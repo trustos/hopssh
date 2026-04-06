@@ -57,6 +57,7 @@ export function connectShell(
 	let resizeDisposable: { dispose: () => void } | null = null;
 	let disposed = false;
 	let reconnecting = false;
+	let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
 	function buildWsUrl(): string {
 		const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -96,9 +97,9 @@ export function connectShell(
 				return;
 			}
 
-			// Unexpected close — attempt reconnection.
+			// Unexpected close — attempt reconnection (don't fire onDisconnect,
+			// fire onReconnecting instead to avoid brief "ended" state flash).
 			terminal.write('\r\n\x1b[33m[Connection lost. Reconnecting...]\x1b[0m\r\n');
-			callbacks.onDisconnect?.();
 			attemptReconnect(0);
 		};
 
@@ -139,7 +140,8 @@ export function connectShell(
 		callbacks.onReconnecting?.(attempt + 1, MAX_RECONNECT_ATTEMPTS);
 
 		const delay = RECONNECT_DELAYS[Math.min(attempt, RECONNECT_DELAYS.length - 1)];
-		setTimeout(() => {
+		reconnectTimer = setTimeout(() => {
+			reconnectTimer = null;
 			if (disposed) return;
 			try {
 				const newWs = new WebSocket(buildWsUrl());
@@ -159,6 +161,10 @@ export function connectShell(
 	return {
 		terminal,
 		reconnect() {
+			if (reconnectTimer) {
+				clearTimeout(reconnectTimer);
+				reconnectTimer = null;
+			}
 			if (ws) {
 				ws.onclose = null;
 				ws.onerror = null;
@@ -170,6 +176,10 @@ export function connectShell(
 		},
 		dispose() {
 			disposed = true;
+			if (reconnectTimer) {
+				clearTimeout(reconnectTimer);
+				reconnectTimer = null;
+			}
 			resizeObserver.disconnect();
 			detachInput();
 			if (ws) {

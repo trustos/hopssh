@@ -59,17 +59,20 @@ export const auth = {
 	me: () => request<UserResponse>('GET', '/api/auth/me')
 };
 
+// Sanitize path segments to prevent path traversal.
+const e = encodeURIComponent;
+
 // --- Networks ---
 export const networks = {
 	list: () => request<NetworkResponse[]>('GET', '/api/networks'),
-	get: (id: string) => request<NetworkDetailResponse>('GET', `/api/networks/${id}`),
+	get: (id: string) => request<NetworkDetailResponse>('GET', `/api/networks/${e(id)}`),
 	create: (name: string, dnsDomain?: string) =>
 		request<{ id: string; name: string; slug: string; subnet: string; dnsDomain: string }>(
 			'POST',
 			'/api/networks',
 			{ name, dnsDomain: dnsDomain || 'hop' }
 		),
-	delete: (id: string) => request<void>('DELETE', `/api/networks/${id}`)
+	delete: (id: string) => request<void>('DELETE', `/api/networks/${e(id)}`)
 };
 
 // --- Nodes ---
@@ -77,28 +80,28 @@ export const nodes = {
 	list: (networkId: string) =>
 		request<import('$lib/types/api').NodeResponse[]>(
 			'GET',
-			`/api/networks/${networkId}/nodes`
+			`/api/networks/${e(networkId)}/nodes`
 		),
 	create: (networkId: string) =>
-		request<CreateNodeResponse>('POST', `/api/networks/${networkId}/nodes`, {}),
+		request<CreateNodeResponse>('POST', `/api/networks/${e(networkId)}/nodes`, {}),
 	delete: (networkId: string, nodeId: string) =>
-		request<void>('DELETE', `/api/networks/${networkId}/nodes/${nodeId}`),
+		request<void>('DELETE', `/api/networks/${e(networkId)}/nodes/${e(nodeId)}`),
 	health: (networkId: string, nodeId: string) =>
-		request<HealthResponse>('GET', `/api/networks/${networkId}/nodes/${nodeId}/health`)
+		request<HealthResponse>('GET', `/api/networks/${e(networkId)}/nodes/${e(nodeId)}/health`)
 };
 
 // --- Port Forwards ---
 export const portForwards = {
 	list: (networkId: string) =>
-		request<PortForwardResponse[]>('GET', `/api/networks/${networkId}/port-forwards`),
+		request<PortForwardResponse[]>('GET', `/api/networks/${e(networkId)}/port-forwards`),
 	start: (networkId: string, nodeId: string, remotePort: number, localPort?: number) =>
 		request<PortForwardResponse>(
 			'POST',
-			`/api/networks/${networkId}/nodes/${nodeId}/port-forwards`,
+			`/api/networks/${e(networkId)}/nodes/${e(nodeId)}/port-forwards`,
 			{ remotePort, localPort: localPort ?? 0 }
 		),
 	stop: (networkId: string, fwdId: string) =>
-		request<void>('DELETE', `/api/networks/${networkId}/port-forwards/${fwdId}`)
+		request<void>('DELETE', `/api/networks/${e(networkId)}/port-forwards/${e(fwdId)}`)
 };
 
 // --- DNS Records ---
@@ -106,16 +109,16 @@ export const dns = {
 	list: (networkId: string) =>
 		request<import('$lib/types/api').DNSRecordResponse[]>(
 			'GET',
-			`/api/networks/${networkId}/dns`
+			`/api/networks/${e(networkId)}/dns`
 		),
 	create: (networkId: string, name: string, nebulaIP: string) =>
 		request<{ id: string; name: string; nebulaIP: string }>(
 			'POST',
-			`/api/networks/${networkId}/dns`,
+			`/api/networks/${e(networkId)}/dns`,
 			{ name, nebulaIP }
 		),
 	delete: (networkId: string, recordId: string) =>
-		request<void>('DELETE', `/api/networks/${networkId}/dns/${recordId}`)
+		request<void>('DELETE', `/api/networks/${e(networkId)}/dns/${e(recordId)}`)
 };
 
 // --- Device Flow ---
@@ -123,7 +126,7 @@ export const device = {
 	verify: (code: string) =>
 		request<{ userCode: string; status: string; expiresIn: number }>(
 			'GET',
-			`/api/device/verify/${code}`
+			`/api/device/verify/${e(code)}`
 		),
 	authorize: (userCode: string, networkId: string) =>
 		request<{ status: string }>('POST', '/api/device/authorize', { userCode, networkId })

@@ -122,11 +122,33 @@ func (nm *NetworkManager) StartNetwork(n *db.Network) error {
 		nm.mu.Unlock()
 		return fmt.Errorf("lighthouse for network %s already running", n.Slug)
 	}
+	// Insert a nil sentinel to prevent concurrent StartNetwork for the same ID.
+	nm.instances[n.ID] = nil
 	nm.mu.Unlock()
 
-	// Start Nebula outside the lock (heavyweight operation).
-	// startInstance acquires the lock internally to insert the instance.
-	return nm.startInstance(n)
+	err := nm.startInstance(n)
+	if err != nil {
+		// Remove sentinel on failure.
+		nm.mu.Lock()
+		if nm.instances[n.ID] == nil {
+			delete(nm.instances, n.ID)
+		}
+		nm.mu.Unlock()
+	}
+	return err
+}
+
+// GetInstance returns the running NetworkInstance for a network.
+// Returns an error if the instance doesn't exist or is still starting.
+func (nm *NetworkManager) GetInstance(networkID string) (*NetworkInstance, error) {
+	nm.mu.RLock()
+	defer nm.mu.RUnlock()
+
+	inst, ok := nm.instances[networkID]
+	if !ok || inst == nil {
+		return nil, fmt.Errorf("no lighthouse running for network %s", networkID)
+	}
+	return inst, nil
 }
 
 // StopNetwork stops and removes a lighthouse instance. Called when a network is deleted.
@@ -144,16 +166,6 @@ func (nm *NetworkManager) StopNetwork(networkID string) {
 }
 
 // GetInstance returns the running NetworkInstance for a network.
-func (nm *NetworkManager) GetInstance(networkID string) (*NetworkInstance, error) {
-	nm.mu.RLock()
-	defer nm.mu.RUnlock()
-
-	inst, ok := nm.instances[networkID]
-	if !ok {
-		return nil, fmt.Errorf("no lighthouse running for network %s", networkID)
-	}
-	return inst, nil
-}
 
 // Stop shuts down all lighthouse instances.
 func (nm *NetworkManager) Stop() {
@@ -237,10 +249,14 @@ func (nm *NetworkManager) AllocatePort() (int, error) {
 	if err != nil {
 		return 0, fmt.Errorf("query max lighthouse port: %w", err)
 	}
-	if maxPort == 0 {
-		return baseLighthousePort, nil
+	port := baseLighthousePort
+	if maxPort > 0 {
+		port = maxPort + 1
 	}
-	return maxPort + 1, nil
+	if port > 65535 {
+		return 0, fmt.Errorf("no available UDP ports (max 65535)")
+	}
+	return port, nil
 }
 
 // startInstance starts a Nebula userspace lighthouse+relay for a network.

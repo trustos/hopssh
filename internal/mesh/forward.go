@@ -8,10 +8,22 @@ import (
 	"io"
 	"log"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 )
+
+// isClosedConnErr returns true for expected errors during normal connection close.
+func isClosedConnErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "use of closed network connection") ||
+		strings.Contains(s, "connection reset by peer") ||
+		err == io.EOF
+}
 
 // closeWriter is implemented by net.TCPConn and similar types for half-close.
 type closeWriter interface {
@@ -246,7 +258,7 @@ func (pf *PortForward) handleConn(ctx context.Context, local net.Conn) {
 
 	done := make(chan struct{})
 	go func() {
-		if _, err := io.Copy(remote, local); err != nil {
+		if _, err := io.Copy(remote, local); err != nil && !isClosedConnErr(err) {
 			log.Printf("[forward] %s: local→remote error: %v", pf.ID, err)
 		}
 		// Signal half-close to remote so the reverse copy gets EOF.
@@ -256,7 +268,7 @@ func (pf *PortForward) handleConn(ctx context.Context, local net.Conn) {
 		close(done)
 	}()
 
-	if _, err := io.Copy(local, remote); err != nil {
+	if _, err := io.Copy(local, remote); err != nil && !isClosedConnErr(err) {
 		log.Printf("[forward] %s: remote→local error: %v", pf.ID, err)
 	}
 	// Signal half-close to local so the forward copy gets EOF.

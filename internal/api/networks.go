@@ -62,7 +62,11 @@ func (h *NetworkHandler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 		dnsDomain = "hop"
 	}
 
-	slug := uniqueSlug(slugify(body.Name), h.Networks)
+	slug, err := uniqueSlug(slugify(body.Name), h.Networks)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 
 	// Generate Nebula CA.
 	ca, err := pki.GenerateCA("hopssh-"+slug, caDuration)
@@ -246,7 +250,7 @@ func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 // @Tags         networks
 // @Security     BearerAuth
 // @Param        networkID path string true "Network ID"
-// @Success      200
+// @Success      204
 // @Failure      404 {object} ErrorResponse
 // @Router       /api/networks/{networkID} [delete]
 func (h *NetworkHandler) DeleteNetwork(w http.ResponseWriter, r *http.Request) {
@@ -294,13 +298,13 @@ func slugify(name string) string {
 }
 
 // uniqueSlug appends -2, -3, etc. if the slug already exists.
-func uniqueSlug(base string, networks *db.NetworkStore) string {
+func uniqueSlug(base string, networks *db.NetworkStore) (string, error) {
 	slug := base
 	for attempt := 2; attempt <= 100; attempt++ {
 		if !networks.SlugExists(slug) {
-			return slug
+			return slug, nil
 		}
 		slug = fmt.Sprintf("%s-%d", base, attempt)
 	}
-	return slug
+	return "", fmt.Errorf("could not generate unique name, please choose a different one")
 }

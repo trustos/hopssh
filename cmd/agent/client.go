@@ -118,7 +118,9 @@ func runClientJoin(args []string) {
 	if err != nil {
 		log.Fatalf("Failed to start Nebula: %v", err)
 	}
+	nebulaMu.Lock()
 	currentNebula = svc
+	nebulaMu.Unlock()
 	defer svc.Close()
 
 	fmt.Println("  ✓ Connected to mesh")
