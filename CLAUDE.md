@@ -1,9 +1,9 @@
-# hopssh — Agent Reference
+# hopssh
 
-**Hop into your servers. No SSH keys needed.**
+**Hop into your network. Your servers, your rules.**
 
-Browser-based server access through auto-provisioned encrypted mesh tunnels.
-Users install a one-line agent, get instant web terminal + port forwarding + team sharing.
+Encrypted mesh networking with P2P, relay fallback, built-in DNS, and a web terminal.
+The best self-hosted alternative to Tailscale and ZeroTier. Single binary, zero infrastructure.
 
 Website: https://hopssh.com
 Domain: hopssh.com
@@ -13,55 +13,94 @@ CLI name: `hop`
 
 ## Product Overview
 
-hopssh replaces SSH key management, bastion hosts, and VPN configuration with a single agent
-that creates encrypted mesh tunnels back to a control plane. Users access servers through
-the browser — web terminal, port forwarding, service status — with team sharing and audit logs.
+hopssh is an encrypted mesh networking platform built on Nebula. It creates P2P tunnels
+between your devices with automatic relay fallback, built-in DNS resolution, and a web-based
+management dashboard — including a browser terminal for server access.
+
+Think ZeroTier/Tailscale, but:
+- **Best self-hosted experience** — single binary, embedded web UI, SQLite, zero infrastructure
+- **Browser-based web terminal** — SSH into any node from the dashboard (no one else has this)
+- **User-defined DNS** — `jellyfin.zero`, `nas.home`, `db.prod` — pick your own domain per network
+- **Visual mesh management** — see P2P vs relayed connections, exposed services, DNS records
 
 ### What it is
-- **Control plane** (hosted or self-hosted) — manages networks, nodes, users, PKI, audit
-- **Agent binary** — installed on servers, creates outbound Nebula mesh tunnel
-- **Web dashboard** — browser terminal, port forwarding, node status, team management
-- **Terraform/Pulumi provider** — auto-bootstrap agent on new infrastructure
-- **CLI** (`hop`) — enroll existing servers, manage networks
+- **Mesh network** — P2P encrypted tunnels between all your devices (Nebula, Noise Protocol)
+- **Control plane** (hosted or self-hosted) — manages networks, nodes, PKI, DNS, lighthouse+relay
+- **Agent** — installed on servers, joins the mesh, exposes services
+- **Client** — installed on laptops/phones, joins the mesh, accesses services
+- **Web dashboard** — manage networks, nodes, DNS, port exposure; built-in web terminal
+- **Built-in DNS** — `hostname.yourdomain` resolves to mesh IPs, user-defined domains per network
 
-### What it is NOT
-- Not a VPN (no network-level routing between nodes)
-- Not an SSH replacement library (users don't SSH — they use the browser)
-- Not a configuration management tool
-- Not storing SSH keys, cloud credentials, or any customer secrets
+### How it compares
+
+| | ZeroTier | Tailscale | hopssh |
+|---|---|---|---|
+| P2P mesh | Yes | Yes | Yes (Nebula) |
+| Relay fallback | Roots (UDP) | DERP (TCP/443) | Lighthouse relay (UDP) |
+| Self-hosted control | Clunky | Headscale (separate) | First-class (single binary) |
+| Self-hosted relay | Moons (no UI) | DERP (manual) | Built-in (dashboard config) |
+| Web terminal | No | No | Yes (browser-based PTY) |
+| DNS | Manual | MagicDNS | User-defined domains |
+| Management UI | Hosted only | Limited | Always (embedded in binary) |
+| Protocol | Custom | WireGuard | Nebula (Noise, Curve25519) |
+| License | BSL | Proprietary | MIT (Nebula) |
 
 ---
 
 ## Architecture
 
 ```
-User's Browser
-  └─ hopssh.com dashboard (or self-hosted)
-       └─ Control Plane API
-            ├─ Auth (session / API key)
-            ├─ Network management (PKI per network)
-            ├─ Node registry (health, status, audit)
-            └─ Mesh Manager (userspace Nebula tunnels, on-demand)
-                 └─ Agent (on customer's server)
-                      ├─ Nebula tunnel (outbound UDP, NAT-friendly)
-                      ├─ Web terminal (WebSocket PTY)
-                      ├─ Port forwarding (TCP relay)
-                      └─ Health + service status
-
-No inbound ports required on customer servers.
-Agent initiates outbound connection. Customer controls the agent lifecycle.
-Control plane never holds credentials that work without agent cooperation.
+┌─────────────────────────────────────────────────────────────┐
+│               hopssh Control Plane (single binary)           │
+│                                                              │
+│  ┌──────────┐  ┌─────────────────────────────────────────┐  │
+│  │ API +    │  │ Per-Network Nebula Instances             │  │
+│  │ Web UI   │  │                                          │  │
+│  │ :9473    │  │  Network "home" (CA-1, domain: .zero)    │  │
+│  │ TCP      │  │  ├─ Lighthouse+Relay (.1) UDP :42001    │  │
+│  │          │  │  └─ DNS: jellyfin.zero → 10.42.1.3      │  │
+│  │          │  │                                          │  │
+│  │          │  │  Network "prod" (CA-2, domain: .prod)    │  │
+│  │          │  │  ├─ Lighthouse+Relay (.1) UDP :42002    │  │
+│  │          │  │  └─ DNS: web.prod → 10.42.2.2           │  │
+│  └──────────┘  └─────────────────────────────────────────┘  │
+└──────────────────┬────────────────────┬──────────────────────┘
+                   │ TCP :9473          │ UDP :42001-N
+                   │ (API/Web)          │ (Nebula per network)
+                   │                    │
+          ┌────────┘              ┌─────┘
+          │                       │
+     ┌────┴────┐           ┌─────┴──────────────────┐
+     │ Browser │           │ Agents & Clients        │
+     │ (manage,│           │                         │
+     │ terminal│           │  Agent A ←─P2P─→ Agent B│
+     │  proxy) │           │     └──relay──┘         │
+     └─────────┘           │  Client C (laptop)      │
+                           │  Client D (phone)        │
+                           └──────────────────────────┘
 ```
 
+### Connection flows
+
+**P2P (primary, ~92% of connections):**
+Agent A asks lighthouse "where is B?" → lighthouse returns B's endpoint → A and B establish direct UDP tunnel via hole punching.
+
+**Relay (fallback, ~8% — symmetric NAT, firewalls):**
+Agent A → Lighthouse/Relay → Agent B. E2E encrypted, relay is blind.
+
+**Web terminal (browser → agent through control plane):**
+Browser → HTTPS to control plane → Nebula mesh → Agent. Always through control plane since browsers can't join the mesh directly.
+
 ### Trust model
-- Agent authenticates to control plane with per-node enrollment token (SHA-256 hashed at rest)
-- Agent tokens encrypted at rest (AES-256-GCM), verified with constant-time comparison
-- Control plane authenticates users via browser session (Secure cookie) or API key
 - All traffic encrypted end-to-end via Nebula (Noise Protocol, Curve25519)
-- Per-network CA — networks are cryptographically isolated
+- Per-network CA — networks are cryptographically isolated (separate Nebula CAs)
+- Nodes authenticate with per-node certificates (24h, auto-renewed)
+- Agent tokens encrypted at rest (AES-256-GCM), verified with constant-time comparison
+- Enrollment tokens SHA-256 hashed, single-use, 10-minute TTL
 - Control plane never stores SSH keys, cloud credentials, or server passwords
+- Relay is blind — cannot decrypt traffic (just forwards opaque Nebula packets)
+- Firewall groups (agent/user/admin) control what each node type can access
 - If agent stops, control plane loses access — customer always in control
-- Agent uploads restricted to `/var/hop-agent/uploads/` (no arbitrary file writes)
 
 ---
 
@@ -120,42 +159,54 @@ mode returns `io.ErrClosedPipe`. Our patch adds the missing error check.
 
 ---
 
-## Core Features (MVP)
+## Core Features
 
-### Tier 1 — Launch
+### Phase 1 — Mesh Networking (current)
 - [x] Agent enrollment (4 modes: device flow, token, bundle, IaC)
+- [x] Networks (isolated mesh per network, auto PKI, per-network CA)
 - [x] Web terminal (browser shell via WebSocket PTY through mesh)
 - [x] Port forwarding (TCP tunnel, any port)
 - [x] Node health dashboard (connected, OS, uptime)
-- [x] Networks (isolated mesh per project, auto PKI)
 - [x] Audit logging (login, shell, exec, port-forward)
-- [ ] GitHub OAuth login
-- [ ] Free tier: 5 nodes, 1 user, 1 network
+- [x] Short-lived certificates (24h) with auto-renewal
+- [ ] Persistent lighthouse + relay per network
+- [ ] P2P direct connections via Nebula hole punching
+- [ ] Relay fallback through lighthouse when P2P fails
+- [ ] Client app (`hop client join`) for laptops/phones
+- [ ] Built-in DNS with user-defined domains (`.zero`, `.prod`, `.lab`)
+- [ ] Service exposure config (which ports are mesh-accessible)
+- [ ] Firewall groups (agent/user/admin roles via Nebula certs)
 
-### Tier 2 — Team
-- [ ] Team invitations (email invite, instant access)
-- [ ] Audit log (who connected to what, when)
-- [ ] Access revocation (remove user → instant cutoff)
-- [ ] Multiple networks
+### Phase 2 — Teams + Management
+- [ ] Team invitations (email invite, instant mesh access)
+- [ ] ACL rules (fine-grained access control beyond groups)
+- [ ] Regional relay nodes (add relays via dashboard)
+- [ ] Peer connectivity map (P2P vs relayed status)
 - [ ] API keys for automation
+- [ ] GitHub OAuth login
+- [ ] Terraform/Pulumi provider
 
-### Tier 3 — Enterprise
+### Phase 3 — Enterprise + Scale
 - [ ] SSO / SAML
-- [ ] RBAC (admin, operator, viewer)
+- [ ] RBAC (granular permissions)
 - [ ] Session recording
-- [ ] Self-hosted option
-- [ ] Terraform provider (`meshaccess_network` resource)
-- [ ] Pulumi provider (bridged from Terraform)
+- [ ] Desktop tray app (macOS, Windows, Linux)
+- [ ] Mobile clients (iOS, Android)
+- [ ] Bandwidth monitoring per network
 
 ---
 
 ## Pricing Model
 
+### Hosted (hopssh.com)
 | Tier | Price | Limits |
 |---|---|---|
-| Free | $0 | 5 nodes, 1 user, 1 network, 24h audit |
-| Team | $5/node/month | Unlimited users/networks, 90-day audit, API |
-| Enterprise | $15/node/month | SSO, RBAC, session recording, self-hosted, SLA |
+| Free | $0 | 10 nodes, 1 network, P2P + relay |
+| Pro | $5/node/month | Unlimited networks, DNS, web terminal, audit, API |
+| Enterprise | Contact | SSO, RBAC, session recording, regional relays, SLA |
+
+### Self-hosted
+Free forever. Run the single binary on your own server. All features included.
 
 ---
 
@@ -163,25 +214,27 @@ mode returns `io.ErrClosedPipe`. Our patch adds the missing error check.
 
 ```
 cmd/
-  agent/              Agent binary (serve + enroll subcommands)
-  server/             Control plane server
+  agent/              Agent + client binary (serve, enroll, client join)
+  server/             Control plane server (API, lighthouse, relay, DNS)
 
 internal/
-  api/                HTTP handlers (auth, networks, nodes, proxy, device flow, bundles)
+  api/                HTTP handlers (auth, networks, nodes, proxy, device, bundles, dns, peers)
   auth/               Middleware (session auth, rate limiting)
+  authz/              Authorization (CanAccessNetwork — future: teams, ACLs)
   crypto/             AES-256-GCM encryption at rest
-  db/                 SQLite stores + migrations
-  mesh/               Nebula tunnel manager (patched — see Vendor Patch section)
+  db/                 SQLite stores + migrations + sqlc generated code
+  frontend/           Embedded SPA (built from frontend/)
+  mesh/               NetworkManager (persistent per-network Nebula instances)
   pki/                Nebula CA + cert generation
 
-patches/              Vendor patches for dependencies
-scripts/              Maintenance scripts (patch checking)
+frontend/             Svelte 5 SPA (shadcn-svelte, Tailwind, xterm.js)
+patches/              Vendor patches (Nebula graceful shutdown)
+scripts/              Maintenance scripts
 docs/                 Architecture, enrollment guide, developer guide
-frontend/             Svelte 5 SPA (pending)
 
 .github/workflows/    CI (build, vet, test, cross-compile, patch check)
-Dockerfile            Multi-stage build for containerized deployment
-Makefile              Build, vendor, patch, test targets
+Dockerfile            Multi-stage build
+Makefile              Build, vendor, patch, frontend, test
 ```
 
 ---
@@ -194,21 +247,21 @@ See [docs/development.md](docs/development.md) for the full developer guide.
 # First-time setup (vendor + apply patches):
 make setup
 
-# Build:
-make build
+# Build everything (frontend + Go):
+make build-all
 
 # Run control plane:
-./hop-server --addr :8080 --data ./data --endpoint http://localhost:8080
+./hop-server
 
-# Enroll an agent (interactive device flow):
-./hop-agent enroll --endpoint http://localhost:8080
+# Enroll a server:
+echo '<token>' | sudo ./hop-agent enroll --token-stdin --endpoint http://<control-plane>:9473
 
-# Run agent (after enrollment):
-./hop-agent serve --listen :41820 --token-file /etc/hop-agent/token
+# Join as a client (laptop):
+./hop-agent client join --network <id> --endpoint http://<control-plane>:9473
 
 # Docker:
 docker build -t hopssh .
-docker run -p 8080:8080 -v hopssh-data:/data hopssh
+docker run -p 9473:9473 -p 42001-42100:42001-42100/udp -v hopssh-data:/data hopssh
 ```
 
 ---
