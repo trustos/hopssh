@@ -3,9 +3,9 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { toast } from 'svelte-sonner';
-	import { networks as networksApi, nodes as nodesApi, dns as dnsApi } from '$lib/api/client';
+	import { networks as networksApi, nodes as nodesApi, dns as dnsApi, portForwards as fwdApi } from '$lib/api/client';
 	import { ApiError } from '$lib/api/client';
-	import type { NetworkDetailResponse, CreateNodeResponse, DNSRecordResponse, NodeResponse } from '$lib/types/api';
+	import type { NetworkDetailResponse, CreateNodeResponse, DNSRecordResponse, NodeResponse, PortForwardResponse } from '$lib/types/api';
 	import Dialog from '$lib/components/ui/dialog.svelte';
 
 	let network = $state<NetworkDetailResponse | null>(null);
@@ -32,6 +32,13 @@
 	let deleteNetworkConfirm = $state('');
 	let deletingNetwork = $state(false);
 	let deleteNetworkError = $state('');
+
+	// Port forwards
+	let activeForwards = $state<PortForwardResponse[]>([]);
+	let forwardNodeId = $state<string | null>(null); // which node's inline form is open
+	let fwdRemotePort = $state('');
+	let fwdLocalPort = $state('');
+	let startingForward = $state(false);
 
 	// Delete node
 	let showDeleteNode = $state(false);
@@ -61,6 +68,7 @@
 		try {
 			network = await networksApi.get(networkId);
 			dnsRecords = await dnsApi.list(networkId);
+			activeForwards = await fwdApi.list(networkId).catch(() => []);
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load network';
 		} finally {
@@ -147,6 +155,48 @@
 		} finally {
 			deletingNode = false;
 		}
+	}
+
+	async function startForward(nodeId: string, e: Event) {
+		e.preventDefault();
+		const remote = parseInt(fwdRemotePort);
+		if (!remote || remote < 1 || remote > 65535) return;
+		const local = fwdLocalPort ? parseInt(fwdLocalPort) : undefined;
+		startingForward = true;
+		try {
+			const pf = await fwdApi.start(networkId, nodeId, remote, local);
+			activeForwards = [...activeForwards, pf];
+			forwardNodeId = null;
+			fwdRemotePort = '';
+			fwdLocalPort = '';
+			const addr = `localhost:${pf.localPort}`;
+			navigator.clipboard.writeText(addr).catch(() => {});
+			toast.success(`Forwarding ${addr} — copied to clipboard`);
+		} catch (e) {
+			toast.error(e instanceof ApiError ? e.message : 'Failed to start forward');
+		} finally {
+			startingForward = false;
+		}
+	}
+
+	async function stopForward(fwdId: string) {
+		try {
+			await fwdApi.stop(networkId, fwdId);
+			activeForwards = activeForwards.filter(f => f.id !== fwdId);
+			toast.success('Port forward stopped');
+		} catch (e) {
+			toast.error(e instanceof ApiError ? e.message : 'Failed to stop forward');
+		}
+	}
+
+	function copyAddr(port: number) {
+		navigator.clipboard.writeText(`localhost:${port}`);
+		toast.success('Copied to clipboard');
+	}
+
+	function nodeHostname(nodeId: string): string {
+		const node = network?.nodes.find(n => n.id === nodeId);
+		return node?.hostname || nodeId.slice(0, 8);
 	}
 
 	async function deleteDNS(recordId: string) {
@@ -253,6 +303,39 @@
 
 		<!-- Nodes Tab -->
 		{#if activeTab === 'nodes'}
+			<!-- Active Forwards -->
+			{#if activeForwards.length > 0}
+				<div class="mb-4 rounded-lg border bg-primary/5 p-3">
+					<div class="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+						Active Forwards
+					</div>
+					{#each activeForwards as fwd}
+						<div class="flex items-center justify-between border-b border-primary/10 py-1.5 last:border-0 font-mono text-sm">
+							<span>
+								<span class="text-muted-foreground">{nodeHostname(fwd.nodeId)}</span>
+								<span class="text-muted-foreground">:</span>{fwd.remotePort}
+								<span class="text-muted-foreground mx-1">→</span>
+								localhost:{fwd.localPort}
+							</span>
+							<div class="flex gap-1">
+								<button
+									onclick={() => copyAddr(fwd.localPort)}
+									class="rounded px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground"
+								>
+									Copy
+								</button>
+								<button
+									onclick={() => stopForward(fwd.id)}
+									class="rounded px-2 py-0.5 text-xs text-destructive hover:bg-destructive/10"
+								>
+									Stop
+								</button>
+							</div>
+						</div>
+					{/each}
+				</div>
+			{/if}
+
 			{#if network.nodes.length === 0}
 				<div class="rounded-lg border border-dashed p-8 text-center">
 					<p class="mb-2 text-lg font-medium">No nodes yet</p>
@@ -317,6 +400,14 @@
 													Terminal
 												</a>
 											{/if}
+											{#if node.nodeType === 'agent' && node.status === 'online'}
+												<button
+													onclick={() => { forwardNodeId = forwardNodeId === node.id ? null : node.id; fwdRemotePort = ''; fwdLocalPort = ''; }}
+													class="rounded px-2 py-1 text-xs text-primary hover:bg-primary/10"
+												>
+													Forward
+												</button>
+											{/if}
 											{#if node.nodeType !== 'lighthouse'}
 												<button
 													onclick={() => confirmDeleteNode(node)}
@@ -328,6 +419,53 @@
 										</div>
 									</td>
 								</tr>
+								<!-- Inline port forward form -->
+								{#if forwardNodeId === node.id}
+									<tr class="bg-muted/50">
+										<td colspan="7" class="px-4 py-3">
+											<form onsubmit={(e) => startForward(node.id, e)} class="flex items-center gap-3">
+												<span class="text-sm text-muted-foreground">Forward port from {node.hostname || node.id.slice(0, 8)}:</span>
+												<div class="flex items-center gap-1">
+													<span class="text-xs text-muted-foreground">Remote</span>
+													<input
+														type="number"
+														bind:value={fwdRemotePort}
+														min="1"
+														max="65535"
+														required
+														placeholder="5432"
+														class="w-20 rounded border bg-background px-2 py-1 font-mono text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+													/>
+												</div>
+												<div class="flex items-center gap-1">
+													<span class="text-xs text-muted-foreground">Local</span>
+													<input
+														type="number"
+														bind:value={fwdLocalPort}
+														min="0"
+														max="65535"
+														placeholder="auto"
+														class="w-20 rounded border bg-background px-2 py-1 font-mono text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+													/>
+												</div>
+												<button
+													type="submit"
+													disabled={startingForward || !fwdRemotePort}
+													class="rounded bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+												>
+													{startingForward ? 'Starting...' : 'Start'}
+												</button>
+												<button
+													type="button"
+													onclick={() => { forwardNodeId = null; }}
+													class="text-xs text-muted-foreground hover:text-foreground"
+												>
+													Cancel
+												</button>
+											</form>
+										</td>
+									</tr>
+								{/if}
 							{/each}
 						</tbody>
 					</table>
