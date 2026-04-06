@@ -155,15 +155,21 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 	h.Nodes.UpdateAgentRealIP(nodeID, captureAgentIP(r))
 
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
+	lighthousePort := 0
+	if network.LighthousePort != nil {
+		lighthousePort = int(*network.LighthousePort)
+	}
 
 	writeJSON(w, map[string]interface{}{
-		"nodeId":     nodeID,
-		"caCert":     string(network.NebulaCACert),
-		"nodeCert":   string(nodeCert.CertPEM),
-		"nodeKey":    string(nodeCert.KeyPEM),
-		"agentToken": agentToken,
-		"serverIP":   serverIP.Addr().String(),
-		"nebulaIP":   node.NebulaIP,
+		"nodeId":         nodeID,
+		"caCert":         string(network.NebulaCACert),
+		"nodeCert":       string(nodeCert.CertPEM),
+		"nodeKey":        string(nodeCert.KeyPEM),
+		"agentToken":     agentToken,
+		"serverIP":       serverIP.Addr().String(),
+		"nebulaIP":       node.NebulaIP,
+		"lighthousePort": lighthousePort,
+		"dnsDomain":      network.DNSDomain,
 	})
 }
 

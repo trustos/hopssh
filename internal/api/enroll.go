@@ -149,17 +149,23 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 	// Record the agent's real IP for mesh tunnel creation.
 	h.Nodes.UpdateAgentRealIP(node.ID, captureAgentIP(r))
 
-	// Compute server's Nebula IP for static_host_map.
+	// Compute lighthouse VPN IP and port for agent's static_host_map.
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
+	lighthousePort := 0
+	if network.LighthousePort != nil {
+		lighthousePort = int(*network.LighthousePort)
+	}
 
 	writeJSON(w, map[string]interface{}{
-		"nodeId":     node.ID,
-		"caCert":     string(network.NebulaCACert),
-		"nodeCert":   string(nodeCert.CertPEM),
-		"nodeKey":    string(nodeCert.KeyPEM),
-		"agentToken": node.AgentToken,
-		"serverIP":   serverIP.Addr().String(),
-		"nebulaIP":   node.NebulaIP,
+		"nodeId":         node.ID,
+		"caCert":         string(network.NebulaCACert),
+		"nodeCert":       string(nodeCert.CertPEM),
+		"nodeKey":        string(nodeCert.KeyPEM),
+		"agentToken":     node.AgentToken,
+		"serverIP":       serverIP.Addr().String(),
+		"nebulaIP":       node.NebulaIP,
+		"lighthousePort": lighthousePort,
+		"dnsDomain":      network.DNSDomain,
 	})
 }
 

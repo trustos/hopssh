@@ -18,16 +18,19 @@ import (
 const (
 	enrollDir       = "/etc/hop-agent"
 	defaultEndpoint = "https://hopssh.com"
+	agentAPIPort    = 41820
 )
 
 type enrollResponse struct {
-	NodeID     string `json:"nodeId"`
-	CACert     string `json:"caCert"`
-	NodeCert   string `json:"nodeCert"`
-	NodeKey    string `json:"nodeKey"`
-	AgentToken string `json:"agentToken"`
-	ServerIP   string `json:"serverIP"`
-	NebulaIP   string `json:"nebulaIP"`
+	NodeID         string `json:"nodeId"`
+	CACert         string `json:"caCert"`
+	NodeCert       string `json:"nodeCert"`
+	NodeKey        string `json:"nodeKey"`
+	AgentToken     string `json:"agentToken"`
+	ServerIP       string `json:"serverIP"`
+	NebulaIP       string `json:"nebulaIP"`
+	LighthousePort int    `json:"lighthousePort"`
+	DNSDomain      string `json:"dnsDomain"`
 }
 
 // runEnroll handles the `hop-agent enroll` subcommand with 4 modes:
@@ -176,10 +179,12 @@ func enrollFromBundle(path, endpoint string) {
 		log.Fatalf("Failed to read bundle config: %v", err)
 	}
 	var bundleConfig struct {
-		NodeID   string `json:"nodeId"`
-		ServerIP string `json:"serverIP"`
-		NebulaIP string `json:"nebulaIP"`
-		Endpoint string `json:"endpoint"`
+		NodeID         string `json:"nodeId"`
+		ServerIP       string `json:"serverIP"`
+		NebulaIP       string `json:"nebulaIP"`
+		LighthousePort int    `json:"lighthousePort"`
+		DNSDomain      string `json:"dnsDomain"`
+		Endpoint       string `json:"endpoint"`
 	}
 	if err := json.Unmarshal(configData, &bundleConfig); err != nil {
 		log.Fatalf("Failed to parse bundle config: %v", err)
@@ -198,7 +203,7 @@ func enrollFromBundle(path, endpoint string) {
 
 	// Generate Nebula config from bundle data.
 	serverHost := extractHost(ep)
-	writeNebulaConfig(bundleConfig.ServerIP, serverHost)
+	writeNebulaConfig(bundleConfig.ServerIP, serverHost, bundleConfig.LighthousePort)
 
 	installSystemdServices()
 	fmt.Println("  ✓ Agent started")
@@ -228,35 +233,44 @@ func installCerts(er *enrollResponse, endpoint string) {
 	fmt.Printf("\n  ✓ Enrolled (%s)\n", er.NebulaIP)
 
 	serverHost := extractHost(endpoint)
-	writeNebulaConfig(er.ServerIP, serverHost)
+	writeNebulaConfig(er.ServerIP, serverHost, er.LighthousePort)
 	installSystemdServices()
 	fmt.Println("  ✓ Agent started")
 }
 
-func writeNebulaConfig(serverIP, serverHost string) {
+func writeNebulaConfig(serverIP, serverHost string, lighthousePort int) {
+	if lighthousePort == 0 {
+		lighthousePort = 41820 // fallback for legacy enrollment
+	}
+
 	nebulaConfig := fmt.Sprintf(`pki:
   ca: %s/ca.crt
   cert: %s/node.crt
   key: %s/node.key
 
 static_host_map:
-  "%s": ["%s:41820"]
+  "%s": ["%s:%d"]
 
 lighthouse:
   am_lighthouse: false
   hosts:
     - "%s"
 
+relay:
+  relays:
+    - "%s"
+  use_relays: true
+
 listen:
   host: 0.0.0.0
-  port: 41820
+  port: 0
 
 punchy:
   punch: true
   respond: true
 
 tun:
-  dev: nebula1
+  user: true
 
 firewall:
   outbound:
@@ -264,29 +278,45 @@ firewall:
       proto: any
       host: any
   inbound:
+    # Control plane (admin group) can reach agent API
+    - port: %d
+      proto: tcp
+      groups:
+        - admin
+    # Mesh users can reach all TCP ports (service exposure controlled by app layer)
     - port: any
       proto: tcp
       groups:
-        - server
+        - user
+    # Other agents can reach for P2P services
+    - port: any
+      proto: tcp
+      groups:
+        - agent
+    # ICMP for diagnostics
     - port: any
       proto: icmp
       host: any
-`, enrollDir, enrollDir, enrollDir, serverIP, serverHost, serverIP)
+`, enrollDir, enrollDir, enrollDir,
+		serverIP, serverHost, lighthousePort,
+		serverIP,
+		serverIP,
+		agentAPIPort)
 
-	os.MkdirAll("/etc/nebula", 0755)
-	writeFileSecure("/etc/nebula/config.yaml", []byte(nebulaConfig), 0644)
-	fmt.Printf("  ✓ Nebula config written (server: %s via %s)\n", serverIP, serverHost)
+	writeFileSecure(filepath.Join(enrollDir, "nebula.yaml"), []byte(nebulaConfig), 0644)
+	fmt.Printf("  ✓ Nebula config written (lighthouse: %s via %s:%d)\n", serverIP, serverHost, lighthousePort)
 }
 
 func installSystemdServices() {
-	nebulaUnit := `[Unit]
-Description=Nebula mesh VPN
+	// Single service — agent embeds Nebula (no separate nebula daemon needed).
+	agentUnit := `[Unit]
+Description=hopssh agent (mesh networking + server management)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/nebula -config /etc/nebula/config.yaml
+ExecStart=/usr/local/bin/hop-agent serve --token-file /etc/hop-agent/token --endpoint-file /etc/hop-agent/endpoint --node-id-file /etc/hop-agent/node-id --nebula-config /etc/hop-agent/nebula.yaml
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5
@@ -294,28 +324,10 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 `
-	agentUnit := `[Unit]
-Description=hopssh agent
-After=nebula.service
-Requires=nebula.service
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/hop-agent serve --listen :41820 --token-file /etc/hop-agent/token --endpoint-file /etc/hop-agent/endpoint --node-id-file /etc/hop-agent/node-id
-ExecReload=/bin/kill -HUP $MAINPID
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-`
-	writeFileSecure("/etc/systemd/system/nebula.service", []byte(nebulaUnit), 0644)
 	writeFileSecure("/etc/systemd/system/hop-agent.service", []byte(agentUnit), 0644)
 
 	runShellCmd("systemctl daemon-reload")
-	runShellCmd("systemctl enable nebula hop-agent")
-	runShellCmd("systemctl start nebula")
-	time.Sleep(2 * time.Second)
+	runShellCmd("systemctl enable hop-agent")
 	runShellCmd("systemctl start hop-agent")
 }
 

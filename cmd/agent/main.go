@@ -50,11 +50,12 @@ func main() {
 
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	listenAddr := fs.String("listen", ":41820", "Address to listen on (host:port)")
 	tokenFile := fs.String("token-file", "/etc/hop-agent/token", "Path to the bearer token file")
 	token := fs.String("token", "", "Bearer token (overrides -token-file)")
 	endpointFile := fs.String("endpoint-file", "/etc/hop-agent/endpoint", "Path to control plane endpoint URL")
 	nodeIDFile := fs.String("node-id-file", "/etc/hop-agent/node-id", "Path to node ID file")
+	nebulaConfig := fs.String("nebula-config", "/etc/hop-agent/nebula.yaml", "Path to Nebula config")
+	listenAddr := fs.String("listen", "", "Override listen address (default: Nebula VPN IP:41820)")
 	fs.Parse(args)
 
 	authToken := *token
@@ -83,6 +84,21 @@ func runServe(args []string) {
 		}
 	}
 
+	// Start embedded Nebula mesh connection (if config exists).
+	var nebulaSvc *nebulaService
+	if _, err := os.Stat(*nebulaConfig); err == nil {
+		svc, err := startNebula(*nebulaConfig)
+		if err != nil {
+			log.Printf("[agent] WARNING: Nebula failed to start: %v (running without mesh)", err)
+		} else {
+			nebulaSvc = svc
+			defer nebulaSvc.Close()
+			log.Printf("[agent] Nebula mesh connected")
+		}
+	} else {
+		log.Printf("[agent] no Nebula config at %s, running without mesh", *nebulaConfig)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("POST /exec", handleExec)
@@ -91,9 +107,15 @@ func runServe(args []string) {
 
 	authed := authMiddleware(authToken, mux)
 
-	ln, err := net.Listen("tcp", *listenAddr)
+	// Determine listen address.
+	addr := *listenAddr
+	if addr == "" {
+		addr = fmt.Sprintf(":%d", 41820) // listen on all interfaces on agent port
+	}
+
+	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		log.Fatalf("Listen %s: %v", *listenAddr, err)
+		log.Fatalf("Listen %s: %v", addr, err)
 	}
 	log.Printf("hop-agent listening on %s", ln.Addr())
 

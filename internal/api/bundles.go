@@ -142,6 +142,10 @@ func (h *BundleHandler) DownloadBundle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
+	lighthousePort := 0
+	if network.LighthousePort != nil {
+		lighthousePort = int(*network.LighthousePort)
+	}
 
 	// Build the config file content.
 	config := fmt.Sprintf(`{
@@ -150,9 +154,11 @@ func (h *BundleHandler) DownloadBundle(w http.ResponseWriter, r *http.Request) {
   "agentToken": %q,
   "serverIP": %q,
   "nebulaIP": %q,
+  "lighthousePort": %d,
+  "dnsDomain": %q,
   "endpoint": %q
 }
-`, node.ID, node.NetworkID, node.AgentToken, serverIP.Addr().String(), node.NebulaIP, h.Endpoint)
+`, node.ID, node.NetworkID, node.AgentToken, serverIP.Addr().String(), node.NebulaIP, lighthousePort, network.DNSDomain, h.Endpoint)
 
 	// Write tarball.
 	w.Header().Set("Content-Type", "application/gzip")
