@@ -181,7 +181,7 @@
 				class="px-4 py-2 text-sm font-medium {activeTab === 'dns' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'}"
 				onclick={() => (activeTab = 'dns')}
 			>
-				DNS ({dnsRecords.length})
+				DNS
 			</button>
 			<button
 				class="px-4 py-2 text-sm font-medium {activeTab === 'join' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'}"
@@ -268,8 +268,7 @@
 		{:else if activeTab === 'dns'}
 			<div class="mb-4 flex items-center justify-between">
 				<p class="text-sm text-muted-foreground">
-					Custom DNS records for <span class="font-mono">.{network.dnsDomain}</span>.
-					Node hostnames are resolved automatically.
+					All resolvable names on <span class="font-mono">.{network.dnsDomain}</span>
 				</p>
 				<button
 					onclick={() => (showAddDNS = true)}
@@ -279,9 +278,16 @@
 				</button>
 			</div>
 
-			{#if dnsRecords.length === 0}
+			{@const autoRecords = network.nodes
+				.filter(n => n.nebulaIP && n.status !== 'pending' && (n.dnsName || n.hostname))
+				.map(n => ({ name: n.dnsName || n.hostname, ip: n.nebulaIP.split('/')[0], source: 'auto' as const, id: n.id }))}
+			{@const customRecordsMapped = dnsRecords.map(r => ({ name: r.name, ip: r.nebulaIP, source: 'custom' as const, id: r.id }))}
+			{@const allRecords = [...autoRecords, ...customRecordsMapped]}
+
+			{#if allRecords.length === 0}
 				<div class="rounded-lg border border-dashed p-6 text-center">
-					<p class="text-sm text-muted-foreground">No custom DNS records. Node hostnames are resolved automatically.</p>
+					<p class="mb-1 text-sm text-muted-foreground">No DNS records yet.</p>
+					<p class="text-xs text-muted-foreground">Node hostnames are added automatically when agents enroll. You can also add custom records.</p>
 				</div>
 			{:else}
 				<div class="rounded-lg border">
@@ -291,22 +297,32 @@
 								<th class="px-4 py-3 text-left font-medium">Hostname</th>
 								<th class="px-4 py-3 text-left font-medium">Resolves to</th>
 								<th class="px-4 py-3 text-left font-medium">FQDN</th>
+								<th class="px-4 py-3 text-left font-medium">Source</th>
 								<th class="px-4 py-3 text-left font-medium"></th>
 							</tr>
 						</thead>
 						<tbody>
-							{#each dnsRecords as record}
+							{#each allRecords as record}
 								<tr class="border-b last:border-0 hover:bg-accent/50">
 									<td class="px-4 py-3 font-mono font-medium">{record.name}</td>
-									<td class="px-4 py-3 font-mono text-muted-foreground">{record.nebulaIP}</td>
+									<td class="px-4 py-3 font-mono text-muted-foreground">{record.ip}</td>
 									<td class="px-4 py-3 font-mono text-xs text-muted-foreground">{record.name}.{network.dnsDomain}</td>
+									<td class="px-4 py-3">
+										{#if record.source === 'auto'}
+											<span class="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">auto</span>
+										{:else}
+											<span class="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">custom</span>
+										{/if}
+									</td>
 									<td class="px-4 py-3 text-right">
-										<button
-											onclick={() => deleteDNS(record.id)}
-											class="rounded px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
-										>
-											Delete
-										</button>
+										{#if record.source === 'custom'}
+											<button
+												onclick={() => deleteDNS(record.id)}
+												class="rounded px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+											>
+												Delete
+											</button>
+										{/if}
 									</td>
 								</tr>
 							{/each}
