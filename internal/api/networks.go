@@ -82,7 +82,10 @@ func (h *NetworkHandler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to compute server IP: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	serverCert, err := pki.IssueCert(ca.CertPEM, ca.KeyPEM, "hopssh-server", serverIP, []string{"server"}, caDuration)
+	// Server cert must expire before the CA. Subtract a buffer to avoid
+	// the timing race where cert.NotAfter > ca.NotAfter by milliseconds.
+	serverCertDuration := caDuration - time.Hour
+	serverCert, err := pki.IssueCert(ca.CertPEM, ca.KeyPEM, "hopssh-server", serverIP, []string{"server"}, serverCertDuration)
 	if err != nil {
 		http.Error(w, "failed to issue server cert: "+err.Error(), http.StatusInternalServerError)
 		return
