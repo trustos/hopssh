@@ -10,19 +10,14 @@
 	let password = $state('');
 	let error = $state('');
 	let submitting = $state(false);
-	let checking = $state(true);
+	let noUsers = $state(false);
 
 	onMount(async () => {
 		try {
 			const status = await authApi.status();
-			if (!status.hasUsers) {
-				goto('/register');
-				return;
-			}
+			noUsers = !status.hasUsers;
 		} catch {
 			// Can't reach server — show login form anyway
-		} finally {
-			checking = false;
 		}
 	});
 
@@ -53,22 +48,26 @@
 	<title>Sign in - hopssh</title>
 </svelte:head>
 
-{#if checking}
-	<div class="flex min-h-screen items-center justify-center bg-background">
-		<div class="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"></div>
-	</div>
-{:else}
-	<div class="flex min-h-screen items-center justify-center bg-background">
-		<div class="w-full max-w-sm space-y-6 p-6">
-			<div class="text-center">
-				<h1 class="text-2xl font-bold"><span class="text-primary">hop</span>ssh</h1>
-				<p class="mt-1 text-sm text-muted-foreground">Hop into your network</p>
-			</div>
+<div class="flex min-h-screen items-center justify-center bg-background">
+	<div class="w-full max-w-sm space-y-6 p-6">
+		<div class="text-center">
+			<h1 class="text-2xl font-bold"><span class="text-primary">hop</span>ssh</h1>
+			<p class="mt-1 text-sm text-muted-foreground">Hop into your network</p>
+		</div>
 
-			<form onsubmit={handleSubmit} class="space-y-4">
-				{#if error}
-					<div class="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{error}</div>
-				{/if}
+		{#if noUsers}
+			<div class="rounded-lg border border-primary/50 bg-primary/10 p-4 text-center">
+				<p class="font-medium">Welcome! No accounts exist yet.</p>
+				<a href="/register" class="mt-2 inline-block text-sm font-medium text-primary hover:underline">
+					Create your first account →
+				</a>
+			</div>
+		{/if}
+
+		<form onsubmit={handleSubmit} class="space-y-4">
+			{#if error}
+				<div class="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{error}</div>
+			{/if}
 
 				<div class="space-y-2">
 					<label for="email" class="text-sm font-medium">Email</label>
@@ -108,4 +107,3 @@
 			</p>
 		</div>
 	</div>
-{/if}
