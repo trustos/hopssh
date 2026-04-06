@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -18,8 +19,20 @@ const caDuration = 10 * 365 * 24 * time.Hour // 10 years
 
 // NetworkHandler manages network CRUD and node enrollment.
 type NetworkHandler struct {
-	Networks *db.NetworkStore
-	Nodes    *db.NodeStore
+	Networks       *db.NetworkStore
+	Nodes          *db.NodeStore
+	MeshManager    MeshTunnelCloser    // for cleaning up tunnels on network delete
+	ForwardManager ForwardNetworkStopper // for cleaning up port forwards on network delete
+}
+
+// MeshTunnelCloser closes mesh tunnels for a node.
+type MeshTunnelCloser interface {
+	CloseTunnel(nodeID string)
+}
+
+// ForwardNetworkStopper stops all port forwards for a network.
+type ForwardNetworkStopper interface {
+	StopAllForNetwork(networkID string)
 }
 
 // CreateNetwork creates a new mesh network with auto-generated Nebula CA and subnet.
@@ -36,6 +49,7 @@ type NetworkHandler struct {
 // @Router       /api/networks [post]
 func (h *NetworkHandler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body struct {
 		Name string `json:"name"`
 	}
@@ -44,7 +58,7 @@ func (h *NetworkHandler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slug := slugify(body.Name)
+	slug := uniqueSlug(slugify(body.Name), h.Networks)
 
 	// Generate Nebula CA.
 	ca, err := pki.GenerateCA("hopssh-"+slug, caDuration)
@@ -84,13 +98,15 @@ func (h *NetworkHandler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 		ServerKey:    serverCert.KeyPEM,
 	}
 	if err := h.Networks.Create(network); err != nil {
+		if db.IsUniqueViolation(err) {
+			http.Error(w, "network name or subnet conflict, please try again", http.StatusConflict)
+			return
+		}
 		http.Error(w, "failed to create network: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSONStatus(w, http.StatusCreated, map[string]interface{}{
 		"id":     network.ID,
 		"name":   network.Name,
 		"slug":   network.Slug,
@@ -137,8 +153,7 @@ func (h *NetworkHandler) ListNetworks(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(result)
+	writeJSON(w, result)
 }
 
 // GetNetwork returns a network's details including its nodes.
@@ -162,16 +177,31 @@ func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 
 	nodes, _ := h.Nodes.ListForNetwork(networkID)
-	count := len(nodes)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	// Map to safe DTO — never expose AgentToken, EnrollmentToken, or keys.
+	nodeResponses := make([]NodeResponse, 0, len(nodes))
+	for _, n := range nodes {
+		nodeResponses = append(nodeResponses, NodeResponse{
+			ID:          n.ID,
+			NetworkID:   n.NetworkID,
+			Hostname:    n.Hostname,
+			OS:          n.OS,
+			Arch:        n.Arch,
+			NebulaIP:    n.NebulaIP,
+			AgentRealIP: n.AgentRealIP,
+			Status:      n.Status,
+			LastSeenAt:  n.LastSeenAt,
+			CreatedAt:   n.CreatedAt,
+		})
+	}
+
+	writeJSON(w, map[string]interface{}{
 		"id":        network.ID,
 		"name":      network.Name,
 		"slug":      network.Slug,
 		"subnet":    network.NebulaSubnet,
-		"nodeCount": count,
-		"nodes":     nodes,
+		"nodeCount": len(nodeResponses),
+		"nodes":     nodeResponses,
 		"createdAt": network.CreatedAt,
 	})
 }
@@ -195,6 +225,17 @@ func (h *NetworkHandler) DeleteNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Close active port forwards and mesh tunnels for this network's nodes.
+	if h.ForwardManager != nil {
+		h.ForwardManager.StopAllForNetwork(networkID)
+	}
+	if h.MeshManager != nil {
+		nodes, _ := h.Nodes.ListForNetwork(networkID)
+		for _, n := range nodes {
+			h.MeshManager.CloseTunnel(n.ID)
+		}
+	}
+
 	h.Nodes.DeleteForNetwork(networkID)
 	if err := h.Networks.Delete(networkID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -213,5 +254,20 @@ func slugify(name string) string {
 	if s == "" {
 		s = "network"
 	}
+	if len(s) > 60 {
+		s = s[:60]
+	}
 	return s
+}
+
+// uniqueSlug appends -2, -3, etc. if the slug already exists.
+func uniqueSlug(base string, networks *db.NetworkStore) string {
+	slug := base
+	for attempt := 2; attempt <= 100; attempt++ {
+		if !networks.SlugExists(slug) {
+			return slug
+		}
+		slug = fmt.Sprintf("%s-%d", base, attempt)
+	}
+	return slug
 }

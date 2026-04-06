@@ -30,7 +30,7 @@ CREATE TABLE networks (
     slug TEXT NOT NULL UNIQUE,
     nebula_ca_cert BLOB,
     nebula_ca_key BLOB,
-    nebula_subnet TEXT,
+    nebula_subnet TEXT UNIQUE,
     server_cert BLOB,
     server_key BLOB,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
@@ -47,9 +47,32 @@ CREATE TABLE nodes (
     nebula_ip TEXT,
     agent_token TEXT NOT NULL,
     enrollment_token TEXT UNIQUE,
+    enrollment_expires_at INTEGER,      -- TTL for enrollment token
     agent_real_ip TEXT,
     status TEXT NOT NULL DEFAULT 'pending',
     last_seen_at INTEGER,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- Device authorization flow (RFC 8628) for interactive enrollment.
+CREATE TABLE device_codes (
+    device_code TEXT PRIMARY KEY,       -- crypto-random, used by agent to poll
+    user_code TEXT NOT NULL UNIQUE,     -- short human-readable code (e.g. HOP-K9M2)
+    user_id TEXT,                       -- set when user authorizes in browser
+    network_id TEXT,                    -- set when user selects network
+    node_id TEXT,                       -- set after enrollment completes
+    status TEXT NOT NULL DEFAULT 'pending',  -- pending, authorized, completed, expired
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- Enrollment bundles for air-gapped/offline installs.
+CREATE TABLE enrollment_bundles (
+    id TEXT PRIMARY KEY,
+    node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
+    download_token TEXT NOT NULL UNIQUE, -- crypto-random URL token
+    downloaded INTEGER NOT NULL DEFAULT 0,
+    expires_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -67,7 +90,12 @@ CREATE INDEX idx_sessions_user ON sessions(user_id);
 CREATE INDEX idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX idx_networks_user ON networks(user_id);
 CREATE INDEX idx_nodes_network ON nodes(network_id);
+CREATE UNIQUE INDEX idx_nodes_nebula_ip ON nodes(network_id, nebula_ip);
 CREATE INDEX idx_nodes_enrollment ON nodes(enrollment_token);
+CREATE INDEX idx_device_codes_user_code ON device_codes(user_code);
+CREATE INDEX idx_device_codes_expires ON device_codes(expires_at);
+CREATE INDEX idx_bundles_token ON enrollment_bundles(download_token);
+CREATE INDEX idx_bundles_expires ON enrollment_bundles(expires_at);
 CREATE INDEX idx_audit_user ON audit_log(user_id);
 CREATE INDEX idx_audit_network ON audit_log(network_id);
 CREATE INDEX idx_audit_created ON audit_log(created_at);

@@ -1,5 +1,30 @@
 package api
 
+import (
+	"encoding/json"
+	"log"
+	"net/http"
+)
+
+// writeJSON encodes v as JSON to w, logging errors instead of silently dropping them.
+// Must be called BEFORE WriteHeader, or pass the status via writeJSONStatus.
+func writeJSON(w http.ResponseWriter, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("[api] json encode error: %v", err)
+	}
+}
+
+// writeJSONStatus writes a JSON response with a specific HTTP status code.
+// Sets Content-Type before WriteHeader to ensure the header is sent.
+func writeJSONStatus(w http.ResponseWriter, status int, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("[api] json encode error: %v", err)
+	}
+}
+
 // --- Request types ---
 
 // RegisterRequest is the request body for user registration.
@@ -129,4 +154,32 @@ type PortForwardResponse struct {
 // ErrorResponse is returned on errors.
 type ErrorResponse struct {
 	Error string `json:"error" example:"invalid credentials"`
+}
+
+// --- Device flow types ---
+
+// DeviceCodeResponse is returned when requesting a device code.
+type DeviceCodeResponse struct {
+	DeviceCode      string `json:"deviceCode" example:"abc123..."`
+	UserCode        string `json:"userCode" example:"HOP-K9M2"`
+	VerificationURI string `json:"verificationURI" example:"/device"`
+	ExpiresIn       int    `json:"expiresIn" example:"600"`
+	Interval        int    `json:"interval" example:"5"`
+}
+
+// DevicePollRequest is the request body for polling device code status.
+type DevicePollRequest struct {
+	DeviceCode string `json:"deviceCode" example:"abc123..."`
+}
+
+// DeviceAuthorizeRequest is the request body for authorizing a device code.
+type DeviceAuthorizeRequest struct {
+	UserCode  string `json:"userCode" example:"HOP-K9M2"`
+	NetworkID string `json:"networkId" example:"550e8400-..."`
+}
+
+// BundleResponse is returned when creating an enrollment bundle.
+type BundleResponse struct {
+	BundleURL string `json:"bundleUrl" example:"https://hopssh.com/api/bundles/abc123"`
+	ExpiresIn int    `json:"expiresIn" example:"900"`
 }

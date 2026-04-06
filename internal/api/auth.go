@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -13,12 +14,15 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const maxRequestBody = 1 << 20 // 1 MB
+
 const sessionTTL = 30 * 24 * time.Hour // 30 days
 
 // AuthHandler manages registration, login, and session lifecycle.
 type AuthHandler struct {
 	Users    *db.UserStore
 	Sessions *db.SessionStore
+	Audit    *db.AuditStore
 }
 
 // Register creates a new user account.
@@ -33,6 +37,7 @@ type AuthHandler struct {
 // @Failure      409 {object} ErrorResponse "Email already registered"
 // @Router       /api/auth/register [post]
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	var body struct {
 		Email    string `json:"email"`
 		Name     string `json:"name"`
@@ -44,6 +49,14 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Email == "" || body.Password == "" {
 		http.Error(w, "email and password are required", http.StatusBadRequest)
+		return
+	}
+	if !isValidEmail(body.Email) {
+		http.Error(w, "invalid email address", http.StatusBadRequest)
+		return
+	}
+	if len(body.Password) < 8 || len(body.Password) > 72 {
+		http.Error(w, "password must be 8-72 characters", http.StatusBadRequest)
 		return
 	}
 
@@ -71,19 +84,18 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	}
 
 	token := generateSessionToken()
-	h.Sessions.Create(token, user.ID, sessionTTL)
+	if err := h.Sessions.Create(token, user.ID, sessionTTL); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 
-	http.SetCookie(w, &http.Cookie{
-		Name:     "session",
-		Value:    token,
-		Path:     "/",
-		MaxAge:   int(sessionTTL.Seconds()),
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	setSessionCookie(w, r, token)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if h.Audit != nil {
+		h.Audit.Log(uuid.New().String(), user.ID, "register", nil, nil, nil)
+	}
+
+	writeJSON(w, map[string]interface{}{
 		"id":    user.ID,
 		"email": user.Email,
 		"name":  user.Name,
@@ -102,6 +114,7 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 // @Failure      401 {object} ErrorResponse "Invalid credentials"
 // @Router       /api/auth/login [post]
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBody)
 	var body struct {
 		Email    string `json:"email"`
 		Password string `json:"password"`
@@ -123,19 +136,18 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	}
 
 	token := generateSessionToken()
-	h.Sessions.Create(token, user.ID, sessionTTL)
+	if err := h.Sessions.Create(token, user.ID, sessionTTL); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 
-	http.SetCookie(w, &http.Cookie{
-		Name:     "session",
-		Value:    token,
-		Path:     "/",
-		MaxAge:   int(sessionTTL.Seconds()),
-		HttpOnly: true,
-		SameSite: http.SameSiteLaxMode,
-	})
+	setSessionCookie(w, r, token)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	if h.Audit != nil {
+		h.Audit.Log(uuid.New().String(), user.ID, "login", nil, nil, nil)
+	}
+
+	writeJSON(w, map[string]interface{}{
 		"id":    user.ID,
 		"email": user.Email,
 		"name":  user.Name,
@@ -156,9 +168,11 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	// Delete current session token
+	// Delete session from cookie or Authorization header.
 	if c, err := r.Cookie("session"); err == nil {
 		h.Sessions.Delete(c.Value)
+	} else if authHeader := r.Header.Get("Authorization"); strings.HasPrefix(authHeader, "Bearer ") {
+		h.Sessions.Delete(strings.TrimPrefix(authHeader, "Bearer "))
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name:   "session",
@@ -184,8 +198,7 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, map[string]interface{}{
 		"id":    user.ID,
 		"email": user.Email,
 		"name":  user.Name,
@@ -201,14 +214,47 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 // @Router       /api/auth/status [get]
 func (h *AuthHandler) Status(w http.ResponseWriter, r *http.Request) {
 	count, _ := h.Users.Count()
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, map[string]interface{}{
 		"hasUsers": count > 0,
+	})
+}
+
+// TrustedProxy controls whether X-Forwarded-Proto is trusted for Secure cookie logic.
+// Set via --trusted-proxy flag. When false, only r.TLS is used.
+var TrustedProxy bool
+
+// setSessionCookie sets the session cookie with appropriate security flags.
+// Secure is set when the request came over HTTPS or via a trusted proxy.
+func setSessionCookie(w http.ResponseWriter, r *http.Request, token string) {
+	secure := r.TLS != nil || (TrustedProxy && r.Header.Get("X-Forwarded-Proto") == "https")
+	http.SetCookie(w, &http.Cookie{
+		Name:     "session",
+		Value:    token,
+		Path:     "/",
+		MaxAge:   int(sessionTTL.Seconds()),
+		HttpOnly: true,
+		Secure:   secure,
+		SameSite: http.SameSiteLaxMode,
 	})
 }
 
 func generateSessionToken() string {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
 	return hex.EncodeToString(b)
+}
+
+// isValidEmail performs basic email format validation.
+func isValidEmail(email string) bool {
+	if len(email) > 254 {
+		return false
+	}
+	at := strings.LastIndex(email, "@")
+	if at < 1 || at >= len(email)-1 {
+		return false
+	}
+	domain := email[at+1:]
+	return strings.Contains(domain, ".")
 }

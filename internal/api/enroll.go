@@ -44,9 +44,13 @@ func (h *EnrollHandler) CreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Count existing nodes to determine next Nebula IP.
-	count, _ := h.Nodes.CountForNetwork(networkID)
-	nextIP, err := pki.NodeAddress(network.NebulaSubnet, count)
+	// Find the next available Nebula IP using MAX to avoid collisions after deletes.
+	nextIndex, err := h.Nodes.NextNodeIndex(networkID)
+	if err != nil {
+		http.Error(w, "failed to determine next node IP: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	nextIP, err := pki.NodeAddress(network.NebulaSubnet, nextIndex)
 	if err != nil {
 		http.Error(w, "failed to allocate node IP: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -54,25 +58,29 @@ func (h *EnrollHandler) CreateNode(w http.ResponseWriter, r *http.Request) {
 
 	enrollToken := generateToken()
 	agentToken := generateToken()
+	enrollExpiry := time.Now().Add(10 * time.Minute).Unix()
 
 	node := &db.Node{
-		ID:              uuid.New().String(),
-		NetworkID:       networkID,
-		NebulaIP:        nextIP.String(),
-		AgentToken:      agentToken,
-		EnrollmentToken: &enrollToken,
-		Status:          "pending",
+		ID:                  uuid.New().String(),
+		NetworkID:           networkID,
+		NebulaIP:            nextIP.String(),
+		AgentToken:          agentToken,
+		EnrollmentToken:     &enrollToken,
+		EnrollmentExpiresAt: &enrollExpiry,
+		Status:              "pending",
 	}
 	if err := h.Nodes.Create(node); err != nil {
+		if db.IsUniqueViolation(err) {
+			http.Error(w, "node IP conflict, please try again", http.StatusConflict)
+			return
+		}
 		http.Error(w, "failed to create node: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	installCmd := fmt.Sprintf("curl -fsSL %s/install | sudo bash -s -- --token %s", h.Endpoint, enrollToken)
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSONStatus(w, http.StatusCreated, map[string]interface{}{
 		"nodeId":          node.ID,
 		"enrollmentToken": enrollToken,
 		"installCommand":  installCmd,
@@ -92,6 +100,7 @@ func (h *EnrollHandler) CreateNode(w http.ResponseWriter, r *http.Request) {
 // @Failure      401 {object} ErrorResponse "Invalid enrollment token"
 // @Router       /api/enroll [post]
 func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body struct {
 		Token    string `json:"token"`
 		Hostname string `json:"hostname"`
@@ -103,7 +112,7 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, err := h.Nodes.GetByEnrollmentToken(body.Token)
+	node, err := h.Nodes.ClaimEnrollmentToken(body.Token)
 	if err != nil || node == nil {
 		http.Error(w, "invalid enrollment token", http.StatusUnauthorized)
 		return
@@ -144,8 +153,7 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 	// Compute server's Nebula IP for static_host_map.
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	writeJSON(w, map[string]interface{}{
 		"caCert":     string(network.NebulaCACert),
 		"nodeCert":   string(nodeCert.CertPEM),
 		"nodeKey":    string(nodeCert.KeyPEM),
@@ -157,7 +165,9 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 
 func generateToken() string {
 	b := make([]byte, 32)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
 	return hex.EncodeToString(b)
 }
 

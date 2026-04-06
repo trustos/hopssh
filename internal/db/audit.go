@@ -47,5 +47,8 @@ func (s *AuditStore) ListForNetwork(networkID string, limit int) ([]*AuditEntry,
 		}
 		entries = append(entries, &e)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return entries, nil
 }

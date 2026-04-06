@@ -1,0 +1,21 @@
+# Binaries
+hop-agent
+hop-server
+*.exe
+
+# Vendor (generated via `make vendor` — includes patched dependencies)
+vendor/
+
+# Data directory (runtime)
+data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

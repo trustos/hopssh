@@ -43,7 +43,7 @@ type Manager struct {
 	mu         sync.Mutex
 	tunnels    map[string]*Tunnel // keyed by nodeID
 	connecting sync.Map           // nodeID → chan (serializes connection attempts)
-	done       chan struct{}
+	done         chan struct{}
 }
 
 func NewManager(networks *db.NetworkStore, nodes *db.NodeStore) *Manager {
@@ -75,7 +75,19 @@ func (m *Manager) GetTunnelForNode(nodeID string) (*Tunnel, error) {
 	lockCh, _ := m.connecting.LoadOrStore(nodeID, make(chan struct{}, 1))
 	ch := lockCh.(chan struct{})
 	ch <- struct{}{}
-	defer func() { <-ch }()
+	defer func() {
+		<-ch
+		// Clean up the entry if the channel is empty (no waiters).
+		// This prevents the sync.Map from growing unbounded.
+		select {
+		case ch <- struct{}{}:
+			// Channel was empty — safe to remove.
+			<-ch
+			m.connecting.Delete(nodeID)
+		default:
+			// Another goroutine is waiting — leave it.
+		}
+	}()
 
 	// Re-check cache after acquiring lock.
 	m.mu.Lock()
@@ -281,13 +293,23 @@ func (t *Tunnel) Token() string {
 	return t.token
 }
 
-// close tears down the tunnel struct. See warning below about Nebula os.Exit(2).
+// close shuts down the tunnel's Nebula service.
+//
+// VENDOR PATCH: This works because of the 1-line patch applied to
+// vendor/github.com/slackhq/nebula/interface.go (see patches/).
+// Without the patch, svc.Close() triggers os.Exit(2).
+//
+// When upstream merges PR #1375 and releases a new version:
+//   1. Run: scripts/check-nebula-patch.sh
+//   2. Update to the new upstream version
+//   3. Remove the vendor patch
+//
+// Upstream tracking:
+//   - Issue: https://github.com/slackhq/nebula/issues/1031
+//   - PR:    https://github.com/slackhq/nebula/pull/1375
 func (t *Tunnel) close() {
-	// WARNING: svc.Close() → control.Stop() → c.f.Close() triggers a race in
-	// Nebula's interface.go: the outbound-reader goroutine may receive EOF before
-	// f.closed is set, causing os.Exit(2). We do NOT call svc.Close() — the
-	// goroutines exit when the server exits. Idle goroutines consume ~100KB.
-	log.Printf("[mesh] tunnel for node %s removed from cache", t.nodeID)
+	log.Printf("[mesh] closing tunnel for node %s", t.nodeID)
+	t.svc.Close()
 }
 
 // CloseTunnel removes a node's tunnel from the cache.
@@ -345,9 +367,7 @@ func indentPEM(pem string, spaces int) string {
 	}
 	lines := ""
 	for _, line := range splitLines(pem) {
-		if line != "" {
-			lines += prefix + line + "\n"
-		}
+		lines += prefix + line + "\n"
 	}
 	return lines
 }

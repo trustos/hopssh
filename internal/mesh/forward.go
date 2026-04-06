@@ -2,6 +2,8 @@ package mesh
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +12,11 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+// closeWriter is implemented by net.TCPConn and similar types for half-close.
+type closeWriter interface {
+	CloseWrite() error
+}
 
 // PortForward represents an active local TCP listener that proxies connections
 // through a Nebula tunnel to a remote port on a specific node.
@@ -40,7 +47,6 @@ type ForwardManager struct {
 
 	mu       sync.Mutex
 	forwards map[string]*PortForward
-	nextID   int
 }
 
 func NewForwardManager(meshManager *Manager) *ForwardManager {
@@ -67,10 +73,7 @@ func (fm *ForwardManager) Start(networkID, nodeID string, remotePort, localPort 
 
 	actualPort := ln.Addr().(*net.TCPAddr).Port
 
-	fm.mu.Lock()
-	fm.nextID++
-	id := fmt.Sprintf("fwd-%d", fm.nextID)
-	fm.mu.Unlock()
+	id := generateForwardID()
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -97,6 +100,20 @@ func (fm *ForwardManager) Start(networkID, nodeID string, remotePort, localPort 
 	return pf, nil
 }
 
+// StopForNetwork closes a port forward by ID, but only if it belongs to the given network.
+func (fm *ForwardManager) StopForNetwork(networkID, id string) error {
+	fm.mu.Lock()
+	pf, ok := fm.forwards[id]
+	if !ok || pf.NetworkID != networkID {
+		fm.mu.Unlock()
+		return fmt.Errorf("port forward %q not found", id)
+	}
+	delete(fm.forwards, id)
+	fm.mu.Unlock()
+
+	return fm.drain(pf)
+}
+
 // Stop closes a port forward by ID with a 3-second drain timeout.
 func (fm *ForwardManager) Stop(id string) error {
 	fm.mu.Lock()
@@ -108,6 +125,10 @@ func (fm *ForwardManager) Stop(id string) error {
 	delete(fm.forwards, id)
 	fm.mu.Unlock()
 
+	return fm.drain(pf)
+}
+
+func (fm *ForwardManager) drain(pf *PortForward) error {
 	pf.cancel()
 	pf.listener.Close()
 
@@ -119,11 +140,49 @@ func (fm *ForwardManager) Stop(id string) error {
 	select {
 	case <-done:
 	case <-time.After(3 * time.Second):
-		log.Printf("[forward] %s: force-closed after drain timeout (%d active)", id, pf.ActiveConns())
+		log.Printf("[forward] %s: force-closed after drain timeout (%d active)", pf.ID, pf.ActiveConns())
 	}
 
-	log.Printf("[forward] %s stopped", id)
+	log.Printf("[forward] %s stopped", pf.ID)
 	return nil
+}
+
+// StopForNetwork stops all port forwards for a network (used during network deletion).
+func (fm *ForwardManager) StopAllForNetwork(networkID string) {
+	fm.mu.Lock()
+	var toStop []*PortForward
+	for id, pf := range fm.forwards {
+		if pf.NetworkID == networkID {
+			toStop = append(toStop, pf)
+			delete(fm.forwards, id)
+		}
+	}
+	fm.mu.Unlock()
+	for _, pf := range toStop {
+		fm.drain(pf)
+	}
+}
+
+// StopAll stops all active port forwards (used during graceful shutdown).
+func (fm *ForwardManager) StopAll() {
+	fm.mu.Lock()
+	var toStop []*PortForward
+	for id, pf := range fm.forwards {
+		toStop = append(toStop, pf)
+		delete(fm.forwards, id)
+	}
+	fm.mu.Unlock()
+	for _, pf := range toStop {
+		fm.drain(pf)
+	}
+}
+
+func generateForwardID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic("crypto/rand failed: " + err.Error())
+	}
+	return "fwd-" + hex.EncodeToString(b)
 }
 
 // List returns all active port forwards, optionally filtered by network.
@@ -187,11 +246,19 @@ func (pf *PortForward) handleConn(ctx context.Context, local net.Conn) {
 		if _, err := io.Copy(remote, local); err != nil {
 			log.Printf("[forward] %s: local→remote error: %v", pf.ID, err)
 		}
+		// Signal half-close to remote so the reverse copy gets EOF.
+		if tc, ok := remote.(closeWriter); ok {
+			tc.CloseWrite()
+		}
 		close(done)
 	}()
 
 	if _, err := io.Copy(local, remote); err != nil {
 		log.Printf("[forward] %s: remote→local error: %v", pf.ID, err)
+	}
+	// Signal half-close to local so the forward copy gets EOF.
+	if tc, ok := local.(closeWriter); ok {
+		tc.CloseWrite()
 	}
 	<-done
 }

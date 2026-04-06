@@ -20,6 +20,9 @@ func SubnetIP(subnet string, hostIndex int) (netip.Prefix, error) {
 	if err != nil {
 		return netip.Prefix{}, fmt.Errorf("parse subnet %q: %w", subnet, err)
 	}
+	if hostIndex < 0 || hostIndex > 254 {
+		return netip.Prefix{}, fmt.Errorf("host index %d out of range (0-254)", hostIndex)
+	}
 	base := prefix.Addr().As4()
 	base[3] = byte(hostIndex)
 	addr := netip.AddrFrom4(base)

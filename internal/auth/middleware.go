@@ -29,21 +29,22 @@ func RequireAuth(sessions *db.SessionStore, users *db.UserStore) func(http.Handl
 				return
 			}
 
-			user, err := users.GetByID(userID)
-			if err != nil || user == nil {
+			profile, err := users.GetProfileByID(userID)
+			if err != nil || profile == nil {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 
-			ctx := context.WithValue(r.Context(), userKey, user)
+			ctx := context.WithValue(r.Context(), userKey, profile)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
 }
 
-// UserFromContext returns the authenticated user from the request context.
-func UserFromContext(ctx context.Context) *db.User {
-	u, _ := ctx.Value(userKey).(*db.User)
+// UserFromContext returns the authenticated user profile from the request context.
+// The profile never contains the password hash.
+func UserFromContext(ctx context.Context) *db.UserProfile {
+	u, _ := ctx.Value(userKey).(*db.UserProfile)
 	return u
 }
 

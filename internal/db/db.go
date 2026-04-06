@@ -34,14 +34,16 @@ func (p *DBPair) Close() error {
 
 // Open creates a dual read/write connection pool for SQLite.
 func Open(path string) (*DBPair, error) {
-	if path == ":memory:" {
-		path = "file::memory:?cache=shared"
-	}
-	dsn := path + "&_journal_mode=WAL&_foreign_keys=on&_busy_timeout=10000" +
+	pragmas := "_journal_mode=WAL&_foreign_keys=on&_busy_timeout=10000" +
 		"&_synchronous=NORMAL&_cache_size=-32000&_temp_store=MEMORY"
-	if !strings.Contains(path, "?") {
-		dsn = path + "?_journal_mode=WAL&_foreign_keys=on&_busy_timeout=10000" +
-			"&_synchronous=NORMAL&_cache_size=-32000&_temp_store=MEMORY"
+	var dsn string
+	switch {
+	case path == ":memory:":
+		dsn = "file::memory:?cache=shared&" + pragmas
+	case strings.Contains(path, "?"):
+		dsn = path + "&" + pragmas
+	default:
+		dsn = path + "?" + pragmas
 	}
 
 	writeDB, err := sql.Open("sqlite", dsn)
@@ -56,33 +58,54 @@ func Open(path string) (*DBPair, error) {
 		writeDB.Close()
 		return nil, fmt.Errorf("open read db: %w", err)
 	}
-	readDB.SetMaxOpenConns(120)
-	readDB.SetMaxIdleConns(10)
+	readDB.SetMaxOpenConns(20)
+	readDB.SetMaxIdleConns(5)
 
 	return &DBPair{ReadDB: readDB, WriteDB: writeDB}, nil
 }
 
 func Migrate(db *sql.DB) error {
-	files, _ := fs.Glob(migrationsFS, "migrations/*.sql")
+	files, err := fs.Glob(migrationsFS, "migrations/*.sql")
+	if err != nil {
+		return fmt.Errorf("glob migrations: %w", err)
+	}
 	sort.Strings(files)
 
-	_, _ = db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
 		version TEXT PRIMARY KEY,
 		applied_at INTEGER NOT NULL DEFAULT (unixepoch())
-	)`)
+	)`); err != nil {
+		return fmt.Errorf("create schema_migrations table: %w", err)
+	}
 
 	for _, f := range files {
 		version := filepath.Base(f)
 		var exists int
-		db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&exists)
+		if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = ?`, version).Scan(&exists); err != nil {
+			return fmt.Errorf("check migration %s: %w", version, err)
+		}
 		if exists > 0 {
 			continue
 		}
-		sqlBytes, _ := migrationsFS.ReadFile(f)
-		if _, err := db.Exec(string(sqlBytes)); err != nil {
+		sqlBytes, err := migrationsFS.ReadFile(f)
+		if err != nil {
+			return fmt.Errorf("read migration %s: %w", version, err)
+		}
+		tx, err := db.Begin()
+		if err != nil {
+			return fmt.Errorf("begin transaction for %s: %w", version, err)
+		}
+		if _, err := tx.Exec(string(sqlBytes)); err != nil {
+			tx.Rollback()
 			return fmt.Errorf("migration %s failed: %w", version, err)
 		}
-		db.Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, version)
+		if _, err := tx.Exec(`INSERT INTO schema_migrations (version) VALUES (?)`, version); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("record migration %s: %w", version, err)
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("commit migration %s: %w", version, err)
+		}
 		log.Printf("[db] applied migration %s", version)
 	}
 	return nil

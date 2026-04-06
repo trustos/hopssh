@@ -3,9 +3,15 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/trustos/hopssh/internal/crypto"
 )
+
+// IsUniqueViolation checks if an error is a SQLite unique constraint violation.
+func IsUniqueViolation(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+}
 
 type Network struct {
 	ID           string
@@ -93,7 +99,17 @@ func (s *NetworkStore) ListForUser(userID string) ([]*Network, error) {
 		}
 		networks = append(networks, &n)
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return networks, nil
+}
+
+// SlugExists checks if a network slug is already taken.
+func (s *NetworkStore) SlugExists(slug string) bool {
+	var exists int
+	s.rdb.QueryRow(`SELECT 1 FROM networks WHERE slug = ? LIMIT 1`, slug).Scan(&exists)
+	return exists == 1
 }
 
 func (s *NetworkStore) Delete(id string) error {
@@ -102,12 +118,20 @@ func (s *NetworkStore) Delete(id string) error {
 }
 
 // AllocateSubnet returns the next available /24 subnet in the 10.42.0.0/8 range.
+// Uses MAX to avoid collisions when networks are deleted.
 func (s *NetworkStore) AllocateSubnet() (string, error) {
-	var count int
-	if err := s.rdb.QueryRow(`SELECT COUNT(*) FROM networks`).Scan(&count); err != nil {
-		return "", err
+	var maxOctet *int
+	err := s.wdb.QueryRow(`
+		SELECT MAX(CAST(SUBSTR(nebula_subnet, 7, INSTR(SUBSTR(nebula_subnet, 7), '.') - 1) AS INTEGER))
+		FROM networks WHERE nebula_subnet IS NOT NULL
+	`).Scan(&maxOctet)
+	if err != nil {
+		return "", fmt.Errorf("query max subnet: %w", err)
 	}
-	octet := count + 1 // 10.42.1.0/24, 10.42.2.0/24, ...
+	octet := 1
+	if maxOctet != nil {
+		octet = *maxOctet + 1
+	}
 	if octet > 254 {
 		return "", fmt.Errorf("subnet space exhausted")
 	}

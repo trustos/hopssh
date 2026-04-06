@@ -10,11 +10,19 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/trustos/hopssh/internal/auth"
 	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/mesh"
 )
+
+func (h *ProxyHandler) audit(userID, action string, networkID, nodeID *string, details *string) {
+	if h.Audit == nil {
+		return
+	}
+	h.Audit.Log(uuid.New().String(), userID, action, networkID, nodeID, details)
+}
 
 // ProxyHandler proxies requests to agents through the Nebula mesh.
 type ProxyHandler struct {
@@ -22,6 +30,8 @@ type ProxyHandler struct {
 	ForwardManager *mesh.ForwardManager
 	Networks       *db.NetworkStore
 	Nodes          *db.NodeStore
+	Audit          *db.AuditStore
+	AllowedOrigins []string // allowed WebSocket origins; empty = same-origin only
 }
 
 // requireNode validates network ownership and returns the node.
@@ -77,12 +87,6 @@ func (h *ProxyHandler) NodeHealth(w http.ResponseWriter, r *http.Request) {
 
 	// Update node status on successful health check.
 	h.Nodes.UpdateLastSeen(node.ID)
-	if node.AgentRealIP == nil {
-		// First health check — record the real IP.
-		if node.AgentRealIP == nil || *node.AgentRealIP == "" {
-			// Real IP was set during enrollment or discovery; just update status.
-		}
-	}
 
 	w.Header().Set("Content-Type", "application/json")
 	io.Copy(w, resp.Body)
@@ -112,8 +116,12 @@ func (h *ProxyHandler) NodeShell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Upgrade browser connection to WebSocket.
-	upgrader := websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }}
+	user := auth.UserFromContext(r.Context())
+	networkID := chi.URLParam(r, "networkID")
+	h.audit(user.ID, "shell.connect", &networkID, &node.ID, nil)
+
+	// Upgrade browser connection to WebSocket with origin validation.
+	upgrader := websocket.Upgrader{CheckOrigin: h.checkOrigin}
 	browserConn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("[proxy] WebSocket upgrade failed: %v", err)
@@ -194,12 +202,17 @@ func (h *ProxyHandler) NodeExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	user := auth.UserFromContext(r.Context())
+	networkID := chi.URLParam(r, "networkID")
+	h.audit(user.ID, "exec", &networkID, &node.ID, nil)
+
 	tunnel, err := h.MeshManager.GetTunnelForNode(node.ID)
 	if err != nil {
 		http.Error(w, "agent unreachable: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	resp, err := agentRequest(r.Context(), tunnel, "POST", "/exec", r.Body)
 	if err != nil {
 		http.Error(w, "agent unreachable: "+err.Error(), http.StatusBadGateway)
@@ -251,6 +264,7 @@ func (h *ProxyHandler) StartPortForward(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body struct {
 		RemotePort int `json:"remotePort"`
 		LocalPort  int `json:"localPort"`
@@ -259,17 +273,32 @@ func (h *ProxyHandler) StartPortForward(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "remotePort is required", http.StatusBadRequest)
 		return
 	}
+	if body.RemotePort < 1 || body.RemotePort > 65535 {
+		http.Error(w, "remotePort must be 1-65535", http.StatusBadRequest)
+		return
+	}
+	if body.LocalPort < 0 || body.LocalPort > 65535 {
+		http.Error(w, "localPort must be 0-65535", http.StatusBadRequest)
+		return
+	}
+	// Prevent binding privileged ports on the control plane host.
+	if body.LocalPort > 0 && body.LocalPort < 1024 {
+		http.Error(w, "localPort must be 0 (auto) or >= 1024", http.StatusBadRequest)
+		return
+	}
 
 	networkID := chi.URLParam(r, "networkID")
+	user := auth.UserFromContext(r.Context())
+	detail := fmt.Sprintf("remote:%d local:%d", body.RemotePort, body.LocalPort)
+	h.audit(user.ID, "port_forward.start", &networkID, &node.ID, &detail)
+
 	pf, err := h.ForwardManager.Start(networkID, node.ID, body.RemotePort, body.LocalPort)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(pf)
+	writeJSONStatus(w, http.StatusCreated, pf)
 }
 
 // StopPortForward closes a port forward. Active connections are drained with a 3-second timeout.
@@ -283,8 +312,18 @@ func (h *ProxyHandler) StartPortForward(w http.ResponseWriter, r *http.Request) 
 // @Failure      404 {object} ErrorResponse "Port forward not found"
 // @Router       /api/networks/{networkID}/port-forwards/{fwdID} [delete]
 func (h *ProxyHandler) StopPortForward(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	networkID := chi.URLParam(r, "networkID")
 	fwdID := chi.URLParam(r, "fwdID")
-	if err := h.ForwardManager.Stop(fwdID); err != nil {
+
+	// Verify the user owns this network before allowing stop.
+	network, err := h.Networks.Get(networkID)
+	if err != nil || network == nil || network.UserID != user.ID {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return
+	}
+
+	if err := h.ForwardManager.StopForNetwork(networkID, fwdID); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
@@ -301,13 +340,21 @@ func (h *ProxyHandler) StopPortForward(w http.ResponseWriter, r *http.Request) {
 // @Success      200 {array} PortForwardResponse
 // @Router       /api/networks/{networkID}/port-forwards [get]
 func (h *ProxyHandler) ListPortForwards(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
 	networkID := chi.URLParam(r, "networkID")
+
+	// Verify the user owns this network.
+	network, err := h.Networks.Get(networkID)
+	if err != nil || network == nil || network.UserID != user.ID {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return
+	}
+
 	forwards := h.ForwardManager.List(networkID)
 	if forwards == nil {
 		forwards = make([]*mesh.PortForward, 0)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(forwards)
+	writeJSON(w, forwards)
 }
 
 // ListNodes returns all nodes for a network.
@@ -335,12 +382,76 @@ func (h *ProxyHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if nodes == nil {
-		nodes = make([]*db.Node, 0)
+
+	// Map to safe DTO — never expose AgentToken, EnrollmentToken, or keys.
+	result := make([]NodeResponse, 0, len(nodes))
+	for _, n := range nodes {
+		result = append(result, NodeResponse{
+			ID:          n.ID,
+			NetworkID:   n.NetworkID,
+			Hostname:    n.Hostname,
+			OS:          n.OS,
+			Arch:        n.Arch,
+			NebulaIP:    n.NebulaIP,
+			AgentRealIP: n.AgentRealIP,
+			Status:      n.Status,
+			LastSeenAt:  n.LastSeenAt,
+			CreatedAt:   n.CreatedAt,
+		})
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(nodes)
+	writeJSON(w, result)
+}
+
+// DeleteNode removes a single node, closing its tunnel and any port forwards.
+// @Summary      Delete node
+// @Description  Permanently deletes a node from the network, closes its mesh tunnel and any active port forwards.
+// @Tags         nodes
+// @Security     BearerAuth
+// @Param        networkID path string true "Network ID"
+// @Param        nodeID path string true "Node ID"
+// @Success      204
+// @Failure      404 {object} ErrorResponse
+// @Router       /api/networks/{networkID}/nodes/{nodeID} [delete]
+func (h *ProxyHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
+	_, node, err := h.requireNode(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	// Close mesh tunnel for this node.
+	h.MeshManager.CloseTunnel(node.ID)
+
+	// Delete from database.
+	if err := h.Nodes.Delete(node.ID); err != nil {
+		http.Error(w, "failed to delete node: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	user := auth.UserFromContext(r.Context())
+	networkID := chi.URLParam(r, "networkID")
+	h.audit(user.ID, "node.delete", &networkID, &node.ID, nil)
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// checkOrigin validates the WebSocket Origin header against allowed origins.
+// If no AllowedOrigins are configured, falls back to same-origin check.
+func (h *ProxyHandler) checkOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true // non-browser clients
+	}
+	// Check explicitly allowed origins.
+	for _, allowed := range h.AllowedOrigins {
+		if origin == allowed {
+			return true
+		}
+	}
+	// Default: same-origin check (Origin must match Host).
+	host := r.Host
+	return origin == "http://"+host || origin == "https://"+host
 }
 
 // agentRequest makes an HTTP request to the agent through the mesh tunnel.

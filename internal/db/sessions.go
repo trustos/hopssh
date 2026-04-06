@@ -1,7 +1,9 @@
 package db
 
 import (
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"time"
 )
 
@@ -21,10 +23,17 @@ func NewSessionStore(p *DBPair) *SessionStore {
 	return &SessionStore{rdb: p.ReadDB, wdb: p.WriteDB}
 }
 
+// hashSessionToken returns the hex-encoded SHA-256 hash of a session token.
+// Only the hash is stored in the DB; the plaintext is returned to the user.
+func hashSessionToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
+
 func (s *SessionStore) Create(token, userID string, ttl time.Duration) error {
 	_, err := s.wdb.Exec(`
 		INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)
-	`, token, userID, time.Now().Add(ttl).Unix())
+	`, hashSessionToken(token), userID, time.Now().Add(ttl).Unix())
 	return err
 }
 
@@ -32,7 +41,7 @@ func (s *SessionStore) GetUserID(token string) (string, error) {
 	var userID string
 	err := s.rdb.QueryRow(`
 		SELECT user_id FROM sessions WHERE token = ? AND expires_at > ?
-	`, token, time.Now().Unix()).Scan(&userID)
+	`, hashSessionToken(token), time.Now().Unix()).Scan(&userID)
 	if err == sql.ErrNoRows {
 		return "", nil
 	}
@@ -40,7 +49,7 @@ func (s *SessionStore) GetUserID(token string) (string, error) {
 }
 
 func (s *SessionStore) Delete(token string) error {
-	_, err := s.wdb.Exec(`DELETE FROM sessions WHERE token = ?`, token)
+	_, err := s.wdb.Exec(`DELETE FROM sessions WHERE token = ?`, hashSessionToken(token))
 	return err
 }
 

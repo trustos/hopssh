@@ -54,12 +54,14 @@ Control plane never holds credentials that work without agent cooperation.
 ```
 
 ### Trust model
-- Agent authenticates to control plane with per-node enrollment token
-- Control plane authenticates users via browser session or API key
+- Agent authenticates to control plane with per-node enrollment token (SHA-256 hashed at rest)
+- Agent tokens encrypted at rest (AES-256-GCM), verified with constant-time comparison
+- Control plane authenticates users via browser session (Secure cookie) or API key
 - All traffic encrypted end-to-end via Nebula (Noise Protocol, Curve25519)
 - Per-network CA — networks are cryptographically isolated
 - Control plane never stores SSH keys, cloud credentials, or server passwords
 - If agent stops, control plane loses access — customer always in control
+- Agent uploads restricted to `/var/hop-agent/uploads/` (no arbitrary file writes)
 
 ---
 
@@ -94,21 +96,40 @@ Packages NOT carried over (Pulumi/OCI-specific):
 | Backend | Go, single binary, `net/http` + chi router |
 | Database | SQLite (dual read/write pool, WAL mode) |
 | Encryption | AES-256-GCM at rest, Nebula/Noise in transit |
-| Mesh | Nebula (userspace, gvisor), Curve25519 PKI |
+| Mesh | Nebula (userspace, gvisor), Curve25519 PKI — see Fork Notes below |
 | Frontend | Svelte 5 SPA, embedded in Go binary |
 | Auth | Session-based + API keys |
+
+---
+
+## Vendor Patch: Nebula
+
+We vendor dependencies and apply a 1-line patch to `slackhq/nebula` to fix a critical bug:
+upstream `svc.Close()` calls `os.Exit(2)` which kills the entire control plane process.
+The root cause is in `interface.go` — the error check matches `os.ErrClosed` but userspace
+mode returns `io.ErrClosedPipe`. Our patch adds the missing error check.
+
+- **Upstream issue**: https://github.com/slackhq/nebula/issues/1031
+- **Upstream fix PR**: https://github.com/slackhq/nebula/pull/1375 (open, not merged)
+- **Our patch**: `patches/nebula-1031-graceful-shutdown.patch` (1 line in `interface.go`)
+- **Apply**: `make patch-vendor` (or `make vendor` which vendors + patches)
+- **Check script**: `scripts/check-nebula-patch.sh` — run monthly or in CI
+- **Build**: use `go build -mod=vendor ./...` (or `make build`)
+- **When to drop**: When PR #1375 merges and a new nebula release includes the fix,
+  update the version, re-vendor, and remove the patch file
 
 ---
 
 ## Core Features (MVP)
 
 ### Tier 1 — Launch
-- [ ] One-liner agent install (`curl | bash` with enrollment token)
-- [ ] Web terminal (browser shell via WebSocket PTY through mesh)
-- [ ] Port forwarding (TCP tunnel, any port)
-- [ ] Node health dashboard (connected, OS, uptime)
+- [x] Agent enrollment (4 modes: device flow, token, bundle, IaC)
+- [x] Web terminal (browser shell via WebSocket PTY through mesh)
+- [x] Port forwarding (TCP tunnel, any port)
+- [x] Node health dashboard (connected, OS, uptime)
+- [x] Networks (isolated mesh per project, auto PKI)
+- [x] Audit logging (login, shell, exec, port-forward)
 - [ ] GitHub OAuth login
-- [ ] Networks (isolated mesh per project, auto PKI)
 - [ ] Free tier: 5 nodes, 1 user, 1 network
 
 ### Tier 2 — Team
@@ -138,41 +159,114 @@ Packages NOT carried over (Pulumi/OCI-specific):
 
 ---
 
-## Project Structure (planned)
+## Project Structure
 
 ```
 cmd/
-  hop/              CLI tool (enroll, status, networks)
-  agent/            Agent binary (from pulumi-ui, stripped)
-  server/           Control plane server
+  agent/              Agent binary (serve + enroll subcommands)
+  server/             Control plane server
 
 internal/
-  api/              HTTP handlers (auth, networks, nodes, proxy)
-  auth/             Session + API key middleware
-  db/               SQLite stores (users, networks, nodes, audit)
-  mesh/             Nebula tunnel manager (from pulumi-ui)
-  pki/              CA + cert generation (from pulumi-ui)
-  crypto/           AES-256-GCM encryption (from pulumi-ui)
+  api/                HTTP handlers (auth, networks, nodes, proxy, device flow, bundles)
+  auth/               Middleware (session auth, rate limiting)
+  crypto/             AES-256-GCM encryption at rest
+  db/                 SQLite stores + migrations
+  mesh/               Nebula tunnel manager (patched — see Vendor Patch section)
+  pki/                Nebula CA + cert generation
 
-frontend/           Svelte 5 SPA (dashboard, terminal, settings)
+patches/              Vendor patches for dependencies
+scripts/              Maintenance scripts (patch checking)
+docs/                 Architecture, enrollment guide, developer guide
+frontend/             Svelte 5 SPA (pending)
 
-install.sh          One-liner agent install script (hosted at hopssh.com/install)
+.github/workflows/    CI (build, vet, test, cross-compile, patch check)
+Dockerfile            Multi-stage build for containerized deployment
+Makefile              Build, vendor, patch, test targets
 ```
 
 ---
 
 ## Development
 
+See [docs/development.md](docs/development.md) for the full developer guide.
+
 ```bash
-# Control plane
-go run ./cmd/server
+# First-time setup (vendor + apply patches):
+make setup
 
-# Frontend dev
-cd frontend && npm run dev
+# Build:
+make build
 
-# Agent (for testing)
-go run ./cmd/agent --token <test-token>
+# Run control plane:
+./hop-server --addr :8080 --data ./data --endpoint http://localhost:8080
 
-# CLI
-go run ./cmd/hop enroll --token <token> --endpoint https://localhost:8080
+# Enroll an agent (interactive device flow):
+./hop-agent enroll --endpoint http://localhost:8080
+
+# Run agent (after enrollment):
+./hop-agent serve --listen :41820 --token-file /etc/hop-agent/token
+
+# Docker:
+docker build -t hopssh .
+docker run -p 8080:8080 -v hopssh-data:/data hopssh
 ```
+
+---
+
+## Coding Principles
+
+These rules are derived from 4 rounds of security review. Follow them for all new code.
+
+### Secrets & Credentials
+
+- **Never store secrets in plaintext.** Encrypt at rest (AES-256-GCM via `crypto.Encryptor`) or hash (SHA-256) depending on whether the value needs to be recovered.
+  - Recoverable secrets (agent tokens, keys): encrypt with `Encryptor`
+  - Compare-only secrets (session tokens, enrollment tokens, device codes): store SHA-256 hash
+- **Tokens must be single-use and time-bounded.** Enrollment tokens get a 10-minute TTL. Device codes get 10 minutes. Bundle URLs get 15 minutes.
+- **Consume tokens atomically.** Use a database transaction with `UPDATE ... WHERE token = ? AND status = 'pending'` + check `RowsAffected`. Never SELECT then UPDATE in separate operations — that's a TOCTOU race.
+- **Use `crypto/subtle.ConstantTimeCompare`** for any token comparison in the agent. Never use `==` or `!=` for bearer tokens.
+- **Never pass secrets as command-line arguments** when avoidable. Prefer `--token-stdin` (read from stdin) or `--token-file` (read from file). If `--token` flag is offered, document that it's visible in `ps`.
+
+### API Handlers
+
+- **Always call `http.MaxBytesReader`** on `r.Body` before decoding JSON. Default: `1 << 20` (1 MB). Uploads: explicit limit.
+- **Always validate ownership** before operating on a resource. Every handler touching a network must check `network.UserID != user.ID`. Every handler touching a node must go through `requireNode()` which validates network→node chain.
+- **Never serialize `*db.Node` or `*db.User` directly to JSON.** Always map to a response DTO (`NodeResponse`, `UserProfile`, etc.) to prevent leaking sensitive fields.
+- **Use `writeJSON(w, v)` for 200 responses** and `writeJSONStatus(w, status, v)` for non-200 (e.g., 201 Created). Never call `w.WriteHeader()` then `writeJSON()` — the Content-Type header will be silently dropped.
+- **Return `409 Conflict` on UNIQUE constraint violations**, not 500. Check with `db.IsUniqueViolation(err)`.
+- **Audit security-significant actions.** Login, registration, shell connect, exec, port-forward start, node delete. Use `h.audit(userID, action, &networkID, &nodeID, details)`.
+- **Rate-limit all public endpoints.** Use `auth.NewRateLimiter()` middleware. Pass `trustedProxy` to control `X-Forwarded-For` trust.
+- **Apply `writeTimeout` to all non-streaming routes.** Shell and exec are streaming (no timeout). Everything else gets `http.TimeoutHandler(30s)`.
+
+### Database
+
+- **All migrations run in transactions.** `tx.Begin()` → execute SQL → record in `schema_migrations` → `tx.Commit()`. Rollback on any error.
+- **Check `rows.Err()`** after every `for rows.Next()` loop.
+- **Use `wdb` (write DB) for any operation that needs atomicity** — even reads that must be serialized with a subsequent write. The `rdb` (read DB) can return stale data.
+- **Allocation queries (subnet, node IP) use MAX, not COUNT.** COUNT breaks when rows are deleted. MAX ensures monotonically increasing IDs. The UNIQUE constraint is the safety net.
+- **Hash before storing, hash before querying.** If a token is hashed at rest (enrollment tokens, session tokens, device codes), the lookup query must hash the input before the WHERE clause.
+
+### Agent
+
+- **Never interpolate user input into shell commands.** Use `exec.Command("binary", "arg1", "arg2")` directly. Never use `fmt.Sprintf("cmd %s", input)` with `sh -c`.
+- **Restrict file write paths.** Uploads go to `/var/hop-agent/uploads/` only. Validate with `filepath.Clean` + `strings.HasPrefix`.
+- **Set `ReadHeaderTimeout`** on all HTTP servers (10s). Prevents Slowloris attacks.
+- **Add a timeout on `cmd.Wait()`** in shell cleanup (5s). Prevents blocking on zombie processes.
+
+### Networking & TLS
+
+- **Session cookies must set `Secure` when behind HTTPS.** Use `r.TLS != nil || (TrustedProxy && X-Forwarded-Proto == "https")`.
+- **Only trust `X-Forwarded-For` / `X-Forwarded-Proto` when `--trusted-proxy` is set.** These headers are trivially spoofable by direct clients.
+- **Validate WebSocket Origin.** Default to same-origin check (`origin == "http(s)://" + host`). Allow explicit origins via `AllowedOrigins` config.
+- **Never serve private key material over plain HTTP.** Bundle downloads must require HTTPS.
+- **Set CORS headers** via middleware. Default: same-origin only. Configurable via `--allowed-origins`.
+
+### Go Patterns
+
+- **Panic on `crypto/rand.Read` failure.** If the system entropy source is broken, nothing is safe. All `rand.Read` calls must check the error.
+- **Use `*int` / `*string` for optional DB fields** that can be NULL. Scan into pointer types.
+- **Exported functions return errors; unexported helpers can panic** on truly impossible conditions (crypto/rand failure).
+- **Port forward IDs and similar user-facing identifiers must be crypto-random**, not sequential. Sequential IDs are guessable.
+- **Connection relays (io.Copy bidirectional) must use half-close.** After one direction's `io.Copy` returns, call `CloseWrite()` on the other connection so the reverse copy gets EOF.
+- **Context values must never carry sensitive data.** Use `UserProfile` (no password hash) in request context, not `User`.
+- **SQLite read pool: 20 connections, 5 idle.** Write pool: 1 connection. WAL mode. This is the right balance for an embedded database.

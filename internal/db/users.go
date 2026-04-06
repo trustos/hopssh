@@ -14,6 +14,14 @@ type User struct {
 	CreatedAt    int64
 }
 
+// UserProfile is a User without sensitive fields (password hash).
+// Used in request contexts and API responses.
+type UserProfile struct {
+	ID    string
+	Email string
+	Name  string
+}
+
 type UserStore struct {
 	rdb *sql.DB
 	wdb *sql.DB
@@ -41,6 +49,21 @@ func (s *UserStore) GetByID(id string) (*User, error) {
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get user by id: %w", err)
+	}
+	return &u, nil
+}
+
+// GetProfileByID returns a UserProfile without the password hash.
+func (s *UserStore) GetProfileByID(id string) (*UserProfile, error) {
+	var u UserProfile
+	err := s.rdb.QueryRow(`
+		SELECT id, email, name FROM users WHERE id = ?
+	`, id).Scan(&u.ID, &u.Email, &u.Name)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get user profile by id: %w", err)
 	}
 	return &u, nil
 }

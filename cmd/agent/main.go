@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -22,11 +23,37 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+const (
+	// maxUploadSize is the max upload body size (100 MB).
+	maxUploadSize = 100 << 20
+	// safeUploadDir is the only directory uploads are allowed to write to.
+	safeUploadDir = "/var/hop-agent/uploads"
+)
+
+// execCommand wraps exec.Command for use by enroll.go.
+var execCommand = exec.Command
+
 func main() {
-	listenAddr := flag.String("listen", ":41820", "Address to listen on (host:port)")
-	tokenFile := flag.String("token-file", "/etc/hop-agent/token", "Path to the bearer token file")
-	token := flag.String("token", "", "Bearer token (overrides -token-file)")
-	flag.Parse()
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "enroll":
+			runEnroll(os.Args[2:])
+			return
+		case "serve":
+			runServe(os.Args[2:])
+			return
+		}
+	}
+	// Default: serve (backwards compatible with existing systemd units).
+	runServe(os.Args[1:])
+}
+
+func runServe(args []string) {
+	fs := flag.NewFlagSet("serve", flag.ExitOnError)
+	listenAddr := fs.String("listen", ":41820", "Address to listen on (host:port)")
+	tokenFile := fs.String("token-file", "/etc/hop-agent/token", "Path to the bearer token file")
+	token := fs.String("token", "", "Bearer token (overrides -token-file)")
+	fs.Parse(args)
 
 	authToken := *token
 	if authToken == "" {
@@ -55,9 +82,10 @@ func main() {
 	log.Printf("hop-agent listening on %s", ln.Addr())
 
 	srv := &http.Server{
-		Handler:      authed,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 0, // streaming responses for /exec
+		Handler:           authed,
+		ReadTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      0, // streaming responses for /exec
 	}
 
 	stop := make(chan os.Signal, 1)
@@ -77,9 +105,10 @@ func main() {
 }
 
 func authMiddleware(token string, next http.Handler) http.Handler {
+	expected := "Bearer " + token
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		auth := r.Header.Get("Authorization")
-		if auth != "Bearer "+token {
+		if subtle.ConstantTimeCompare([]byte(auth), []byte(expected)) != 1 {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -122,6 +151,7 @@ type execRequest struct {
 }
 
 func handleExec(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var req execRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
@@ -191,11 +221,21 @@ func handleExec(w http.ResponseWriter, r *http.Request) {
 // --- Upload endpoint ---
 
 func handleUpload(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize)
+
 	destPath := r.Header.Get("X-Dest-Path")
 	if destPath == "" {
 		http.Error(w, "X-Dest-Path header is required", http.StatusBadRequest)
 		return
 	}
+
+	// Restrict writes to the safe upload directory to prevent arbitrary file overwrites.
+	cleanPath := filepath.Clean(destPath)
+	if !strings.HasPrefix(cleanPath, safeUploadDir+"/") && cleanPath != safeUploadDir {
+		http.Error(w, fmt.Sprintf("uploads are restricted to %s", safeUploadDir), http.StatusForbidden)
+		return
+	}
+
 	modeStr := r.Header.Get("X-File-Mode")
 	mode := os.FileMode(0644)
 	if modeStr != "" {
@@ -205,12 +245,12 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(cleanPath), 0755); err != nil {
 		http.Error(w, "mkdir: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	f, err := os.OpenFile(cleanPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
 	if err != nil {
 		http.Error(w, "create file: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -225,7 +265,7 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"path":  destPath,
+		"path":  cleanPath,
 		"bytes": n,
 	})
 }
@@ -233,6 +273,10 @@ func handleUpload(w http.ResponseWriter, r *http.Request) {
 // --- Shell endpoint (interactive WebSocket terminal) ---
 
 var wsUpgrader = websocket.Upgrader{
+	// The agent is not directly exposed to browsers — it sits behind the
+	// Nebula mesh and the control plane's WebSocket proxy, which validates
+	// origins before relaying. The auth middleware has already validated the
+	// bearer token by the time this runs, so all origins are accepted.
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
 
@@ -263,7 +307,17 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		ptmx.Close()
 		cmd.Process.Kill()
-		cmd.Wait()
+		// Wait with timeout to avoid blocking on zombie processes.
+		waitDone := make(chan struct{})
+		go func() {
+			cmd.Wait()
+			close(waitDone)
+		}()
+		select {
+		case <-waitDone:
+		case <-time.After(5 * time.Second):
+			log.Printf("[shell] process %d did not exit after kill, abandoning", cmd.Process.Pid)
+		}
 	}()
 
 	_ = pty.Setsize(ptmx, &pty.Winsize{Rows: 24, Cols: 80})
