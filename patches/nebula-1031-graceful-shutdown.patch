@@ -6,10 +6,10 @@
 # Problem: When using Nebula as a library (userspace mode), calling
 # Service.Close() triggers os.Exit(2) in interface.go. The listenIn
 # goroutine reads from an io.Pipe; when the pipe is closed, Read()
-# returns io.ErrClosedPipe. But the guard only checks for os.ErrClosed,
-# so it falls through to os.Exit(2), killing the entire process.
+# returns io.ErrClosedPipe or io.EOF. But the guard only checks for
+# os.ErrClosed, so it falls through to os.Exit(2).
 #
-# Fix: Also check for io.ErrClosedPipe in the error guard.
+# Fix: Also check for io.ErrClosedPipe and io.EOF in the error guard.
 
 --- a/github.com/slackhq/nebula/interface.go
 +++ b/github.com/slackhq/nebula/interface.go
@@ -18,7 +18,7 @@
  		n, err := reader.Read(packet)
  		if err != nil {
 -			if errors.Is(err, os.ErrClosed) && f.closed.Load() {
-+			if (errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe)) && f.closed.Load() {
++			if (errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, io.EOF)) && f.closed.Load() {
  				return
  			}
 
