@@ -8,8 +8,10 @@
 	let selectedNetwork = $state('');
 	let networkList = $state<NetworkResponse[]>([]);
 	let error = $state('');
+	let loadError = $state('');
 	let success = $state(false);
 	let submitting = $state(false);
+	let loadingNetworks = $state(true);
 
 	onMount(async () => {
 		try {
@@ -17,8 +19,10 @@
 			if (networkList.length > 0) {
 				selectedNetwork = networkList[0].id;
 			}
-		} catch {
-			// User might not be authenticated — that's OK, form still shows
+		} catch (e) {
+			loadError = e instanceof Error ? e.message : 'Failed to load networks';
+		} finally {
+			loadingNetworks = false;
 		}
 	});
 
@@ -37,20 +41,33 @@
 	}
 </script>
 
-<div class="flex min-h-screen items-center justify-center bg-background">
-	<div class="w-full max-w-sm space-y-6 p-6">
+<svelte:head>
+	<title>Device Auth - hopssh</title>
+</svelte:head>
+
+<div class="flex items-center justify-center p-6">
+	<div class="w-full max-w-sm space-y-6">
 		<div class="text-center">
-			<h1 class="text-2xl font-bold"><span class="text-primary">hop</span>ssh</h1>
-			<p class="mt-1 text-sm text-muted-foreground">Authorize a device</p>
+			<h1 class="text-2xl font-bold">Authorize Device</h1>
+			<p class="mt-1 text-sm text-muted-foreground">Enter the code shown on your server</p>
 		</div>
 
 		{#if success}
 			<div class="rounded-lg border border-primary/50 bg-primary/10 p-6 text-center">
 				<div class="mb-2 text-4xl">✓</div>
 				<p class="font-medium text-primary">Device authorized!</p>
-				<p class="mt-1 text-sm text-muted-foreground">
-					The agent will connect momentarily.
-				</p>
+				<p class="mt-1 text-sm text-muted-foreground">The agent will connect momentarily.</p>
+			</div>
+		{:else if loadError}
+			<div class="rounded-md bg-destructive/10 p-4 text-sm text-destructive">{loadError}</div>
+		{:else if loadingNetworks}
+			<div class="flex items-center justify-center py-8">
+				<div class="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent"></div>
+			</div>
+		{:else if networkList.length === 0}
+			<div class="rounded-lg border border-dashed p-6 text-center">
+				<p class="text-sm text-muted-foreground">No networks yet. Create a network first.</p>
+				<a href="/" class="mt-2 inline-block text-sm text-primary hover:underline">Go to Networks</a>
 			</div>
 		{:else}
 			<form onsubmit={handleSubmit} class="space-y-4">
@@ -66,7 +83,7 @@
 						bind:value={code}
 						required
 						placeholder="HOP-K9M2"
-						class="w-full rounded-md border bg-background px-3 py-2 text-center text-lg font-mono tracking-widest focus:outline-none focus:ring-2 focus:ring-ring uppercase"
+						class="w-full rounded-md border bg-background px-3 py-2 text-center font-mono text-lg uppercase tracking-widest focus:outline-none focus:ring-2 focus:ring-ring"
 					/>
 				</div>
 

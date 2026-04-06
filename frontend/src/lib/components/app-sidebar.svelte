@@ -6,6 +6,10 @@
 	const auth = getAuth();
 	const theme = getTheme();
 	let { children } = $props();
+
+	const isNetworks = $derived(
+		page.url.pathname === '/' || page.url.pathname.startsWith('/networks')
+	);
 </script>
 
 <div class="flex h-screen">
@@ -19,16 +23,9 @@
 			<a
 				href="/"
 				class="flex items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-accent"
-				class:bg-accent={page.url.pathname === '/'}
+				class:bg-accent={isNetworks}
 			>
 				Networks
-			</a>
-			<a
-				href="/device"
-				class="flex items-center gap-2 rounded-md px-3 py-2 text-sm hover:bg-accent"
-				class:bg-accent={page.url.pathname === '/device'}
-			>
-				Device Auth
 			</a>
 		</nav>
 
@@ -36,16 +33,18 @@
 			<div class="truncate text-sm text-muted-foreground">{auth.user?.email}</div>
 			<div class="flex gap-2">
 				<button
-					onclick={theme.toggle}
+					onclick={() => theme.toggle()}
 					class="rounded-md p-2 text-sm hover:bg-accent"
+					aria-label="Toggle dark mode"
 				>
 					{theme.mode === 'dark' ? '☀️' : '🌙'}
 				</button>
 				<button
-					onclick={auth.logout}
+					onclick={() => auth.logout()}
 					class="rounded-md p-2 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+					aria-label="Sign out"
 				>
-					Logout
+					Sign out
 				</button>
 			</div>
 		</div>

@@ -11,23 +11,30 @@
 
 	let { children } = $props();
 
-	const PUBLIC_ROUTES = ['/login', '/register', '/device'];
+	const PUBLIC_ROUTES = ['/login', '/register'];
+
+	const isPublicRoute = $derived(
+		PUBLIC_ROUTES.some((r) => page.url.pathname.startsWith(r))
+	);
+
+	const shouldRenderChildren = $derived(
+		auth.loading || auth.isAuthenticated || isPublicRoute
+	);
 
 	onMount(() => {
 		theme.init();
 		auth.init();
 	});
 
+	// Auth guard: redirect unauthenticated users to login, authenticated users away from login.
 	$effect(() => {
 		if (auth.loading) return;
-		const path = page.url.pathname;
-		const isPublic = PUBLIC_ROUTES.some((r) => path.startsWith(r));
 
-		if (!auth.isAuthenticated && !isPublic) {
-			goto('/login');
+		if (!auth.isAuthenticated && !isPublicRoute) {
+			goto('/login').catch(() => {});
 		}
-		if (auth.isAuthenticated && (path === '/login' || path === '/register')) {
-			goto('/');
+		if (auth.isAuthenticated && (page.url.pathname === '/login' || page.url.pathname === '/register')) {
+			goto('/').catch(() => {});
 		}
 	});
 </script>
@@ -38,6 +45,6 @@
 			class="h-8 w-8 animate-spin rounded-full border-4 border-primary border-t-transparent"
 		></div>
 	</div>
-{:else}
+{:else if shouldRenderChildren}
 	{@render children()}
 {/if}

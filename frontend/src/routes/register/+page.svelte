@@ -26,6 +26,10 @@
 	}
 </script>
 
+<svelte:head>
+	<title>Register - hopssh</title>
+</svelte:head>
+
 <div class="flex min-h-screen items-center justify-center bg-background">
 	<div class="w-full max-w-sm space-y-6 p-6">
 		<div class="text-center">

@@ -12,7 +12,8 @@ export interface ShellConnection {
 export function connectShell(
 	container: HTMLElement,
 	networkId: string,
-	nodeId: string
+	nodeId: string,
+	onConnect?: () => void
 ): ShellConnection {
 	const terminal = new Terminal({
 		cursorBlink: true,
@@ -42,6 +43,7 @@ export function connectShell(
 
 	ws.onopen = () => {
 		sendResize(ws, terminal.rows, terminal.cols);
+		onConnect?.();
 	};
 
 	ws.onmessage = (event) => {
@@ -60,10 +62,16 @@ export function connectShell(
 		terminal.write('\r\n\x1b[31m[Connection error]\x1b[0m\r\n');
 	};
 
-	// Terminal input → WebSocket
+	// Terminal input → WebSocket as text frames.
+	// PROTOCOL INVARIANT: The Go agent (cmd/agent/main.go) only checks the
+	// resize prefix byte (0x01) on BinaryMessage frames. Terminal input is sent
+	// as text frames via ws.send(string), which the agent writes directly to
+	// the PTY. Resize commands use ws.send(ArrayBuffer) which becomes a
+	// BinaryMessage. This text/binary distinction MUST be preserved end-to-end
+	// through the control plane's WebSocket proxy (internal/api/proxy.go).
 	const inputDisposable = terminal.onData((data) => {
 		if (ws.readyState === WebSocket.OPEN) {
-			ws.send(data);
+			ws.send(data); // string → text frame
 		}
 	});
 

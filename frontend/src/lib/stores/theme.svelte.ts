@@ -1,3 +1,5 @@
+import { browser } from '$app/environment';
+
 let mode = $state<'light' | 'dark'>('dark');
 
 export function getTheme() {
@@ -7,6 +9,7 @@ export function getTheme() {
 		},
 
 		init() {
+			if (!browser) return;
 			const stored = localStorage.getItem('hop_theme');
 			if (stored === 'light' || stored === 'dark') {
 				mode = stored;
@@ -17,6 +20,7 @@ export function getTheme() {
 		},
 
 		toggle() {
+			if (!browser) return;
 			mode = mode === 'dark' ? 'light' : 'dark';
 			localStorage.setItem('hop_theme', mode);
 			applyMode();
@@ -25,6 +29,7 @@ export function getTheme() {
 }
 
 function applyMode() {
+	if (!browser) return;
 	if (mode === 'dark') {
 		document.documentElement.classList.add('dark');
 	} else {

@@ -3,33 +3,60 @@
 /*
  * hopssh "hop" theme
  * Dark-first, teal-green primary (#22d3a0)
- * Tailwind v4 — register theme tokens via @theme
+ * Tailwind v4 — CSS custom properties with dark/light modes
  */
 
 @theme {
-	--color-background: hsl(220 20% 4%);
-	--color-foreground: hsl(0 0% 95%);
-	--color-card: hsl(220 17% 7%);
-	--color-card-foreground: hsl(0 0% 95%);
-	--color-popover: hsl(220 17% 7%);
-	--color-popover-foreground: hsl(0 0% 95%);
+	/* These resolve to the CSS variables below, enabling mode switching */
+	--color-background: var(--hop-bg);
+	--color-foreground: var(--hop-fg);
+	--color-card: var(--hop-card);
+	--color-card-foreground: var(--hop-card-fg);
+	--color-popover: var(--hop-card);
+	--color-popover-foreground: var(--hop-card-fg);
 	--color-primary: hsl(161 71% 48%);
 	--color-primary-foreground: hsl(0 0% 100%);
-	--color-secondary: hsl(220 10% 14%);
-	--color-secondary-foreground: hsl(0 0% 95%);
-	--color-muted: hsl(220 10% 14%);
-	--color-muted-foreground: hsl(220 9% 55%);
-	--color-accent: hsl(220 10% 14%);
-	--color-accent-foreground: hsl(0 0% 95%);
+	--color-secondary: var(--hop-secondary);
+	--color-secondary-foreground: var(--hop-secondary-fg);
+	--color-muted: var(--hop-muted);
+	--color-muted-foreground: var(--hop-muted-fg);
+	--color-accent: var(--hop-muted);
+	--color-accent-foreground: var(--hop-fg);
 	--color-destructive: hsl(0 63% 31%);
 	--color-destructive-foreground: hsl(0 0% 98%);
-	--color-border: hsl(220 10% 18%);
-	--color-input: hsl(220 10% 18%);
+	--color-border: var(--hop-border);
+	--color-input: var(--hop-border);
 	--color-ring: hsl(161 71% 48%);
 	--radius: 0.5rem;
 
 	--font-sans: 'Inter', system-ui, -apple-system, sans-serif;
 	--font-mono: 'JetBrains Mono', ui-monospace, monospace;
+}
+
+/* Dark mode (default) */
+:root {
+	--hop-bg: hsl(220 20% 4%);
+	--hop-fg: hsl(0 0% 95%);
+	--hop-card: hsl(220 17% 7%);
+	--hop-card-fg: hsl(0 0% 95%);
+	--hop-secondary: hsl(220 10% 14%);
+	--hop-secondary-fg: hsl(0 0% 95%);
+	--hop-muted: hsl(220 10% 14%);
+	--hop-muted-fg: hsl(220 9% 55%);
+	--hop-border: hsl(220 10% 18%);
+}
+
+/* Light mode */
+:root:not(.dark) {
+	--hop-bg: hsl(0 0% 100%);
+	--hop-fg: hsl(222 47% 11%);
+	--hop-card: hsl(0 0% 100%);
+	--hop-card-fg: hsl(222 47% 11%);
+	--hop-secondary: hsl(220 14% 96%);
+	--hop-secondary-fg: hsl(220 9% 46%);
+	--hop-muted: hsl(220 14% 96%);
+	--hop-muted-fg: hsl(220 9% 46%);
+	--hop-border: hsl(220 13% 91%);
 }
 
 @layer base {

@@ -4,11 +4,9 @@ import type {
 	StatusResponse,
 	NetworkResponse,
 	NetworkDetailResponse,
-	NodeResponse,
 	CreateNodeResponse,
 	HealthResponse,
-	PortForwardResponse,
-	ErrorResponse
+	PortForwardResponse
 } from '$lib/types/api';
 
 export class ApiError extends Error {
@@ -24,18 +22,13 @@ export class ApiError extends Error {
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
 	const headers: Record<string, string> = {};
 
-	const token = typeof localStorage !== 'undefined' ? localStorage.getItem('hop_token') : null;
-	if (token) {
-		headers['Authorization'] = `Bearer ${token}`;
-	}
-
 	if (body) {
 		headers['Content-Type'] = 'application/json';
 	}
 
 	const res = await fetch(path, {
 		method,
-		credentials: 'include',
+		credentials: 'include', // send HttpOnly session cookie
 		headers,
 		body: body ? JSON.stringify(body) : undefined
 	});
@@ -43,7 +36,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 	if (!res.ok) {
 		let msg = res.statusText;
 		try {
-			const err: ErrorResponse = await res.json();
+			const err = await res.json();
 			msg = err.error || msg;
 		} catch {
 			msg = await res.text().catch(() => msg);
@@ -70,13 +63,22 @@ export const auth = {
 export const networks = {
 	list: () => request<NetworkResponse[]>('GET', '/api/networks'),
 	get: (id: string) => request<NetworkDetailResponse>('GET', `/api/networks/${id}`),
-	create: (name: string) => request<NetworkResponse>('POST', '/api/networks', { name }),
+	create: (name: string) =>
+		request<{ id: string; name: string; slug: string; subnet: string }>(
+			'POST',
+			'/api/networks',
+			{ name }
+		),
 	delete: (id: string) => request<void>('DELETE', `/api/networks/${id}`)
 };
 
 // --- Nodes ---
 export const nodes = {
-	list: (networkId: string) => request<NodeResponse[]>('GET', `/api/networks/${networkId}/nodes`),
+	list: (networkId: string) =>
+		request<import('$lib/types/api').NodeResponse[]>(
+			'GET',
+			`/api/networks/${networkId}/nodes`
+		),
 	create: (networkId: string) =>
 		request<CreateNodeResponse>('POST', `/api/networks/${networkId}/nodes`, {}),
 	delete: (networkId: string, nodeId: string) =>
