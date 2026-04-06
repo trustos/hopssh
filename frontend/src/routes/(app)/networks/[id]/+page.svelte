@@ -54,11 +54,8 @@
 
 	const networkId = $derived(page.params.id);
 
-	// Filter out pending nodes — they're pre-created for IP allocation but the
-	// agent hasn't enrolled yet. Show only enrolled/online/offline nodes.
-	const visibleNodes = $derived(
-		network?.nodes.filter(n => n.status !== 'pending') ?? []
-	);
+	// All nodes including pending (pending shown with special style).
+	const visibleNodes = $derived(network?.nodes ?? []);
 
 	onMount(async () => {
 		await loadNetwork();
@@ -160,6 +157,17 @@
 			deleteNodeError = e instanceof ApiError ? e.message : 'Failed to delete node';
 		} finally {
 			deletingNode = false;
+		}
+	}
+
+	async function checkHealth(node: NodeResponse) {
+		try {
+			const h = await nodesApi.health(networkId, node.id);
+			toast.success(`${node.hostname || node.id.slice(0, 8)}: ${h.status} — uptime ${h.uptime}`);
+			// Refresh to update last_seen
+			await loadNetwork();
+		} catch (e) {
+			toast.error(`Health check failed: ${e instanceof ApiError ? e.message : 'unreachable'}`);
 		}
 	}
 
@@ -398,7 +406,13 @@
 									<td class="px-4 py-3 text-muted-foreground">{timeAgo(node.lastSeenAt)}</td>
 									<td class="px-4 py-3">
 										<div class="flex gap-1">
-											{#if node.nodeType === 'agent'}
+											{#if node.nodeType === 'agent' && node.status !== 'pending'}
+												<button
+													onclick={() => checkHealth(node)}
+													class="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+												>
+													Health
+												</button>
 												<a
 													href="/terminal/{networkId}/{node.id}?h={encodeURIComponent(node.hostname || node.id.slice(0, 8))}"
 													class="rounded px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10"

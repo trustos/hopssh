@@ -95,6 +95,7 @@ func NewRouter(
 	bundleH *BundleHandler,
 	renewH *RenewHandler,
 	dnsH *DNSHandler,
+	auditH *AuditHandler,
 ) chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -130,6 +131,9 @@ func NewRouter(
 
 		r.With(wt).Post("/api/auth/logout", authH.Logout)
 		r.With(wt).Get("/api/auth/me", authH.Me)
+
+		// Audit log.
+		r.With(wt).Get("/api/audit", auditH.ListAuditLog)
 
 		// Networks.
 		r.With(wt).Post("/api/networks", networkH.CreateNetwork)

@@ -62,3 +62,28 @@ func (s *AuditStore) ListForNetwork(networkID string, limit int) ([]*AuditEntry,
 	}
 	return entries, nil
 }
+
+func (s *AuditStore) ListForUser(userID string, limit int) ([]*AuditEntry, error) {
+	q := dbsqlc.New(WrapDB(s.rdb))
+	rows, err := q.ListAuditForUser(context.Background(), dbsqlc.ListAuditForUserParams{
+		UserID: userID,
+		Limit:  int64(limit),
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	entries := make([]*AuditEntry, 0, len(rows))
+	for _, r := range rows {
+		entries = append(entries, &AuditEntry{
+			ID:        r.ID,
+			UserID:    r.UserID,
+			NodeID:    r.NodeID,
+			NetworkID: r.NetworkID,
+			Action:    r.Action,
+			Details:   r.Details,
+			CreatedAt: r.CreatedAt,
+		})
+	}
+	return entries, nil
+}

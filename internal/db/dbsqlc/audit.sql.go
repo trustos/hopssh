@@ -75,3 +75,44 @@ func (q *Queries) ListAuditForNetwork(ctx context.Context, arg ListAuditForNetwo
 	}
 	return items, nil
 }
+
+const listAuditForUser = `-- name: ListAuditForUser :many
+SELECT id, user_id, node_id, network_id, action, details, created_at
+FROM audit_log WHERE user_id = ? ORDER BY created_at DESC LIMIT ?
+`
+
+type ListAuditForUserParams struct {
+	UserID string
+	Limit  int64
+}
+
+func (q *Queries) ListAuditForUser(ctx context.Context, arg ListAuditForUserParams) ([]AuditLog, error) {
+	rows, err := q.db.QueryContext(ctx, listAuditForUser, arg.UserID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AuditLog{}
+	for rows.Next() {
+		var i AuditLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.NodeID,
+			&i.NetworkID,
+			&i.Action,
+			&i.Details,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

@@ -126,6 +126,22 @@ export const dns = {
 		request<void>('DELETE', `/api/networks/${e(networkId)}/dns/${e(recordId)}`)
 };
 
+// --- Audit ---
+export const audit = {
+	list: () =>
+		request<
+			Array<{
+				id: string;
+				userId: string;
+				nodeId: string | null;
+				networkId: string | null;
+				action: string;
+				details: string | null;
+				createdAt: number;
+			}>
+		>('GET', '/api/audit')
+};
+
 // --- Device Flow ---
 export const device = {
 	verify: (code: string) =>
