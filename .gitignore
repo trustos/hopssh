@@ -13,8 +13,9 @@ frontend/.svelte-kit/
 internal/frontend/dist/
 !internal/frontend/dist/.gitkeep
 
-# Data directory (runtime)
+# Runtime
 data/
+.hop-server.pid
 
 # OS
 .DS_Store

@@ -1,5 +1,6 @@
 .PHONY: all setup vendor patch-vendor build build-all build-linux vet test \
-       generate check-patches clean clean-vendor frontend frontend-embed
+       generate check-patches clean clean-vendor frontend frontend-embed \
+       run dev
 
 # Default: build Go binaries only (assumes frontend already built or not needed).
 all: build
@@ -62,6 +63,24 @@ test:
 # Check if vendor patches are still needed (requires gh CLI).
 check-patches:
 	@./scripts/check-nebula-patch.sh
+
+# Build everything and run the server (frontend embedded in binary).
+run: build-all
+	./hop-server
+
+# Development mode: run Go backend + SvelteKit dev server with hot reload.
+# Backend on :9473, frontend on :5173 (proxies /api to backend).
+dev:
+	@echo "==> Starting backend + frontend dev servers..."
+	@$(MAKE) build
+	@./hop-server & echo $$! > .hop-server.pid
+	@cd frontend && npm run dev &
+	@echo ""
+	@echo "  Backend:  http://localhost:9473"
+	@echo "  Frontend: http://localhost:5173 (hot reload)"
+	@echo "  Press Ctrl+C to stop."
+	@echo ""
+	@trap 'kill $$(cat .hop-server.pid 2>/dev/null) 2>/dev/null; rm -f .hop-server.pid; exit' INT TERM; wait
 
 # Remove build artifacts.
 clean:
