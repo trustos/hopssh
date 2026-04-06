@@ -51,7 +51,25 @@ func (h *DNSHandler) ListDNSRecords(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, records)
+	// Map to JSON-tagged DTO to ensure camelCase field names.
+	type dnsEntry struct {
+		ID        string `json:"id"`
+		NetworkID string `json:"networkId"`
+		Name      string `json:"name"`
+		NebulaIP  string `json:"nebulaIP"`
+		CreatedAt int64  `json:"createdAt"`
+	}
+	result := make([]dnsEntry, 0, len(records))
+	for _, r := range records {
+		result = append(result, dnsEntry{
+			ID:        r.ID,
+			NetworkID: r.NetworkID,
+			Name:      r.Name,
+			NebulaIP:  r.NebulaIP,
+			CreatedAt: r.CreatedAt,
+		})
+	}
+	writeJSON(w, result)
 }
 
 // CreateDNSRecord adds a custom DNS record to a network.

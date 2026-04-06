@@ -160,12 +160,10 @@ func (nm *NetworkManager) StopNetwork(networkID string) {
 	}
 	nm.mu.Unlock()
 
-	if ok {
+	if ok && inst != nil {
 		inst.Close()
 	}
 }
-
-// GetInstance returns the running NetworkInstance for a network.
 
 // Stop shuts down all lighthouse instances.
 func (nm *NetworkManager) Stop() {
@@ -173,7 +171,9 @@ func (nm *NetworkManager) Stop() {
 	defer nm.mu.Unlock()
 
 	for id, inst := range nm.instances {
-		inst.Close()
+		if inst != nil {
+			inst.Close()
+		}
 		delete(nm.instances, id)
 	}
 	log.Printf("[mesh] NetworkManager stopped")
