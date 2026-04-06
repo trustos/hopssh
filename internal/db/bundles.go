@@ -3,6 +3,7 @@ package db
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -11,6 +12,11 @@ import (
 
 	"github.com/trustos/hopssh/internal/db/dbsqlc"
 )
+
+func hashBundleToken(token string) string {
+	h := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(h[:])
+}
 
 const bundleTTL = 15 * time.Minute
 
@@ -46,11 +52,11 @@ func (s *BundleStore) Create(id, nodeID string) (*EnrollmentBundle, error) {
 		ExpiresAt:     time.Now().Add(bundleTTL).Unix(),
 	}
 
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	err := q.InsertBundle(context.Background(), dbsqlc.InsertBundleParams{
 		ID:            b.ID,
 		NodeID:        b.NodeID,
-		DownloadToken: b.DownloadToken,
+		DownloadToken: hashBundleToken(token),
 		ExpiresAt:     b.ExpiresAt,
 	})
 	if err != nil {
@@ -69,9 +75,9 @@ func (s *BundleStore) ClaimByToken(token string) (*EnrollmentBundle, error) {
 	}
 	defer tx.Rollback()
 
-	q := dbsqlc.New(tx)
+	q := dbsqlc.New(WrapTx(tx))
 	row, err := q.GetBundleByToken(ctx, dbsqlc.GetBundleByTokenParams{
-		DownloadToken: token,
+		DownloadToken: hashBundleToken(token),
 		ExpiresAt:     time.Now().Unix(),
 	})
 	if errors.Is(err, sql.ErrNoRows) {
@@ -101,6 +107,6 @@ func (s *BundleStore) ClaimByToken(token string) (*EnrollmentBundle, error) {
 }
 
 func (s *BundleStore) DeleteExpired() error {
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.DeleteExpiredBundles(context.Background(), time.Now().Unix())
 }

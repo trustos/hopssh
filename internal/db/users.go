@@ -36,7 +36,7 @@ func NewUserStore(p *DBPair) *UserStore {
 }
 
 func (s *UserStore) Create(u *User) error {
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.CreateUser(context.Background(), dbsqlc.CreateUserParams{
 		ID:           u.ID,
 		Email:        u.Email,
@@ -46,28 +46,9 @@ func (s *UserStore) Create(u *User) error {
 	})
 }
 
-func (s *UserStore) GetByID(id string) (*User, error) {
-	q := dbsqlc.New(s.rdb)
-	row, err := q.GetUserByID(context.Background(), id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("get user by id: %w", err)
-	}
-	return &User{
-		ID:           row.ID,
-		Email:        row.Email,
-		Name:         row.Name,
-		PasswordHash: row.PasswordHash,
-		GitHubID:     row.GithubID,
-		CreatedAt:    row.CreatedAt,
-	}, nil
-}
-
 // GetProfileByID returns a UserProfile without the password hash.
 func (s *UserStore) GetProfileByID(id string) (*UserProfile, error) {
-	q := dbsqlc.New(s.rdb)
+	q := dbsqlc.New(WrapDB(s.rdb))
 	row, err := q.GetUserProfileByID(context.Background(), id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -83,7 +64,7 @@ func (s *UserStore) GetProfileByID(id string) (*UserProfile, error) {
 }
 
 func (s *UserStore) GetByEmail(email string) (*User, error) {
-	q := dbsqlc.New(s.rdb)
+	q := dbsqlc.New(WrapDB(s.rdb))
 	row, err := q.GetUserByEmail(context.Background(), email)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -102,7 +83,7 @@ func (s *UserStore) GetByEmail(email string) (*User, error) {
 }
 
 func (s *UserStore) Count() (int, error) {
-	q := dbsqlc.New(s.rdb)
+	q := dbsqlc.New(WrapDB(s.rdb))
 	count, err := q.CountUsers(context.Background())
 	return int(count), err
 }

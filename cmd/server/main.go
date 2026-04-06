@@ -160,6 +160,7 @@ func main() {
 		Handler:           router,
 		ReadTimeout:       30 * time.Second,
 		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       120 * time.Second,
 		WriteTimeout:      0, // streaming responses
 	}
 

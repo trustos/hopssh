@@ -12,7 +12,7 @@ import (
 
 const completeEnrollment = `-- name: CompleteEnrollment :exec
 UPDATE nodes SET nebula_cert = ?, nebula_key = ?, hostname = ?, os = ?, arch = ?,
-status = 'pending'
+status = 'enrolled'
 WHERE id = ?
 `
 

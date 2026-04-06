@@ -3,8 +3,27 @@ package api
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 )
+
+// captureAgentIP extracts the client IP from an HTTP request.
+// Used to record the agent's real IP for mesh tunnel creation.
+func captureAgentIP(r *http.Request) string {
+	if TrustedProxy {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			for i, c := range xff {
+				if c == ',' {
+					return strings.TrimSpace(xff[:i])
+				}
+			}
+			return strings.TrimSpace(xff)
+		}
+	}
+	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	return ip
+}
 
 // writeJSON encodes v as JSON to w, logging errors instead of silently dropping them.
 // Must be called BEFORE WriteHeader, or pass the status via writeJSONStatus.

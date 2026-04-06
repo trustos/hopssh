@@ -79,7 +79,7 @@ func (h *EnrollHandler) CreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	installCmd := fmt.Sprintf("curl -fsSL %s/install | sudo bash -s -- --token %s", h.Endpoint, enrollToken)
+	installCmd := fmt.Sprintf("echo '%s' | sudo hop-agent enroll --token-stdin --endpoint %s", enrollToken, h.Endpoint)
 
 	writeJSONStatus(w, http.StatusCreated, map[string]interface{}{
 		"nodeId":          node.ID,
@@ -125,16 +125,11 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse the node's pre-allocated Nebula IP.
-	nodeIP, err := pki.SubnetIP(network.NebulaSubnet, parseNodeIndex(node.NebulaIP)+2)
+	// Parse the node's pre-allocated Nebula IP directly.
+	nodeIP, err := pki.ParsePrefix(node.NebulaIP)
 	if err != nil {
-		// Fallback: use the stored IP directly.
-		var parseErr error
-		nodeIP, parseErr = parsePrefix(node.NebulaIP)
-		if parseErr != nil {
-			http.Error(w, "invalid node IP", http.StatusInternalServerError)
-			return
-		}
+		http.Error(w, "invalid node IP", http.StatusInternalServerError)
+		return
 	}
 
 	// Issue node certificate.
@@ -150,6 +145,9 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to complete enrollment: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	// Record the agent's real IP for mesh tunnel creation.
+	h.Nodes.UpdateAgentRealIP(node.ID, captureAgentIP(r))
 
 	// Compute server's Nebula IP for static_host_map.
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
@@ -173,16 +171,3 @@ func generateToken() string {
 	return hex.EncodeToString(b)
 }
 
-// parseNodeIndex extracts the host index from a CIDR IP like "10.42.1.3/24" → 3.
-func parseNodeIndex(cidr string) int {
-	p, err := parsePrefix(cidr)
-	if err != nil {
-		return 0
-	}
-	octets := p.Addr().As4()
-	return int(octets[3]) - 2 // .2 = node 0, .3 = node 1, etc.
-}
-
-func parsePrefix(s string) (pki.NetipPrefix, error) {
-	return pki.ParsePrefix(s)
-}

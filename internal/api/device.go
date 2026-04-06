@@ -152,6 +152,7 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.DeviceCodes.SetNodeID(dc.DeviceCode, nodeID)
+	h.Nodes.UpdateAgentRealIP(nodeID, captureAgentIP(r))
 
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
 

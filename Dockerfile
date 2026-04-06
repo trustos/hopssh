@@ -6,7 +6,7 @@
 #   docker run -p 8080:8080 -v hopssh-data:/data hopssh server --trusted-proxy
 
 # --- Build stage ---
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.24-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends patch && rm -rf /var/lib/apt/lists/*
 

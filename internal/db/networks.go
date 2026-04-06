@@ -44,7 +44,7 @@ func (s *NetworkStore) Create(n *Network) error {
 		return fmt.Errorf("encrypt server key: %w", err)
 	}
 
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.InsertNetwork(context.Background(), dbsqlc.InsertNetworkParams{
 		ID:           n.ID,
 		UserID:       n.UserID,
@@ -59,7 +59,7 @@ func (s *NetworkStore) Create(n *Network) error {
 }
 
 func (s *NetworkStore) Get(id string) (*Network, error) {
-	q := dbsqlc.New(s.rdb)
+	q := dbsqlc.New(WrapDB(s.rdb))
 	row, err := q.GetNetworkByID(context.Background(), id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -97,7 +97,7 @@ func (s *NetworkStore) Get(id string) (*Network, error) {
 }
 
 func (s *NetworkStore) ListForUser(userID string) ([]*Network, error) {
-	q := dbsqlc.New(s.rdb)
+	q := dbsqlc.New(WrapDB(s.rdb))
 	rows, err := q.ListNetworksForUser(context.Background(), userID)
 	if err != nil {
 		return nil, err
@@ -122,13 +122,13 @@ func (s *NetworkStore) ListForUser(userID string) ([]*Network, error) {
 
 // SlugExists checks if a network slug is already taken.
 func (s *NetworkStore) SlugExists(slug string) bool {
-	q := dbsqlc.New(s.rdb)
+	q := dbsqlc.New(WrapDB(s.rdb))
 	count, err := q.NetworkSlugExists(context.Background(), slug)
 	return err == nil && count > 0
 }
 
 func (s *NetworkStore) Delete(id string) error {
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.DeleteNetwork(context.Background(), id)
 }
 
@@ -140,7 +140,7 @@ func IsUniqueViolation(err error) bool {
 // AllocateSubnet returns the next available /24 subnet in the 10.42.0.0/8 range.
 // Uses MAX to avoid collisions when networks are deleted.
 func (s *NetworkStore) AllocateSubnet() (string, error) {
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	result, err := q.MaxSubnetOctet(context.Background())
 	if err != nil {
 		return "", fmt.Errorf("query max subnet: %w", err)

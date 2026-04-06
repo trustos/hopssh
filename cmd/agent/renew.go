@@ -36,16 +36,16 @@ func runCertRenewal(ctx context.Context, endpoint, nodeID, agentToken string) {
 
 		if err := renewCert(endpoint, nodeID, agentToken); err != nil {
 			log.Printf("[renew] renewal failed: %v", err)
-			// Retry with backoff: 1m, 2m, 4m, ..., capped at 30m.
+			// Retry with backoff: 1m, 2m, 4m, ..., capped at 30m, max 12 attempts.
 			backoff := time.Minute
-			for backoff <= 30*time.Minute {
+			for attempt := 0; attempt < 12; attempt++ {
 				select {
 				case <-ctx.Done():
 					return
 				case <-time.After(backoff):
 				}
 				if err := renewCert(endpoint, nodeID, agentToken); err != nil {
-					log.Printf("[renew] retry failed: %v", err)
+					log.Printf("[renew] retry %d failed: %v", attempt+1, err)
 					backoff *= 2
 					if backoff > 30*time.Minute {
 						backoff = 30 * time.Minute

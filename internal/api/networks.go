@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strings"
@@ -237,7 +238,9 @@ func (h *NetworkHandler) DeleteNetwork(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	h.Nodes.DeleteForNetwork(networkID)
+	if err := h.Nodes.DeleteForNetwork(networkID); err != nil {
+		log.Printf("[networks] failed to delete nodes for network %s: %v", networkID, err)
+	}
 	if err := h.Networks.Delete(networkID); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

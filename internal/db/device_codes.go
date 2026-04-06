@@ -66,7 +66,7 @@ func (s *DeviceCodeStore) Create() (*DeviceCode, error) {
 			ExpiresAt:  time.Now().Add(deviceCodeTTL).Unix(),
 		}
 
-		q := dbsqlc.New(s.wdb)
+		q := dbsqlc.New(WrapDB(s.wdb))
 		err = q.InsertDeviceCode(context.Background(), dbsqlc.InsertDeviceCodeParams{
 			DeviceCode: hashDeviceCode(deviceCode),
 			UserCode:   dc.UserCode,
@@ -86,7 +86,7 @@ func (s *DeviceCodeStore) Create() (*DeviceCode, error) {
 
 // GetByDeviceCode returns a device code by its device code (used by agent polling).
 func (s *DeviceCodeStore) GetByDeviceCode(deviceCode string) (*DeviceCode, error) {
-	q := dbsqlc.New(s.rdb)
+	q := dbsqlc.New(WrapDB(s.rdb))
 	row, err := q.GetDeviceCodeByCode(context.Background(), hashDeviceCode(deviceCode))
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -99,7 +99,7 @@ func (s *DeviceCodeStore) GetByDeviceCode(deviceCode string) (*DeviceCode, error
 
 // GetByUserCode returns a device code by its user code (used by browser authorization).
 func (s *DeviceCodeStore) GetByUserCode(userCode string) (*DeviceCode, error) {
-	q := dbsqlc.New(s.rdb)
+	q := dbsqlc.New(WrapDB(s.rdb))
 	row, err := q.GetDeviceCodeByUserCode(context.Background(), dbsqlc.GetDeviceCodeByUserCodeParams{
 		UserCode:  strings.ToUpper(userCode),
 		ExpiresAt: time.Now().Unix(),
@@ -115,7 +115,7 @@ func (s *DeviceCodeStore) GetByUserCode(userCode string) (*DeviceCode, error) {
 
 // Authorize marks a device code as authorized by a user for a specific network.
 func (s *DeviceCodeStore) Authorize(userCode, userID, networkID string) error {
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	result, err := q.AuthorizeDeviceCode(context.Background(), dbsqlc.AuthorizeDeviceCodeParams{
 		UserID:    &userID,
 		NetworkID: &networkID,
@@ -143,7 +143,7 @@ func (s *DeviceCodeStore) ClaimAuthorized(deviceCode string) (*DeviceCode, error
 	}
 	defer tx.Rollback()
 
-	q := dbsqlc.New(tx)
+	q := dbsqlc.New(WrapTx(tx))
 	row, err := q.GetAuthorizedDeviceCode(ctx, dbsqlc.GetAuthorizedDeviceCodeParams{
 		DeviceCode: h,
 		ExpiresAt:  time.Now().Unix(),
@@ -180,7 +180,7 @@ func (s *DeviceCodeStore) ClaimAuthorized(deviceCode string) (*DeviceCode, error
 
 // SetNodeID updates the node_id after enrollment completes.
 func (s *DeviceCodeStore) SetNodeID(deviceCode, nodeID string) error {
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.SetDeviceCodeNodeID(context.Background(), dbsqlc.SetDeviceCodeNodeIDParams{
 		NodeID:     &nodeID,
 		DeviceCode: hashDeviceCode(deviceCode),
@@ -189,7 +189,7 @@ func (s *DeviceCodeStore) SetNodeID(deviceCode, nodeID string) error {
 
 // DeleteExpired removes expired device codes.
 func (s *DeviceCodeStore) DeleteExpired() error {
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.DeleteExpiredDeviceCodes(context.Background(), time.Now().Unix())
 }
 

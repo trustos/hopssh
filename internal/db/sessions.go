@@ -33,7 +33,7 @@ func hashSessionToken(token string) string {
 }
 
 func (s *SessionStore) Create(token, userID string, ttl time.Duration) error {
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.CreateSession(context.Background(), dbsqlc.CreateSessionParams{
 		Token:     hashSessionToken(token),
 		UserID:    userID,
@@ -42,7 +42,7 @@ func (s *SessionStore) Create(token, userID string, ttl time.Duration) error {
 }
 
 func (s *SessionStore) GetUserID(token string) (string, error) {
-	q := dbsqlc.New(s.rdb)
+	q := dbsqlc.New(WrapDB(s.rdb))
 	userID, err := q.GetSessionUserID(context.Background(), dbsqlc.GetSessionUserIDParams{
 		Token:     hashSessionToken(token),
 		ExpiresAt: time.Now().Unix(),
@@ -54,11 +54,11 @@ func (s *SessionStore) GetUserID(token string) (string, error) {
 }
 
 func (s *SessionStore) Delete(token string) error {
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.DeleteSession(context.Background(), hashSessionToken(token))
 }
 
 func (s *SessionStore) DeleteExpired() error {
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.DeleteExpiredSessions(context.Background(), time.Now().Unix())
 }

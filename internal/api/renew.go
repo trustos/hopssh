@@ -84,6 +84,9 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Update agent's real IP (may change between renewals).
+	h.Nodes.UpdateAgentRealIP(node.ID, captureAgentIP(r))
+
 	// Persist to DB.
 	if err := h.Nodes.UpdateCert(node.ID, nodeCert.CertPEM, nodeCert.KeyPEM); err != nil {
 		http.Error(w, "failed to update cert: "+err.Error(), http.StatusInternalServerError)

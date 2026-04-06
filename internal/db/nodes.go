@@ -75,7 +75,7 @@ func (s *NodeStore) Create(n *Node) error {
 		nebulaIP = &n.NebulaIP
 	}
 
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.InsertNode(context.Background(), dbsqlc.InsertNodeParams{
 		ID:                  n.ID,
 		NetworkID:           n.NetworkID,
@@ -93,7 +93,7 @@ func (s *NodeStore) Create(n *Node) error {
 }
 
 func (s *NodeStore) Get(id string) (*Node, error) {
-	q := dbsqlc.New(s.rdb)
+	q := dbsqlc.New(WrapDB(s.rdb))
 	row, err := q.GetNodeByID(context.Background(), id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -151,7 +151,7 @@ func (s *NodeStore) ClaimEnrollmentToken(token string) (*Node, error) {
 	}
 	defer tx.Rollback()
 
-	q := dbsqlc.New(tx)
+	q := dbsqlc.New(WrapTx(tx))
 	row, err := q.GetNodeByEnrollmentToken(ctx, dbsqlc.GetNodeByEnrollmentTokenParams{
 		EnrollmentToken: &h,
 		EnrollmentExpiresAt: func() *int64 { t := time.Now().Unix(); return &t }(),
@@ -200,7 +200,7 @@ func (s *NodeStore) ClaimEnrollmentToken(token string) (*Node, error) {
 }
 
 func (s *NodeStore) ListForNetwork(networkID string) ([]*Node, error) {
-	q := dbsqlc.New(s.rdb)
+	q := dbsqlc.New(WrapDB(s.rdb))
 	rows, err := q.ListNodesForNetwork(context.Background(), networkID)
 	if err != nil {
 		return nil, err
@@ -228,14 +228,14 @@ func (s *NodeStore) ListForNetwork(networkID string) ([]*Node, error) {
 }
 
 func (s *NodeStore) CountForNetwork(networkID string) (int, error) {
-	q := dbsqlc.New(s.rdb)
+	q := dbsqlc.New(WrapDB(s.rdb))
 	count, err := q.CountNodesForNetwork(context.Background(), networkID)
 	return int(count), err
 }
 
 // NextNodeIndex returns the next available host index for a network's subnet.
 func (s *NodeStore) NextNodeIndex(networkID string) (int, error) {
-	q := dbsqlc.New(s.rdb)
+	q := dbsqlc.New(WrapDB(s.rdb))
 	rows, err := q.ListNodeIPsForNetwork(context.Background(), networkID)
 	if err != nil {
 		return 0, err
@@ -277,7 +277,7 @@ func (s *NodeStore) CompleteEnrollment(id string, cert, key []byte, hostname, os
 	if err != nil {
 		return fmt.Errorf("encrypt node key: %w", err)
 	}
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.CompleteEnrollment(context.Background(), dbsqlc.CompleteEnrollmentParams{
 		NebulaCert: cert,
 		NebulaKey:  encKey,
@@ -294,7 +294,7 @@ func (s *NodeStore) UpdateCert(id string, cert, key []byte) error {
 	if err != nil {
 		return fmt.Errorf("encrypt node key: %w", err)
 	}
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.UpdateNodeCert(context.Background(), dbsqlc.UpdateNodeCertParams{
 		NebulaCert: cert,
 		NebulaKey:  encKey,
@@ -303,7 +303,7 @@ func (s *NodeStore) UpdateCert(id string, cert, key []byte) error {
 }
 
 func (s *NodeStore) UpdateStatus(id, status string) error {
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.UpdateNodeStatus(context.Background(), dbsqlc.UpdateNodeStatusParams{
 		Status: status,
 		ID:     id,
@@ -311,12 +311,12 @@ func (s *NodeStore) UpdateStatus(id, status string) error {
 }
 
 func (s *NodeStore) UpdateLastSeen(id string) error {
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.UpdateNodeLastSeen(context.Background(), id)
 }
 
 func (s *NodeStore) UpdateAgentRealIP(id, ip string) error {
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.UpdateNodeAgentRealIP(context.Background(), dbsqlc.UpdateNodeAgentRealIPParams{
 		AgentRealIp: &ip,
 		ID:          id,
@@ -324,11 +324,11 @@ func (s *NodeStore) UpdateAgentRealIP(id, ip string) error {
 }
 
 func (s *NodeStore) Delete(id string) error {
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.DeleteNode(context.Background(), id)
 }
 
 func (s *NodeStore) DeleteForNetwork(networkID string) error {
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.DeleteNodesForNetwork(context.Background(), networkID)
 }

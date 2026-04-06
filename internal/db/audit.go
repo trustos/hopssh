@@ -27,7 +27,7 @@ func NewAuditStore(p *DBPair) *AuditStore {
 }
 
 func (s *AuditStore) Log(id, userID, action string, networkID, nodeID, details *string) error {
-	q := dbsqlc.New(s.wdb)
+	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.InsertAuditEntry(context.Background(), dbsqlc.InsertAuditEntryParams{
 		ID:        id,
 		UserID:    userID,
@@ -39,7 +39,7 @@ func (s *AuditStore) Log(id, userID, action string, networkID, nodeID, details *
 }
 
 func (s *AuditStore) ListForNetwork(networkID string, limit int) ([]*AuditEntry, error) {
-	q := dbsqlc.New(s.rdb)
+	q := dbsqlc.New(WrapDB(s.rdb))
 	rows, err := q.ListAuditForNetwork(context.Background(), dbsqlc.ListAuditForNetworkParams{
 		NetworkID: &networkID,
 		Limit:     int64(limit),
