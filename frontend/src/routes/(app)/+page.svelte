@@ -86,9 +86,10 @@
 						/>
 					</div>
 					<div class="space-y-2">
-						<label for="dns-domain" class="text-sm font-medium">DNS Domain</label>
+						<label for="dns-domain" class="text-sm font-medium">Domain suffix</label>
 						<div class="flex items-center gap-2">
-							<span class="text-sm text-muted-foreground">hostname.</span>
+							<span class="text-sm text-muted-foreground">hostname</span>
+							<span class="text-sm text-muted-foreground">.</span>
 							<input
 								id="dns-domain"
 								type="text"
@@ -98,7 +99,11 @@
 							/>
 						</div>
 						<p class="text-xs text-muted-foreground">
-							Nodes will be reachable as <span class="font-mono">hostname.{newDomain || 'hop'}</span>
+							All nodes and services in this network will be reachable as
+							<span class="font-mono font-medium">&lt;name&gt;.{newDomain || 'hop'}</span>
+							— for example <span class="font-mono">jellyfin.{newDomain || 'hop'}</span>
+							or <span class="font-mono">nas.{newDomain || 'hop'}</span>.
+							This cannot be changed later.
 						</p>
 					</div>
 					<div class="flex justify-end gap-2">
