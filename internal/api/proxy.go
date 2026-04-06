@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/trustos/hopssh/internal/auth"
+	"github.com/trustos/hopssh/internal/authz"
 	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/mesh"
 )
@@ -41,7 +42,7 @@ func (h *ProxyHandler) requireNode(r *http.Request) (*db.Network, *db.Node, erro
 	nodeID := chi.URLParam(r, "nodeID")
 
 	network, err := h.Networks.Get(networkID)
-	if err != nil || network == nil || network.UserID != user.ID {
+	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
 		return nil, nil, fmt.Errorf("network not found")
 	}
 
@@ -318,7 +319,7 @@ func (h *ProxyHandler) StopPortForward(w http.ResponseWriter, r *http.Request) {
 
 	// Verify the user owns this network before allowing stop.
 	network, err := h.Networks.Get(networkID)
-	if err != nil || network == nil || network.UserID != user.ID {
+	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
 		http.Error(w, "network not found", http.StatusNotFound)
 		return
 	}
@@ -345,7 +346,7 @@ func (h *ProxyHandler) ListPortForwards(w http.ResponseWriter, r *http.Request) 
 
 	// Verify the user owns this network.
 	network, err := h.Networks.Get(networkID)
-	if err != nil || network == nil || network.UserID != user.ID {
+	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
 		http.Error(w, "network not found", http.StatusNotFound)
 		return
 	}
@@ -372,7 +373,7 @@ func (h *ProxyHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
 	networkID := chi.URLParam(r, "networkID")
 
 	network, err := h.Networks.Get(networkID)
-	if err != nil || network == nil || network.UserID != user.ID {
+	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
 		http.Error(w, "network not found", http.StatusNotFound)
 		return
 	}

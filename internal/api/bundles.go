@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/trustos/hopssh/internal/auth"
+	"github.com/trustos/hopssh/internal/authz"
 	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/pki"
 )
@@ -41,7 +42,7 @@ func (h *BundleHandler) CreateBundle(w http.ResponseWriter, r *http.Request) {
 	networkID := chi.URLParam(r, "networkID")
 
 	network, err := h.Networks.Get(networkID)
-	if err != nil || network == nil || network.UserID != user.ID {
+	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
 		http.Error(w, "network not found", http.StatusNotFound)
 		return
 	}

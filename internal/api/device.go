@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/trustos/hopssh/internal/auth"
+	"github.com/trustos/hopssh/internal/authz"
 	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/pki"
 )
@@ -191,7 +192,7 @@ func (h *DeviceHandler) Authorize(w http.ResponseWriter, r *http.Request) {
 
 	// Verify user owns the network.
 	network, err := h.Networks.Get(body.NetworkID)
-	if err != nil || network == nil || network.UserID != user.ID {
+	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
 		http.Error(w, "network not found", http.StatusNotFound)
 		return
 	}

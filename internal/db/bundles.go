@@ -1,11 +1,15 @@
 package db
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/trustos/hopssh/internal/db/dbsqlc"
 )
 
 const bundleTTL = 15 * time.Minute
@@ -28,7 +32,6 @@ func NewBundleStore(p *DBPair) *BundleStore {
 	return &BundleStore{rdb: p.ReadDB, wdb: p.WriteDB}
 }
 
-// Create generates a new bundle record with a crypto-random download token.
 func (s *BundleStore) Create(id, nodeID string) (*EnrollmentBundle, error) {
 	tokenBytes := make([]byte, 32)
 	if _, err := rand.Read(tokenBytes); err != nil {
@@ -43,10 +46,13 @@ func (s *BundleStore) Create(id, nodeID string) (*EnrollmentBundle, error) {
 		ExpiresAt:     time.Now().Add(bundleTTL).Unix(),
 	}
 
-	_, err := s.wdb.Exec(`
-		INSERT INTO enrollment_bundles (id, node_id, download_token, expires_at)
-		VALUES (?, ?, ?, ?)
-	`, b.ID, b.NodeID, b.DownloadToken, b.ExpiresAt)
+	q := dbsqlc.New(s.wdb)
+	err := q.InsertBundle(context.Background(), dbsqlc.InsertBundleParams{
+		ID:            b.ID,
+		NodeID:        b.NodeID,
+		DownloadToken: b.DownloadToken,
+		ExpiresAt:     b.ExpiresAt,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("create bundle: %w", err)
 	}
@@ -56,26 +62,26 @@ func (s *BundleStore) Create(id, nodeID string) (*EnrollmentBundle, error) {
 // ClaimByToken finds a bundle by download token, marks it as downloaded (single-use),
 // and returns it. Returns nil if not found, already downloaded, or expired.
 func (s *BundleStore) ClaimByToken(token string) (*EnrollmentBundle, error) {
+	ctx := context.Background()
 	tx, err := s.wdb.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
 
-	var b EnrollmentBundle
-	err = tx.QueryRow(`
-		SELECT id, node_id, download_token, downloaded, expires_at, created_at
-		FROM enrollment_bundles WHERE download_token = ? AND downloaded = 0 AND expires_at > ?
-	`, token, time.Now().Unix()).Scan(&b.ID, &b.NodeID, &b.DownloadToken,
-		&b.Downloaded, &b.ExpiresAt, &b.CreatedAt)
-	if err == sql.ErrNoRows {
+	q := dbsqlc.New(tx)
+	row, err := q.GetBundleByToken(ctx, dbsqlc.GetBundleByTokenParams{
+		DownloadToken: token,
+		ExpiresAt:     time.Now().Unix(),
+	})
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get bundle: %w", err)
 	}
 
-	_, err = tx.Exec(`UPDATE enrollment_bundles SET downloaded = 1 WHERE id = ?`, b.ID)
+	err = q.MarkBundleDownloaded(ctx, row.ID)
 	if err != nil {
 		return nil, fmt.Errorf("mark downloaded: %w", err)
 	}
@@ -83,11 +89,18 @@ func (s *BundleStore) ClaimByToken(token string) (*EnrollmentBundle, error) {
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	return &b, nil
+
+	return &EnrollmentBundle{
+		ID:            row.ID,
+		NodeID:        row.NodeID,
+		DownloadToken: row.DownloadToken,
+		Downloaded:    row.Downloaded != 0,
+		ExpiresAt:     row.ExpiresAt,
+		CreatedAt:     row.CreatedAt,
+	}, nil
 }
 
-// DeleteExpired removes expired bundles.
 func (s *BundleStore) DeleteExpired() error {
-	_, err := s.wdb.Exec(`DELETE FROM enrollment_bundles WHERE expires_at < ?`, time.Now().Unix())
-	return err
+	q := dbsqlc.New(s.wdb)
+	return q.DeleteExpiredBundles(context.Background(), time.Now().Unix())
 }

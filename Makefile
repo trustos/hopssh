@@ -1,4 +1,4 @@
-.PHONY: all setup vendor patch-vendor build vet test check-patches clean
+.PHONY: all setup vendor patch-vendor build vet test check-patches clean generate
 
 # Default: build everything.
 all: build
@@ -38,6 +38,10 @@ build-linux:
 # Run go vet.
 vet:
 	go vet -mod=vendor ./...
+
+# Regenerate sqlc code from .sql query files.
+generate:
+	$(GOPATH)/bin/sqlc generate || sqlc generate
 
 # Run tests.
 test:

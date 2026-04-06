@@ -1,10 +1,14 @@
 package db
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"time"
+
+	"github.com/trustos/hopssh/internal/db/dbsqlc"
 )
 
 type Session struct {
@@ -23,37 +27,38 @@ func NewSessionStore(p *DBPair) *SessionStore {
 	return &SessionStore{rdb: p.ReadDB, wdb: p.WriteDB}
 }
 
-// hashSessionToken returns the hex-encoded SHA-256 hash of a session token.
-// Only the hash is stored in the DB; the plaintext is returned to the user.
 func hashSessionToken(token string) string {
 	h := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(h[:])
 }
 
 func (s *SessionStore) Create(token, userID string, ttl time.Duration) error {
-	_, err := s.wdb.Exec(`
-		INSERT INTO sessions (token, user_id, expires_at) VALUES (?, ?, ?)
-	`, hashSessionToken(token), userID, time.Now().Add(ttl).Unix())
-	return err
+	q := dbsqlc.New(s.wdb)
+	return q.CreateSession(context.Background(), dbsqlc.CreateSessionParams{
+		Token:     hashSessionToken(token),
+		UserID:    userID,
+		ExpiresAt: time.Now().Add(ttl).Unix(),
+	})
 }
 
 func (s *SessionStore) GetUserID(token string) (string, error) {
-	var userID string
-	err := s.rdb.QueryRow(`
-		SELECT user_id FROM sessions WHERE token = ? AND expires_at > ?
-	`, hashSessionToken(token), time.Now().Unix()).Scan(&userID)
-	if err == sql.ErrNoRows {
+	q := dbsqlc.New(s.rdb)
+	userID, err := q.GetSessionUserID(context.Background(), dbsqlc.GetSessionUserIDParams{
+		Token:     hashSessionToken(token),
+		ExpiresAt: time.Now().Unix(),
+	})
+	if errors.Is(err, sql.ErrNoRows) {
 		return "", nil
 	}
 	return userID, err
 }
 
 func (s *SessionStore) Delete(token string) error {
-	_, err := s.wdb.Exec(`DELETE FROM sessions WHERE token = ?`, hashSessionToken(token))
-	return err
+	q := dbsqlc.New(s.wdb)
+	return q.DeleteSession(context.Background(), hashSessionToken(token))
 }
 
 func (s *SessionStore) DeleteExpired() error {
-	_, err := s.wdb.Exec(`DELETE FROM sessions WHERE expires_at < ?`, time.Now().Unix())
-	return err
+	q := dbsqlc.New(s.wdb)
+	return q.DeleteExpiredSessions(context.Background(), time.Now().Unix())
 }

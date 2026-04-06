@@ -1,20 +1,19 @@
 package db
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
 	"time"
-)
 
-func hashDeviceCode(code string) string {
-	h := sha256.Sum256([]byte(code))
-	return hex.EncodeToString(h[:])
-}
+	"github.com/trustos/hopssh/internal/db/dbsqlc"
+)
 
 type DeviceCode struct {
 	DeviceCode string
@@ -42,15 +41,18 @@ const (
 	userCodeLength   = 4
 )
 
+func hashDeviceCode(code string) string {
+	h := sha256.Sum256([]byte(code))
+	return hex.EncodeToString(h[:])
+}
+
 // Create generates a new device code pair and stores it.
-// Returns the device code (for agent polling) and user code (for human entry).
 func (s *DeviceCodeStore) Create() (*DeviceCode, error) {
 	deviceCode, err := generateDeviceCode()
 	if err != nil {
 		return nil, err
 	}
 
-	// Retry on user code collision (small namespace: 32^4 ≈ 1M).
 	for attempt := 0; attempt < 3; attempt++ {
 		userCode, err := generateUserCode()
 		if err != nil {
@@ -64,13 +66,16 @@ func (s *DeviceCodeStore) Create() (*DeviceCode, error) {
 			ExpiresAt:  time.Now().Add(deviceCodeTTL).Unix(),
 		}
 
-		_, err = s.wdb.Exec(`
-			INSERT INTO device_codes (device_code, user_code, status, expires_at)
-			VALUES (?, ?, ?, ?)
-		`, hashDeviceCode(deviceCode), dc.UserCode, dc.Status, dc.ExpiresAt)
+		q := dbsqlc.New(s.wdb)
+		err = q.InsertDeviceCode(context.Background(), dbsqlc.InsertDeviceCodeParams{
+			DeviceCode: hashDeviceCode(deviceCode),
+			UserCode:   dc.UserCode,
+			Status:     dc.Status,
+			ExpiresAt:  dc.ExpiresAt,
+		})
 		if err != nil {
 			if strings.Contains(err.Error(), "UNIQUE constraint failed") {
-				continue // user_code collision, retry
+				continue
 			}
 			return nil, fmt.Errorf("create device code: %w", err)
 		}
@@ -81,49 +86,46 @@ func (s *DeviceCodeStore) Create() (*DeviceCode, error) {
 
 // GetByDeviceCode returns a device code by its device code (used by agent polling).
 func (s *DeviceCodeStore) GetByDeviceCode(deviceCode string) (*DeviceCode, error) {
-	var dc DeviceCode
-	h := hashDeviceCode(deviceCode)
-	err := s.rdb.QueryRow(`
-		SELECT device_code, user_code, user_id, network_id, node_id, status, expires_at, created_at
-		FROM device_codes WHERE device_code = ?
-	`, h).Scan(&dc.DeviceCode, &dc.UserCode, &dc.UserID, &dc.NetworkID,
-		&dc.NodeID, &dc.Status, &dc.ExpiresAt, &dc.CreatedAt)
-	if err == sql.ErrNoRows {
+	q := dbsqlc.New(s.rdb)
+	row, err := q.GetDeviceCodeByCode(context.Background(), hashDeviceCode(deviceCode))
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get device code: %w", err)
 	}
-	return &dc, nil
+	return mapDeviceCodeRow(row), nil
 }
 
 // GetByUserCode returns a device code by its user code (used by browser authorization).
 func (s *DeviceCodeStore) GetByUserCode(userCode string) (*DeviceCode, error) {
-	var dc DeviceCode
-	err := s.rdb.QueryRow(`
-		SELECT device_code, user_code, user_id, network_id, node_id, status, expires_at, created_at
-		FROM device_codes WHERE user_code = ? AND expires_at > ?
-	`, strings.ToUpper(userCode), time.Now().Unix()).Scan(&dc.DeviceCode, &dc.UserCode,
-		&dc.UserID, &dc.NetworkID, &dc.NodeID, &dc.Status, &dc.ExpiresAt, &dc.CreatedAt)
-	if err == sql.ErrNoRows {
+	q := dbsqlc.New(s.rdb)
+	row, err := q.GetDeviceCodeByUserCode(context.Background(), dbsqlc.GetDeviceCodeByUserCodeParams{
+		UserCode:  strings.ToUpper(userCode),
+		ExpiresAt: time.Now().Unix(),
+	})
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get device code by user code: %w", err)
 	}
-	return &dc, nil
+	return mapDeviceCodeRow(row), nil
 }
 
 // Authorize marks a device code as authorized by a user for a specific network.
 func (s *DeviceCodeStore) Authorize(userCode, userID, networkID string) error {
-	res, err := s.wdb.Exec(`
-		UPDATE device_codes SET user_id = ?, network_id = ?, status = 'authorized'
-		WHERE user_code = ? AND status = 'pending' AND expires_at > ?
-	`, userID, networkID, strings.ToUpper(userCode), time.Now().Unix())
+	q := dbsqlc.New(s.wdb)
+	result, err := q.AuthorizeDeviceCode(context.Background(), dbsqlc.AuthorizeDeviceCodeParams{
+		UserID:    &userID,
+		NetworkID: &networkID,
+		UserCode:  strings.ToUpper(userCode),
+		ExpiresAt: time.Now().Unix(),
+	})
 	if err != nil {
 		return fmt.Errorf("authorize device code: %w", err)
 	}
-	affected, _ := res.RowsAffected()
+	affected, _ := result.RowsAffected()
 	if affected == 0 {
 		return fmt.Errorf("device code not found, already used, or expired")
 	}
@@ -131,55 +133,77 @@ func (s *DeviceCodeStore) Authorize(userCode, userID, networkID string) error {
 }
 
 // ClaimAuthorized atomically transitions an authorized device code to completed.
-// Returns the device code data if successful, nil if already claimed or not authorized.
 func (s *DeviceCodeStore) ClaimAuthorized(deviceCode string) (*DeviceCode, error) {
 	h := hashDeviceCode(deviceCode)
+	ctx := context.Background()
+
 	tx, err := s.wdb.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback()
 
-	var dc DeviceCode
-	err = tx.QueryRow(`
-		SELECT device_code, user_code, user_id, network_id, status, expires_at
-		FROM device_codes WHERE device_code = ? AND status = 'authorized' AND expires_at > ?
-	`, h, time.Now().Unix()).Scan(&dc.DeviceCode, &dc.UserCode, &dc.UserID,
-		&dc.NetworkID, &dc.Status, &dc.ExpiresAt)
-	if err == sql.ErrNoRows {
+	q := dbsqlc.New(tx)
+	row, err := q.GetAuthorizedDeviceCode(ctx, dbsqlc.GetAuthorizedDeviceCodeParams{
+		DeviceCode: h,
+		ExpiresAt:  time.Now().Unix(),
+	})
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query device code: %w", err)
 	}
 
-	res, err := tx.Exec(`
-		UPDATE device_codes SET status = 'completed' WHERE device_code = ? AND status = 'authorized'
-	`, h)
+	result, err := q.CompleteDeviceCode(ctx, h)
 	if err != nil {
 		return nil, fmt.Errorf("claim device code: %w", err)
 	}
-	affected, _ := res.RowsAffected()
+	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		return nil, nil // raced with another poll
+		return nil, nil
 	}
 
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("commit: %w", err)
 	}
-	return &dc, nil
+
+	return &DeviceCode{
+		DeviceCode: row.DeviceCode,
+		UserCode:   row.UserCode,
+		UserID:     row.UserID,
+		NetworkID:  row.NetworkID,
+		Status:     row.Status,
+		ExpiresAt:  row.ExpiresAt,
+	}, nil
 }
 
 // SetNodeID updates the node_id after enrollment completes.
 func (s *DeviceCodeStore) SetNodeID(deviceCode, nodeID string) error {
-	_, err := s.wdb.Exec(`UPDATE device_codes SET node_id = ? WHERE device_code = ?`, nodeID, hashDeviceCode(deviceCode))
-	return err
+	q := dbsqlc.New(s.wdb)
+	return q.SetDeviceCodeNodeID(context.Background(), dbsqlc.SetDeviceCodeNodeIDParams{
+		NodeID:     &nodeID,
+		DeviceCode: hashDeviceCode(deviceCode),
+	})
 }
 
 // DeleteExpired removes expired device codes.
 func (s *DeviceCodeStore) DeleteExpired() error {
-	_, err := s.wdb.Exec(`DELETE FROM device_codes WHERE expires_at < ?`, time.Now().Unix())
-	return err
+	q := dbsqlc.New(s.wdb)
+	return q.DeleteExpiredDeviceCodes(context.Background(), time.Now().Unix())
+}
+
+func mapDeviceCodeRow(row dbsqlc.DeviceCode) *DeviceCode {
+	return &DeviceCode{
+		DeviceCode: row.DeviceCode,
+		UserCode:   row.UserCode,
+		UserID:     row.UserID,
+		NetworkID:  row.NetworkID,
+		NodeID:     row.NodeID,
+		Status:     row.Status,
+		ExpiresAt:  row.ExpiresAt,
+		CreatedAt:  row.CreatedAt,
+	}
 }
 
 func generateDeviceCode() (string, error) {

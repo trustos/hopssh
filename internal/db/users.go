@@ -1,8 +1,12 @@
 package db
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+
+	"github.com/trustos/hopssh/internal/db/dbsqlc"
 )
 
 type User struct {
@@ -32,58 +36,73 @@ func NewUserStore(p *DBPair) *UserStore {
 }
 
 func (s *UserStore) Create(u *User) error {
-	_, err := s.wdb.Exec(`
-		INSERT INTO users (id, email, name, password_hash, github_id)
-		VALUES (?, ?, ?, ?, ?)
-	`, u.ID, u.Email, u.Name, u.PasswordHash, u.GitHubID)
-	return err
+	q := dbsqlc.New(s.wdb)
+	return q.CreateUser(context.Background(), dbsqlc.CreateUserParams{
+		ID:           u.ID,
+		Email:        u.Email,
+		Name:         u.Name,
+		PasswordHash: u.PasswordHash,
+		GithubID:     u.GitHubID,
+	})
 }
 
 func (s *UserStore) GetByID(id string) (*User, error) {
-	var u User
-	err := s.rdb.QueryRow(`
-		SELECT id, email, name, password_hash, github_id, created_at FROM users WHERE id = ?
-	`, id).Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.GitHubID, &u.CreatedAt)
-	if err == sql.ErrNoRows {
+	q := dbsqlc.New(s.rdb)
+	row, err := q.GetUserByID(context.Background(), id)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get user by id: %w", err)
 	}
-	return &u, nil
+	return &User{
+		ID:           row.ID,
+		Email:        row.Email,
+		Name:         row.Name,
+		PasswordHash: row.PasswordHash,
+		GitHubID:     row.GithubID,
+		CreatedAt:    row.CreatedAt,
+	}, nil
 }
 
 // GetProfileByID returns a UserProfile without the password hash.
 func (s *UserStore) GetProfileByID(id string) (*UserProfile, error) {
-	var u UserProfile
-	err := s.rdb.QueryRow(`
-		SELECT id, email, name FROM users WHERE id = ?
-	`, id).Scan(&u.ID, &u.Email, &u.Name)
-	if err == sql.ErrNoRows {
+	q := dbsqlc.New(s.rdb)
+	row, err := q.GetUserProfileByID(context.Background(), id)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get user profile by id: %w", err)
 	}
-	return &u, nil
+	return &UserProfile{
+		ID:    row.ID,
+		Email: row.Email,
+		Name:  row.Name,
+	}, nil
 }
 
 func (s *UserStore) GetByEmail(email string) (*User, error) {
-	var u User
-	err := s.rdb.QueryRow(`
-		SELECT id, email, name, password_hash, github_id, created_at FROM users WHERE email = ?
-	`, email).Scan(&u.ID, &u.Email, &u.Name, &u.PasswordHash, &u.GitHubID, &u.CreatedAt)
-	if err == sql.ErrNoRows {
+	q := dbsqlc.New(s.rdb)
+	row, err := q.GetUserByEmail(context.Background(), email)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get user by email: %w", err)
 	}
-	return &u, nil
+	return &User{
+		ID:           row.ID,
+		Email:        row.Email,
+		Name:         row.Name,
+		PasswordHash: row.PasswordHash,
+		GitHubID:     row.GithubID,
+		CreatedAt:    row.CreatedAt,
+	}, nil
 }
 
 func (s *UserStore) Count() (int, error) {
-	var count int
-	err := s.rdb.QueryRow(`SELECT COUNT(*) FROM users`).Scan(&count)
-	return count, err
+	q := dbsqlc.New(s.rdb)
+	count, err := q.CountUsers(context.Background())
+	return int(count), err
 }

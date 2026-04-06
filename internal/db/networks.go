@@ -1,17 +1,15 @@
 package db
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/trustos/hopssh/internal/crypto"
+	"github.com/trustos/hopssh/internal/db/dbsqlc"
 )
-
-// IsUniqueViolation checks if an error is a SQLite unique constraint violation.
-func IsUniqueViolation(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
-}
 
 type Network struct {
 	ID           string
@@ -46,91 +44,116 @@ func (s *NetworkStore) Create(n *Network) error {
 		return fmt.Errorf("encrypt server key: %w", err)
 	}
 
-	_, err = s.wdb.Exec(`
-		INSERT INTO networks (id, user_id, name, slug, nebula_ca_cert, nebula_ca_key, nebula_subnet, server_cert, server_key)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, n.ID, n.UserID, n.Name, n.Slug, n.NebulaCACert, encCAKey, n.NebulaSubnet, n.ServerCert, encServerKey)
-	return err
+	q := dbsqlc.New(s.wdb)
+	return q.InsertNetwork(context.Background(), dbsqlc.InsertNetworkParams{
+		ID:           n.ID,
+		UserID:       n.UserID,
+		Name:         n.Name,
+		Slug:         n.Slug,
+		NebulaCaCert: n.NebulaCACert,
+		NebulaCaKey:  encCAKey,
+		NebulaSubnet: &n.NebulaSubnet,
+		ServerCert:   n.ServerCert,
+		ServerKey:    encServerKey,
+	})
 }
 
 func (s *NetworkStore) Get(id string) (*Network, error) {
-	var n Network
-	var encCAKey, encServerKey []byte
-	err := s.rdb.QueryRow(`
-		SELECT id, user_id, name, slug, nebula_ca_cert, nebula_ca_key, nebula_subnet, server_cert, server_key, created_at
-		FROM networks WHERE id = ?
-	`, id).Scan(&n.ID, &n.UserID, &n.Name, &n.Slug, &n.NebulaCACert, &encCAKey, &n.NebulaSubnet, &n.ServerCert, &encServerKey, &n.CreatedAt)
-	if err == sql.ErrNoRows {
+	q := dbsqlc.New(s.rdb)
+	row, err := q.GetNetworkByID(context.Background(), id)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get network: %w", err)
 	}
-	if len(encCAKey) > 0 {
-		n.NebulaCAKey, err = s.enc.DecryptBytes(encCAKey)
+
+	n := &Network{
+		ID:           row.ID,
+		UserID:       row.UserID,
+		Name:         row.Name,
+		Slug:         row.Slug,
+		NebulaCACert: row.NebulaCaCert,
+		ServerCert:   row.ServerCert,
+		CreatedAt:    row.CreatedAt,
+	}
+	if row.NebulaSubnet != nil {
+		n.NebulaSubnet = *row.NebulaSubnet
+	}
+
+	if len(row.NebulaCaKey) > 0 {
+		n.NebulaCAKey, err = s.enc.DecryptBytes(row.NebulaCaKey)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt CA key: %w", err)
 		}
 	}
-	if len(encServerKey) > 0 {
-		n.ServerKey, err = s.enc.DecryptBytes(encServerKey)
+	if len(row.ServerKey) > 0 {
+		n.ServerKey, err = s.enc.DecryptBytes(row.ServerKey)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt server key: %w", err)
 		}
 	}
-	return &n, nil
+	return n, nil
 }
 
 func (s *NetworkStore) ListForUser(userID string) ([]*Network, error) {
-	rows, err := s.rdb.Query(`
-		SELECT id, user_id, name, slug, nebula_subnet, created_at
-		FROM networks WHERE user_id = ? ORDER BY created_at DESC
-	`, userID)
+	q := dbsqlc.New(s.rdb)
+	rows, err := q.ListNetworksForUser(context.Background(), userID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var networks []*Network
-	for rows.Next() {
-		var n Network
-		if err := rows.Scan(&n.ID, &n.UserID, &n.Name, &n.Slug, &n.NebulaSubnet, &n.CreatedAt); err != nil {
-			return nil, err
+	networks := make([]*Network, 0, len(rows))
+	for _, r := range rows {
+		n := &Network{
+			ID:        r.ID,
+			UserID:    r.UserID,
+			Name:      r.Name,
+			Slug:      r.Slug,
+			CreatedAt: r.CreatedAt,
 		}
-		networks = append(networks, &n)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+		if r.NebulaSubnet != nil {
+			n.NebulaSubnet = *r.NebulaSubnet
+		}
+		networks = append(networks, n)
 	}
 	return networks, nil
 }
 
 // SlugExists checks if a network slug is already taken.
 func (s *NetworkStore) SlugExists(slug string) bool {
-	var exists int
-	s.rdb.QueryRow(`SELECT 1 FROM networks WHERE slug = ? LIMIT 1`, slug).Scan(&exists)
-	return exists == 1
+	q := dbsqlc.New(s.rdb)
+	count, err := q.NetworkSlugExists(context.Background(), slug)
+	return err == nil && count > 0
 }
 
 func (s *NetworkStore) Delete(id string) error {
-	_, err := s.wdb.Exec(`DELETE FROM networks WHERE id = ?`, id)
-	return err
+	q := dbsqlc.New(s.wdb)
+	return q.DeleteNetwork(context.Background(), id)
+}
+
+// IsUniqueViolation checks if an error is a SQLite unique constraint violation.
+func IsUniqueViolation(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
 }
 
 // AllocateSubnet returns the next available /24 subnet in the 10.42.0.0/8 range.
 // Uses MAX to avoid collisions when networks are deleted.
 func (s *NetworkStore) AllocateSubnet() (string, error) {
-	var maxOctet *int
-	err := s.wdb.QueryRow(`
-		SELECT MAX(CAST(SUBSTR(nebula_subnet, 7, INSTR(SUBSTR(nebula_subnet, 7), '.') - 1) AS INTEGER))
-		FROM networks WHERE nebula_subnet IS NOT NULL
-	`).Scan(&maxOctet)
+	q := dbsqlc.New(s.wdb)
+	result, err := q.MaxSubnetOctet(context.Background())
 	if err != nil {
 		return "", fmt.Errorf("query max subnet: %w", err)
 	}
 	octet := 1
-	if maxOctet != nil {
-		octet = *maxOctet + 1
+	if result != nil {
+		// sqlc returns interface{} for MAX(CAST(...)). SQLite returns int64.
+		switch v := result.(type) {
+		case int64:
+			octet = int(v) + 1
+		case float64:
+			octet = int(v) + 1
+		}
 	}
 	if octet > 254 {
 		return "", fmt.Errorf("subnet space exhausted")

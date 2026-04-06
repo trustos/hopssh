@@ -1,15 +1,18 @@
 package db
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/trustos/hopssh/internal/crypto"
+	"github.com/trustos/hopssh/internal/db/dbsqlc"
 )
 
 // hashToken returns the hex-encoded SHA-256 hash of a token.
@@ -61,55 +64,86 @@ func (s *NodeStore) Create(n *Node) error {
 		return fmt.Errorf("encrypt agent token: %w", err)
 	}
 
-	// Hash enrollment token before storage (one-time use, only need to compare).
 	var enrollHash *string
 	if n.EnrollmentToken != nil {
 		h := hashToken(*n.EnrollmentToken)
 		enrollHash = &h
 	}
 
-	_, err = s.wdb.Exec(`
-		INSERT INTO nodes (id, network_id, hostname, os, arch, nebula_cert, nebula_key, nebula_ip, agent_token, enrollment_token, enrollment_expires_at, status)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, n.ID, n.NetworkID, n.Hostname, n.OS, n.Arch, n.NebulaCert, encKey, n.NebulaIP, encToken, enrollHash, n.EnrollmentExpiresAt, n.Status)
-	return err
+	var nebulaIP *string
+	if n.NebulaIP != "" {
+		nebulaIP = &n.NebulaIP
+	}
+
+	q := dbsqlc.New(s.wdb)
+	return q.InsertNode(context.Background(), dbsqlc.InsertNodeParams{
+		ID:                  n.ID,
+		NetworkID:           n.NetworkID,
+		Hostname:            n.Hostname,
+		Os:                  n.OS,
+		Arch:                n.Arch,
+		NebulaCert:          n.NebulaCert,
+		NebulaKey:           encKey,
+		NebulaIp:            nebulaIP,
+		AgentToken:          string(encToken),
+		EnrollmentToken:     enrollHash,
+		EnrollmentExpiresAt: n.EnrollmentExpiresAt,
+		Status:              n.Status,
+	})
 }
 
 func (s *NodeStore) Get(id string) (*Node, error) {
-	var n Node
-	var encKey, encToken []byte
-	err := s.rdb.QueryRow(`
-		SELECT id, network_id, hostname, os, arch, nebula_cert, nebula_key, nebula_ip,
-		       agent_token, enrollment_token, agent_real_ip, status, last_seen_at, created_at
-		FROM nodes WHERE id = ?
-	`, id).Scan(&n.ID, &n.NetworkID, &n.Hostname, &n.OS, &n.Arch, &n.NebulaCert, &encKey,
-		&n.NebulaIP, &encToken, &n.EnrollmentToken, &n.AgentRealIP, &n.Status, &n.LastSeenAt, &n.CreatedAt)
-	if err == sql.ErrNoRows {
+	q := dbsqlc.New(s.rdb)
+	row, err := q.GetNodeByID(context.Background(), id)
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get node: %w", err)
 	}
-	if len(encKey) > 0 {
-		n.NebulaKey, err = s.enc.DecryptBytes(encKey)
+	return s.mapNodeRow(row)
+}
+
+func (s *NodeStore) mapNodeRow(row dbsqlc.GetNodeByIDRow) (*Node, error) {
+	n := &Node{
+		ID:              row.ID,
+		NetworkID:       row.NetworkID,
+		Hostname:        row.Hostname,
+		OS:              row.Os,
+		Arch:            row.Arch,
+		NebulaCert:      row.NebulaCert,
+		EnrollmentToken: row.EnrollmentToken,
+		AgentRealIP:     row.AgentRealIp,
+		Status:          row.Status,
+		LastSeenAt:      row.LastSeenAt,
+		CreatedAt:       row.CreatedAt,
+	}
+	if row.NebulaIp != nil {
+		n.NebulaIP = *row.NebulaIp
+	}
+
+	if len(row.NebulaKey) > 0 {
+		var err error
+		n.NebulaKey, err = s.enc.DecryptBytes(row.NebulaKey)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt node key: %w", err)
 		}
 	}
-	if len(encToken) > 0 {
-		n.AgentToken, err = s.enc.Decrypt(encToken)
+	if row.AgentToken != "" {
+		decrypted, err := s.enc.Decrypt([]byte(row.AgentToken))
 		if err != nil {
 			return nil, fmt.Errorf("decrypt agent token: %w", err)
 		}
+		n.AgentToken = decrypted
 	}
-	return &n, nil
+	return n, nil
 }
 
 // ClaimEnrollmentToken atomically looks up a node by enrollment token hash,
-// NULLs the token (consuming it), and returns the node. This prevents two
-// agents from enrolling with the same token concurrently.
+// NULLs the token (consuming it), and returns the node.
 func (s *NodeStore) ClaimEnrollmentToken(token string) (*Node, error) {
 	h := hashToken(token)
+	ctx := context.Background()
 
 	tx, err := s.wdb.Begin()
 	if err != nil {
@@ -117,28 +151,27 @@ func (s *NodeStore) ClaimEnrollmentToken(token string) (*Node, error) {
 	}
 	defer tx.Rollback()
 
-	var n Node
-	var encToken []byte
-	err = tx.QueryRow(`
-		SELECT id, network_id, hostname, os, arch, nebula_ip, agent_token, status
-		FROM nodes WHERE enrollment_token = ?
-		  AND (enrollment_expires_at IS NULL OR enrollment_expires_at > ?)
-	`, h, time.Now().Unix()).Scan(&n.ID, &n.NetworkID, &n.Hostname, &n.OS, &n.Arch, &n.NebulaIP, &encToken, &n.Status)
-	if err == sql.ErrNoRows {
+	q := dbsqlc.New(tx)
+	row, err := q.GetNodeByEnrollmentToken(ctx, dbsqlc.GetNodeByEnrollmentTokenParams{
+		EnrollmentToken: &h,
+		EnrollmentExpiresAt: func() *int64 { t := time.Now().Unix(); return &t }(),
+	})
+	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get node by enrollment token: %w", err)
 	}
 
-	// Consume the token atomically within the same transaction.
-	res, err := tx.Exec(`UPDATE nodes SET enrollment_token = NULL, enrollment_expires_at = NULL WHERE id = ? AND enrollment_token = ?`, n.ID, h)
+	result, err := q.ConsumeEnrollmentToken(ctx, dbsqlc.ConsumeEnrollmentTokenParams{
+		ID:              row.ID,
+		EnrollmentToken: &h,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("consume enrollment token: %w", err)
 	}
-	affected, _ := res.RowsAffected()
+	affected, _ := result.RowsAffected()
 	if affected == 0 {
-		// Another request consumed it between SELECT and UPDATE (race).
 		return nil, nil
 	}
 
@@ -146,83 +179,86 @@ func (s *NodeStore) ClaimEnrollmentToken(token string) (*Node, error) {
 		return nil, fmt.Errorf("commit: %w", err)
 	}
 
-	if len(encToken) > 0 {
-		n.AgentToken, err = s.enc.Decrypt(encToken)
+	n := &Node{
+		ID:        row.ID,
+		NetworkID: row.NetworkID,
+		Hostname:  row.Hostname,
+		OS:        row.Os,
+		Arch:      row.Arch,
+		Status:    row.Status,
+	}
+	if row.NebulaIp != nil {
+		n.NebulaIP = *row.NebulaIp
+	}
+	if row.AgentToken != "" {
+		n.AgentToken, err = s.enc.Decrypt([]byte(row.AgentToken))
 		if err != nil {
 			return nil, fmt.Errorf("decrypt agent token: %w", err)
 		}
 	}
-	return &n, nil
+	return n, nil
 }
 
 func (s *NodeStore) ListForNetwork(networkID string) ([]*Node, error) {
-	rows, err := s.rdb.Query(`
-		SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, status, last_seen_at, created_at
-		FROM nodes WHERE network_id = ? ORDER BY created_at ASC
-	`, networkID)
+	q := dbsqlc.New(s.rdb)
+	rows, err := q.ListNodesForNetwork(context.Background(), networkID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 
-	var nodes []*Node
-	for rows.Next() {
-		var n Node
-		if err := rows.Scan(&n.ID, &n.NetworkID, &n.Hostname, &n.OS, &n.Arch, &n.NebulaIP,
-			&n.AgentRealIP, &n.Status, &n.LastSeenAt, &n.CreatedAt); err != nil {
-			return nil, err
+	nodes := make([]*Node, 0, len(rows))
+	for _, r := range rows {
+		n := &Node{
+			ID:        r.ID,
+			NetworkID: r.NetworkID,
+			Hostname:  r.Hostname,
+			OS:        r.Os,
+			Arch:      r.Arch,
+			AgentRealIP: r.AgentRealIp,
+			Status:    r.Status,
+			LastSeenAt: r.LastSeenAt,
+			CreatedAt: r.CreatedAt,
 		}
-		nodes = append(nodes, &n)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+		if r.NebulaIp != nil {
+			n.NebulaIP = *r.NebulaIp
+		}
+		nodes = append(nodes, n)
 	}
 	return nodes, nil
 }
 
 func (s *NodeStore) CountForNetwork(networkID string) (int, error) {
-	var count int
-	err := s.rdb.QueryRow(`SELECT COUNT(*) FROM nodes WHERE network_id = ?`, networkID).Scan(&count)
-	return count, err
+	q := dbsqlc.New(s.rdb)
+	count, err := q.CountNodesForNetwork(context.Background(), networkID)
+	return int(count), err
 }
 
 // NextNodeIndex returns the next available host index for a network's subnet.
-// Uses MAX(last_octet) to avoid IP collisions when nodes are deleted.
-// Returns 0 if no nodes exist (which maps to .2 via NodeAddress).
 func (s *NodeStore) NextNodeIndex(networkID string) (int, error) {
-	rows, err := s.rdb.Query(`SELECT nebula_ip FROM nodes WHERE network_id = ? AND nebula_ip IS NOT NULL`, networkID)
+	q := dbsqlc.New(s.rdb)
+	rows, err := q.ListNodeIPsForNetwork(context.Background(), networkID)
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
 
-	maxOctet := 1 // server is .1, nodes start at .2
-	found := false
-	for rows.Next() {
-		var ip string
-		if err := rows.Scan(&ip); err != nil {
-			continue
-		}
-		found = true
-		octet := parseLastOctet(ip)
-		if octet > maxOctet {
-			maxOctet = octet
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
-	if !found {
+	if len(rows) == 0 {
 		return 0, nil
 	}
-	// maxOctet is the last octet (e.g. 3 for .3), NodeAddress(subnet, idx) → .idx+2
-	// So next index = maxOctet - 2 + 1 = maxOctet - 1
+
+	maxOctet := 1
+	for _, ip := range rows {
+		if ip != nil {
+			octet := parseLastOctet(*ip)
+			if octet > maxOctet {
+				maxOctet = octet
+			}
+		}
+	}
 	return maxOctet - 1, nil
 }
 
 // parseLastOctet extracts the last octet from a CIDR like "10.42.1.3/24" → 3.
 func parseLastOctet(cidr string) int {
-	// Strip mask if present.
 	ip := cidr
 	if idx := strings.Index(cidr, "/"); idx >= 0 {
 		ip = cidr[:idx]
@@ -236,18 +272,20 @@ func parseLastOctet(cidr string) int {
 }
 
 // CompleteEnrollment sets the node's cert/key after enrollment.
-// The enrollment token is already consumed by ClaimEnrollmentToken.
 func (s *NodeStore) CompleteEnrollment(id string, cert, key []byte, hostname, os, arch string) error {
 	encKey, err := s.enc.EncryptBytes(key)
 	if err != nil {
 		return fmt.Errorf("encrypt node key: %w", err)
 	}
-	_, err = s.wdb.Exec(`
-		UPDATE nodes SET nebula_cert = ?, nebula_key = ?, hostname = ?, os = ?, arch = ?,
-		status = 'pending'
-		WHERE id = ?
-	`, cert, encKey, hostname, os, arch, id)
-	return err
+	q := dbsqlc.New(s.wdb)
+	return q.CompleteEnrollment(context.Background(), dbsqlc.CompleteEnrollmentParams{
+		NebulaCert: cert,
+		NebulaKey:  encKey,
+		Hostname:   hostname,
+		Os:         os,
+		Arch:       arch,
+		ID:         id,
+	})
 }
 
 // UpdateCert replaces the node's Nebula certificate and key (for cert rotation).
@@ -256,31 +294,41 @@ func (s *NodeStore) UpdateCert(id string, cert, key []byte) error {
 	if err != nil {
 		return fmt.Errorf("encrypt node key: %w", err)
 	}
-	_, err = s.wdb.Exec(`UPDATE nodes SET nebula_cert = ?, nebula_key = ? WHERE id = ?`, cert, encKey, id)
-	return err
+	q := dbsqlc.New(s.wdb)
+	return q.UpdateNodeCert(context.Background(), dbsqlc.UpdateNodeCertParams{
+		NebulaCert: cert,
+		NebulaKey:  encKey,
+		ID:         id,
+	})
 }
 
 func (s *NodeStore) UpdateStatus(id, status string) error {
-	_, err := s.wdb.Exec(`UPDATE nodes SET status = ? WHERE id = ?`, status, id)
-	return err
+	q := dbsqlc.New(s.wdb)
+	return q.UpdateNodeStatus(context.Background(), dbsqlc.UpdateNodeStatusParams{
+		Status: status,
+		ID:     id,
+	})
 }
 
 func (s *NodeStore) UpdateLastSeen(id string) error {
-	_, err := s.wdb.Exec(`UPDATE nodes SET last_seen_at = unixepoch(), status = 'online' WHERE id = ?`, id)
-	return err
+	q := dbsqlc.New(s.wdb)
+	return q.UpdateNodeLastSeen(context.Background(), id)
 }
 
 func (s *NodeStore) UpdateAgentRealIP(id, ip string) error {
-	_, err := s.wdb.Exec(`UPDATE nodes SET agent_real_ip = ? WHERE id = ?`, ip, id)
-	return err
+	q := dbsqlc.New(s.wdb)
+	return q.UpdateNodeAgentRealIP(context.Background(), dbsqlc.UpdateNodeAgentRealIPParams{
+		AgentRealIp: &ip,
+		ID:          id,
+	})
 }
 
 func (s *NodeStore) Delete(id string) error {
-	_, err := s.wdb.Exec(`DELETE FROM nodes WHERE id = ?`, id)
-	return err
+	q := dbsqlc.New(s.wdb)
+	return q.DeleteNode(context.Background(), id)
 }
 
 func (s *NodeStore) DeleteForNetwork(networkID string) error {
-	_, err := s.wdb.Exec(`DELETE FROM nodes WHERE network_id = ?`, networkID)
-	return err
+	q := dbsqlc.New(s.wdb)
+	return q.DeleteNodesForNetwork(context.Background(), networkID)
 }
