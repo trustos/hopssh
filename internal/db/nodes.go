@@ -27,14 +27,17 @@ type Node struct {
 	Hostname            string
 	OS                  string
 	Arch                string
-	NebulaCert          []byte // PEM, plaintext
-	NebulaKey           []byte // PEM, plaintext (encrypted on disk)
-	NebulaIP            string // e.g. "10.42.1.2/24"
+	NebulaCert          []byte  // PEM, plaintext
+	NebulaKey           []byte  // PEM, plaintext (encrypted on disk)
+	NebulaIP            string  // e.g. "10.42.1.2/24"
 	AgentToken          string
 	EnrollmentToken     *string // one-time, nulled after use (SHA-256 hashed at rest)
 	EnrollmentExpiresAt *int64  // TTL for enrollment token
 	AgentRealIP         *string
-	Status              string // pending, online, offline
+	NodeType            string  // agent, user, lighthouse
+	ExposedPorts        *string // JSON: [{"port":8096,"proto":"tcp","name":"Jellyfin"}]
+	DNSName             *string // custom DNS hostname
+	Status              string  // pending, enrolled, online, offline
 	LastSeenAt          *int64
 	CreatedAt           int64
 }
@@ -75,6 +78,11 @@ func (s *NodeStore) Create(n *Node) error {
 		nebulaIP = &n.NebulaIP
 	}
 
+	nodeType := n.NodeType
+	if nodeType == "" {
+		nodeType = "agent"
+	}
+
 	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.InsertNode(context.Background(), dbsqlc.InsertNodeParams{
 		ID:                  n.ID,
@@ -88,6 +96,8 @@ func (s *NodeStore) Create(n *Node) error {
 		AgentToken:          string(encToken),
 		EnrollmentToken:     enrollHash,
 		EnrollmentExpiresAt: n.EnrollmentExpiresAt,
+		NodeType:            nodeType,
+		DnsName:             n.DNSName,
 		Status:              n.Status,
 	})
 }
@@ -114,6 +124,9 @@ func (s *NodeStore) mapNodeRow(row dbsqlc.GetNodeByIDRow) (*Node, error) {
 		NebulaCert:      row.NebulaCert,
 		EnrollmentToken: row.EnrollmentToken,
 		AgentRealIP:     row.AgentRealIp,
+		NodeType:        row.NodeType,
+		ExposedPorts:    row.ExposedPorts,
+		DNSName:         row.DnsName,
 		Status:          row.Status,
 		LastSeenAt:      row.LastSeenAt,
 		CreatedAt:       row.CreatedAt,
@@ -209,15 +222,18 @@ func (s *NodeStore) ListForNetwork(networkID string) ([]*Node, error) {
 	nodes := make([]*Node, 0, len(rows))
 	for _, r := range rows {
 		n := &Node{
-			ID:        r.ID,
-			NetworkID: r.NetworkID,
-			Hostname:  r.Hostname,
-			OS:        r.Os,
-			Arch:      r.Arch,
-			AgentRealIP: r.AgentRealIp,
-			Status:    r.Status,
-			LastSeenAt: r.LastSeenAt,
-			CreatedAt: r.CreatedAt,
+			ID:           r.ID,
+			NetworkID:    r.NetworkID,
+			Hostname:     r.Hostname,
+			OS:           r.Os,
+			Arch:         r.Arch,
+			AgentRealIP:  r.AgentRealIp,
+			NodeType:     r.NodeType,
+			ExposedPorts: r.ExposedPorts,
+			DNSName:      r.DnsName,
+			Status:       r.Status,
+			LastSeenAt:   r.LastSeenAt,
+			CreatedAt:    r.CreatedAt,
 		}
 		if r.NebulaIp != nil {
 			n.NebulaIP = *r.NebulaIp

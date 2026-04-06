@@ -12,16 +12,18 @@ import (
 )
 
 type Network struct {
-	ID           string
-	UserID       string
-	Name         string
-	Slug         string
-	NebulaCACert []byte // PEM, plaintext
-	NebulaCAKey  []byte // PEM, plaintext (encrypted on disk)
-	NebulaSubnet string // e.g. "10.42.1.0/24"
-	ServerCert   []byte // PEM, plaintext
-	ServerKey    []byte // PEM, plaintext (encrypted on disk)
-	CreatedAt    int64
+	ID             string
+	UserID         string
+	Name           string
+	Slug           string
+	NebulaCACert   []byte // PEM, plaintext
+	NebulaCAKey    []byte // PEM, plaintext (encrypted on disk)
+	NebulaSubnet   string // e.g. "10.42.1.0/24"
+	ServerCert     []byte // PEM, plaintext
+	ServerKey      []byte // PEM, plaintext (encrypted on disk)
+	LighthousePort *int64 // UDP port for this network's Nebula lighthouse
+	DNSDomain      string // user-defined DNS domain (e.g., "zero", "prod")
+	CreatedAt      int64
 }
 
 type NetworkStore struct {
@@ -46,15 +48,17 @@ func (s *NetworkStore) Create(n *Network) error {
 
 	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.InsertNetwork(context.Background(), dbsqlc.InsertNetworkParams{
-		ID:           n.ID,
-		UserID:       n.UserID,
-		Name:         n.Name,
-		Slug:         n.Slug,
-		NebulaCaCert: n.NebulaCACert,
-		NebulaCaKey:  encCAKey,
-		NebulaSubnet: &n.NebulaSubnet,
-		ServerCert:   n.ServerCert,
-		ServerKey:    encServerKey,
+		ID:             n.ID,
+		UserID:         n.UserID,
+		Name:           n.Name,
+		Slug:           n.Slug,
+		NebulaCaCert:   n.NebulaCACert,
+		NebulaCaKey:    encCAKey,
+		NebulaSubnet:   &n.NebulaSubnet,
+		ServerCert:     n.ServerCert,
+		ServerKey:      encServerKey,
+		LighthousePort: n.LighthousePort,
+		DnsDomain:      n.DNSDomain,
 	})
 }
 
@@ -69,13 +73,15 @@ func (s *NetworkStore) Get(id string) (*Network, error) {
 	}
 
 	n := &Network{
-		ID:           row.ID,
-		UserID:       row.UserID,
-		Name:         row.Name,
-		Slug:         row.Slug,
-		NebulaCACert: row.NebulaCaCert,
-		ServerCert:   row.ServerCert,
-		CreatedAt:    row.CreatedAt,
+		ID:             row.ID,
+		UserID:         row.UserID,
+		Name:           row.Name,
+		Slug:           row.Slug,
+		NebulaCACert:   row.NebulaCaCert,
+		ServerCert:     row.ServerCert,
+		LighthousePort: row.LighthousePort,
+		DNSDomain:      row.DnsDomain,
+		CreatedAt:      row.CreatedAt,
 	}
 	if row.NebulaSubnet != nil {
 		n.NebulaSubnet = *row.NebulaSubnet
@@ -106,11 +112,13 @@ func (s *NetworkStore) ListForUser(userID string) ([]*Network, error) {
 	networks := make([]*Network, 0, len(rows))
 	for _, r := range rows {
 		n := &Network{
-			ID:        r.ID,
-			UserID:    r.UserID,
-			Name:      r.Name,
-			Slug:      r.Slug,
-			CreatedAt: r.CreatedAt,
+			ID:             r.ID,
+			UserID:         r.UserID,
+			Name:           r.Name,
+			Slug:           r.Slug,
+			LighthousePort: r.LighthousePort,
+			DNSDomain:      r.DnsDomain,
+			CreatedAt:      r.CreatedAt,
 		}
 		if r.NebulaSubnet != nil {
 			n.NebulaSubnet = *r.NebulaSubnet
@@ -118,6 +126,65 @@ func (s *NetworkStore) ListForUser(userID string) ([]*Network, error) {
 		networks = append(networks, n)
 	}
 	return networks, nil
+}
+
+// ListAll returns all networks (for NetworkManager startup).
+func (s *NetworkStore) ListAll() ([]*Network, error) {
+	q := dbsqlc.New(WrapDB(s.rdb))
+	rows, err := q.ListAllNetworks(context.Background())
+	if err != nil {
+		return nil, err
+	}
+	networks := make([]*Network, 0, len(rows))
+	for _, r := range rows {
+		n := &Network{
+			ID:             r.ID,
+			UserID:         r.UserID,
+			Name:           r.Name,
+			Slug:           r.Slug,
+			NebulaCACert:   r.NebulaCaCert,
+			ServerCert:     r.ServerCert,
+			LighthousePort: r.LighthousePort,
+			DNSDomain:      r.DnsDomain,
+			CreatedAt:      r.CreatedAt,
+		}
+		if r.NebulaSubnet != nil {
+			n.NebulaSubnet = *r.NebulaSubnet
+		}
+		if len(r.NebulaCaKey) > 0 {
+			n.NebulaCAKey, err = s.enc.DecryptBytes(r.NebulaCaKey)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt CA key for network %s: %w", r.ID, err)
+			}
+		}
+		if len(r.ServerKey) > 0 {
+			n.ServerKey, err = s.enc.DecryptBytes(r.ServerKey)
+			if err != nil {
+				return nil, fmt.Errorf("decrypt server key for network %s: %w", r.ID, err)
+			}
+		}
+		networks = append(networks, n)
+	}
+	return networks, nil
+}
+
+// MaxLighthousePort returns the highest allocated lighthouse port, or 0 if none.
+func (s *NetworkStore) MaxLighthousePort() (int, error) {
+	q := dbsqlc.New(WrapDB(s.rdb))
+	result, err := q.MaxLighthousePort(context.Background())
+	if err != nil {
+		return 0, err
+	}
+	if result == nil {
+		return 0, nil
+	}
+	switch v := result.(type) {
+	case int64:
+		return int(v), nil
+	case float64:
+		return int(v), nil
+	}
+	return 0, nil
 }
 
 // SlugExists checks if a network slug is already taken.

@@ -1,15 +1,22 @@
 -- name: InsertNode :exec
-INSERT INTO nodes (id, network_id, hostname, os, arch, nebula_cert, nebula_key, nebula_ip, agent_token, enrollment_token, enrollment_expires_at, status)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+INSERT INTO nodes (id, network_id, hostname, os, arch, nebula_cert, nebula_key, nebula_ip, agent_token, enrollment_token, enrollment_expires_at, node_type, dns_name, status)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: GetNodeByID :one
 SELECT id, network_id, hostname, os, arch, nebula_cert, nebula_key, nebula_ip,
-       agent_token, enrollment_token, agent_real_ip, status, last_seen_at, created_at
+       agent_token, enrollment_token, agent_real_ip, node_type, exposed_ports,
+       dns_name, status, last_seen_at, created_at
 FROM nodes WHERE id = ?;
 
 -- name: ListNodesForNetwork :many
-SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, status, last_seen_at, created_at
+SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, node_type,
+       exposed_ports, dns_name, status, last_seen_at, created_at
 FROM nodes WHERE network_id = ? ORDER BY created_at ASC;
+
+-- name: ListNodesForNetworkByType :many
+SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, node_type,
+       exposed_ports, dns_name, status, last_seen_at, created_at
+FROM nodes WHERE network_id = ? AND node_type = ? ORDER BY created_at ASC;
 
 -- name: CountNodesForNetwork :one
 SELECT COUNT(*) FROM nodes WHERE network_id = ?;
@@ -18,7 +25,7 @@ SELECT COUNT(*) FROM nodes WHERE network_id = ?;
 SELECT nebula_ip FROM nodes WHERE network_id = ? AND nebula_ip IS NOT NULL;
 
 -- name: GetNodeByEnrollmentToken :one
-SELECT id, network_id, hostname, os, arch, nebula_ip, agent_token, status
+SELECT id, network_id, hostname, os, arch, nebula_ip, agent_token, node_type, status
 FROM nodes WHERE enrollment_token = ?
   AND (enrollment_expires_at IS NULL OR enrollment_expires_at > ?);
 
@@ -43,8 +50,19 @@ UPDATE nodes SET last_seen_at = unixepoch(), status = 'online' WHERE id = ?;
 -- name: UpdateNodeAgentRealIP :exec
 UPDATE nodes SET agent_real_ip = ? WHERE id = ?;
 
+-- name: UpdateNodeExposedPorts :exec
+UPDATE nodes SET exposed_ports = ? WHERE id = ?;
+
+-- name: UpdateNodeDNSName :exec
+UPDATE nodes SET dns_name = ? WHERE id = ?;
+
 -- name: DeleteNode :exec
 DELETE FROM nodes WHERE id = ?;
 
 -- name: DeleteNodesForNetwork :exec
 DELETE FROM nodes WHERE network_id = ?;
+
+-- name: ListNodeDNSEntries :many
+SELECT hostname, dns_name, nebula_ip FROM nodes
+WHERE network_id = ? AND nebula_ip IS NOT NULL AND status != 'pending'
+ORDER BY hostname;

@@ -19,7 +19,7 @@ func (q *Queries) DeleteNetwork(ctx context.Context, id string) error {
 }
 
 const getNetworkByID = `-- name: GetNetworkByID :one
-SELECT id, user_id, name, slug, nebula_ca_cert, nebula_ca_key, nebula_subnet, server_cert, server_key, created_at
+SELECT id, user_id, name, slug, nebula_ca_cert, nebula_ca_key, nebula_subnet, server_cert, server_key, lighthouse_port, dns_domain, created_at
 FROM networks WHERE id = ?
 `
 
@@ -36,26 +36,30 @@ func (q *Queries) GetNetworkByID(ctx context.Context, id string) (Network, error
 		&i.NebulaSubnet,
 		&i.ServerCert,
 		&i.ServerKey,
+		&i.LighthousePort,
+		&i.DnsDomain,
 		&i.CreatedAt,
 	)
 	return i, err
 }
 
 const insertNetwork = `-- name: InsertNetwork :exec
-INSERT INTO networks (id, user_id, name, slug, nebula_ca_cert, nebula_ca_key, nebula_subnet, server_cert, server_key)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO networks (id, user_id, name, slug, nebula_ca_cert, nebula_ca_key, nebula_subnet, server_cert, server_key, lighthouse_port, dns_domain)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type InsertNetworkParams struct {
-	ID           string
-	UserID       string
-	Name         string
-	Slug         string
-	NebulaCaCert []byte
-	NebulaCaKey  []byte
-	NebulaSubnet *string
-	ServerCert   []byte
-	ServerKey    []byte
+	ID             string
+	UserID         string
+	Name           string
+	Slug           string
+	NebulaCaCert   []byte
+	NebulaCaKey    []byte
+	NebulaSubnet   *string
+	ServerCert     []byte
+	ServerKey      []byte
+	LighthousePort *int64
+	DnsDomain      string
 }
 
 func (q *Queries) InsertNetwork(ctx context.Context, arg InsertNetworkParams) error {
@@ -69,22 +73,67 @@ func (q *Queries) InsertNetwork(ctx context.Context, arg InsertNetworkParams) er
 		arg.NebulaSubnet,
 		arg.ServerCert,
 		arg.ServerKey,
+		arg.LighthousePort,
+		arg.DnsDomain,
 	)
 	return err
 }
 
+const listAllNetworks = `-- name: ListAllNetworks :many
+SELECT id, user_id, name, slug, nebula_ca_cert, nebula_ca_key, nebula_subnet, server_cert, server_key, lighthouse_port, dns_domain, created_at
+FROM networks
+`
+
+func (q *Queries) ListAllNetworks(ctx context.Context) ([]Network, error) {
+	rows, err := q.db.QueryContext(ctx, listAllNetworks)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Network{}
+	for rows.Next() {
+		var i Network
+		if err := rows.Scan(
+			&i.ID,
+			&i.UserID,
+			&i.Name,
+			&i.Slug,
+			&i.NebulaCaCert,
+			&i.NebulaCaKey,
+			&i.NebulaSubnet,
+			&i.ServerCert,
+			&i.ServerKey,
+			&i.LighthousePort,
+			&i.DnsDomain,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listNetworksForUser = `-- name: ListNetworksForUser :many
-SELECT id, user_id, name, slug, nebula_subnet, created_at
+SELECT id, user_id, name, slug, nebula_subnet, lighthouse_port, dns_domain, created_at
 FROM networks WHERE user_id = ? ORDER BY created_at DESC
 `
 
 type ListNetworksForUserRow struct {
-	ID           string
-	UserID       string
-	Name         string
-	Slug         string
-	NebulaSubnet *string
-	CreatedAt    int64
+	ID             string
+	UserID         string
+	Name           string
+	Slug           string
+	NebulaSubnet   *string
+	LighthousePort *int64
+	DnsDomain      string
+	CreatedAt      int64
 }
 
 func (q *Queries) ListNetworksForUser(ctx context.Context, userID string) ([]ListNetworksForUserRow, error) {
@@ -102,6 +151,8 @@ func (q *Queries) ListNetworksForUser(ctx context.Context, userID string) ([]Lis
 			&i.Name,
 			&i.Slug,
 			&i.NebulaSubnet,
+			&i.LighthousePort,
+			&i.DnsDomain,
 			&i.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -115,6 +166,17 @@ func (q *Queries) ListNetworksForUser(ctx context.Context, userID string) ([]Lis
 		return nil, err
 	}
 	return items, nil
+}
+
+const maxLighthousePort = `-- name: MaxLighthousePort :one
+SELECT MAX(lighthouse_port) FROM networks WHERE lighthouse_port IS NOT NULL
+`
+
+func (q *Queries) MaxLighthousePort(ctx context.Context) (interface{}, error) {
+	row := q.db.QueryRowContext(ctx, maxLighthousePort)
+	var max interface{}
+	err := row.Scan(&max)
+	return max, err
 }
 
 const maxSubnetOctet = `-- name: MaxSubnetOctet :one

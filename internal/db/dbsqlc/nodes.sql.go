@@ -81,7 +81,7 @@ func (q *Queries) DeleteNodesForNetwork(ctx context.Context, networkID string) e
 }
 
 const getNodeByEnrollmentToken = `-- name: GetNodeByEnrollmentToken :one
-SELECT id, network_id, hostname, os, arch, nebula_ip, agent_token, status
+SELECT id, network_id, hostname, os, arch, nebula_ip, agent_token, node_type, status
 FROM nodes WHERE enrollment_token = ?
   AND (enrollment_expires_at IS NULL OR enrollment_expires_at > ?)
 `
@@ -99,6 +99,7 @@ type GetNodeByEnrollmentTokenRow struct {
 	Arch       string
 	NebulaIp   *string
 	AgentToken string
+	NodeType   string
 	Status     string
 }
 
@@ -113,6 +114,7 @@ func (q *Queries) GetNodeByEnrollmentToken(ctx context.Context, arg GetNodeByEnr
 		&i.Arch,
 		&i.NebulaIp,
 		&i.AgentToken,
+		&i.NodeType,
 		&i.Status,
 	)
 	return i, err
@@ -120,7 +122,8 @@ func (q *Queries) GetNodeByEnrollmentToken(ctx context.Context, arg GetNodeByEnr
 
 const getNodeByID = `-- name: GetNodeByID :one
 SELECT id, network_id, hostname, os, arch, nebula_cert, nebula_key, nebula_ip,
-       agent_token, enrollment_token, agent_real_ip, status, last_seen_at, created_at
+       agent_token, enrollment_token, agent_real_ip, node_type, exposed_ports,
+       dns_name, status, last_seen_at, created_at
 FROM nodes WHERE id = ?
 `
 
@@ -136,6 +139,9 @@ type GetNodeByIDRow struct {
 	AgentToken      string
 	EnrollmentToken *string
 	AgentRealIp     *string
+	NodeType        string
+	ExposedPorts    *string
+	DnsName         *string
 	Status          string
 	LastSeenAt      *int64
 	CreatedAt       int64
@@ -156,6 +162,9 @@ func (q *Queries) GetNodeByID(ctx context.Context, id string) (GetNodeByIDRow, e
 		&i.AgentToken,
 		&i.EnrollmentToken,
 		&i.AgentRealIp,
+		&i.NodeType,
+		&i.ExposedPorts,
+		&i.DnsName,
 		&i.Status,
 		&i.LastSeenAt,
 		&i.CreatedAt,
@@ -164,8 +173,8 @@ func (q *Queries) GetNodeByID(ctx context.Context, id string) (GetNodeByIDRow, e
 }
 
 const insertNode = `-- name: InsertNode :exec
-INSERT INTO nodes (id, network_id, hostname, os, arch, nebula_cert, nebula_key, nebula_ip, agent_token, enrollment_token, enrollment_expires_at, status)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+INSERT INTO nodes (id, network_id, hostname, os, arch, nebula_cert, nebula_key, nebula_ip, agent_token, enrollment_token, enrollment_expires_at, node_type, dns_name, status)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `
 
 type InsertNodeParams struct {
@@ -180,6 +189,8 @@ type InsertNodeParams struct {
 	AgentToken          string
 	EnrollmentToken     *string
 	EnrollmentExpiresAt *int64
+	NodeType            string
+	DnsName             *string
 	Status              string
 }
 
@@ -196,9 +207,46 @@ func (q *Queries) InsertNode(ctx context.Context, arg InsertNodeParams) error {
 		arg.AgentToken,
 		arg.EnrollmentToken,
 		arg.EnrollmentExpiresAt,
+		arg.NodeType,
+		arg.DnsName,
 		arg.Status,
 	)
 	return err
+}
+
+const listNodeDNSEntries = `-- name: ListNodeDNSEntries :many
+SELECT hostname, dns_name, nebula_ip FROM nodes
+WHERE network_id = ? AND nebula_ip IS NOT NULL AND status != 'pending'
+ORDER BY hostname
+`
+
+type ListNodeDNSEntriesRow struct {
+	Hostname string
+	DnsName  *string
+	NebulaIp *string
+}
+
+func (q *Queries) ListNodeDNSEntries(ctx context.Context, networkID string) ([]ListNodeDNSEntriesRow, error) {
+	rows, err := q.db.QueryContext(ctx, listNodeDNSEntries, networkID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListNodeDNSEntriesRow{}
+	for rows.Next() {
+		var i ListNodeDNSEntriesRow
+		if err := rows.Scan(&i.Hostname, &i.DnsName, &i.NebulaIp); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listNodeIPsForNetwork = `-- name: ListNodeIPsForNetwork :many
@@ -229,21 +277,25 @@ func (q *Queries) ListNodeIPsForNetwork(ctx context.Context, networkID string) (
 }
 
 const listNodesForNetwork = `-- name: ListNodesForNetwork :many
-SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, status, last_seen_at, created_at
+SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, node_type,
+       exposed_ports, dns_name, status, last_seen_at, created_at
 FROM nodes WHERE network_id = ? ORDER BY created_at ASC
 `
 
 type ListNodesForNetworkRow struct {
-	ID          string
-	NetworkID   string
-	Hostname    string
-	Os          string
-	Arch        string
-	NebulaIp    *string
-	AgentRealIp *string
-	Status      string
-	LastSeenAt  *int64
-	CreatedAt   int64
+	ID           string
+	NetworkID    string
+	Hostname     string
+	Os           string
+	Arch         string
+	NebulaIp     *string
+	AgentRealIp  *string
+	NodeType     string
+	ExposedPorts *string
+	DnsName      *string
+	Status       string
+	LastSeenAt   *int64
+	CreatedAt    int64
 }
 
 func (q *Queries) ListNodesForNetwork(ctx context.Context, networkID string) ([]ListNodesForNetworkRow, error) {
@@ -263,6 +315,73 @@ func (q *Queries) ListNodesForNetwork(ctx context.Context, networkID string) ([]
 			&i.Arch,
 			&i.NebulaIp,
 			&i.AgentRealIp,
+			&i.NodeType,
+			&i.ExposedPorts,
+			&i.DnsName,
+			&i.Status,
+			&i.LastSeenAt,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listNodesForNetworkByType = `-- name: ListNodesForNetworkByType :many
+SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, node_type,
+       exposed_ports, dns_name, status, last_seen_at, created_at
+FROM nodes WHERE network_id = ? AND node_type = ? ORDER BY created_at ASC
+`
+
+type ListNodesForNetworkByTypeParams struct {
+	NetworkID string
+	NodeType  string
+}
+
+type ListNodesForNetworkByTypeRow struct {
+	ID           string
+	NetworkID    string
+	Hostname     string
+	Os           string
+	Arch         string
+	NebulaIp     *string
+	AgentRealIp  *string
+	NodeType     string
+	ExposedPorts *string
+	DnsName      *string
+	Status       string
+	LastSeenAt   *int64
+	CreatedAt    int64
+}
+
+func (q *Queries) ListNodesForNetworkByType(ctx context.Context, arg ListNodesForNetworkByTypeParams) ([]ListNodesForNetworkByTypeRow, error) {
+	rows, err := q.db.QueryContext(ctx, listNodesForNetworkByType, arg.NetworkID, arg.NodeType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListNodesForNetworkByTypeRow{}
+	for rows.Next() {
+		var i ListNodesForNetworkByTypeRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.NetworkID,
+			&i.Hostname,
+			&i.Os,
+			&i.Arch,
+			&i.NebulaIp,
+			&i.AgentRealIp,
+			&i.NodeType,
+			&i.ExposedPorts,
+			&i.DnsName,
 			&i.Status,
 			&i.LastSeenAt,
 			&i.CreatedAt,
@@ -306,6 +425,34 @@ type UpdateNodeCertParams struct {
 
 func (q *Queries) UpdateNodeCert(ctx context.Context, arg UpdateNodeCertParams) error {
 	_, err := q.db.ExecContext(ctx, updateNodeCert, arg.NebulaCert, arg.NebulaKey, arg.ID)
+	return err
+}
+
+const updateNodeDNSName = `-- name: UpdateNodeDNSName :exec
+UPDATE nodes SET dns_name = ? WHERE id = ?
+`
+
+type UpdateNodeDNSNameParams struct {
+	DnsName *string
+	ID      string
+}
+
+func (q *Queries) UpdateNodeDNSName(ctx context.Context, arg UpdateNodeDNSNameParams) error {
+	_, err := q.db.ExecContext(ctx, updateNodeDNSName, arg.DnsName, arg.ID)
+	return err
+}
+
+const updateNodeExposedPorts = `-- name: UpdateNodeExposedPorts :exec
+UPDATE nodes SET exposed_ports = ? WHERE id = ?
+`
+
+type UpdateNodeExposedPortsParams struct {
+	ExposedPorts *string
+	ID           string
+}
+
+func (q *Queries) UpdateNodeExposedPorts(ctx context.Context, arg UpdateNodeExposedPortsParams) error {
+	_, err := q.db.ExecContext(ctx, updateNodeExposedPorts, arg.ExposedPorts, arg.ID)
 	return err
 }
 

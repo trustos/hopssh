@@ -34,6 +34,14 @@ type DeviceCode struct {
 	CreatedAt  int64
 }
 
+type DnsRecord struct {
+	ID        string
+	NetworkID string
+	Name      string
+	NebulaIp  string
+	CreatedAt int64
+}
+
 type EnrollmentBundle struct {
 	ID            string
 	NodeID        string
@@ -44,16 +52,18 @@ type EnrollmentBundle struct {
 }
 
 type Network struct {
-	ID           string
-	UserID       string
-	Name         string
-	Slug         string
-	NebulaCaCert []byte
-	NebulaCaKey  []byte
-	NebulaSubnet *string
-	ServerCert   []byte
-	ServerKey    []byte
-	CreatedAt    int64
+	ID             string
+	UserID         string
+	Name           string
+	Slug           string
+	NebulaCaCert   []byte
+	NebulaCaKey    []byte
+	NebulaSubnet   *string
+	ServerCert     []byte
+	ServerKey      []byte
+	LighthousePort *int64
+	DnsDomain      string
+	CreatedAt      int64
 }
 
 type Node struct {
@@ -69,6 +79,9 @@ type Node struct {
 	EnrollmentToken     *string
 	EnrollmentExpiresAt *int64
 	AgentRealIp         *string
+	NodeType            string
+	ExposedPorts        *string
+	DnsName             *string
 	Status              string
 	LastSeenAt          *int64
 	CreatedAt           int64

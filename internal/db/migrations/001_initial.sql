@@ -33,6 +33,8 @@ CREATE TABLE networks (
     nebula_subnet TEXT UNIQUE,
     server_cert BLOB,
     server_key BLOB,
+    lighthouse_port INTEGER,                -- UDP port for this network's Nebula lighthouse
+    dns_domain TEXT NOT NULL DEFAULT 'hop',  -- user-defined DNS domain (e.g., "zero", "prod")
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -47,20 +49,23 @@ CREATE TABLE nodes (
     nebula_ip TEXT,
     agent_token TEXT NOT NULL,
     enrollment_token TEXT UNIQUE,
-    enrollment_expires_at INTEGER,      -- TTL for enrollment token
+    enrollment_expires_at INTEGER,
     agent_real_ip TEXT,
-    status TEXT NOT NULL DEFAULT 'pending',
+    node_type TEXT NOT NULL DEFAULT 'agent',  -- agent, user, lighthouse
+    exposed_ports TEXT,                       -- JSON: [{"port":8096,"proto":"tcp","name":"Jellyfin"}]
+    dns_name TEXT,                            -- custom DNS name (defaults to hostname)
+    status TEXT NOT NULL DEFAULT 'pending',   -- pending, enrolled, online, offline
     last_seen_at INTEGER,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
 -- Device authorization flow (RFC 8628) for interactive enrollment.
 CREATE TABLE device_codes (
-    device_code TEXT PRIMARY KEY,       -- crypto-random, used by agent to poll
-    user_code TEXT NOT NULL UNIQUE,     -- short human-readable code (e.g. HOP-K9M2)
-    user_id TEXT,                       -- set when user authorizes in browser
-    network_id TEXT,                    -- set when user selects network
-    node_id TEXT,                       -- set after enrollment completes
+    device_code TEXT PRIMARY KEY,
+    user_code TEXT NOT NULL UNIQUE,
+    user_id TEXT,
+    network_id TEXT,
+    node_id TEXT,
     status TEXT NOT NULL DEFAULT 'pending',  -- pending, authorized, completed, expired
     expires_at INTEGER NOT NULL,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
@@ -70,9 +75,18 @@ CREATE TABLE device_codes (
 CREATE TABLE enrollment_bundles (
     id TEXT PRIMARY KEY,
     node_id TEXT NOT NULL REFERENCES nodes(id) ON DELETE CASCADE,
-    download_token TEXT NOT NULL UNIQUE, -- crypto-random URL token
+    download_token TEXT NOT NULL UNIQUE,
     downloaded INTEGER NOT NULL DEFAULT 0,
     expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
+-- Custom DNS records (beyond auto-generated hostname records).
+CREATE TABLE dns_records (
+    id TEXT PRIMARY KEY,
+    network_id TEXT NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,        -- hostname part (e.g., "jellyfin")
+    nebula_ip TEXT NOT NULL,   -- target VPN IP
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
@@ -86,16 +100,19 @@ CREATE TABLE audit_log (
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
+-- Indexes
 CREATE INDEX idx_sessions_user ON sessions(user_id);
 CREATE INDEX idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX idx_networks_user ON networks(user_id);
 CREATE INDEX idx_nodes_network ON nodes(network_id);
 CREATE UNIQUE INDEX idx_nodes_nebula_ip ON nodes(network_id, nebula_ip);
 CREATE INDEX idx_nodes_enrollment ON nodes(enrollment_token);
+CREATE INDEX idx_nodes_type ON nodes(network_id, node_type);
 CREATE INDEX idx_device_codes_user_code ON device_codes(user_code);
 CREATE INDEX idx_device_codes_expires ON device_codes(expires_at);
 CREATE INDEX idx_bundles_token ON enrollment_bundles(download_token);
 CREATE INDEX idx_bundles_expires ON enrollment_bundles(expires_at);
+CREATE UNIQUE INDEX idx_dns_name ON dns_records(network_id, name);
 CREATE INDEX idx_audit_user ON audit_log(user_id);
 CREATE INDEX idx_audit_network ON audit_log(network_id);
 CREATE INDEX idx_audit_created ON audit_log(created_at);
