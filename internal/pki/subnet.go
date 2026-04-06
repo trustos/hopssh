@@ -5,6 +5,14 @@ import (
 	"net/netip"
 )
 
+// NetipPrefix is an alias for net/netip.Prefix for use in other packages.
+type NetipPrefix = netip.Prefix
+
+// ParsePrefix parses a CIDR string like "10.42.1.3/24".
+func ParsePrefix(s string) (netip.Prefix, error) {
+	return netip.ParsePrefix(s)
+}
+
 // SubnetIP returns a specific host address within a /24 subnet.
 // hostIndex 1 = server (e.g. 10.42.1.1), hostIndex 2 = first node, etc.
 func SubnetIP(subnet string, hostIndex int) (netip.Prefix, error) {
