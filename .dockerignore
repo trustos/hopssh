@@ -1,0 +1,11 @@
+vendor/
+data/
+.git/
+.github/
+*.md
+docs/
+hop-agent
+hop-server
+hop-agent-linux-*
+hop-server-linux-*
+.DS_Store
