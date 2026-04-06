@@ -1,9 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
+	import { toast } from 'svelte-sonner';
 	import { networks as networksApi, nodes as nodesApi, dns as dnsApi } from '$lib/api/client';
 	import { ApiError } from '$lib/api/client';
-	import type { NetworkDetailResponse, CreateNodeResponse, DNSRecordResponse } from '$lib/types/api';
+	import type { NetworkDetailResponse, CreateNodeResponse, DNSRecordResponse, NodeResponse } from '$lib/types/api';
+	import Dialog from '$lib/components/ui/dialog.svelte';
 
 	let network = $state<NetworkDetailResponse | null>(null);
 	let dnsRecords = $state<DNSRecordResponse[]>([]);
@@ -23,6 +26,18 @@
 	let dnsIP = $state('');
 	let addingDNS = $state(false);
 	let addDNSError = $state('');
+
+	// Delete network
+	let showDeleteNetwork = $state(false);
+	let deleteNetworkConfirm = $state('');
+	let deletingNetwork = $state(false);
+	let deleteNetworkError = $state('');
+
+	// Delete node
+	let showDeleteNode = $state(false);
+	let nodeToDelete = $state<NodeResponse | null>(null);
+	let deletingNode = $state(false);
+	let deleteNodeError = $state('');
 
 	// Active tab
 	let activeTab = $state<'nodes' | 'dns' | 'join'>('nodes');
@@ -98,12 +113,49 @@
 		}
 	}
 
+	async function deleteNetwork() {
+		if (!network || deleteNetworkConfirm !== network.name) return;
+		deletingNetwork = true;
+		deleteNetworkError = '';
+		try {
+			await networksApi.delete(networkId);
+			goto('/');
+		} catch (e) {
+			deleteNetworkError = e instanceof ApiError ? e.message : 'Failed to delete network';
+		} finally {
+			deletingNetwork = false;
+		}
+	}
+
+	function confirmDeleteNode(node: NodeResponse) {
+		nodeToDelete = node;
+		showDeleteNode = true;
+		deleteNodeError = '';
+	}
+
+	async function deleteNode() {
+		if (!nodeToDelete) return;
+		deletingNode = true;
+		deleteNodeError = '';
+		try {
+			await nodesApi.delete(networkId, nodeToDelete.id);
+			showDeleteNode = false;
+			nodeToDelete = null;
+			await loadNetwork();
+		} catch (e) {
+			deleteNodeError = e instanceof ApiError ? e.message : 'Failed to delete node';
+		} finally {
+			deletingNode = false;
+		}
+	}
+
 	async function deleteDNS(recordId: string) {
 		try {
 			await dnsApi.delete(networkId, recordId);
 			dnsRecords = await dnsApi.list(networkId);
-		} catch {
-			/* ignore */
+			toast.success('DNS record deleted');
+		} catch (e) {
+			toast.error(e instanceof ApiError ? e.message : 'Failed to delete DNS record');
 		}
 	}
 
@@ -161,12 +213,20 @@
 					<span>DNS: <span class="font-mono">.{network.dnsDomain}</span></span>
 				</div>
 			</div>
-			<button
-				onclick={() => { showAddNode = true; addNode(); }}
-				class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-			>
-				Add Node
-			</button>
+			<div class="flex items-center gap-2">
+				<button
+					onclick={() => { showAddNode = true; addNode(); }}
+					class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+				>
+					Add Node
+				</button>
+				<button
+					onclick={() => { showDeleteNetwork = true; deleteNetworkConfirm = ''; deleteNetworkError = ''; }}
+					class="rounded-md px-3 py-2 text-sm text-destructive hover:bg-destructive/10"
+				>
+					Delete Network
+				</button>
+			</div>
 		</div>
 
 		<!-- Tabs -->
@@ -226,7 +286,7 @@
 									<td class="px-4 py-3">
 										{#if node.nodeType === 'agent'}
 											<a
-												href="/terminal/{networkId}/{node.id}"
+												href="/terminal/{networkId}/{node.id}?h={encodeURIComponent(node.hostname || node.id.slice(0, 8))}"
 												class="font-mono font-medium text-primary hover:underline"
 											>
 												{node.hostname || node.id.slice(0, 8)}
@@ -248,14 +308,24 @@
 									</td>
 									<td class="px-4 py-3 text-muted-foreground">{timeAgo(node.lastSeenAt)}</td>
 									<td class="px-4 py-3">
-										{#if node.nodeType === 'agent'}
-											<a
-												href="/terminal/{networkId}/{node.id}"
-												class="rounded px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10"
-											>
-												Terminal
-											</a>
-										{/if}
+										<div class="flex gap-1">
+											{#if node.nodeType === 'agent'}
+												<a
+													href="/terminal/{networkId}/{node.id}?h={encodeURIComponent(node.hostname || node.id.slice(0, 8))}"
+													class="rounded px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10"
+												>
+													Terminal
+												</a>
+											{/if}
+											{#if node.nodeType !== 'lighthouse'}
+												<button
+													onclick={() => confirmDeleteNode(node)}
+													class="rounded px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+												>
+													Delete
+												</button>
+											{/if}
+										</div>
 									</td>
 								</tr>
 							{/each}
@@ -459,4 +529,79 @@
 			</div>
 		{/if}
 	{/if}
+
+	<!-- Delete Network Dialog -->
+	<Dialog open={showDeleteNetwork} onClose={() => { showDeleteNetwork = false; }}>
+		<h2 class="mb-2 text-lg font-semibold">Delete "{network?.name}"?</h2>
+		<p class="mb-4 text-sm text-muted-foreground">
+			{#if network && network.nodes.length > 0}
+				This will permanently delete the network and disconnect {network.nodes.length}
+				{network.nodes.length === 1 ? 'node' : 'nodes'}. Certificates and DNS records will stop working immediately.
+			{:else}
+				This will permanently delete the network. This cannot be undone.
+			{/if}
+		</p>
+		{#if deleteNetworkError}
+			<div class="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">{deleteNetworkError}</div>
+		{/if}
+		<div class="mb-4 space-y-2">
+			<label for="confirm-name" class="text-sm font-medium">
+				Type "<span class="font-mono">{network?.name}</span>" to confirm
+			</label>
+			<input
+				id="confirm-name"
+				type="text"
+				bind:value={deleteNetworkConfirm}
+				class="w-full rounded-md border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+			/>
+		</div>
+		<div class="flex justify-end gap-2">
+			<button
+				onclick={() => { showDeleteNetwork = false; }}
+				disabled={deletingNetwork}
+				class="rounded-md px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
+			>
+				Cancel
+			</button>
+			<button
+				onclick={deleteNetwork}
+				disabled={deletingNetwork || deleteNetworkConfirm !== network?.name}
+				class="rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+			>
+				{deletingNetwork ? 'Deleting...' : 'Delete Network'}
+			</button>
+		</div>
+	</Dialog>
+
+	<!-- Delete Node Dialog -->
+	<Dialog open={showDeleteNode} onClose={() => { showDeleteNode = false; nodeToDelete = null; }}>
+		<h2 class="mb-2 text-lg font-semibold">
+			Delete node "{nodeToDelete?.hostname || nodeToDelete?.id?.slice(0, 8)}"?
+		</h2>
+		<p class="mb-4 text-sm text-muted-foreground">
+			This will remove the node from the network and revoke its certificate.
+			{#if nodeToDelete?.status === 'online'}
+				<span class="font-medium text-destructive">This node is currently online.</span>
+			{/if}
+		</p>
+		{#if deleteNodeError}
+			<div class="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">{deleteNodeError}</div>
+		{/if}
+		<div class="flex justify-end gap-2">
+			<button
+				onclick={() => { showDeleteNode = false; nodeToDelete = null; }}
+				disabled={deletingNode}
+				class="rounded-md px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
+			>
+				Cancel
+			</button>
+			<button
+				onclick={deleteNode}
+				disabled={deletingNode}
+				class="rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
+			>
+				{deletingNode ? 'Deleting...' : 'Delete Node'}
+			</button>
+		</div>
+	</Dialog>
 </div>

@@ -4,6 +4,7 @@
 	import { page } from '$app/state';
 	import { getAuth } from '$lib/stores/auth.svelte';
 	import { getTheme } from '$lib/stores/theme.svelte';
+	import { Toaster } from 'svelte-sonner';
 	import '../app.css';
 
 	const auth = getAuth();
@@ -48,3 +49,5 @@
 {:else if shouldRenderChildren}
 	{@render children()}
 {/if}
+
+<Toaster position="bottom-right" richColors />
