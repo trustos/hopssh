@@ -42,6 +42,9 @@ func main() {
 		case "serve":
 			runServe(os.Args[2:])
 			return
+		case "client":
+			runClient(os.Args[2:])
+			return
 		}
 	}
 	// Default: serve (backwards compatible with existing systemd units).

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +31,7 @@ type NetworkInstance struct {
 	DNSDomain string
 
 	svc *service.Service
+	dns *MeshDNS
 }
 
 // Dial opens a TCP connection to a node's agent API through the mesh.
@@ -59,22 +61,34 @@ func (ni *NetworkInstance) HTTPClient(nebulaIP string) *http.Client {
 // Close shuts down the Nebula instance gracefully.
 func (ni *NetworkInstance) Close() {
 	log.Printf("[mesh] stopping lighthouse for network %s (port %d)", ni.Slug, ni.UDPPort)
+	if ni.dns != nil {
+		ni.dns.Stop()
+	}
 	ni.svc.Close()
+}
+
+// DNS returns the mesh DNS server for this network (for record updates).
+func (ni *NetworkInstance) DNS() *MeshDNS {
+	return ni.dns
 }
 
 // NetworkManager manages persistent Nebula lighthouse+relay instances, one per network.
 type NetworkManager struct {
-	networks *db.NetworkStore
+	networks   *db.NetworkStore
+	nodes      *db.NodeStore
+	dnsRecords *db.DNSRecordStore
 
 	mu        sync.RWMutex
 	instances map[string]*NetworkInstance // keyed by network ID
 }
 
 // NewNetworkManager creates a NetworkManager and starts lighthouse instances for all existing networks.
-func NewNetworkManager(networks *db.NetworkStore) (*NetworkManager, error) {
+func NewNetworkManager(networks *db.NetworkStore, nodes *db.NodeStore, dnsRecords *db.DNSRecordStore) (*NetworkManager, error) {
 	nm := &NetworkManager{
-		networks:  networks,
-		instances: make(map[string]*NetworkInstance),
+		networks:   networks,
+		nodes:      nodes,
+		dnsRecords: dnsRecords,
+		instances:  make(map[string]*NetworkInstance),
 	}
 
 	// Start lighthouses for all existing networks.
@@ -90,8 +104,10 @@ func NewNetworkManager(networks *db.NetworkStore) (*NetworkManager, error) {
 		}
 		if err := nm.startInstance(n); err != nil {
 			log.Printf("[mesh] failed to start lighthouse for network %s: %v", n.Slug, err)
-			// Continue — don't fail startup because one network's lighthouse fails
+			continue
 		}
+		// Load DNS records for this network.
+		nm.RefreshDNS(n.ID)
 	}
 
 	log.Printf("[mesh] NetworkManager started with %d lighthouse instances", len(nm.instances))
@@ -146,6 +162,70 @@ func (nm *NetworkManager) Stop() {
 		delete(nm.instances, id)
 	}
 	log.Printf("[mesh] NetworkManager stopped")
+}
+
+// RefreshDNS reloads DNS records for a network from the database.
+// Called after enrollment, node deletion, or DNS record changes.
+func (nm *NetworkManager) RefreshDNS(networkID string) {
+	nm.mu.RLock()
+	inst, ok := nm.instances[networkID]
+	nm.mu.RUnlock()
+	if !ok || inst.dns == nil {
+		return
+	}
+
+	var records []DNSRecord
+
+	// Auto-records from nodes (hostname → VPN IP).
+	if nm.nodes != nil {
+		nodes, err := nm.nodes.ListForNetwork(networkID)
+		if err == nil {
+			for _, n := range nodes {
+				if n.NebulaIP == "" || n.Status == "pending" {
+					continue
+				}
+				ip := parseNodeIPForDNS(n.NebulaIP)
+				if ip == nil {
+					continue
+				}
+				// Use dns_name if set, otherwise hostname.
+				name := ""
+				if n.DNSName != nil && *n.DNSName != "" {
+					name = *n.DNSName
+				} else if n.Hostname != "" {
+					name = n.Hostname
+				}
+				if name != "" {
+					records = append(records, DNSRecord{Name: name, IP: ip})
+				}
+			}
+		}
+	}
+
+	// Custom DNS records from the dns_records table.
+	if nm.dnsRecords != nil {
+		customRecords, err := nm.dnsRecords.ListForNetwork(networkID)
+		if err == nil {
+			for _, r := range customRecords {
+				ip := parseNodeIPForDNS(r.NebulaIP)
+				if ip != nil {
+					records = append(records, DNSRecord{Name: r.Name, IP: ip})
+				}
+			}
+		}
+	}
+
+	inst.dns.SetRecords(records)
+	log.Printf("[dns] refreshed %d records for .%s", len(records), inst.DNSDomain)
+}
+
+func parseNodeIPForDNS(nebulaIP string) net.IP {
+	// Strip CIDR mask if present: "10.42.1.3/24" → "10.42.1.3"
+	ipStr := nebulaIP
+	if idx := strings.Index(nebulaIP, "/"); idx >= 0 {
+		ipStr = nebulaIP[:idx]
+	}
+	return net.ParseIP(ipStr)
 }
 
 // AllocatePort returns the next available lighthouse UDP port.
@@ -223,12 +303,37 @@ firewall:
 		return fmt.Errorf("create nebula service: %w", err)
 	}
 
+	// Compute the lighthouse's VPN IP (.1 in the subnet) for DNS binding.
+	lighthouseIP := ""
+	if n.NebulaSubnet != "" {
+		// Parse "10.42.1.0/24" → "10.42.1.1"
+		parts := net.ParseIP(n.NebulaSubnet[:len(n.NebulaSubnet)-3]) // strip /24
+		if parts != nil {
+			ip4 := parts.To4()
+			if ip4 != nil {
+				ip4[3] = 1
+				lighthouseIP = ip4.String()
+			}
+		}
+	}
+
+	// Start DNS server for this network.
+	var meshDNS *MeshDNS
+	if lighthouseIP != "" && n.DNSDomain != "" {
+		meshDNS = NewMeshDNS(lighthouseIP, n.DNSDomain)
+		if err := meshDNS.Start(); err != nil {
+			log.Printf("[mesh] DNS server failed to start for .%s: %v", n.DNSDomain, err)
+			// Non-fatal — lighthouse works without DNS
+		}
+	}
+
 	inst := &NetworkInstance{
 		NetworkID: n.ID,
 		Slug:      n.Slug,
 		UDPPort:   port,
 		DNSDomain: n.DNSDomain,
 		svc:       svc,
+		dns:       meshDNS,
 	}
 
 	nm.instances[n.ID] = inst

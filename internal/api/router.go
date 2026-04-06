@@ -94,6 +94,7 @@ func NewRouter(
 	deviceH *DeviceHandler,
 	bundleH *BundleHandler,
 	renewH *RenewHandler,
+	dnsH *DNSHandler,
 ) chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -156,6 +157,14 @@ func NewRouter(
 		// Device flow (browser-side authorization).
 		r.With(wt).Post("/api/device/authorize", deviceH.Authorize)
 		r.With(wt).Get("/api/device/verify/{code}", deviceH.VerifyCode)
+
+		// Client join (issue "user" cert for laptops/phones).
+		r.With(wt).Post("/api/networks/{networkID}/join", enrollH.JoinNetwork)
+
+		// DNS records.
+		r.With(wt).Get("/api/networks/{networkID}/dns", dnsH.ListDNSRecords)
+		r.With(wt).Post("/api/networks/{networkID}/dns", dnsH.CreateDNSRecord)
+		r.With(wt).Delete("/api/networks/{networkID}/dns/{recordID}", dnsH.DeleteDNSRecord)
 
 		// Enrollment bundles.
 		r.With(wt).Post("/api/networks/{networkID}/bundles", bundleH.CreateBundle)

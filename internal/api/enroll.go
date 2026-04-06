@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/trustos/hopssh/internal/auth"
 	"github.com/trustos/hopssh/internal/authz"
+	"github.com/trustos/hopssh/internal/mesh"
 	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/pki"
 )
@@ -20,9 +21,10 @@ const nodeCertDuration = 24 * time.Hour // short-lived, auto-renewed by agent
 
 // EnrollHandler manages node enrollment.
 type EnrollHandler struct {
-	Networks *db.NetworkStore
-	Nodes    *db.NodeStore
-	Endpoint string // public URL of this server (e.g. "https://hopssh.com")
+	Networks       *db.NetworkStore
+	Nodes          *db.NodeStore
+	NetworkManager *mesh.NetworkManager
+	Endpoint       string // public URL of this server (e.g. "https://hopssh.com")
 }
 
 // CreateNode generates an enrollment token and returns the install command.
@@ -146,8 +148,11 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Record the agent's real IP for mesh tunnel creation.
+	// Record the agent's real IP and refresh DNS.
 	h.Nodes.UpdateAgentRealIP(node.ID, captureAgentIP(r))
+	if h.NetworkManager != nil {
+		h.NetworkManager.RefreshDNS(node.NetworkID)
+	}
 
 	// Compute lighthouse VPN IP and port for agent's static_host_map.
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
@@ -162,6 +167,102 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		"nodeCert":       string(nodeCert.CertPEM),
 		"nodeKey":        string(nodeCert.KeyPEM),
 		"agentToken":     node.AgentToken,
+		"serverIP":       serverIP.Addr().String(),
+		"nebulaIP":       node.NebulaIP,
+		"lighthousePort": lighthousePort,
+		"dnsDomain":      network.DNSDomain,
+	})
+}
+
+// JoinNetwork allows a client device (laptop/phone) to join a mesh network.
+// Authenticated endpoint — requires user session.
+// @Summary      Join network as client
+// @Description  Issues a "user" cert for a client device to join the mesh. Returns certs and lighthouse info.
+// @Tags         enrollment
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        networkID path string true "Network ID"
+// @Success      200 {object} EnrollResponse
+// @Router       /api/networks/{networkID}/join [post]
+func (h *EnrollHandler) JoinNetwork(w http.ResponseWriter, r *http.Request) {
+	user := auth.UserFromContext(r.Context())
+	networkID := chi.URLParam(r, "networkID")
+
+	network, err := h.Networks.Get(networkID)
+	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body struct {
+		Hostname string `json:"hostname"`
+		OS       string `json:"os"`
+		Arch     string `json:"arch"`
+	}
+	json.NewDecoder(r.Body).Decode(&body)
+
+	// Allocate an IP for the client.
+	nextIndex, err := h.Nodes.NextNodeIndex(networkID)
+	if err != nil {
+		http.Error(w, "failed to allocate IP: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	nextIP, err := pki.NodeAddress(network.NebulaSubnet, nextIndex)
+	if err != nil {
+		http.Error(w, "failed to allocate IP: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	agentToken := generateToken()
+	nodeID := uuid.New().String()
+
+	node := &db.Node{
+		ID:         nodeID,
+		NetworkID:  networkID,
+		Hostname:   body.Hostname,
+		OS:         body.OS,
+		Arch:       body.Arch,
+		NebulaIP:   nextIP.String(),
+		AgentToken: agentToken,
+		NodeType:   "user", // client, not agent
+		Status:     "enrolled",
+	}
+	if err := h.Nodes.Create(node); err != nil {
+		http.Error(w, "failed to create node: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Issue cert with "user" group (not "agent").
+	nodeCert, err := pki.IssueCert(network.NebulaCACert, network.NebulaCAKey,
+		fmt.Sprintf("client-%s", nodeID[:8]), nextIP, []string{"user"}, nodeCertDuration)
+	if err != nil {
+		http.Error(w, "failed to issue cert: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if err := h.Nodes.CompleteEnrollment(nodeID, nodeCert.CertPEM, nodeCert.KeyPEM, body.Hostname, body.OS, body.Arch); err != nil {
+		http.Error(w, "failed to complete enrollment: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	h.Nodes.UpdateAgentRealIP(nodeID, captureAgentIP(r))
+	if h.NetworkManager != nil {
+		h.NetworkManager.RefreshDNS(networkID)
+	}
+
+	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
+	lighthousePort := 0
+	if network.LighthousePort != nil {
+		lighthousePort = int(*network.LighthousePort)
+	}
+
+	writeJSON(w, map[string]interface{}{
+		"nodeId":         nodeID,
+		"caCert":         string(network.NebulaCACert),
+		"nodeCert":       string(nodeCert.CertPEM),
+		"nodeKey":        string(nodeCert.KeyPEM),
 		"serverIP":       serverIP.Addr().String(),
 		"nebulaIP":       node.NebulaIP,
 		"lighthousePort": lighthousePort,

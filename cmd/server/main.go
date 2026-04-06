@@ -96,8 +96,10 @@ func main() {
 	deviceCodes := db.NewDeviceCodeStore(database)
 	bundles := db.NewBundleStore(database)
 
-	// Initialize network manager (persistent per-network Nebula lighthouse+relay).
-	netMgr, err := mesh.NewNetworkManager(networks)
+	dnsRecords := db.NewDNSRecordStore(database)
+
+	// Initialize network manager (persistent per-network Nebula lighthouse+relay+DNS).
+	netMgr, err := mesh.NewNetworkManager(networks, nodes, dnsRecords)
 	if err != nil {
 		log.Fatalf("Init network manager: %v", err)
 	}
@@ -108,7 +110,7 @@ func main() {
 	// Initialize handlers.
 	authH := &api.AuthHandler{Users: users, Sessions: sessions, Audit: audit}
 	networkH := &api.NetworkHandler{Networks: networks, Nodes: nodes, NetworkManager: netMgr, ForwardManager: fwdMgr}
-	enrollH := &api.EnrollHandler{Networks: networks, Nodes: nodes, Endpoint: *endpoint}
+	enrollH := &api.EnrollHandler{Networks: networks, Nodes: nodes, NetworkManager: netMgr, Endpoint: *endpoint}
 	proxyH := &api.ProxyHandler{
 		NetworkManager: netMgr,
 		ForwardManager: fwdMgr,
@@ -130,8 +132,9 @@ func main() {
 	}
 
 	renewH := &api.RenewHandler{Networks: networks, Nodes: nodes}
+	dnsH := &api.DNSHandler{Networks: networks, DNSRecords: dnsRecords, NetworkManager: netMgr}
 
-	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH)
+	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH)
 
 	// Clean up expired sessions periodically with graceful shutdown.
 	stopCleanup := make(chan struct{})
