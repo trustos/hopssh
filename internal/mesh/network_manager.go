@@ -29,8 +29,7 @@ type NetworkInstance struct {
 	UDPPort   int
 	DNSDomain string
 
-	svc    *service.Service
-	cancel context.CancelFunc
+	svc *service.Service
 }
 
 // Dial opens a TCP connection to a node's agent API through the mesh.
@@ -60,7 +59,6 @@ func (ni *NetworkInstance) HTTPClient(nebulaIP string) *http.Client {
 // Close shuts down the Nebula instance gracefully.
 func (ni *NetworkInstance) Close() {
 	log.Printf("[mesh] stopping lighthouse for network %s (port %d)", ni.Slug, ni.UDPPort)
-	ni.cancel()
 	ni.svc.Close()
 }
 
@@ -163,7 +161,7 @@ func (nm *NetworkManager) AllocatePort() (int, error) {
 }
 
 // startInstance starts a Nebula userspace lighthouse+relay for a network.
-// Must be called with nm.mu held.
+// Must be called with nm.mu held, or during single-threaded initialization.
 func (nm *NetworkManager) startInstance(n *db.Network) error {
 	if n.LighthousePort == nil {
 		return fmt.Errorf("network %s has no lighthouse port", n.Slug)
@@ -225,16 +223,12 @@ firewall:
 		return fmt.Errorf("create nebula service: %w", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	_ = ctx // context reserved for future use (DNS server, monitoring)
-
 	inst := &NetworkInstance{
 		NetworkID: n.ID,
 		Slug:      n.Slug,
 		UDPPort:   port,
 		DNSDomain: n.DNSDomain,
 		svc:       svc,
-		cancel:    cancel,
 	}
 
 	nm.instances[n.ID] = inst
@@ -242,4 +236,31 @@ firewall:
 		n.Slug, n.ID[:8], port, n.DNSDomain)
 
 	return nil
+}
+
+func indentPEM(pem string, spaces int) string {
+	prefix := ""
+	for i := 0; i < spaces; i++ {
+		prefix += " "
+	}
+	lines := ""
+	for _, line := range splitLines(pem) {
+		lines += prefix + line + "\n"
+	}
+	return lines
+}
+
+func splitLines(s string) []string {
+	var lines []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			lines = append(lines, s[start:i])
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		lines = append(lines, s[start:])
+	}
+	return lines
 }

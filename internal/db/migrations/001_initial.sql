@@ -33,7 +33,7 @@ CREATE TABLE networks (
     nebula_subnet TEXT UNIQUE,
     server_cert BLOB,
     server_key BLOB,
-    lighthouse_port INTEGER,                -- UDP port for this network's Nebula lighthouse
+    lighthouse_port INTEGER UNIQUE,          -- UDP port for this network's Nebula lighthouse
     dns_domain TEXT NOT NULL DEFAULT 'hop',  -- user-defined DNS domain (e.g., "zero", "prod")
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );

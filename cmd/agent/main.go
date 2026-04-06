@@ -85,14 +85,13 @@ func runServe(args []string) {
 	}
 
 	// Start embedded Nebula mesh connection (if config exists).
-	var nebulaSvc *nebulaService
 	if _, err := os.Stat(*nebulaConfig); err == nil {
 		svc, err := startNebula(*nebulaConfig)
 		if err != nil {
 			log.Printf("[agent] WARNING: Nebula failed to start: %v (running without mesh)", err)
 		} else {
-			nebulaSvc = svc
-			defer nebulaSvc.Close()
+			currentNebula = svc
+			defer currentNebula.Close()
 			log.Printf("[agent] Nebula mesh connected")
 		}
 	} else {
@@ -107,10 +106,14 @@ func runServe(args []string) {
 
 	authed := authMiddleware(authToken, mux)
 
-	// Determine listen address.
+	// Listen on all interfaces. The agent API is protected by bearer token auth.
+	// In the mesh architecture, the control plane reaches the agent through
+	// the Nebula mesh (which appears as a connection to the VPN IP).
+	// The Nebula firewall (configured during enrollment) restricts which
+	// mesh groups can reach which ports.
 	addr := *listenAddr
 	if addr == "" {
-		addr = fmt.Sprintf(":%d", 41820) // listen on all interfaces on agent port
+		addr = fmt.Sprintf(":%d", 41820)
 	}
 
 	ln, err := net.Listen("tcp", addr)

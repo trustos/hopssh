@@ -11,6 +11,10 @@ import (
 	"github.com/slackhq/nebula/service"
 )
 
+// currentNebula is the running embedded Nebula instance.
+// Used by cert renewal to restart Nebula with new certs.
+var currentNebula *nebulaService
+
 // nebulaService wraps an embedded Nebula userspace instance.
 type nebulaService struct {
 	svc *service.Service

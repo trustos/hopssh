@@ -294,7 +294,7 @@ func (h *ProxyHandler) StartPortForward(w http.ResponseWriter, r *http.Request) 
 	detail := fmt.Sprintf("remote:%d local:%d", body.RemotePort, body.LocalPort)
 	h.audit(user.ID, "port_forward.start", &networkID, &node.ID, &detail)
 
-	pf, err := h.ForwardManager.Start(networkID, node.ID, body.RemotePort, body.LocalPort)
+	pf, err := h.ForwardManager.Start(networkID, node.ID, agentNodeIP(node), body.RemotePort, body.LocalPort)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

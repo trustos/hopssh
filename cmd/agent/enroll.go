@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -351,17 +352,7 @@ func extractHost(endpoint string) string {
 }
 
 func detectArch() string {
-	// Simple detection — the binary itself is compiled for the right arch.
-	out, _ := runShellCmd("uname -m")
-	arch := strings.TrimSpace(out)
-	switch arch {
-	case "x86_64", "amd64":
-		return "amd64"
-	case "aarch64", "arm64":
-		return "arm64"
-	default:
-		return arch
-	}
+	return runtime.GOARCH
 }
 
 func runShellCmd(cmd string) (string, error) {

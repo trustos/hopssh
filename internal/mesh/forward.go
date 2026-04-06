@@ -29,11 +29,13 @@ type PortForward struct {
 	LocalAddr  string `json:"localAddr"`
 	CreatedAt  int64  `json:"createdAt"`
 
-	listener net.Listener
-	manager  *Manager
-	cancel   context.CancelFunc
-	connWg   sync.WaitGroup
-	active   atomic.Int32
+	nebulaIP string // VPN IP of the target node
+
+	listener   net.Listener
+	netManager *NetworkManager
+	cancel     context.CancelFunc
+	connWg     sync.WaitGroup
+	active     atomic.Int32
 }
 
 // ActiveConns returns the number of active proxied connections.
@@ -43,26 +45,26 @@ func (pf *PortForward) ActiveConns() int {
 
 // ForwardManager tracks active port forwards.
 type ForwardManager struct {
-	meshManager *Manager
+	netManager *NetworkManager
 
 	mu       sync.Mutex
 	forwards map[string]*PortForward
 }
 
-func NewForwardManager(meshManager *Manager) *ForwardManager {
+func NewForwardManager(netManager *NetworkManager) *ForwardManager {
 	return &ForwardManager{
-		meshManager: meshManager,
-		forwards:    make(map[string]*PortForward),
+		netManager: netManager,
+		forwards:   make(map[string]*PortForward),
 	}
 }
 
 // Start creates a local TCP listener that proxies to a remote port through the mesh.
-func (fm *ForwardManager) Start(networkID, nodeID string, remotePort, localPort int) (*PortForward, error) {
-	if fm.meshManager == nil {
-		return nil, fmt.Errorf("mesh manager not available")
+func (fm *ForwardManager) Start(networkID, nodeID, nebulaIP string, remotePort, localPort int) (*PortForward, error) {
+	if fm.netManager == nil {
+		return nil, fmt.Errorf("network manager not available")
 	}
-	if _, err := fm.meshManager.GetTunnelForNode(nodeID); err != nil {
-		return nil, fmt.Errorf("mesh tunnel: %w", err)
+	if _, err := fm.netManager.GetInstance(networkID); err != nil {
+		return nil, fmt.Errorf("mesh instance: %w", err)
 	}
 
 	listenAddr := fmt.Sprintf("127.0.0.1:%d", localPort)
@@ -85,8 +87,9 @@ func (fm *ForwardManager) Start(networkID, nodeID string, remotePort, localPort 
 		LocalPort:  actualPort,
 		LocalAddr:  ln.Addr().String(),
 		CreatedAt:  time.Now().Unix(),
+		nebulaIP:   nebulaIP,
 		listener:   ln,
-		manager:    fm.meshManager,
+		netManager: fm.netManager,
 		cancel:     cancel,
 	}
 
@@ -225,16 +228,16 @@ func (pf *PortForward) acceptLoop(ctx context.Context) {
 func (pf *PortForward) handleConn(ctx context.Context, local net.Conn) {
 	defer local.Close()
 
-	tunnel, err := pf.manager.GetTunnelForNode(pf.NodeID)
+	inst, err := pf.netManager.GetInstance(pf.NetworkID)
 	if err != nil {
-		log.Printf("[forward] %s: get tunnel failed: %v", pf.ID, err)
+		log.Printf("[forward] %s: get mesh instance failed: %v", pf.ID, err)
 		return
 	}
 
 	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	remote, err := tunnel.DialPort(dialCtx, pf.RemotePort)
+	remote, err := inst.DialPort(dialCtx, pf.nebulaIP, pf.RemotePort)
 	if err != nil {
 		log.Printf("[forward] %s: dial remote port %d failed: %v", pf.ID, pf.RemotePort, err)
 		return

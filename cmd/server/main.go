@@ -103,7 +103,7 @@ func main() {
 	}
 	defer netMgr.Stop()
 
-	fwdMgr := mesh.NewForwardManager(nil) // TODO: update ForwardManager for NetworkInstance
+	fwdMgr := mesh.NewForwardManager(netMgr)
 
 	// Initialize handlers.
 	authH := &api.AuthHandler{Users: users, Sessions: sessions, Audit: audit}

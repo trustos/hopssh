@@ -146,14 +146,24 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	return os.Rename(tmp, path)
 }
 
-// reloadNebula sends SIGHUP to the Nebula process to reload its certs.
+// reloadNebula restarts the embedded Nebula instance to pick up new certs.
+// Since the agent embeds Nebula in-process, we restart our own Nebula service.
 func reloadNebula() {
-	// Try systemctl reload first, fallback to finding PID.
-	if _, err := runShellCmd("systemctl reload nebula"); err == nil {
+	if currentNebula == nil {
+		log.Printf("[renew] no embedded Nebula instance to reload")
 		return
 	}
-	// Fallback: send SIGHUP directly.
-	if _, err := runShellCmd("pkill -HUP nebula"); err != nil {
-		log.Printf("[renew] failed to signal Nebula to reload (may need manual restart)")
+
+	configPath := filepath.Join(enrollDir, "nebula.yaml")
+	currentNebula.Close()
+
+	svc, err := startNebula(configPath)
+	if err != nil {
+		log.Printf("[renew] CRITICAL: failed to restart Nebula after cert renewal: %v", err)
+		log.Printf("[renew] agent will lose mesh connectivity when old cert expires")
+		return
 	}
+
+	currentNebula = svc
+	log.Printf("[renew] Nebula restarted with new certificate")
 }
