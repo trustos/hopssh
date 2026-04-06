@@ -9,6 +9,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/trustos/hopssh/internal/auth"
+	"github.com/trustos/hopssh/internal/mesh"
 	"github.com/trustos/hopssh/internal/authz"
 	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/pki"
@@ -18,9 +19,10 @@ const deviceNodeCertDuration = 24 * time.Hour // short-lived, auto-renewed by ag
 
 // DeviceHandler manages the device authorization flow (RFC 8628) for enrollment.
 type DeviceHandler struct {
-	DeviceCodes *db.DeviceCodeStore
-	Networks    *db.NetworkStore
-	Nodes       *db.NodeStore
+	DeviceCodes    *db.DeviceCodeStore
+	Networks       *db.NetworkStore
+	Nodes          *db.NodeStore
+	NetworkManager *mesh.NetworkManager
 }
 
 // RequestCode is called by the agent to initiate the device flow.
@@ -153,6 +155,9 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 
 	h.DeviceCodes.SetNodeID(dc.DeviceCode, nodeID)
 	h.Nodes.UpdateAgentRealIP(nodeID, captureAgentIP(r))
+	if h.NetworkManager != nil {
+		h.NetworkManager.RefreshDNS(*dc.NetworkID)
+	}
 
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
 	lighthousePort := 0

@@ -120,9 +120,10 @@ func main() {
 		AllowedOrigins: api.AllowedOrigins,
 	}
 	deviceH := &api.DeviceHandler{
-		DeviceCodes: deviceCodes,
-		Networks:    networks,
-		Nodes:       nodes,
+		DeviceCodes:    deviceCodes,
+		Networks:       networks,
+		Nodes:          nodes,
+		NetworkManager: netMgr,
 	}
 	bundleH := &api.BundleHandler{
 		Networks: networks,

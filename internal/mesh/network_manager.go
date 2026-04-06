@@ -20,6 +20,7 @@ import (
 
 const (
 	baseLighthousePort = 42001
+	baseDNSPort        = 15300 // DNS port = baseDNSPort + (lighthousePort - baseLighthousePort)
 	agentAPIPort       = 41820
 )
 
@@ -117,12 +118,14 @@ func NewNetworkManager(networks *db.NetworkStore, nodes *db.NodeStore, dnsRecord
 // StartNetwork starts a lighthouse instance for a network. Called when a network is created.
 func (nm *NetworkManager) StartNetwork(n *db.Network) error {
 	nm.mu.Lock()
-	defer nm.mu.Unlock()
-
 	if _, exists := nm.instances[n.ID]; exists {
+		nm.mu.Unlock()
 		return fmt.Errorf("lighthouse for network %s already running", n.Slug)
 	}
+	nm.mu.Unlock()
 
+	// Start Nebula outside the lock (heavyweight operation).
+	// startInstance acquires the lock internally to insert the instance.
 	return nm.startInstance(n)
 }
 
@@ -241,7 +244,7 @@ func (nm *NetworkManager) AllocatePort() (int, error) {
 }
 
 // startInstance starts a Nebula userspace lighthouse+relay for a network.
-// Must be called with nm.mu held, or during single-threaded initialization.
+// Acquires nm.mu internally for the instance map insert. Safe to call without holding the lock.
 func (nm *NetworkManager) startInstance(n *db.Network) error {
 	if n.LighthousePort == nil {
 		return fmt.Errorf("network %s has no lighthouse port", n.Slug)
@@ -303,27 +306,16 @@ firewall:
 		return fmt.Errorf("create nebula service: %w", err)
 	}
 
-	// Compute the lighthouse's VPN IP (.1 in the subnet) for DNS binding.
-	lighthouseIP := ""
-	if n.NebulaSubnet != "" {
-		// Parse "10.42.1.0/24" → "10.42.1.1"
-		parts := net.ParseIP(n.NebulaSubnet[:len(n.NebulaSubnet)-3]) // strip /24
-		if parts != nil {
-			ip4 := parts.To4()
-			if ip4 != nil {
-				ip4[3] = 1
-				lighthouseIP = ip4.String()
-			}
-		}
-	}
-
-	// Start DNS server for this network.
+	// Start DNS server for this network on a per-network port.
+	// We bind on 0.0.0.0 because the Nebula VPN IP doesn't exist as an OS
+	// interface in userspace mode. Each network gets a unique DNS port.
 	var meshDNS *MeshDNS
-	if lighthouseIP != "" && n.DNSDomain != "" {
-		meshDNS = NewMeshDNS(lighthouseIP, n.DNSDomain)
+	if n.DNSDomain != "" {
+		dnsPort := baseDNSPort + (port - baseLighthousePort)
+		meshDNS = NewMeshDNS(dnsPort, n.DNSDomain)
 		if err := meshDNS.Start(); err != nil {
 			log.Printf("[mesh] DNS server failed to start for .%s: %v", n.DNSDomain, err)
-			// Non-fatal — lighthouse works without DNS
+			meshDNS = nil // non-fatal — lighthouse works without DNS
 		}
 	}
 
@@ -336,7 +328,9 @@ firewall:
 		dns:       meshDNS,
 	}
 
+	nm.mu.Lock()
 	nm.instances[n.ID] = inst
+	nm.mu.Unlock()
 	log.Printf("[mesh] lighthouse started for network %s (%s) on UDP :%d, DNS domain: .%s",
 		n.Slug, n.ID[:8], port, n.DNSDomain)
 

@@ -6,6 +6,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/miekg/dns"
 )
@@ -18,9 +19,12 @@ type DNSRecord struct {
 
 // MeshDNS serves DNS for a single network's domain.
 // Resolves <hostname>.<domain> → Nebula VPN IP.
+//
+// Binds on 0.0.0.0 with a per-network port (not on the VPN IP, which
+// doesn't exist as an OS interface in userspace Nebula mode).
 type MeshDNS struct {
-	domain  string // e.g., "zero", "prod"
-	listenIP string // lighthouse VPN IP to bind on
+	domain string // e.g., "zero", "prod"
+	port   int    // UDP port to listen on
 
 	mu      sync.RWMutex
 	records map[string]net.IP // hostname → IP
@@ -29,15 +33,19 @@ type MeshDNS struct {
 }
 
 // NewMeshDNS creates a DNS server for a network.
-// listenIP is the lighthouse's Nebula VPN IP (e.g., "10.42.1.1").
+// port is the UDP port to listen on (unique per network).
 // domain is the user-defined domain (e.g., "zero").
-func NewMeshDNS(listenIP, domain string) *MeshDNS {
-	d := &MeshDNS{
-		domain:   strings.ToLower(domain),
-		listenIP: listenIP,
-		records:  make(map[string]net.IP),
+func NewMeshDNS(port int, domain string) *MeshDNS {
+	return &MeshDNS{
+		domain:  strings.ToLower(domain),
+		port:    port,
+		records: make(map[string]net.IP),
 	}
-	return d
+}
+
+// Port returns the port the DNS server is listening on.
+func (d *MeshDNS) Port() int {
+	return d.port
 }
 
 // SetRecords replaces all DNS records atomically.
@@ -72,28 +80,33 @@ func (d *MeshDNS) Resolve(name string) net.IP {
 	return d.records[strings.ToLower(name)]
 }
 
-// Start begins serving DNS on the lighthouse VPN IP, port 53.
-// This runs in a goroutine — call Stop() to shut down.
+// Start begins serving DNS. Blocks briefly to verify the bind succeeds.
 func (d *MeshDNS) Start() error {
 	mux := dns.NewServeMux()
-	// Handle queries for our domain (e.g., "*.zero.")
 	mux.HandleFunc(d.domain+".", d.handleQuery)
 
-	addr := fmt.Sprintf("%s:53", d.listenIP)
+	addr := fmt.Sprintf("0.0.0.0:%d", d.port)
 	d.server = &dns.Server{
 		Addr:    addr,
 		Net:     "udp",
 		Handler: mux,
 	}
 
+	// Use a channel to detect bind errors during startup.
+	errCh := make(chan error, 1)
 	go func() {
-		log.Printf("[dns] serving .%s on %s", d.domain, addr)
-		if err := d.server.ListenAndServe(); err != nil {
-			log.Printf("[dns] server error for .%s: %v", d.domain, err)
-		}
+		errCh <- d.server.ListenAndServe()
 	}()
 
-	return nil
+	// Wait briefly for the server to either bind or fail.
+	select {
+	case err := <-errCh:
+		return fmt.Errorf("DNS server failed to start on %s: %w", addr, err)
+	case <-time.After(100 * time.Millisecond):
+		// Server started successfully (no immediate error).
+		log.Printf("[dns] serving .%s on %s", d.domain, addr)
+		return nil
+	}
 }
 
 // Stop shuts down the DNS server.
@@ -110,33 +123,33 @@ func (d *MeshDNS) handleQuery(w dns.ResponseWriter, r *dns.Msg) {
 	m.Authoritative = true
 
 	for _, q := range r.Question {
-		if q.Qtype != dns.TypeA && q.Qtype != dns.TypeAAAA {
+		if q.Qtype != dns.TypeA {
 			continue
 		}
 
 		// Extract hostname from FQDN: "jellyfin.zero." → "jellyfin"
-		name := strings.TrimSuffix(q.Name, "."+d.domain+".")
-		name = strings.TrimSuffix(name, ".")
-		name = strings.ToLower(name)
+		fqdn := strings.ToLower(q.Name)
+		suffix := "." + d.domain + "."
+		if !strings.HasSuffix(fqdn, suffix) {
+			continue
+		}
+		name := strings.TrimSuffix(fqdn, suffix)
 
 		ip := d.Resolve(name)
 		if ip == nil {
 			continue
 		}
 
-		// Only serve A records (IPv4 — Nebula uses 10.42.x.x)
-		if q.Qtype == dns.TypeA {
-			if ip4 := ip.To4(); ip4 != nil {
-				m.Answer = append(m.Answer, &dns.A{
-					Hdr: dns.RR_Header{
-						Name:   q.Name,
-						Rrtype: dns.TypeA,
-						Class:  dns.ClassINET,
-						Ttl:    60,
-					},
-					A: ip4,
-				})
-			}
+		if ip4 := ip.To4(); ip4 != nil {
+			m.Answer = append(m.Answer, &dns.A{
+				Hdr: dns.RR_Header{
+					Name:   q.Name,
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    60,
+				},
+				A: ip4,
+			})
 		}
 	}
 

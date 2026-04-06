@@ -149,6 +149,9 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 // reloadNebula restarts the embedded Nebula instance to pick up new certs.
 // Since the agent embeds Nebula in-process, we restart our own Nebula service.
 func reloadNebula() {
+	nebulaMu.Lock()
+	defer nebulaMu.Unlock()
+
 	if currentNebula == nil {
 		log.Printf("[renew] no embedded Nebula instance to reload")
 		return
@@ -161,6 +164,7 @@ func reloadNebula() {
 	if err != nil {
 		log.Printf("[renew] CRITICAL: failed to restart Nebula after cert renewal: %v", err)
 		log.Printf("[renew] agent will lose mesh connectivity when old cert expires")
+		currentNebula = nil
 		return
 	}
 

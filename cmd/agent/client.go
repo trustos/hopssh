@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -22,6 +23,7 @@ type joinResponse struct {
 	CACert         string `json:"caCert"`
 	NodeCert       string `json:"nodeCert"`
 	NodeKey        string `json:"nodeKey"`
+	AgentToken     string `json:"agentToken"`
 	ServerIP       string `json:"serverIP"`
 	NebulaIP       string `json:"nebulaIP"`
 	LighthousePort int    `json:"lighthousePort"`
@@ -94,6 +96,9 @@ func runClientJoin(args []string) {
 	writeFileSecure(filepath.Join(clientDir, "ca.crt"), []byte(jr.CACert), 0644)
 	writeFileSecure(filepath.Join(clientDir, "node.crt"), []byte(jr.NodeCert), 0644)
 	writeFileSecure(filepath.Join(clientDir, "node.key"), []byte(jr.NodeKey), 0600)
+	writeFileSecure(filepath.Join(clientDir, "token"), []byte(jr.AgentToken), 0600)
+	writeFileSecure(filepath.Join(clientDir, "endpoint"), []byte(*endpoint), 0600)
+	writeFileSecure(filepath.Join(clientDir, "node-id"), []byte(jr.NodeID), 0600)
 
 	// Generate Nebula config for client mode.
 	serverHost := extractHost(*endpoint)
@@ -102,12 +107,18 @@ func runClientJoin(args []string) {
 	fmt.Printf("\n  ✓ Joined network (%s)\n", jr.NebulaIP)
 	fmt.Printf("  ✓ DNS domain: .%s\n", jr.DNSDomain)
 
+	// Start cert renewal in background (certs are 24h, renew at 12h).
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runCertRenewal(ctx, *endpoint, jr.NodeID, jr.AgentToken)
+
 	// Start embedded Nebula and stay running.
 	configPath := filepath.Join(clientDir, "nebula.yaml")
 	svc, err := startNebula(configPath)
 	if err != nil {
 		log.Fatalf("Failed to start Nebula: %v", err)
 	}
+	currentNebula = svc
 	defer svc.Close()
 
 	fmt.Println("  ✓ Connected to mesh")

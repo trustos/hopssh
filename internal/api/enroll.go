@@ -263,6 +263,7 @@ func (h *EnrollHandler) JoinNetwork(w http.ResponseWriter, r *http.Request) {
 		"caCert":         string(network.NebulaCACert),
 		"nodeCert":       string(nodeCert.CertPEM),
 		"nodeKey":        string(nodeCert.KeyPEM),
+		"agentToken":     agentToken, // needed for cert renewal
 		"serverIP":       serverIP.Addr().String(),
 		"nebulaIP":       node.NebulaIP,
 		"lighthousePort": lighthousePort,

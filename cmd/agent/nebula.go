@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"sync"
 
 	"github.com/sirupsen/logrus"
 	"github.com/slackhq/nebula"
@@ -12,8 +13,11 @@ import (
 )
 
 // currentNebula is the running embedded Nebula instance.
-// Used by cert renewal to restart Nebula with new certs.
-var currentNebula *nebulaService
+// Protected by nebulaMu for concurrent access from main and renewal goroutines.
+var (
+	currentNebula *nebulaService
+	nebulaMu      sync.Mutex
+)
 
 // nebulaService wraps an embedded Nebula userspace instance.
 type nebulaService struct {

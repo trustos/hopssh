@@ -2,7 +2,9 @@ package api
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
+	"regexp"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -11,6 +13,12 @@ import (
 	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/mesh"
 )
+
+var validDNSName = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
+
+func isValidDNSName(name string) bool {
+	return len(name) >= 1 && len(name) <= 63 && validDNSName.MatchString(name)
+}
 
 // DNSHandler manages DNS records for networks.
 type DNSHandler struct {
@@ -72,6 +80,18 @@ func (h *DNSHandler) CreateDNSRecord(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" || body.NebulaIP == "" {
 		http.Error(w, "name and nebulaIP are required", http.StatusBadRequest)
+		return
+	}
+
+	// Validate DNS name: alphanumeric + hyphens, 1-63 chars, no leading/trailing hyphen.
+	if !isValidDNSName(body.Name) {
+		http.Error(w, "invalid DNS name: must be 1-63 alphanumeric characters or hyphens", http.StatusBadRequest)
+		return
+	}
+
+	// Validate IP address.
+	if net.ParseIP(body.NebulaIP) == nil {
+		http.Error(w, "invalid IP address", http.StatusBadRequest)
 		return
 	}
 

@@ -93,8 +93,10 @@ func runServe(args []string) {
 		if err != nil {
 			log.Printf("[agent] WARNING: Nebula failed to start: %v (running without mesh)", err)
 		} else {
+			nebulaMu.Lock()
 			currentNebula = svc
-			defer currentNebula.Close()
+			nebulaMu.Unlock()
+			defer svc.Close()
 			log.Printf("[agent] Nebula mesh connected")
 		}
 	} else {
