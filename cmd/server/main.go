@@ -96,18 +96,21 @@ func main() {
 	deviceCodes := db.NewDeviceCodeStore(database)
 	bundles := db.NewBundleStore(database)
 
-	// Initialize mesh manager.
-	meshMgr := mesh.NewManager(networks, nodes)
-	defer meshMgr.Stop()
+	// Initialize network manager (persistent per-network Nebula lighthouse+relay).
+	netMgr, err := mesh.NewNetworkManager(networks)
+	if err != nil {
+		log.Fatalf("Init network manager: %v", err)
+	}
+	defer netMgr.Stop()
 
-	fwdMgr := mesh.NewForwardManager(meshMgr)
+	fwdMgr := mesh.NewForwardManager(nil) // TODO: update ForwardManager for NetworkInstance
 
 	// Initialize handlers.
 	authH := &api.AuthHandler{Users: users, Sessions: sessions, Audit: audit}
-	networkH := &api.NetworkHandler{Networks: networks, Nodes: nodes, MeshManager: meshMgr, ForwardManager: fwdMgr}
+	networkH := &api.NetworkHandler{Networks: networks, Nodes: nodes, NetworkManager: netMgr, ForwardManager: fwdMgr}
 	enrollH := &api.EnrollHandler{Networks: networks, Nodes: nodes, Endpoint: *endpoint}
 	proxyH := &api.ProxyHandler{
-		MeshManager:    meshMgr,
+		NetworkManager: netMgr,
 		ForwardManager: fwdMgr,
 		Networks:       networks,
 		Nodes:          nodes,

@@ -13,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/trustos/hopssh/internal/auth"
 	"github.com/trustos/hopssh/internal/authz"
+	"github.com/trustos/hopssh/internal/mesh"
 	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/pki"
 )
@@ -23,13 +24,8 @@ const caDuration = 10 * 365 * 24 * time.Hour // 10 years
 type NetworkHandler struct {
 	Networks       *db.NetworkStore
 	Nodes          *db.NodeStore
-	MeshManager    MeshTunnelCloser    // for cleaning up tunnels on network delete
+	NetworkManager *mesh.NetworkManager
 	ForwardManager ForwardNetworkStopper // for cleaning up port forwards on network delete
-}
-
-// MeshTunnelCloser closes mesh tunnels for a node.
-type MeshTunnelCloser interface {
-	CloseTunnel(nodeID string)
 }
 
 // ForwardNetworkStopper stops all port forwards for a network.
@@ -53,11 +49,17 @@ func (h *NetworkHandler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 	var body struct {
-		Name string `json:"name"`
+		Name      string `json:"name"`
+		DNSDomain string `json:"dnsDomain"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
 		http.Error(w, "name is required", http.StatusBadRequest)
 		return
+	}
+
+	dnsDomain := body.DNSDomain
+	if dnsDomain == "" {
+		dnsDomain = "hop"
 	}
 
 	slug := uniqueSlug(slugify(body.Name), h.Networks)
@@ -91,16 +93,26 @@ func (h *NetworkHandler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Allocate a unique UDP port for this network's lighthouse.
+	lighthousePort, err := h.NetworkManager.AllocatePort()
+	if err != nil {
+		http.Error(w, "failed to allocate lighthouse port: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	lhPort := int64(lighthousePort)
+
 	network := &db.Network{
-		ID:           uuid.New().String(),
-		UserID:       user.ID,
-		Name:         body.Name,
-		Slug:         slug,
-		NebulaCACert: ca.CertPEM,
-		NebulaCAKey:  ca.KeyPEM,
-		NebulaSubnet: subnet,
-		ServerCert:   serverCert.CertPEM,
-		ServerKey:    serverCert.KeyPEM,
+		ID:             uuid.New().String(),
+		UserID:         user.ID,
+		Name:           body.Name,
+		Slug:           slug,
+		NebulaCACert:   ca.CertPEM,
+		NebulaCAKey:    ca.KeyPEM,
+		NebulaSubnet:   subnet,
+		ServerCert:     serverCert.CertPEM,
+		ServerKey:      serverCert.KeyPEM,
+		LighthousePort: &lhPort,
+		DNSDomain:      dnsDomain,
 	}
 	if err := h.Networks.Create(network); err != nil {
 		if db.IsUniqueViolation(err) {
@@ -111,11 +123,19 @@ func (h *NetworkHandler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Start the lighthouse for this network.
+	if err := h.NetworkManager.StartNetwork(network); err != nil {
+		log.Printf("[networks] failed to start lighthouse for %s: %v", network.Slug, err)
+		// Don't fail the request — network is created, lighthouse can be started later
+	}
+
 	writeJSONStatus(w, http.StatusCreated, map[string]interface{}{
-		"id":     network.ID,
-		"name":   network.Name,
-		"slug":   network.Slug,
-		"subnet": network.NebulaSubnet,
+		"id":             network.ID,
+		"name":           network.Name,
+		"slug":           network.Slug,
+		"subnet":         network.NebulaSubnet,
+		"lighthousePort": lighthousePort,
+		"dnsDomain":      dnsDomain,
 	})
 }
 
@@ -230,15 +250,12 @@ func (h *NetworkHandler) DeleteNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Close active port forwards and mesh tunnels for this network's nodes.
+	// Stop the lighthouse and port forwards for this network.
 	if h.ForwardManager != nil {
 		h.ForwardManager.StopAllForNetwork(networkID)
 	}
-	if h.MeshManager != nil {
-		nodes, _ := h.Nodes.ListForNetwork(networkID)
-		for _, n := range nodes {
-			h.MeshManager.CloseTunnel(n.ID)
-		}
+	if h.NetworkManager != nil {
+		h.NetworkManager.StopNetwork(networkID)
 	}
 
 	if err := h.Nodes.DeleteForNetwork(networkID); err != nil {

@@ -27,7 +27,7 @@ func (h *ProxyHandler) audit(userID, action string, networkID, nodeID *string, d
 
 // ProxyHandler proxies requests to agents through the Nebula mesh.
 type ProxyHandler struct {
-	MeshManager    *mesh.Manager
+	NetworkManager *mesh.NetworkManager
 	ForwardManager *mesh.ForwardManager
 	Networks       *db.NetworkStore
 	Nodes          *db.NodeStore
@@ -73,13 +73,13 @@ func (h *ProxyHandler) NodeHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tunnel, err := h.MeshManager.GetTunnelForNode(node.ID)
+	inst, err := h.getNetworkInstance(node.NetworkID)
 	if err != nil {
 		http.Error(w, "agent unreachable: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 
-	resp, err := agentRequest(r.Context(), tunnel, "GET", "/health", nil)
+	resp, err := agentRequest(r.Context(), inst, node, "GET", "/health", nil)
 	if err != nil {
 		http.Error(w, "agent unreachable: "+err.Error(), http.StatusBadGateway)
 		return
@@ -111,7 +111,7 @@ func (h *ProxyHandler) NodeShell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tunnel, err := h.MeshManager.GetTunnelForNode(node.ID)
+	inst, err := h.getNetworkInstance(node.NetworkID)
 	if err != nil {
 		http.Error(w, "agent unreachable: "+err.Error(), http.StatusBadGateway)
 		return
@@ -130,15 +130,16 @@ func (h *ProxyHandler) NodeShell(w http.ResponseWriter, r *http.Request) {
 	}
 	defer browserConn.Close()
 
-	// Connect to agent's /shell WebSocket through the mesh tunnel.
+	// Connect to agent's /shell WebSocket through the mesh.
+	nodeIP := agentNodeIP(node)
 	wsDialer := websocket.Dialer{
 		NetDialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			return tunnel.Dial(ctx)
+			return inst.Dial(ctx, nodeIP)
 		},
 	}
 
-	agentURL := fmt.Sprintf("ws://%s/shell", tunnel.AgentNebulaIP()+":41820")
-	headers := http.Header{"Authorization": []string{"Bearer " + tunnel.Token()}}
+	agentURL := fmt.Sprintf("ws://%s:%d/shell", nodeIP, 41820)
+	headers := http.Header{"Authorization": []string{"Bearer " + node.AgentToken}}
 
 	agentConn, _, err := wsDialer.DialContext(r.Context(), agentURL, headers)
 	if err != nil {
@@ -207,14 +208,14 @@ func (h *ProxyHandler) NodeExec(w http.ResponseWriter, r *http.Request) {
 	networkID := chi.URLParam(r, "networkID")
 	h.audit(user.ID, "exec", &networkID, &node.ID, nil)
 
-	tunnel, err := h.MeshManager.GetTunnelForNode(node.ID)
+	inst, err := h.getNetworkInstance(node.NetworkID)
 	if err != nil {
 		http.Error(w, "agent unreachable: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 
 	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
-	resp, err := agentRequest(r.Context(), tunnel, "POST", "/exec", r.Body)
+	resp, err := agentRequest(r.Context(), inst, node, "POST", "/exec", r.Body)
 	if err != nil {
 		http.Error(w, "agent unreachable: "+err.Error(), http.StatusBadGateway)
 		return
@@ -421,8 +422,8 @@ func (h *ProxyHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Close mesh tunnel for this node.
-	h.MeshManager.CloseTunnel(node.ID)
+	// Node will be disconnected from the mesh when its cert expires (24h)
+	// or immediately when it tries to re-register with the lighthouse.
 
 	// Delete from database.
 	if err := h.Nodes.Delete(node.ID); err != nil {
@@ -455,16 +456,34 @@ func (h *ProxyHandler) checkOrigin(r *http.Request) bool {
 	return origin == "http://"+host || origin == "https://"+host
 }
 
-// agentRequest makes an HTTP request to the agent through the mesh tunnel.
-func agentRequest(ctx context.Context, tunnel *mesh.Tunnel, method, path string, body io.Reader) (*http.Response, error) {
-	client := tunnel.HTTPClient()
-	url := tunnel.AgentURL() + path
+// getNetworkInstance returns the running Nebula lighthouse for a node's network.
+func (h *ProxyHandler) getNetworkInstance(networkID string) (*mesh.NetworkInstance, error) {
+	return h.NetworkManager.GetInstance(networkID)
+}
+
+// agentNodeIP extracts the IP (without CIDR mask) from the node's NebulaIP.
+func agentNodeIP(node *db.Node) string {
+	ip, _, err := net.ParseCIDR(node.NebulaIP)
+	if err != nil {
+		ip = net.ParseIP(node.NebulaIP)
+	}
+	if ip == nil {
+		return node.NebulaIP
+	}
+	return ip.String()
+}
+
+// agentRequest makes an HTTP request to the agent through the mesh.
+func agentRequest(ctx context.Context, inst *mesh.NetworkInstance, node *db.Node, method, path string, body io.Reader) (*http.Response, error) {
+	nodeIP := agentNodeIP(node)
+	client := inst.HTTPClient(nodeIP)
+	url := fmt.Sprintf("http://%s:%d%s", nodeIP, 41820, path)
 
 	req, err := http.NewRequestWithContext(ctx, method, url, body)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("Authorization", "Bearer "+tunnel.Token())
+	req.Header.Set("Authorization", "Bearer "+node.AgentToken)
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
