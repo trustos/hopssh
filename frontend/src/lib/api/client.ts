@@ -36,10 +36,15 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 	if (!res.ok) {
 		let msg = res.statusText;
 		try {
-			const err = await res.json();
-			msg = err.error || msg;
+			const text = await res.text();
+			try {
+				const json = JSON.parse(text);
+				msg = json.error || text || msg;
+			} catch {
+				msg = text.trim() || msg;
+			}
 		} catch {
-			msg = await res.text().catch(() => msg);
+			// couldn't read body at all
 		}
 		throw new ApiError(res.status, msg);
 	}
