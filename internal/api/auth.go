@@ -21,6 +21,17 @@ type AuthHandler struct {
 	Sessions *db.SessionStore
 }
 
+// Register creates a new user account.
+// @Summary      Register a new user
+// @Description  Create a user account with email and password. Returns session token.
+// @Tags         auth
+// @Accept       json
+// @Produce      json
+// @Param        body body RegisterRequest true "Registration details"
+// @Success      200 {object} AuthResponse
+// @Failure      400 {object} ErrorResponse "Missing email or password"
+// @Failure      409 {object} ErrorResponse "Email already registered"
+// @Router       /api/auth/register [post]
 func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Email    string `json:"email"`
@@ -80,6 +91,16 @@ func (h *AuthHandler) Register(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Login authenticates a user and returns a session token.
+// @Summary      Login
+// @Description  Authenticate with email and password. Returns session token and sets cookie.
+// @Tags         auth
+// @Accept       json
+// @Produce      json
+// @Param        body body LoginRequest true "Login credentials"
+// @Success      200 {object} AuthResponse
+// @Failure      401 {object} ErrorResponse "Invalid credentials"
+// @Router       /api/auth/login [post]
 func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Email    string `json:"email"`
@@ -122,6 +143,13 @@ func (h *AuthHandler) Login(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Logout destroys the current session.
+// @Summary      Logout
+// @Description  Destroy the current session and clear the session cookie.
+// @Tags         auth
+// @Security     BearerAuth
+// @Success      200
+// @Router       /api/auth/logout [post]
 func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	if user == nil {
@@ -141,6 +169,15 @@ func (h *AuthHandler) Logout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// Me returns the current authenticated user.
+// @Summary      Current user
+// @Description  Returns the authenticated user's profile.
+// @Tags         auth
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200 {object} UserResponse
+// @Failure      401 {object} ErrorResponse
+// @Router       /api/auth/me [get]
 func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	if user == nil {
@@ -155,6 +192,13 @@ func (h *AuthHandler) Me(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Status checks whether any users exist (for showing register vs login page).
+// @Summary      Auth status
+// @Description  Returns whether any users are registered. Used by frontend to show register or login form.
+// @Tags         auth
+// @Produce      json
+// @Success      200 {object} StatusResponse
+// @Router       /api/auth/status [get]
 func (h *AuthHandler) Status(w http.ResponseWriter, r *http.Request) {
 	count, _ := h.Users.Count()
 	w.Header().Set("Content-Type", "application/json")

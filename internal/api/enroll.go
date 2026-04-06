@@ -25,7 +25,15 @@ type EnrollHandler struct {
 }
 
 // CreateNode generates an enrollment token and returns the install command.
-// Called by authenticated users from the dashboard.
+// @Summary      Add node to network
+// @Description  Generates a one-time enrollment token for a new node. Returns the curl install command to run on the server.
+// @Tags         nodes
+// @Security     BearerAuth
+// @Produce      json
+// @Param        networkID path string true "Network ID"
+// @Success      201 {object} CreateNodeResponse
+// @Failure      404 {object} ErrorResponse "Network not found"
+// @Router       /api/networks/{networkID}/nodes [post]
 func (h *EnrollHandler) CreateNode(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	networkID := chi.URLParam(r, "networkID")
@@ -73,7 +81,16 @@ func (h *EnrollHandler) CreateNode(w http.ResponseWriter, r *http.Request) {
 }
 
 // Enroll is called by the agent during installation. Public endpoint (no auth).
-// Validates the enrollment token, issues a node cert, and returns connection details.
+// @Summary      Agent enrollment
+// @Description  Called by the install script. Validates the one-time enrollment token, issues a Nebula certificate, and returns connection details. The enrollment token is consumed and cannot be reused.
+// @Tags         enrollment
+// @Accept       json
+// @Produce      json
+// @Param        body body EnrollRequest true "Enrollment token and system info"
+// @Success      200 {object} EnrollResponse
+// @Failure      400 {object} ErrorResponse "Missing token"
+// @Failure      401 {object} ErrorResponse "Invalid enrollment token"
+// @Router       /api/enroll [post]
 func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Token    string `json:"token"`

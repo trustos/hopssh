@@ -13,8 +13,26 @@ import (
 	"github.com/trustos/hopssh/internal/crypto"
 	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/mesh"
+
+	_ "github.com/trustos/hopssh/docs" // swagger generated docs
 )
 
+// @title        hopssh API
+// @version      0.1.0
+// @description  Browser-based server access through auto-provisioned encrypted mesh tunnels. No SSH keys, no VPN, no bastion hosts.
+//
+// @contact.name   hopssh
+// @contact.url    https://hopssh.com
+//
+// @license.name  Proprietary
+//
+// @host      localhost:8080
+// @BasePath  /
+//
+// @securityDefinitions.apikey BearerAuth
+// @in header
+// @name Authorization
+// @description Session token from login/register. Format: "Bearer {token}"
 func main() {
 	addr := flag.String("addr", ":8080", "Listen address")
 	dataDir := flag.String("data", "./data", "Data directory")

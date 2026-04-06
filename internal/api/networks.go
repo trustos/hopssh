@@ -22,6 +22,18 @@ type NetworkHandler struct {
 	Nodes    *db.NodeStore
 }
 
+// CreateNetwork creates a new mesh network with auto-generated Nebula CA and subnet.
+// @Summary      Create network
+// @Description  Creates a new isolated mesh network. Auto-generates Nebula CA (Curve25519), allocates /24 subnet, and issues server certificate.
+// @Tags         networks
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        body body CreateNetworkRequest true "Network name"
+// @Success      201 {object} NetworkResponse
+// @Failure      400 {object} ErrorResponse
+// @Failure      401 {object} ErrorResponse
+// @Router       /api/networks [post]
 func (h *NetworkHandler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	var body struct {
@@ -86,6 +98,15 @@ func (h *NetworkHandler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ListNetworks returns all networks for the authenticated user.
+// @Summary      List networks
+// @Description  Returns all mesh networks owned by the authenticated user with node counts.
+// @Tags         networks
+// @Security     BearerAuth
+// @Produce      json
+// @Success      200 {array} NetworkResponse
+// @Failure      401 {object} ErrorResponse
+// @Router       /api/networks [get]
 func (h *NetworkHandler) ListNetworks(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	networks, err := h.Networks.ListForUser(user.ID)
@@ -120,6 +141,16 @@ func (h *NetworkHandler) ListNetworks(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(result)
 }
 
+// GetNetwork returns a network's details including its nodes.
+// @Summary      Get network
+// @Description  Returns network details, subnet info, and all nodes.
+// @Tags         networks
+// @Security     BearerAuth
+// @Produce      json
+// @Param        networkID path string true "Network ID"
+// @Success      200 {object} NetworkResponse
+// @Failure      404 {object} ErrorResponse
+// @Router       /api/networks/{networkID} [get]
 func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	networkID := chi.URLParam(r, "networkID")
@@ -145,6 +176,15 @@ func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// DeleteNetwork removes a network and all its nodes.
+// @Summary      Delete network
+// @Description  Permanently deletes a network, all its nodes, and associated PKI material.
+// @Tags         networks
+// @Security     BearerAuth
+// @Param        networkID path string true "Network ID"
+// @Success      200
+// @Failure      404 {object} ErrorResponse
+// @Router       /api/networks/{networkID} [delete]
 func (h *NetworkHandler) DeleteNetwork(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	networkID := chi.URLParam(r, "networkID")

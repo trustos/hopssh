@@ -3,6 +3,7 @@ package api
 import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	httpSwagger "github.com/swaggo/http-swagger/v2"
 	"github.com/trustos/hopssh/internal/auth"
 	"github.com/trustos/hopssh/internal/db"
 )
@@ -18,6 +19,9 @@ func NewRouter(
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
+
+	// Swagger UI.
+	r.Get("/swagger/*", httpSwagger.WrapHandler)
 
 	// Public endpoints.
 	r.Get("/api/auth/status", authH.Status)

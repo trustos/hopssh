@@ -1,0 +1,756 @@
+basePath: /
+definitions:
+  internal_api.AuthResponse:
+    properties:
+      email:
+        example: user@example.com
+        type: string
+      id:
+        example: 550e8400-e29b-41d4-a716-446655440000
+        type: string
+      name:
+        example: John Doe
+        type: string
+      token:
+        example: a1b2c3d4e5f6...
+        type: string
+    type: object
+  internal_api.CreateNetworkRequest:
+    properties:
+      name:
+        example: production
+        type: string
+    type: object
+  internal_api.CreateNodeResponse:
+    properties:
+      enrollmentToken:
+        example: a1b2c3d4...
+        type: string
+      installCommand:
+        example: curl -fsSL https://hopssh.com/install | sudo bash -s -- --token a1b2c3d4...
+        type: string
+      nebulaIP:
+        example: 10.42.1.2/24
+        type: string
+      nodeId:
+        example: 550e8400-e29b-41d4-a716-446655440000
+        type: string
+    type: object
+  internal_api.EnrollRequest:
+    properties:
+      arch:
+        example: arm64
+        type: string
+      hostname:
+        example: web-server-1
+        type: string
+      os:
+        example: linux
+        type: string
+      token:
+        example: a1b2c3d4...
+        type: string
+    type: object
+  internal_api.EnrollResponse:
+    properties:
+      agentToken:
+        example: deadbeef1234...
+        type: string
+      caCert:
+        example: '-----BEGIN NEBULA CERTIFICATE-----...'
+        type: string
+      nebulaIP:
+        example: 10.42.1.2/24
+        type: string
+      nodeCert:
+        example: '-----BEGIN NEBULA CERTIFICATE-----...'
+        type: string
+      nodeKey:
+        example: '-----BEGIN NEBULA X25519 PRIVATE KEY-----...'
+        type: string
+      serverIP:
+        example: 10.42.1.1
+        type: string
+    type: object
+  internal_api.ErrorResponse:
+    properties:
+      error:
+        example: invalid credentials
+        type: string
+    type: object
+  internal_api.ExecRequest:
+    properties:
+      args:
+        example:
+        - -la
+        - /var/log
+        items:
+          type: string
+        type: array
+      command:
+        example: ls
+        type: string
+      dir:
+        example: /home/ubuntu
+        type: string
+      env:
+        example:
+        - FOO=bar
+        items:
+          type: string
+        type: array
+    type: object
+  internal_api.HealthResponse:
+    properties:
+      arch:
+        example: arm64
+        type: string
+      hostname:
+        example: web-server-1
+        type: string
+      os:
+        example: linux
+        type: string
+      status:
+        example: ok
+        type: string
+      uptime:
+        example: 2h30m15s
+        type: string
+    type: object
+  internal_api.LoginRequest:
+    properties:
+      email:
+        example: user@example.com
+        type: string
+      password:
+        example: secretpassword
+        type: string
+    type: object
+  internal_api.NetworkResponse:
+    properties:
+      createdAt:
+        example: 1712361600
+        type: integer
+      id:
+        example: 550e8400-e29b-41d4-a716-446655440000
+        type: string
+      name:
+        example: production
+        type: string
+      nodeCount:
+        example: 3
+        type: integer
+      slug:
+        example: production
+        type: string
+      subnet:
+        example: 10.42.1.0/24
+        type: string
+    type: object
+  internal_api.NodeResponse:
+    properties:
+      agentRealIP:
+        example: 203.0.113.10
+        type: string
+      arch:
+        example: arm64
+        type: string
+      createdAt:
+        example: 1712361600
+        type: integer
+      hostname:
+        example: web-server-1
+        type: string
+      id:
+        example: 550e8400-e29b-41d4-a716-446655440000
+        type: string
+      lastSeenAt:
+        example: 1712361600
+        type: integer
+      nebulaIP:
+        example: 10.42.1.2/24
+        type: string
+      networkId:
+        example: 550e8400-e29b-41d4-a716-446655440000
+        type: string
+      os:
+        example: linux
+        type: string
+      status:
+        example: online
+        type: string
+    type: object
+  internal_api.PortForwardResponse:
+    properties:
+      createdAt:
+        example: 1712361600
+        type: integer
+      id:
+        example: fwd-1
+        type: string
+      localAddr:
+        example: 127.0.0.1:15432
+        type: string
+      localPort:
+        example: 15432
+        type: integer
+      networkId:
+        example: 550e8400-...
+        type: string
+      nodeId:
+        example: 550e8400-...
+        type: string
+      remotePort:
+        example: 5432
+        type: integer
+    type: object
+  internal_api.RegisterRequest:
+    properties:
+      email:
+        example: user@example.com
+        type: string
+      name:
+        example: John Doe
+        type: string
+      password:
+        example: secretpassword
+        type: string
+    type: object
+  internal_api.StartPortForwardRequest:
+    properties:
+      localPort:
+        example: 15432
+        type: integer
+      remotePort:
+        example: 5432
+        type: integer
+    type: object
+  internal_api.StatusResponse:
+    properties:
+      hasUsers:
+        example: true
+        type: boolean
+    type: object
+  internal_api.UserResponse:
+    properties:
+      email:
+        example: user@example.com
+        type: string
+      id:
+        example: 550e8400-e29b-41d4-a716-446655440000
+        type: string
+      name:
+        example: John Doe
+        type: string
+    type: object
+host: localhost:8080
+info:
+  contact:
+    name: hopssh
+    url: https://hopssh.com
+  description: Browser-based server access through auto-provisioned encrypted mesh
+    tunnels. No SSH keys, no VPN, no bastion hosts.
+  license:
+    name: Proprietary
+  title: hopssh API
+  version: 0.1.0
+paths:
+  /api/auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticate with email and password. Returns session token and
+        sets cookie.
+      parameters:
+      - description: Login credentials
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.AuthResponse'
+        "401":
+          description: Invalid credentials
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      summary: Login
+      tags:
+      - auth
+  /api/auth/logout:
+    post:
+      description: Destroy the current session and clear the session cookie.
+      responses:
+        "200":
+          description: OK
+      security:
+      - BearerAuth: []
+      summary: Logout
+      tags:
+      - auth
+  /api/auth/me:
+    get:
+      description: Returns the authenticated user's profile.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.UserResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Current user
+      tags:
+      - auth
+  /api/auth/register:
+    post:
+      consumes:
+      - application/json
+      description: Create a user account with email and password. Returns session
+        token.
+      parameters:
+      - description: Registration details
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.RegisterRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.AuthResponse'
+        "400":
+          description: Missing email or password
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "409":
+          description: Email already registered
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      summary: Register a new user
+      tags:
+      - auth
+  /api/auth/status:
+    get:
+      description: Returns whether any users are registered. Used by frontend to show
+        register or login form.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.StatusResponse'
+      summary: Auth status
+      tags:
+      - auth
+  /api/enroll:
+    post:
+      consumes:
+      - application/json
+      description: Called by the install script. Validates the one-time enrollment
+        token, issues a Nebula certificate, and returns connection details. The enrollment
+        token is consumed and cannot be reused.
+      parameters:
+      - description: Enrollment token and system info
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.EnrollRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.EnrollResponse'
+        "400":
+          description: Missing token
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "401":
+          description: Invalid enrollment token
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      summary: Agent enrollment
+      tags:
+      - enrollment
+  /api/networks:
+    get:
+      description: Returns all mesh networks owned by the authenticated user with
+        node counts.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/internal_api.NetworkResponse'
+            type: array
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List networks
+      tags:
+      - networks
+    post:
+      consumes:
+      - application/json
+      description: Creates a new isolated mesh network. Auto-generates Nebula CA (Curve25519),
+        allocates /24 subnet, and issues server certificate.
+      parameters:
+      - description: Network name
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.CreateNetworkRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_api.NetworkResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create network
+      tags:
+      - networks
+  /api/networks/{networkID}:
+    delete:
+      description: Permanently deletes a network, all its nodes, and associated PKI
+        material.
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      responses:
+        "200":
+          description: OK
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete network
+      tags:
+      - networks
+    get:
+      description: Returns network details, subnet info, and all nodes.
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.NetworkResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get network
+      tags:
+      - networks
+  /api/networks/{networkID}/nodes:
+    get:
+      description: Returns all nodes in a network with their status, hostname, OS,
+        and last-seen time.
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/internal_api.NodeResponse'
+            type: array
+        "404":
+          description: Network not found
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List nodes
+      tags:
+      - nodes
+    post:
+      description: Generates a one-time enrollment token for a new node. Returns the
+        curl install command to run on the server.
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_api.CreateNodeResponse'
+        "404":
+          description: Network not found
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Add node to network
+      tags:
+      - nodes
+  /api/networks/{networkID}/nodes/{nodeID}/exec:
+    post:
+      consumes:
+      - application/json
+      description: Executes a command on the node via the agent. Output is streamed
+        as text/plain. The response ends with a ---EXIT:N--- marker containing the
+        exit code.
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      - description: Node ID
+        in: path
+        name: nodeID
+        required: true
+        type: string
+      - description: Command to execute
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.ExecRequest'
+      produces:
+      - text/plain
+      responses:
+        "200":
+          description: Streaming command output
+          schema:
+            type: string
+        "404":
+          description: Node not found
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "502":
+          description: Agent unreachable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Execute command
+      tags:
+      - nodes
+  /api/networks/{networkID}/nodes/{nodeID}/health:
+    get:
+      description: Proxies a health check to the agent on the node via Nebula mesh.
+        Returns hostname, OS, architecture, and uptime. Updates the node's last-seen
+        timestamp.
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      - description: Node ID
+        in: path
+        name: nodeID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.HealthResponse'
+        "404":
+          description: Node not found
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "502":
+          description: Agent unreachable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Node health check
+      tags:
+      - nodes
+  /api/networks/{networkID}/nodes/{nodeID}/port-forwards:
+    post:
+      consumes:
+      - application/json
+      description: Creates a local TCP listener that proxies connections through the
+        Nebula mesh to a remote port on the node. Similar to kubectl port-forward.
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      - description: Node ID
+        in: path
+        name: nodeID
+        required: true
+        type: string
+      - description: Port forward config
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.StartPortForwardRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_api.PortForwardResponse'
+        "400":
+          description: remotePort required
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "404":
+          description: Node not found
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Start port forward
+      tags:
+      - port-forwards
+  /api/networks/{networkID}/nodes/{nodeID}/shell:
+    get:
+      description: Upgrades to WebSocket and relays a PTY shell session to the agent.
+        Supports terminal resize via binary control frames. Uses xterm-256color.
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      - description: Node ID
+        in: path
+        name: nodeID
+        required: true
+        type: string
+      responses:
+        "101":
+          description: WebSocket upgrade
+        "404":
+          description: Node not found
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "502":
+          description: Agent unreachable
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Web terminal
+      tags:
+      - nodes
+  /api/networks/{networkID}/port-forwards:
+    get:
+      description: Returns all active TCP port forwards for a network.
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/internal_api.PortForwardResponse'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List port forwards
+      tags:
+      - port-forwards
+  /api/networks/{networkID}/port-forwards/{fwdID}:
+    delete:
+      description: Closes an active port forward. Active connections are given 3 seconds
+        to drain before force-close.
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      - description: Port forward ID
+        in: path
+        name: fwdID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Port forward not found
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Stop port forward
+      tags:
+      - port-forwards
+securityDefinitions:
+  BearerAuth:
+    description: 'Session token from login/register. Format: "Bearer {token}"'
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

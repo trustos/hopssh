@@ -43,7 +43,18 @@ func (h *ProxyHandler) requireNode(r *http.Request) (*db.Network, *db.Node, erro
 	return network, node, nil
 }
 
-// NodeHealth proxies a health check to the agent.
+// NodeHealth proxies a health check to the agent through the mesh tunnel.
+// @Summary      Node health check
+// @Description  Proxies a health check to the agent on the node via Nebula mesh. Returns hostname, OS, architecture, and uptime. Updates the node's last-seen timestamp.
+// @Tags         nodes
+// @Security     BearerAuth
+// @Produce      json
+// @Param        networkID path string true "Network ID"
+// @Param        nodeID path string true "Node ID"
+// @Success      200 {object} HealthResponse
+// @Failure      404 {object} ErrorResponse "Node not found"
+// @Failure      502 {object} ErrorResponse "Agent unreachable"
+// @Router       /api/networks/{networkID}/nodes/{nodeID}/health [get]
 func (h *ProxyHandler) NodeHealth(w http.ResponseWriter, r *http.Request) {
 	_, node, err := h.requireNode(r)
 	if err != nil {
@@ -77,7 +88,17 @@ func (h *ProxyHandler) NodeHealth(w http.ResponseWriter, r *http.Request) {
 	io.Copy(w, resp.Body)
 }
 
-// NodeShell proxies a WebSocket terminal session to the agent.
+// NodeShell proxies a WebSocket terminal session to the agent through the mesh.
+// @Summary      Web terminal
+// @Description  Upgrades to WebSocket and relays a PTY shell session to the agent. Supports terminal resize via binary control frames. Uses xterm-256color.
+// @Tags         nodes
+// @Security     BearerAuth
+// @Param        networkID path string true "Network ID"
+// @Param        nodeID path string true "Node ID"
+// @Success      101 "WebSocket upgrade"
+// @Failure      404 {object} ErrorResponse "Node not found"
+// @Failure      502 {object} ErrorResponse "Agent unreachable"
+// @Router       /api/networks/{networkID}/nodes/{nodeID}/shell [get]
 func (h *ProxyHandler) NodeShell(w http.ResponseWriter, r *http.Request) {
 	_, node, err := h.requireNode(r)
 	if err != nil {
@@ -153,6 +174,19 @@ func (h *ProxyHandler) NodeShell(w http.ResponseWriter, r *http.Request) {
 }
 
 // NodeExec proxies a command execution request with streaming output.
+// @Summary      Execute command
+// @Description  Executes a command on the node via the agent. Output is streamed as text/plain. The response ends with a ---EXIT:N--- marker containing the exit code.
+// @Tags         nodes
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      plain
+// @Param        networkID path string true "Network ID"
+// @Param        nodeID path string true "Node ID"
+// @Param        body body ExecRequest true "Command to execute"
+// @Success      200 {string} string "Streaming command output"
+// @Failure      404 {object} ErrorResponse "Node not found"
+// @Failure      502 {object} ErrorResponse "Agent unreachable"
+// @Router       /api/networks/{networkID}/nodes/{nodeID}/exec [post]
 func (h *ProxyHandler) NodeExec(w http.ResponseWriter, r *http.Request) {
 	_, node, err := h.requireNode(r)
 	if err != nil {
@@ -196,7 +230,20 @@ func (h *ProxyHandler) NodeExec(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// StartPortForward creates a local TCP port forward through the mesh.
+// StartPortForward creates a local TCP port forward through the mesh tunnel.
+// @Summary      Start port forward
+// @Description  Creates a local TCP listener that proxies connections through the Nebula mesh to a remote port on the node. Similar to kubectl port-forward.
+// @Tags         port-forwards
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        networkID path string true "Network ID"
+// @Param        nodeID path string true "Node ID"
+// @Param        body body StartPortForwardRequest true "Port forward config"
+// @Success      201 {object} PortForwardResponse
+// @Failure      400 {object} ErrorResponse "remotePort required"
+// @Failure      404 {object} ErrorResponse "Node not found"
+// @Router       /api/networks/{networkID}/nodes/{nodeID}/port-forwards [post]
 func (h *ProxyHandler) StartPortForward(w http.ResponseWriter, r *http.Request) {
 	_, node, err := h.requireNode(r)
 	if err != nil {
@@ -225,7 +272,16 @@ func (h *ProxyHandler) StartPortForward(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(pf)
 }
 
-// StopPortForward closes a port forward.
+// StopPortForward closes a port forward. Active connections are drained with a 3-second timeout.
+// @Summary      Stop port forward
+// @Description  Closes an active port forward. Active connections are given 3 seconds to drain before force-close.
+// @Tags         port-forwards
+// @Security     BearerAuth
+// @Param        networkID path string true "Network ID"
+// @Param        fwdID path string true "Port forward ID"
+// @Success      204
+// @Failure      404 {object} ErrorResponse "Port forward not found"
+// @Router       /api/networks/{networkID}/port-forwards/{fwdID} [delete]
 func (h *ProxyHandler) StopPortForward(w http.ResponseWriter, r *http.Request) {
 	fwdID := chi.URLParam(r, "fwdID")
 	if err := h.ForwardManager.Stop(fwdID); err != nil {
@@ -236,6 +292,14 @@ func (h *ProxyHandler) StopPortForward(w http.ResponseWriter, r *http.Request) {
 }
 
 // ListPortForwards returns all active port forwards for a network.
+// @Summary      List port forwards
+// @Description  Returns all active TCP port forwards for a network.
+// @Tags         port-forwards
+// @Security     BearerAuth
+// @Produce      json
+// @Param        networkID path string true "Network ID"
+// @Success      200 {array} PortForwardResponse
+// @Router       /api/networks/{networkID}/port-forwards [get]
 func (h *ProxyHandler) ListPortForwards(w http.ResponseWriter, r *http.Request) {
 	networkID := chi.URLParam(r, "networkID")
 	forwards := h.ForwardManager.List(networkID)
@@ -247,6 +311,15 @@ func (h *ProxyHandler) ListPortForwards(w http.ResponseWriter, r *http.Request) 
 }
 
 // ListNodes returns all nodes for a network.
+// @Summary      List nodes
+// @Description  Returns all nodes in a network with their status, hostname, OS, and last-seen time.
+// @Tags         nodes
+// @Security     BearerAuth
+// @Produce      json
+// @Param        networkID path string true "Network ID"
+// @Success      200 {array} NodeResponse
+// @Failure      404 {object} ErrorResponse "Network not found"
+// @Router       /api/networks/{networkID}/nodes [get]
 func (h *ProxyHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	networkID := chi.URLParam(r, "networkID")
