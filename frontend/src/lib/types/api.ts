@@ -23,6 +23,8 @@ export interface NetworkResponse {
 	slug: string;
 	subnet: string;
 	nodeCount: number;
+	lighthousePort: number | null;
+	dnsDomain: string;
 	createdAt: number;
 }
 
@@ -38,6 +40,9 @@ export interface NodeResponse {
 	arch: string;
 	nebulaIP: string;
 	agentRealIP: string | null;
+	nodeType: string;
+	exposedPorts: string | null;
+	dnsName: string | null;
 	status: string;
 	lastSeenAt: number | null;
 	createdAt: number;
@@ -65,6 +70,14 @@ export interface PortForwardResponse {
 	remotePort: number;
 	localPort: number;
 	localAddr: string;
+	createdAt: number;
+}
+
+export interface DNSRecordResponse {
+	id: string;
+	networkId: string;
+	name: string;
+	nebulaIP: string;
 	createdAt: number;
 }
 

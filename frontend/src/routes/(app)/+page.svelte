@@ -11,6 +11,7 @@
 	// Create network dialog
 	let showCreate = $state(false);
 	let newName = $state('');
+	let newDomain = $state('hop');
 	let creating = $state(false);
 	let createError = $state('');
 
@@ -36,9 +37,10 @@
 		creating = true;
 		createError = '';
 		try {
-			await networksApi.create(newName.trim());
+			await networksApi.create(newName.trim(), newDomain.trim() || undefined);
 			showCreate = false;
 			newName = '';
+			newDomain = 'hop';
 			await loadNetworks();
 		} catch (e) {
 			createError = e instanceof ApiError ? e.message : 'Failed to create network';
@@ -82,6 +84,22 @@
 							placeholder="production"
 							class="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
 						/>
+					</div>
+					<div class="space-y-2">
+						<label for="dns-domain" class="text-sm font-medium">DNS Domain</label>
+						<div class="flex items-center gap-2">
+							<span class="text-sm text-muted-foreground">hostname.</span>
+							<input
+								id="dns-domain"
+								type="text"
+								bind:value={newDomain}
+								placeholder="hop"
+								class="w-24 rounded-md border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
+							/>
+						</div>
+						<p class="text-xs text-muted-foreground">
+							Nodes will be reachable as <span class="font-mono">hostname.{newDomain || 'hop'}</span>
+						</p>
 					</div>
 					<div class="flex justify-end gap-2">
 						<button
@@ -134,7 +152,10 @@
 				>
 					<div>
 						<div class="font-medium">{network.name}</div>
-						<div class="font-mono text-sm text-muted-foreground">{network.subnet}</div>
+						<div class="flex gap-3 text-sm text-muted-foreground">
+							<span class="font-mono">{network.subnet}</span>
+							<span class="font-mono">.{network.dnsDomain}</span>
+						</div>
 					</div>
 					<div class="text-sm text-muted-foreground">
 						{network.nodeCount} {network.nodeCount === 1 ? 'node' : 'nodes'}

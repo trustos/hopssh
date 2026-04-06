@@ -63,11 +63,11 @@ export const auth = {
 export const networks = {
 	list: () => request<NetworkResponse[]>('GET', '/api/networks'),
 	get: (id: string) => request<NetworkDetailResponse>('GET', `/api/networks/${id}`),
-	create: (name: string) =>
-		request<{ id: string; name: string; slug: string; subnet: string }>(
+	create: (name: string, dnsDomain?: string) =>
+		request<{ id: string; name: string; slug: string; subnet: string; dnsDomain: string }>(
 			'POST',
 			'/api/networks',
-			{ name }
+			{ name, dnsDomain: dnsDomain || 'hop' }
 		),
 	delete: (id: string) => request<void>('DELETE', `/api/networks/${id}`)
 };
@@ -99,6 +99,23 @@ export const portForwards = {
 		),
 	stop: (networkId: string, fwdId: string) =>
 		request<void>('DELETE', `/api/networks/${networkId}/port-forwards/${fwdId}`)
+};
+
+// --- DNS Records ---
+export const dns = {
+	list: (networkId: string) =>
+		request<import('$lib/types/api').DNSRecordResponse[]>(
+			'GET',
+			`/api/networks/${networkId}/dns`
+		),
+	create: (networkId: string, name: string, nebulaIP: string) =>
+		request<{ id: string; name: string; nebulaIP: string }>(
+			'POST',
+			`/api/networks/${networkId}/dns`,
+			{ name, nebulaIP }
+		),
+	delete: (networkId: string, recordId: string) =>
+		request<void>('DELETE', `/api/networks/${networkId}/dns/${recordId}`)
 };
 
 // --- Device Flow ---
