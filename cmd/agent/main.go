@@ -53,6 +53,8 @@ func runServe(args []string) {
 	listenAddr := fs.String("listen", ":41820", "Address to listen on (host:port)")
 	tokenFile := fs.String("token-file", "/etc/hop-agent/token", "Path to the bearer token file")
 	token := fs.String("token", "", "Bearer token (overrides -token-file)")
+	endpointFile := fs.String("endpoint-file", "/etc/hop-agent/endpoint", "Path to control plane endpoint URL")
+	nodeIDFile := fs.String("node-id-file", "/etc/hop-agent/node-id", "Path to node ID file")
 	fs.Parse(args)
 
 	authToken := *token
@@ -65,6 +67,20 @@ func runServe(args []string) {
 	}
 	if authToken == "" {
 		log.Fatal("No authentication token configured")
+	}
+
+	// Start cert renewal if endpoint + nodeID are available.
+	renewCtx, renewCancel := context.WithCancel(context.Background())
+	defer renewCancel()
+	if epData, err := os.ReadFile(*endpointFile); err == nil {
+		if idData, err := os.ReadFile(*nodeIDFile); err == nil {
+			ep := strings.TrimSpace(string(epData))
+			nodeID := strings.TrimSpace(string(idData))
+			if ep != "" && nodeID != "" {
+				go runCertRenewal(renewCtx, ep, nodeID, authToken)
+				log.Printf("[agent] cert auto-renewal enabled (endpoint: %s)", ep)
+			}
+		}
 	}
 
 	mux := http.NewServeMux()
@@ -99,6 +115,7 @@ func runServe(args []string) {
 
 	<-stop
 	log.Println("Shutting down agent...")
+	renewCancel()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	srv.Shutdown(ctx)

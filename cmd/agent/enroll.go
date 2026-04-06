@@ -21,6 +21,7 @@ const (
 )
 
 type enrollResponse struct {
+	NodeID     string `json:"nodeId"`
 	CACert     string `json:"caCert"`
 	NodeCert   string `json:"nodeCert"`
 	NodeKey    string `json:"nodeKey"`
@@ -175,6 +176,7 @@ func enrollFromBundle(path, endpoint string) {
 		log.Fatalf("Failed to read bundle config: %v", err)
 	}
 	var bundleConfig struct {
+		NodeID   string `json:"nodeId"`
 		ServerIP string `json:"serverIP"`
 		NebulaIP string `json:"nebulaIP"`
 		Endpoint string `json:"endpoint"`
@@ -188,13 +190,15 @@ func enrollFromBundle(path, endpoint string) {
 		ep = endpoint
 	}
 
-	// Generate Nebula config from bundle data.
-	er := &enrollResponse{
-		ServerIP: bundleConfig.ServerIP,
-		NebulaIP: bundleConfig.NebulaIP,
+	// Persist endpoint + nodeID for cert renewal.
+	writeFileSecure(filepath.Join(enrollDir, "endpoint"), []byte(ep), 0600)
+	if bundleConfig.NodeID != "" {
+		writeFileSecure(filepath.Join(enrollDir, "node-id"), []byte(bundleConfig.NodeID), 0600)
 	}
+
+	// Generate Nebula config from bundle data.
 	serverHost := extractHost(ep)
-	writeNebulaConfig(er.ServerIP, serverHost)
+	writeNebulaConfig(bundleConfig.ServerIP, serverHost)
 
 	installSystemdServices()
 	fmt.Println("  ✓ Agent started")
@@ -216,6 +220,10 @@ func installCerts(er *enrollResponse, endpoint string) {
 	writeFileSecure(filepath.Join(enrollDir, "node.crt"), []byte(er.NodeCert), 0644)
 	writeFileSecure(filepath.Join(enrollDir, "node.key"), []byte(er.NodeKey), 0600)
 	writeFileSecure(filepath.Join(enrollDir, "token"), []byte(er.AgentToken), 0600)
+	writeFileSecure(filepath.Join(enrollDir, "endpoint"), []byte(endpoint), 0600)
+	if er.NodeID != "" {
+		writeFileSecure(filepath.Join(enrollDir, "node-id"), []byte(er.NodeID), 0600)
+	}
 
 	fmt.Printf("\n  ✓ Enrolled (%s)\n", er.NebulaIP)
 
@@ -279,6 +287,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/nebula -config /etc/nebula/config.yaml
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5
 
@@ -292,7 +301,8 @@ Requires=nebula.service
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/hop-agent serve --listen :41820 --token-file /etc/hop-agent/token
+ExecStart=/usr/local/bin/hop-agent serve --listen :41820 --token-file /etc/hop-agent/token --endpoint-file /etc/hop-agent/endpoint --node-id-file /etc/hop-agent/node-id
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5
 

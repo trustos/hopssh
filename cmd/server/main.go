@@ -126,7 +126,9 @@ func main() {
 		Endpoint: *endpoint,
 	}
 
-	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH)
+	renewH := &api.RenewHandler{Networks: networks, Nodes: nodes}
+
+	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH)
 
 	// Clean up expired sessions periodically with graceful shutdown.
 	stopCleanup := make(chan struct{})

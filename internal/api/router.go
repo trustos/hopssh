@@ -92,6 +92,7 @@ func NewRouter(
 	proxyH *ProxyHandler,
 	deviceH *DeviceHandler,
 	bundleH *BundleHandler,
+	renewH *RenewHandler,
 ) chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -114,6 +115,9 @@ func NewRouter(
 	// Device flow (public — agent-initiated).
 	r.With(publicRL.Limit, wt).Post("/api/device/code", deviceH.RequestCode)
 	r.With(publicRL.Limit, wt).Post("/api/device/poll", deviceH.Poll)
+
+	// Cert renewal (public — agent authenticates via bearer token).
+	r.With(publicRL.Limit, wt).Post("/api/renew", renewH.Renew)
 
 	// Bundle download (public — token is the auth).
 	r.With(wt).Get("/api/bundles/{token}", bundleH.DownloadBundle)

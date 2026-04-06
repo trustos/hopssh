@@ -13,7 +13,7 @@ import (
 	"github.com/trustos/hopssh/internal/pki"
 )
 
-const deviceNodeCertDuration = 5 * 365 * 24 * time.Hour
+const deviceNodeCertDuration = 24 * time.Hour // short-lived, auto-renewed by agent
 
 // DeviceHandler manages the device authorization flow (RFC 8628) for enrollment.
 type DeviceHandler struct {
@@ -155,6 +155,7 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
 
 	writeJSON(w, map[string]interface{}{
+		"nodeId":     nodeID,
 		"caCert":     string(network.NebulaCACert),
 		"nodeCert":   string(nodeCert.CertPEM),
 		"nodeKey":    string(nodeCert.KeyPEM),

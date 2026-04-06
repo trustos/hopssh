@@ -307,8 +307,11 @@ Node appears in dashboard (status: online)
 5. **Cache deduplication** — Concurrent requests for same node share one tunnel instance
 6. **Connection serialization** — `sync.Map` + channel prevents concurrent retry loops per node
 
-### Known Nebula limitation
-`svc.Close()` triggers `os.Exit(2)` race in Nebula's `interface.go`. Tunnels are removed from cache but the Nebula service is left running (~100KB goroutines). Goroutines exit when server process exits. Acceptable for MVP.
+### Nebula vendor patch
+`svc.Close()` triggers `os.Exit(2)` in upstream Nebula's `interface.go` (issue #1031). We apply a 1-line vendor patch that adds `io.ErrClosedPipe` to the error guard, allowing graceful shutdown. Tunnels now close cleanly. See `patches/` and `scripts/check-nebula-patch.sh`.
+
+### Certificate rotation
+Node certificates are short-lived (24h). The agent auto-renews at 50% lifetime (12h) by calling `POST /api/renew` with its bearer token. The control plane issues a fresh cert with the same identity. If the node has been deleted, renewal returns 401 and the agent shuts down — this provides effective certificate revocation without CRL infrastructure.
 
 ---
 

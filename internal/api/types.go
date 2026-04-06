@@ -183,3 +183,17 @@ type BundleResponse struct {
 	BundleURL string `json:"bundleUrl" example:"https://hopssh.com/api/bundles/abc123"`
 	ExpiresIn int    `json:"expiresIn" example:"900"`
 }
+
+// --- Cert renewal types ---
+
+// RenewRequest is the request body for certificate renewal.
+type RenewRequest struct {
+	NodeID string `json:"nodeId" example:"550e8400-e29b-41d4-a716-446655440000"`
+}
+
+// RenewResponse is returned after successful cert renewal.
+type RenewResponse struct {
+	NodeCert  string `json:"nodeCert" example:"-----BEGIN NEBULA CERTIFICATE-----..."`
+	NodeKey   string `json:"nodeKey" example:"-----BEGIN NEBULA X25519 PRIVATE KEY-----..."`
+	ExpiresIn int    `json:"expiresIn" example:"86400"`
+}

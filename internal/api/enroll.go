@@ -15,7 +15,7 @@ import (
 	"github.com/trustos/hopssh/internal/pki"
 )
 
-const nodeCertDuration = 5 * 365 * 24 * time.Hour // 5 years
+const nodeCertDuration = 24 * time.Hour // short-lived, auto-renewed by agent
 
 // EnrollHandler manages node enrollment.
 type EnrollHandler struct {
@@ -154,6 +154,7 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
 
 	writeJSON(w, map[string]interface{}{
+		"nodeId":     node.ID,
 		"caCert":     string(network.NebulaCACert),
 		"nodeCert":   string(nodeCert.CertPEM),
 		"nodeKey":    string(nodeCert.KeyPEM),

@@ -250,6 +250,16 @@ func (s *NodeStore) CompleteEnrollment(id string, cert, key []byte, hostname, os
 	return err
 }
 
+// UpdateCert replaces the node's Nebula certificate and key (for cert rotation).
+func (s *NodeStore) UpdateCert(id string, cert, key []byte) error {
+	encKey, err := s.enc.EncryptBytes(key)
+	if err != nil {
+		return fmt.Errorf("encrypt node key: %w", err)
+	}
+	_, err = s.wdb.Exec(`UPDATE nodes SET nebula_cert = ?, nebula_key = ? WHERE id = ?`, cert, encKey, id)
+	return err
+}
+
 func (s *NodeStore) UpdateStatus(id, status string) error {
 	_, err := s.wdb.Exec(`UPDATE nodes SET status = ? WHERE id = ?`, status, id)
 	return err

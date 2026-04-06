@@ -15,7 +15,7 @@ import (
 	"github.com/trustos/hopssh/internal/pki"
 )
 
-const bundleCertDuration = 5 * 365 * 24 * time.Hour
+const bundleCertDuration = 24 * time.Hour // short-lived, auto-renewed by agent
 
 // BundleHandler manages enrollment bundle generation and download.
 type BundleHandler struct {
