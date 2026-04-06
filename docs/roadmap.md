@@ -1,177 +1,173 @@
 # hopssh — Development Roadmap
 
-## Phase 0: Extract & Foundation (Week 1-2)
+## Vision
 
-Extract core packages from pulumi-ui, adapt for standalone use.
+hopssh is an encrypted mesh networking platform — a ZeroTier/Tailscale alternative with
+the best self-hosted experience. Single binary, zero infrastructure, built-in web terminal.
 
-| Task | Source | Notes |
-|---|---|---|
-| Agent binary | `pulumi-ui/cmd/agent/` | Strip Nomad-specific endpoints, keep health + shell + TCP relay |
-| Mesh manager | `pulumi-ui/internal/mesh/` | As-is (tunnel lifecycle, idle reaper, per-node) |
-| PKI | `pulumi-ui/internal/nebula/` | As-is (CA generation, cert issuance) |
-| Crypto | `pulumi-ui/internal/crypto/` | As-is (AES-256-GCM + passphrase-based) |
-| SQLite stores | `pulumi-ui/internal/db/` | New schema: users, networks, nodes, audit_log |
-| Auth | `pulumi-ui/internal/auth/` | Adapt for API keys + OAuth |
+---
 
-**Deliverable:** Go project that compiles, with agent + control plane skeleton.
+## Phase 1: Mesh Networking Core
 
-## Phase 1: Core MVP (Week 3-4)
+The foundation. P2P mesh with relay fallback. This is the core product.
 
-Minimum product that a solo dev can use end-to-end.
+### Networking
+| Task | Status | Notes |
+|------|--------|-------|
+| Persistent NetworkManager (per-network Nebula instances) | Planned | Replace ephemeral tunnel manager |
+| Lighthouse + relay per network | Planned | Control plane IS the lighthouse |
+| P2P direct connections (UDP hole punching) | Planned | Nebula `punchy.punch: true` |
+| Relay fallback through lighthouse | Planned | Nebula relay (v1.6+) |
+| Agent with embedded persistent Nebula | Planned | Single binary, always connected |
+| Client app (`hop client join`) | Planned | Laptops/phones join the mesh |
+| Built-in DNS (user-defined domains) | Planned | `jellyfin.zero`, `db.prod` |
+| Split DNS on clients (Linux/macOS/Windows) | Planned | Only mesh domain goes through mesh |
+| Service exposure config (ports per node) | Planned | Dashboard configurable |
+| Firewall groups (agent/user/admin) | Planned | Via Nebula cert groups |
 
-| Feature | Priority | Status |
-|---|---|---|
-| GitHub OAuth login | P0 | |
-| Create network (auto PKI) | P0 | |
-| "Add Node" → enrollment token | P0 | |
-| Install script (`hopssh.com/install`) | P0 | |
-| Agent enrollment endpoint | P0 | |
-| Node appears in dashboard (online/offline) | P0 | |
-| Web terminal through mesh | P0 | |
-| Port forwarding (start/stop/list) | P0 | |
-| Node health (OS, uptime, status) | P0 | |
+### Already Implemented
+| Feature | Status |
+|---------|--------|
+| Agent enrollment (device flow, token, bundle) | ✓ |
+| Web terminal (browser shell via mesh) | ✓ |
+| Port forwarding (TCP tunnel) | ✓ |
+| Node health dashboard | ✓ |
+| Networks (isolated per-network CA) | ✓ |
+| Short-lived certs (24h) + auto-renewal | ✓ |
+| Audit logging | ✓ |
+| Rate limiting, CORS, security hardening | ✓ |
+| sqlc type-safe queries | ✓ |
+| SQLite production hardening (PocketBase-inspired) | ✓ |
+| Svelte 5 frontend scaffold (hop theme) | ✓ |
+| Nebula vendor patch (graceful shutdown) | ✓ |
+| CI, Docker, Makefile | ✓ |
 
-**Deliverable:** Working product. One user, one network, browser terminal works.
+**Deliverable:** Working mesh network. Install agent on servers, join from laptop,
+reach services by name. Web terminal works. Self-hosted in one binary.
 
-## Phase 2: Polish & Launch (Week 5-6)
+---
 
-Ready for public launch (HN Show, blog post, Twitter).
+## Phase 2: Teams + Management
 
-| Feature | Priority | Status |
-|---|---|---|
-| Landing page (hopssh.com) | P0 | |
-| Hosted control plane deployment | P0 | |
-| Free tier enforcement (5 nodes, 1 network) | P0 | |
-| Install script auto-detects OS/arch | P0 | |
-| Agent auto-reconnect on network change | P1 | |
-| Terminal resize, color, copy/paste | P1 | |
-| Node detail page (services, uptime, connections) | P1 | |
-| `hop` CLI: enroll, status, networks | P1 | |
-| Documentation site | P1 | |
+Convert solo users into teams. Polish the dashboard.
 
-**Deliverable:** Public launch. Free tier available. Landing page live.
+| Task | Priority |
+|------|----------|
+| Team invitations (email invite → mesh access) | P0 |
+| ACL rules (fine-grained access beyond groups) | P0 |
+| Peer connectivity map (P2P vs relayed visualization) | P1 |
+| Regional relay nodes (add via dashboard) | P1 |
+| API keys for automation | P1 |
+| GitHub OAuth login | P1 |
+| Stripe billing (per-node pricing) | P0 |
+| Landing page (hopssh.com) | P0 |
+| Documentation site | P1 |
 
-## Phase 3: Team Features (Week 7-10)
+**Deliverable:** Team tier live. Invite colleagues, manage access, billing.
 
-Convert solo devs into paying teams.
+---
 
-| Feature | Priority | Status |
-|---|---|---|
-| Email invitations to network | P0 | |
-| Team member roles (admin/member/viewer) | P0 | |
-| Audit log (who connected when) | P0 | |
-| Access revocation (remove user → instant cutoff) | P0 | |
-| Multiple networks per account | P0 | |
-| API keys for automation | P1 | |
-| Stripe billing ($5/node/month) | P0 | |
-| Usage dashboard (nodes, connections, history) | P1 | |
+## Phase 3: Enterprise + Scale
 
-**Deliverable:** Team tier live. First paying customers.
+| Task | Priority |
+|------|----------|
+| SSO / SAML | P1 |
+| RBAC (granular permissions) | P1 |
+| Session recording | P1 |
+| Desktop tray app (macOS, Windows, Linux) | P1 |
+| Mobile clients (iOS, Android) | P2 |
+| Terraform/Pulumi provider | P1 |
+| Bandwidth monitoring per network | P2 |
+| Webhook notifications (node online/offline) | P2 |
+| SOC 2 compliance documentation | P2 |
 
-## Phase 4: Growth (Week 11-16)
+**Deliverable:** Enterprise-ready. SSO, audit, compliance.
 
-Expand distribution and feature set.
-
-| Feature | Priority | Status |
-|---|---|---|
-| Terraform provider (`hopssh_network`) | P1 | |
-| Pulumi provider (bridged from Terraform) | P2 | |
-| `hop enroll` CLI with SSH-based batch install | P1 | |
-| Ansible role for agent deployment | P2 | |
-| Email/password auth (in addition to OAuth) | P1 | |
-| Custom branding for networks | P2 | |
-| Webhook notifications (node online/offline) | P2 | |
-
-## Phase 5: Enterprise (Month 4+)
-
-Only if demand warrants it.
-
-| Feature | Priority | Status |
-|---|---|---|
-| SSO / SAML | P1 | |
-| RBAC (granular permissions) | P1 | |
-| Session recording | P1 | |
-| Self-hosted distribution (Docker image) | P1 | |
-| SOC 2 compliance documentation | P2 | |
-| SLA + priority support | P2 | |
+---
 
 ## Scaling Thresholds
 
-The control plane uses a single-binary SQLite architecture. This section documents
-the known scaling limits and the changes needed at each threshold.
+### Current architecture (handles ~10,000 nodes)
 
-### Current architecture (handles ~100,000 nodes)
+Single binary: API + web UI + SQLite + lighthouse + relay + DNS.
 
-**SQLite write path:** Single writer (`MaxOpenConns=1`) with WAL mode. Writes are
-serialized through Go's `database/sql` connection pool — no explicit channels or
-mutexes. PocketBase uses the identical pattern and serves thousands of concurrent
-users at production scale.
-
-**Why this works:** The heaviest write path is `UpdateLastSeen`, called once per
-health check poll. At 30-second polling intervals:
-- 1,000 nodes = 33 writes/sec (trivial)
-- 10,000 nodes = 333 writes/sec (comfortable)
-- 100,000 nodes = 3,333 writes/sec (near SQLite WAL limit of ~5-10K writes/sec)
+**Why this works:**
+- Lighthouse memory: ~1KB per node. 10,000 nodes = 10MB.
+- Lighthouse bandwidth: ~400KB/s for 10K nodes.
+- Relay: only ~8% of connections use relay. Terminal sessions are 2-5 KB/s.
+- SQLite: 33 writes/sec at 10K nodes (health updates). Well within WAL limits.
+- Hardware: $20-40/month VPS is dramatically overprovisioned.
 
 **Hardening (implemented):**
-- Lock retry with escalating backoff (50ms → 3s, 12 attempts) for "database is locked"
-- Default 30-second query timeout on all operations
+- Lock retry with escalating backoff (PocketBase pattern)
 - Daily WAL checkpoint + PRAGMA optimize
-- Connection idle timeout (3 minutes)
-- WAL journal size limit (200MB)
+- Connection idle timeout, journal size limit
+- Nebula tunnels close properly (vendor patch)
+
+### ~10,000 nodes: Add regional relays
+
+Standalone Nebula relay nodes in different regions. No app logic — just Nebula config.
+Reduces latency for relayed cross-region connections. Control plane stays single server.
 
 ### ~100,000 nodes: Write channel + batching
 
-**When to implement:** When monitoring shows write queue latency exceeding 100ms
-or "database is locked" retries becoming frequent.
+Replace implicit `MaxOpenConns(1)` serialization with explicit write channel.
+Batch `UpdateLastSeen` for N nodes into single statement.
 
-**What to do:**
-- Replace implicit `MaxOpenConns(1)` serialization with an explicit write channel
-- Single goroutine consumes from the channel, batches compatible writes
-- `UpdateLastSeen` for N nodes becomes 1 batch `UPDATE ... WHERE id IN (?...)`
-  instead of N individual statements
-- Priority queue: enrollment/auth writes before health check writes
-- Metrics: queue depth, write latency, batch sizes
+**Why not now:** PocketBase proves the simple pattern handles production.
+Add complexity only when monitoring demands it.
 
-**Why not now:** The write channel adds ~200 lines of synchronization code, a new
-failure mode (channel full/blocked), and makes transactions harder to reason about.
-PocketBase proves the simple pattern handles production load. We add complexity only
-when monitoring demands it.
+### ~100,000+ nodes: PostgreSQL
 
-### ~100,000+ nodes: PostgreSQL migration
+Swap SQLite for PostgreSQL. Multiple control plane instances behind load balancer.
+Regional lighthouses. Dedicated relay fleet.
 
-**When to implement:** When SQLite's single-writer fundamentally limits throughput,
-or when horizontal scaling is needed (multiple control plane instances).
-
-**What to do:**
-- Swap `modernc.org/sqlite` for `pgx` driver
-- All SQL queries are already in `.sql` files (sqlc) — port SQLite-specific syntax
-  (e.g., `unixepoch()`, `PRAGMA`) to PostgreSQL equivalents
-- The `DBPair` abstraction becomes a connection pool to the same PostgreSQL instance
-  (reads can go to replicas)
-- The `authz` package already abstracts authorization — team/RBAC queries go here
-
-**Why not now:** PostgreSQL adds operational burden (provisioning, backups, monitoring,
-connection management). SQLite in a single binary is zero-ops. The entire database is
-one file that can be backed up with `cp`.
+**Why not now:** PostgreSQL adds operational burden. SQLite in a single binary is zero-ops.
 
 ### Node count to architecture mapping
 
-| Nodes | Architecture | Write strategy | Database |
-|-------|-------------|---------------|----------|
-| 0 – 10,000 | Single binary | `MaxOpenConns(1)` + lock retry | SQLite |
-| 10,000 – 100,000 | Single binary | Write channel + batching | SQLite |
-| 100,000+ | Horizontal | Connection pool + replicas | PostgreSQL |
+| Nodes | Control Plane | Relay | Database |
+|-------|--------------|-------|----------|
+| 0 – 10,000 | Single binary | Embedded in control plane | SQLite |
+| 10K – 100K | Single binary | Regional relay nodes | SQLite + write batching |
+| 100K+ | Horizontal (load balanced) | Relay fleet | PostgreSQL |
+
+---
+
+## Self-Hosted vs Hosted
+
+### Self-hosted (default, free forever)
+
+User runs the single binary on their server. All features included.
+One server handles everything: API, dashboard, lighthouse, relay, DNS.
+
+```bash
+make setup && make build-all
+./hop-server --endpoint https://my-server.com
+# Open https://my-server.com:9473
+# Create network, enroll servers, join from laptop
+```
+
+### Hosted (hopssh.com)
+
+hopssh runs the infrastructure. Users just install agents and join.
+
+| Tier | Price | Includes |
+|------|-------|---------|
+| Free | $0 | 10 nodes, 1 network, P2P + relay |
+| Pro | $5/node/month | Unlimited networks, DNS, web terminal, audit, API |
+| Enterprise | Contact | SSO, RBAC, session recording, regional relays, SLA |
+
+---
 
 ## Launch Checklist
 
-- [ ] Domain: hopssh.com (bought)
-- [ ] GitHub org or repo: trustos/hopssh
-- [ ] Landing page with waitlist or direct sign-up
-- [ ] Install script hosted at hopssh.com/install
-- [ ] Control plane deployed (single binary on VPS or container)
-- [ ] Agent binaries on GitHub Releases (linux/amd64, linux/arm64)
-- [ ] Demo video: "60 seconds from install to terminal"
+- [ ] Phase 1 networking complete (P2P + relay + DNS + client)
+- [ ] Deployed on a VPS with public IP
+- [ ] Domain: hopssh.com with TLS
+- [ ] Agent binary on GitHub Releases (linux/amd64, linux/arm64)
+- [ ] Client binary on GitHub Releases (linux, macOS, Windows)
+- [ ] Landing page with sign-up or self-hosted download
+- [ ] Demo video: "60 seconds from install to Jellyfin"
 - [ ] Blog post: "Why we built hopssh"
-- [ ] HN Show post
-- [ ] Twitter/X thread
+- [ ] Documentation site

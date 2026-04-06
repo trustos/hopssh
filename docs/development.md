@@ -2,166 +2,217 @@
 
 ## Prerequisites
 
-- Go 1.25+ (`go version`)
+- Go 1.24+ (`go version`)
+- Node.js 20+ (`node --version`) — for frontend
 - `patch` command (pre-installed on macOS/Linux)
 - `make` (pre-installed on macOS/Linux)
 - Optional: `gh` CLI (for `make check-patches`)
 - Optional: Docker (for containerized builds)
+- Optional: `sqlc` (for regenerating query code: `go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest`)
 
 ## First-Time Setup
 
 ```bash
 git clone git@github.com:trustos/hopssh.git
 cd hopssh
-make setup
+make setup    # vendors Go deps + applies Nebula patch
 ```
-
-This runs `go mod vendor` and applies the Nebula vendor patch (see below).
-You only need to do this once after cloning.
 
 ## Building
 
 ```bash
-# Build both binaries (agent + server) for your platform:
+# Go binaries only (fast, for backend development):
 make build
 
-# Outputs:
-#   ./hop-agent    — agent binary
-#   ./hop-server   — control plane server
+# Everything — frontend + Go binaries (for production / full testing):
+make build-all
 
-# Build for Linux (for deployment):
-make build-linux                  # linux/amd64 (default)
+# Cross-compile for Linux:
+make build-linux                  # linux/amd64
 make build-linux GOARCH=arm64     # linux/arm64
+
+# Outputs:
+#   ./hop-agent    — agent + client binary
+#   ./hop-server   — control plane (API + web UI + lighthouse + relay + DNS)
 ```
 
 ## Running Locally
 
 ```bash
 # Terminal 1: Start the control plane
-./hop-server --addr :8080 --data ./data --endpoint http://localhost:8080
+./hop-server
 
-# Terminal 2: Enroll an agent (device flow)
-./hop-agent enroll --endpoint http://localhost:8080
+# Server starts on :9473 with data in ./data/
+# Dashboard at http://localhost:9473
+# API at http://localhost:9473/api/*
 
-# Terminal 2 (alternative): Enroll with a token
-# Get a token from: POST http://localhost:8080/api/networks/{id}/nodes
-echo "<token>" | ./hop-agent enroll --token-stdin --endpoint http://localhost:8080
+# Terminal 2: Frontend dev with hot reload (optional)
+cd frontend && npm run dev
+# Dev server at http://localhost:5173, proxies /api/* to :9473
+```
 
-# Terminal 2 (alternative): Run agent in serve mode (if already enrolled)
-./hop-agent serve --token <test-token>
+### Testing the mesh locally
+
+For local mesh testing, you need the control plane to have a reachable IP.
+Using `localhost` works for the API but not for Nebula mesh connections.
+
+```bash
+# Start with your local IP as the endpoint:
+./hop-server --endpoint http://192.168.1.100:9473
+
+# Enroll an agent (on the same machine for testing):
+echo '<token>' | sudo ./hop-agent enroll --token-stdin --endpoint http://192.168.1.100:9473
+
+# Join as a client:
+./hop-agent client join --network <id> --endpoint http://192.168.1.100:9473
 ```
 
 ## Project Structure
 
 ```
 cmd/
-  agent/              Agent binary (serve + enroll subcommands)
-  server/             Control plane server
+  agent/                Agent + client binary
+    main.go             Subcommand dispatch: serve, enroll, client
+    enroll.go           Agent enrollment (device flow, token, bundle)
+    renew.go            Certificate auto-renewal goroutine
+    client.go           Client join mode (planned)
+  server/
+    main.go             Control plane entry point
 
 internal/
-  api/                HTTP handlers (auth, networks, nodes, proxy, device flow, bundles)
-  auth/               Middleware (session auth, rate limiting)
-  crypto/             AES-256-GCM encryption at rest
-  db/                 SQLite stores + migrations
-  mesh/               Nebula tunnel manager
-  pki/                Nebula CA + cert generation
+  api/                  HTTP handlers
+    router.go           Route definitions + middleware wiring
+    auth.go             Register, login, logout, me
+    networks.go         Network CRUD (creates lighthouse instances)
+    enroll.go           Node enrollment + token management
+    device.go           Device authorization flow (RFC 8628)
+    bundles.go          Pre-bundled tarball generation
+    proxy.go            Agent proxy: health, shell, exec, port forwards, node delete
+    renew.go            Certificate renewal endpoint
+    dns.go              DNS record management (planned)
+    peers.go            Peer connectivity status (planned)
+    types.go            Request/response DTOs + helpers
+  auth/
+    middleware.go        Session auth middleware
+    ratelimit.go         Per-IP rate limiter (token bucket)
+  authz/
+    authz.go            Authorization checks (CanAccessNetwork — future: teams)
+  crypto/
+    crypto.go           AES-256-GCM encrypt/decrypt
+  db/
+    db.go               SQLite connection pools + migration runner
+    resilience.go        ResilientDB wrapper (lock retry with backoff)
+    users.go            UserStore
+    sessions.go          SessionStore (SHA-256 hashed tokens)
+    networks.go          NetworkStore (encrypted CA/server keys)
+    nodes.go             NodeStore (encrypted tokens, hashed enrollment tokens, atomic claims)
+    device_codes.go      DeviceCodeStore (hashed codes, collision retry)
+    bundles.go           BundleStore (hashed download tokens, single-use)
+    audit.go             AuditStore
+    dns_records.go       DNSRecordStore (planned)
+    queries/             SQL query files (sqlc source)
+    dbsqlc/              Generated Go code (sqlc output — do not edit)
+    migrations/          SQL migration files
+  frontend/
+    embed.go            Embeds built frontend SPA into Go binary
+  mesh/
+    network_manager.go   Persistent per-network Nebula instances (planned)
+    mesh.go              Legacy ephemeral tunnel manager (being replaced)
+    forward.go           TCP port forwarding (half-close)
+    dns.go               Mesh DNS server (planned)
+  pki/
+    pki.go              Nebula CA generation + cert issuance
+    subnet.go            Subnet/IP allocation helpers
 
-patches/              Vendor patches (applied via `make vendor`)
-scripts/              Maintenance scripts
-docs/                 Documentation
+frontend/               Svelte 5 SPA
+  src/
+    routes/             SvelteKit pages (login, dashboard, network, terminal, device)
+    lib/
+      api/client.ts     Typed API client (all endpoints)
+      stores/            Auth + theme stores (Svelte 5 runes)
+      terminal/shell.ts  xterm.js + WebSocket helper
+      types/api.ts       TypeScript interfaces matching Go DTOs
+      components/        App sidebar, shadcn-svelte components
+  svelte.config.js      adapter-static (SPA), runes mode
+  vite.config.ts        Dev proxy /api → :9473 (ws: true)
 ```
 
 ## Dependency Management
 
-We use **vendored dependencies** with a local patch applied to Nebula.
-
-### Regular workflow
+We use **vendored dependencies** with a Nebula patch.
 
 ```bash
 # Add/update a dependency:
 go get github.com/some/package@v1.2.3
-make vendor    # re-vendors + re-applies patches
+make vendor    # re-vendors + re-applies Nebula patch
 
-# Build (always use -mod=vendor or `make build`):
-make build
+# Regenerate sqlc code after modifying .sql files:
+make generate
 ```
 
 ### The Nebula Patch
 
-We patch `vendor/github.com/slackhq/nebula/interface.go` to fix a critical bug
-where `svc.Close()` calls `os.Exit(2)`, crashing the control plane. The patch
-adds `io.ErrClosedPipe` to an error guard so the userspace TUN pipe can close
-gracefully.
+`vendor/github.com/slackhq/nebula/interface.go` is patched to fix `os.Exit(2)` on service
+shutdown. The patch adds `io.ErrClosedPipe` to an error guard.
 
 - **Patch file**: `patches/nebula-1031-graceful-shutdown.patch`
-- **Upstream issue**: https://github.com/slackhq/nebula/issues/1031
-- **Upstream fix PR**: https://github.com/slackhq/nebula/pull/1375 (not yet merged)
+- **Applied by**: `make vendor` (automatic)
+- **Monitor**: `make check-patches` (checks if upstream fix has merged)
 
-The patch is applied automatically by `make vendor`. To re-apply manually:
+### sqlc
 
-```bash
-make patch-vendor
-```
-
-To check if the upstream fix has been merged (run monthly):
+SQL queries live in `internal/db/queries/*.sql`. After editing, regenerate:
 
 ```bash
-make check-patches   # requires gh CLI
+make generate    # runs sqlc
 ```
 
-When the upstream fix is released:
-1. Update nebula version: `go get github.com/slackhq/nebula@<new-version>`
-2. Re-vendor: `make vendor`
-3. Verify `interface.go` includes the fix natively
-4. If fixed: delete `patches/`, simplify Makefile
-5. If not: patch will be re-applied automatically
+Generated code goes to `internal/db/dbsqlc/`. Never edit generated files.
 
 ## Docker
 
 ```bash
-# Build the Docker image:
 docker build -t hopssh .
-
-# Run the control plane:
-docker run -p 8080:8080 -v hopssh-data:/data hopssh server
-
-# Run with custom flags:
-docker run -p 8080:8080 -v hopssh-data:/data hopssh server \
-  --addr :8080 --data /data --endpoint https://hopssh.com --trusted-proxy
+docker run -p 9473:9473 -p 42001-42100:42001-42100/udp -v hopssh-data:/data hopssh
 ```
+
+The Dockerfile has three stages:
+1. **Node.js** — builds the Svelte frontend
+2. **Go** — vendors, patches, copies frontend, builds static binaries
+3. **Debian slim** — minimal runtime with ca-certificates
 
 ## CI
 
-GitHub Actions runs on every push and PR:
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR:
 - `make setup` (vendor + patch)
-- `make build` (compile both binaries)
+- `make build` (compile)
 - `make vet` (static analysis)
 - `make test` (unit tests)
-- `make build-linux` + `make build-linux GOARCH=arm64` (cross-compile)
-
-See `.github/workflows/ci.yml`.
+- Cross-compile for linux/amd64 + linux/arm64 with artifact upload
+- Weekly patch check on main branch
 
 ## Code Quality Rules
 
-See the **Coding Principles** section in `CLAUDE.md` for the full list of rules
-that all code in this project must follow. Key highlights:
+See the **Coding Principles** section in `CLAUDE.md` for the complete list.
+Key highlights:
 
-- Never store secrets in plaintext — encrypt or hash
+- Never store secrets in plaintext — encrypt (AES-GCM) or hash (SHA-256)
 - Always `http.MaxBytesReader` on request bodies
 - Never serialize `*db.Node` or `*db.User` — use DTOs
-- Tokens must be single-use and time-bounded
+- Tokens must be single-use, time-bounded, consumed atomically
 - No shell interpolation of user input — use `exec.Command` directly
 - Check `rows.Err()` after every database iteration
+- Authorization through `authz.CanAccessNetwork()` — never inline checks
+- All queries through `ResilientDB` wrapper (lock retry)
+- SQL in `.sql` files (sqlc), not in Go code
 - Rate-limit all public endpoints
 - Audit security-significant actions
 
 ## Swagger API Docs
-
-The API is documented with Swagger annotations. To regenerate:
 
 ```bash
 go install github.com/swaggo/swag/v2/cmd/swag@latest
 swag init -g cmd/server/main.go -o docs --parseDependency
 ```
 
-Access at: `http://localhost:8080/swagger/`
+Access at: `http://localhost:9473/swagger/`

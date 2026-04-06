@@ -1,6 +1,6 @@
 # hopssh — Enrollment Guide
 
-Four ways to enroll a server, from most secure to most automated.
+Five ways to add devices to your mesh network.
 
 ---
 
@@ -136,18 +136,6 @@ resource "aws_instance" "web" {
 
 ---
 
-## Enrollment Modes Summary
-
-| Mode | Command | Token on server? | Automated? | Offline? |
-|------|---------|-----------------|-----------|---------|
-| Device flow | `hop-agent enroll` | No | No (human-in-loop) | No |
-| Token stdin | `echo <tok> \| hop-agent enroll --token-stdin` | Briefly (stdin) | Yes | No |
-| Token arg | `hop-agent enroll --token <tok>` | Yes (ps visible) | Yes | No |
-| Bundle | `hop-agent enroll --bundle <path>` | No | Yes | Yes |
-| Terraform | Via provider | In TF state | Yes | No |
-
----
-
 ## Token Lifecycle
 
 ```
@@ -164,8 +152,9 @@ Dashboard: "Add Node"
     │
     └─ After enrollment:
        ├─ Token is NULL in DB (consumed)
-       ├─ Node has permanent Nebula certificate (5-year validity)
-       └─ Node has encrypted agent token for ongoing auth
+       ├─ Node has short-lived Nebula certificate (24h, auto-renewed)
+       ├─ Node has encrypted agent token for ongoing auth
+       └─ Agent connects to lighthouse and joins the mesh
 ```
 
 ## Device Code Lifecycle
@@ -184,5 +173,54 @@ Agent: POST /api/device/code
     ├─ Agent poll sees "authorized" → receives certs
     │  └─ Server: creates node, issues cert, marks device_code "completed"
     │
-    └─ Agent installs certs, writes config, starts services
+    └─ Agent installs certs, writes config, connects to lighthouse
 ```
+
+---
+
+## 6. Client Join (Laptops/Phones)
+
+For accessing services from your personal devices (not servers).
+
+```bash
+# On your laptop:
+hop client join --network <network-id> --endpoint https://hopssh.com
+
+  Authenticating... (opens browser for login)
+  ✓ Joined network "home" (10.42.1.5)
+  ✓ DNS configured: .zero → mesh
+  ✓ Connected to lighthouse
+
+# Now access your services:
+curl http://jellyfin.zero:8096
+ssh nas.zero
+ping immich.zero
+```
+
+**How it works:**
+1. Authenticates with the control plane (browser OAuth or token)
+2. Gets a Nebula certificate with group `user` (not `agent`)
+3. Starts embedded Nebula in userspace (connects to lighthouse)
+4. Configures split DNS so `.zero` (or whatever your network domain is) resolves through the mesh
+5. P2P connections to agents when possible, relay fallback when not
+
+**Security:**
+- Client cert is `user` group — can only access ports the agent explicitly exposes
+- Cannot access the agent management API (that's `admin` group only)
+- Short-lived cert (24h), auto-renewed while the client is running
+- Split DNS: only your mesh domain goes through the mesh. All other DNS is unchanged.
+
+**Best for:** Accessing self-hosted services (Jellyfin, Immich, Paperless-ngx, Home Assistant) from anywhere.
+
+---
+
+## Enrollment Modes Summary
+
+| Mode | Command | Who uses it | Token on device? | Offline? |
+|------|---------|-------------|-----------------|---------|
+| Device flow | `hop-agent enroll` | Server enrollment (interactive) | No | No |
+| Token stdin | `echo <tok> \| hop-agent enroll --token-stdin` | Server enrollment (scripted) | Briefly | No |
+| Token arg | `hop-agent enroll --token <tok>` | Quick demos | Yes (ps visible) | No |
+| Bundle | `hop-agent enroll --bundle <path>` | Air-gapped servers | No | Yes |
+| Client join | `hop client join --network <id>` | Laptops, phones | Via browser auth | No |
+| Terraform | Via provider | IaC pipelines | In TF state | No |
