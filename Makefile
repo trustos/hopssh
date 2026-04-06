@@ -1,6 +1,7 @@
-.PHONY: all setup vendor patch-vendor build vet test check-patches clean generate
+.PHONY: all setup vendor patch-vendor build build-all build-linux vet test \
+       generate check-patches clean clean-vendor frontend frontend-embed
 
-# Default: build everything.
+# Default: build Go binaries only (assumes frontend already built or not needed).
 all: build
 
 # First-time setup: vendor dependencies and apply patches.
@@ -15,21 +16,32 @@ vendor:
 	$(MAKE) patch-vendor
 
 # Apply patches to vendored dependencies.
-# Run this after `go mod vendor` to re-apply local fixes.
 patch-vendor:
 	@echo "==> Applying vendor patches..."
 	@cd vendor && patch -p1 --forward --silent < ../patches/nebula-1031-graceful-shutdown.patch 2>/dev/null || true
 	@find vendor -name '*.rej' -delete 2>/dev/null || true
 	@echo "==> Done."
 
-# Build all binaries.
+# Build Go binaries.
 build:
 	@test -d vendor || (echo "Run 'make setup' first." && exit 1)
 	go build -mod=vendor -o hop-agent ./cmd/agent
 	go build -mod=vendor -o hop-server ./cmd/server
 
-# Build for a specific platform.
-# Usage: make build-linux GOARCH=amd64
+# Build frontend (SvelteKit SPA).
+frontend:
+	cd frontend && npm ci && npm run build
+
+# Copy frontend build into Go embed location.
+frontend-embed: frontend
+	rm -rf internal/frontend/dist
+	mkdir -p internal/frontend/dist
+	cp -r frontend/build/* internal/frontend/dist/
+
+# Build everything: frontend + Go binaries.
+build-all: frontend-embed build
+
+# Build for a specific Linux platform.
 build-linux:
 	@test -d vendor || (echo "Run 'make setup' first." && exit 1)
 	GOOS=linux GOARCH=$(or $(GOARCH),amd64) go build -mod=vendor -trimpath -ldflags='-s -w' -o hop-agent-linux-$(or $(GOARCH),amd64) ./cmd/agent

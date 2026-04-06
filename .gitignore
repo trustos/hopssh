@@ -6,6 +6,13 @@ hop-server
 # Vendor (generated via `make vendor` — includes patched dependencies)
 vendor/
 
+# Frontend (generated)
+frontend/node_modules/
+frontend/build/
+frontend/.svelte-kit/
+internal/frontend/dist/
+!internal/frontend/dist/.gitkeep
+
 # Data directory (runtime)
 data/
 

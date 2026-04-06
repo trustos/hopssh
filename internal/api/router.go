@@ -10,6 +10,7 @@ import (
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 	"github.com/trustos/hopssh/internal/auth"
 	"github.com/trustos/hopssh/internal/db"
+	"github.com/trustos/hopssh/internal/frontend"
 )
 
 // AllowedOrigins controls CORS. Empty = same-origin only (no Access-Control-Allow-Origin header).
@@ -159,6 +160,9 @@ func NewRouter(
 		// Enrollment bundles.
 		r.With(wt).Post("/api/networks/{networkID}/bundles", bundleH.CreateBundle)
 	})
+
+	// Serve frontend SPA (catch-all — must be last).
+	r.NotFound(frontend.Handler().ServeHTTP)
 
 	return r
 }

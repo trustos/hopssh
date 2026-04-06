@@ -1,11 +1,19 @@
-# Multi-stage build for hopssh control plane server.
+# Multi-stage build for hopssh.
 #
 # Usage:
 #   docker build -t hopssh .
-#   docker run -p 8080:8080 -v hopssh-data:/data hopssh server
-#   docker run -p 8080:8080 -v hopssh-data:/data hopssh server --trusted-proxy
+#   docker run -p 8080:8080 -v hopssh-data:/data hopssh
 
-# --- Build stage ---
+# --- Frontend build stage ---
+FROM node:20-slim AS frontend
+
+WORKDIR /frontend
+COPY frontend/package*.json ./
+RUN npm ci
+COPY frontend/ .
+RUN npm run build
+
+# --- Go build stage ---
 FROM golang:1.24-bookworm AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends patch && rm -rf /var/lib/apt/lists/*
@@ -15,12 +23,14 @@ COPY go.mod go.sum ./
 COPY patches/ patches/
 COPY Makefile ./
 
-# Vendor + patch (cached unless go.mod/patches change).
 RUN go mod download
 COPY . .
 RUN make vendor
 
-# Build both binaries (static, no CGO — modernc.org/sqlite is pure Go).
+# Copy built frontend into embed location.
+COPY --from=frontend /frontend/build ./internal/frontend/dist/
+
+# Build static binaries.
 RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -trimpath -ldflags='-s -w' -o /out/hop-server ./cmd/server
 RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -trimpath -ldflags='-s -w' -o /out/hop-agent ./cmd/agent
 
