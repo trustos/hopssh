@@ -1,0 +1,352 @@
+package main
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+const (
+	enrollDir       = "/etc/hop-agent"
+	defaultEndpoint = "https://hopssh.com"
+)
+
+type enrollResponse struct {
+	CACert     string `json:"caCert"`
+	NodeCert   string `json:"nodeCert"`
+	NodeKey    string `json:"nodeKey"`
+	AgentToken string `json:"agentToken"`
+	ServerIP   string `json:"serverIP"`
+	NebulaIP   string `json:"nebulaIP"`
+}
+
+// runEnroll handles the `hop-agent enroll` subcommand with 4 modes:
+//   - device flow (default, interactive)
+//   - --token-stdin (read token from stdin)
+//   - --token <token> (token as argument)
+//   - --bundle <path> (offline tarball)
+func runEnroll(args []string) {
+	fs := flag.NewFlagSet("enroll", flag.ExitOnError)
+	token := fs.String("token", "", "Enrollment token (visible in ps — prefer --token-stdin)")
+	tokenStdin := fs.Bool("token-stdin", false, "Read enrollment token from stdin")
+	bundlePath := fs.String("bundle", "", "Path to pre-generated enrollment bundle (.tar.gz)")
+	endpoint := fs.String("endpoint", defaultEndpoint, "Control plane URL")
+	fs.Parse(args)
+
+	switch {
+	case *bundlePath != "":
+		enrollFromBundle(*bundlePath, *endpoint)
+	case *tokenStdin:
+		tok := readTokenFromStdin()
+		enrollWithToken(tok, *endpoint)
+	case *token != "":
+		enrollWithToken(*token, *endpoint)
+	default:
+		enrollDeviceFlow(*endpoint)
+	}
+}
+
+// enrollDeviceFlow initiates the device authorization flow (RFC 8628).
+func enrollDeviceFlow(endpoint string) {
+	// Request device code.
+	resp, err := http.Post(endpoint+"/api/device/code", "application/json", nil)
+	if err != nil {
+		log.Fatalf("Failed to request device code: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		log.Fatalf("Failed to request device code (HTTP %d): %s", resp.StatusCode, body)
+	}
+
+	var codeResp struct {
+		DeviceCode string `json:"deviceCode"`
+		UserCode   string `json:"userCode"`
+		ExpiresIn  int    `json:"expiresIn"`
+		Interval   int    `json:"interval"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&codeResp); err != nil {
+		log.Fatalf("Failed to parse device code response: %v", err)
+	}
+
+	fmt.Println()
+	fmt.Println("  To enroll this node, open:  " + endpoint + "/device")
+	fmt.Println("  Enter code:  " + codeResp.UserCode)
+	fmt.Println()
+	fmt.Println("  Waiting for authorization...")
+
+	// Poll until authorized or expired.
+	interval := time.Duration(codeResp.Interval) * time.Second
+	if interval < 2*time.Second {
+		interval = 5 * time.Second
+	}
+	deadline := time.Now().Add(time.Duration(codeResp.ExpiresIn) * time.Second)
+
+	for time.Now().Before(deadline) {
+		time.Sleep(interval)
+
+		hostname, _ := os.Hostname()
+		pollBody := fmt.Sprintf(`{"deviceCode":%q,"hostname":%q,"os":"linux","arch":"%s"}`,
+			codeResp.DeviceCode, hostname, detectArch())
+		pollResp, err := http.Post(endpoint+"/api/device/poll", "application/json",
+			strings.NewReader(pollBody))
+		if err != nil {
+			continue
+		}
+
+		if pollResp.StatusCode == http.StatusForbidden {
+			bodyBytes, _ := io.ReadAll(pollResp.Body)
+			pollResp.Body.Close()
+			status := strings.TrimSpace(string(bodyBytes))
+			if status == "authorization_pending" {
+				continue
+			}
+			if status == "expired_token" {
+				log.Fatal("Device code expired. Run `hop-agent enroll` again.")
+			}
+			log.Fatalf("Unexpected poll response: %s", status)
+		}
+
+		if pollResp.StatusCode == http.StatusOK {
+			var er enrollResponse
+			if err := json.NewDecoder(pollResp.Body).Decode(&er); err != nil {
+				pollResp.Body.Close()
+				log.Fatalf("Failed to parse enrollment response: %v", err)
+			}
+			pollResp.Body.Close()
+			installCerts(&er, endpoint)
+			return
+		}
+
+		pollResp.Body.Close()
+	}
+
+	log.Fatal("Device code expired. Run `hop-agent enroll` again.")
+}
+
+// enrollWithToken uses a pre-generated enrollment token.
+func enrollWithToken(token, endpoint string) {
+	hostname, _ := os.Hostname()
+	reqBody := fmt.Sprintf(`{"token":%q,"hostname":%q,"os":"linux","arch":"%s"}`,
+		token, hostname, detectArch())
+
+	resp, err := http.Post(endpoint+"/api/enroll", "application/json",
+		strings.NewReader(reqBody))
+	if err != nil {
+		log.Fatalf("Enrollment failed: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		log.Fatalf("Enrollment failed (HTTP %d): %s", resp.StatusCode, body)
+	}
+
+	var er enrollResponse
+	if err := json.NewDecoder(resp.Body).Decode(&er); err != nil {
+		log.Fatalf("Failed to parse enrollment response: %v", err)
+	}
+	installCerts(&er, endpoint)
+}
+
+// enrollFromBundle installs from a pre-generated tarball.
+func enrollFromBundle(path, endpoint string) {
+	fmt.Printf("Installing from bundle: %s\n", path)
+
+	// Extract tarball to / using exec.Command directly (no shell interpolation).
+	cmd := execCommand("tar", "xzf", path, "-C", "/")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Fatalf("Failed to extract bundle: %v\n%s", err, out)
+	}
+	fmt.Println("  ✓ Bundle extracted to " + enrollDir)
+
+	// Read config.json from the extracted bundle to generate Nebula config.
+	configData, err := os.ReadFile(filepath.Join(enrollDir, "config.json"))
+	if err != nil {
+		log.Fatalf("Failed to read bundle config: %v", err)
+	}
+	var bundleConfig struct {
+		ServerIP string `json:"serverIP"`
+		NebulaIP string `json:"nebulaIP"`
+		Endpoint string `json:"endpoint"`
+	}
+	if err := json.Unmarshal(configData, &bundleConfig); err != nil {
+		log.Fatalf("Failed to parse bundle config: %v", err)
+	}
+
+	ep := bundleConfig.Endpoint
+	if ep == "" {
+		ep = endpoint
+	}
+
+	// Generate Nebula config from bundle data.
+	er := &enrollResponse{
+		ServerIP: bundleConfig.ServerIP,
+		NebulaIP: bundleConfig.NebulaIP,
+	}
+	serverHost := extractHost(ep)
+	writeNebulaConfig(er.ServerIP, serverHost)
+
+	installSystemdServices()
+	fmt.Println("  ✓ Agent started")
+}
+
+func readTokenFromStdin() string {
+	scanner := bufio.NewScanner(os.Stdin)
+	if scanner.Scan() {
+		return strings.TrimSpace(scanner.Text())
+	}
+	log.Fatal("No token provided on stdin")
+	return ""
+}
+
+func installCerts(er *enrollResponse, endpoint string) {
+	os.MkdirAll(enrollDir, 0700)
+
+	writeFileSecure(filepath.Join(enrollDir, "ca.crt"), []byte(er.CACert), 0644)
+	writeFileSecure(filepath.Join(enrollDir, "node.crt"), []byte(er.NodeCert), 0644)
+	writeFileSecure(filepath.Join(enrollDir, "node.key"), []byte(er.NodeKey), 0600)
+	writeFileSecure(filepath.Join(enrollDir, "token"), []byte(er.AgentToken), 0600)
+
+	fmt.Printf("\n  ✓ Enrolled (%s)\n", er.NebulaIP)
+
+	serverHost := extractHost(endpoint)
+	writeNebulaConfig(er.ServerIP, serverHost)
+	installSystemdServices()
+	fmt.Println("  ✓ Agent started")
+}
+
+func writeNebulaConfig(serverIP, serverHost string) {
+	nebulaConfig := fmt.Sprintf(`pki:
+  ca: %s/ca.crt
+  cert: %s/node.crt
+  key: %s/node.key
+
+static_host_map:
+  "%s": ["%s:41820"]
+
+lighthouse:
+  am_lighthouse: false
+  hosts:
+    - "%s"
+
+listen:
+  host: 0.0.0.0
+  port: 41820
+
+punchy:
+  punch: true
+  respond: true
+
+tun:
+  dev: nebula1
+
+firewall:
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    - port: any
+      proto: tcp
+      groups:
+        - server
+    - port: any
+      proto: icmp
+      host: any
+`, enrollDir, enrollDir, enrollDir, serverIP, serverHost, serverIP)
+
+	os.MkdirAll("/etc/nebula", 0755)
+	writeFileSecure("/etc/nebula/config.yaml", []byte(nebulaConfig), 0644)
+	fmt.Printf("  ✓ Nebula config written (server: %s via %s)\n", serverIP, serverHost)
+}
+
+func installSystemdServices() {
+	nebulaUnit := `[Unit]
+Description=Nebula mesh VPN
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/nebula -config /etc/nebula/config.yaml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+`
+	agentUnit := `[Unit]
+Description=hopssh agent
+After=nebula.service
+Requires=nebula.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hop-agent serve --listen :41820 --token-file /etc/hop-agent/token
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+`
+	writeFileSecure("/etc/systemd/system/nebula.service", []byte(nebulaUnit), 0644)
+	writeFileSecure("/etc/systemd/system/hop-agent.service", []byte(agentUnit), 0644)
+
+	runShellCmd("systemctl daemon-reload")
+	runShellCmd("systemctl enable nebula hop-agent")
+	runShellCmd("systemctl start nebula")
+	time.Sleep(2 * time.Second)
+	runShellCmd("systemctl start hop-agent")
+}
+
+func writeFileSecure(path string, data []byte, mode os.FileMode) {
+	if err := os.WriteFile(path, data, mode); err != nil {
+		log.Fatalf("Failed to write %s: %v", path, err)
+	}
+}
+
+func extractHost(endpoint string) string {
+	s := endpoint
+	s = strings.TrimPrefix(s, "https://")
+	s = strings.TrimPrefix(s, "http://")
+	if idx := strings.Index(s, "/"); idx >= 0 {
+		s = s[:idx]
+	}
+	if idx := strings.Index(s, ":"); idx >= 0 {
+		s = s[:idx]
+	}
+	return s
+}
+
+func detectArch() string {
+	// Simple detection — the binary itself is compiled for the right arch.
+	out, _ := runShellCmd("uname -m")
+	arch := strings.TrimSpace(out)
+	switch arch {
+	case "x86_64", "amd64":
+		return "amd64"
+	case "aarch64", "arm64":
+		return "arm64"
+	default:
+		return arch
+	}
+}
+
+func runShellCmd(cmd string) (string, error) {
+	var out bytes.Buffer
+	c := execCommand("sh", "-c", cmd)
+	c.Stdout = &out
+	c.Stderr = &out
+	err := c.Run()
+	return out.String(), err
+}
