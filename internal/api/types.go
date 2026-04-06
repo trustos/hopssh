@@ -110,12 +110,14 @@ type StatusResponse struct {
 
 // NetworkResponse is returned when creating or getting a network.
 type NetworkResponse struct {
-	ID        string `json:"id" example:"550e8400-e29b-41d4-a716-446655440000"`
-	Name      string `json:"name" example:"production"`
-	Slug      string `json:"slug" example:"production"`
-	Subnet    string `json:"subnet" example:"10.42.1.0/24"`
-	NodeCount int    `json:"nodeCount" example:"3"`
-	CreatedAt int64  `json:"createdAt" example:"1712361600"`
+	ID             string `json:"id" example:"550e8400-e29b-41d4-a716-446655440000"`
+	Name           string `json:"name" example:"production"`
+	Slug           string `json:"slug" example:"production"`
+	Subnet         string `json:"subnet" example:"10.42.1.0/24"`
+	NodeCount      int    `json:"nodeCount" example:"3"`
+	LighthousePort *int64 `json:"lighthousePort" example:"42001"`
+	DNSDomain      string `json:"dnsDomain" example:"hop"`
+	CreatedAt      int64  `json:"createdAt" example:"1712361600"`
 }
 
 // CreateNodeResponse is returned when creating a node enrollment token.
@@ -138,16 +140,19 @@ type EnrollResponse struct {
 
 // NodeResponse represents a node in API responses.
 type NodeResponse struct {
-	ID          string  `json:"id" example:"550e8400-e29b-41d4-a716-446655440000"`
-	NetworkID   string  `json:"networkId" example:"550e8400-e29b-41d4-a716-446655440000"`
-	Hostname    string  `json:"hostname" example:"web-server-1"`
-	OS          string  `json:"os" example:"linux"`
-	Arch        string  `json:"arch" example:"arm64"`
-	NebulaIP    string  `json:"nebulaIP" example:"10.42.1.2/24"`
-	AgentRealIP *string `json:"agentRealIP" example:"203.0.113.10"`
-	Status      string  `json:"status" example:"online"`
-	LastSeenAt  *int64  `json:"lastSeenAt" example:"1712361600"`
-	CreatedAt   int64   `json:"createdAt" example:"1712361600"`
+	ID           string  `json:"id" example:"550e8400-e29b-41d4-a716-446655440000"`
+	NetworkID    string  `json:"networkId" example:"550e8400-e29b-41d4-a716-446655440000"`
+	Hostname     string  `json:"hostname" example:"web-server-1"`
+	OS           string  `json:"os" example:"linux"`
+	Arch         string  `json:"arch" example:"arm64"`
+	NebulaIP     string  `json:"nebulaIP" example:"10.42.1.2/24"`
+	AgentRealIP  *string `json:"agentRealIP" example:"203.0.113.10"`
+	NodeType     string  `json:"nodeType" example:"agent"`
+	ExposedPorts *string `json:"exposedPorts,omitempty"`
+	DNSName      *string `json:"dnsName,omitempty"`
+	Status       string  `json:"status" example:"online"`
+	LastSeenAt   *int64  `json:"lastSeenAt" example:"1712361600"`
+	CreatedAt    int64   `json:"createdAt" example:"1712361600"`
 }
 
 // HealthResponse is returned from the agent health check.

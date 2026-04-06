@@ -18,8 +18,12 @@
 		if (!terminalEl) return;
 
 		status = 'connecting';
-		const connection = connectShell(terminalEl, networkId, nodeId, () => {
-			status = 'connected';
+		const connection = connectShell(terminalEl, networkId, nodeId, {
+			onConnect: () => { status = 'connected'; },
+			onDisconnect: () => { if (status === 'connected') status = 'ended'; },
+			onReconnecting: () => { status = 'reconnecting'; },
+			onReconnected: () => { status = 'connected'; },
+			onFailed: () => { status = 'failed'; },
 		});
 		shell = connection;
 

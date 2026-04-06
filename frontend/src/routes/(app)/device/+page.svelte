@@ -1,10 +1,11 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { page } from '$app/state';
 	import { device as deviceApi, networks as networksApi } from '$lib/api/client';
 	import { ApiError } from '$lib/api/client';
 	import type { NetworkResponse } from '$lib/types/api';
 
-	let code = $state('');
+	let code = $state(page.url.searchParams.get('code') || '');
 	let selectedNetwork = $state('');
 	let networkList = $state<NetworkResponse[]>([]);
 	let error = $state('');

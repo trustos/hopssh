@@ -389,16 +389,19 @@ func (h *ProxyHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
 	result := make([]NodeResponse, 0, len(nodes))
 	for _, n := range nodes {
 		result = append(result, NodeResponse{
-			ID:          n.ID,
-			NetworkID:   n.NetworkID,
-			Hostname:    n.Hostname,
-			OS:          n.OS,
-			Arch:        n.Arch,
-			NebulaIP:    n.NebulaIP,
-			AgentRealIP: n.AgentRealIP,
-			Status:      n.Status,
-			LastSeenAt:  n.LastSeenAt,
-			CreatedAt:   n.CreatedAt,
+			ID:           n.ID,
+			NetworkID:    n.NetworkID,
+			Hostname:     n.Hostname,
+			OS:           n.OS,
+			Arch:         n.Arch,
+			NebulaIP:     n.NebulaIP,
+			AgentRealIP:  n.AgentRealIP,
+			NodeType:     n.NodeType,
+			ExposedPorts: n.ExposedPorts,
+			DNSName:      n.DNSName,
+			Status:       n.Status,
+			LastSeenAt:   n.LastSeenAt,
+			CreatedAt:    n.CreatedAt,
 		})
 	}
 

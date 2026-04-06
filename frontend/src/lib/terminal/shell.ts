@@ -24,9 +24,9 @@ export function connectShell(
 	container: HTMLElement,
 	networkId: string,
 	nodeId: string,
-	onConnect?: () => void
+	cbs?: Partial<ShellCallbacks>
 ): ShellConnection {
-	const callbacks: ShellCallbacks = { onConnect };
+	const callbacks: ShellCallbacks = { ...cbs };
 
 	const terminal = new Terminal({
 		cursorBlink: true,

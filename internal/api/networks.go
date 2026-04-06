@@ -157,23 +157,27 @@ func (h *NetworkHandler) ListNetworks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type networkEntry struct {
-		ID        string `json:"id"`
-		Name      string `json:"name"`
-		Slug      string `json:"slug"`
-		Subnet    string `json:"subnet"`
-		NodeCount int    `json:"nodeCount"`
-		CreatedAt int64  `json:"createdAt"`
+		ID             string `json:"id"`
+		Name           string `json:"name"`
+		Slug           string `json:"slug"`
+		Subnet         string `json:"subnet"`
+		NodeCount      int    `json:"nodeCount"`
+		LighthousePort *int64 `json:"lighthousePort"`
+		DNSDomain      string `json:"dnsDomain"`
+		CreatedAt      int64  `json:"createdAt"`
 	}
 
 	result := make([]networkEntry, 0, len(networks))
 	for _, n := range networks {
 		count, _ := h.Nodes.CountForNetwork(n.ID)
 		result = append(result, networkEntry{
-			ID:        n.ID,
-			Name:      n.Name,
-			Slug:      n.Slug,
-			Subnet:    n.NebulaSubnet,
-			NodeCount: count,
+			ID:             n.ID,
+			Name:           n.Name,
+			Slug:           n.Slug,
+			Subnet:         n.NebulaSubnet,
+			NodeCount:      count,
+			LighthousePort: n.LighthousePort,
+			DNSDomain:      n.DNSDomain,
 			CreatedAt: n.CreatedAt,
 		})
 	}
@@ -207,27 +211,32 @@ func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 	nodeResponses := make([]NodeResponse, 0, len(nodes))
 	for _, n := range nodes {
 		nodeResponses = append(nodeResponses, NodeResponse{
-			ID:          n.ID,
-			NetworkID:   n.NetworkID,
-			Hostname:    n.Hostname,
-			OS:          n.OS,
-			Arch:        n.Arch,
-			NebulaIP:    n.NebulaIP,
-			AgentRealIP: n.AgentRealIP,
-			Status:      n.Status,
-			LastSeenAt:  n.LastSeenAt,
-			CreatedAt:   n.CreatedAt,
+			ID:           n.ID,
+			NetworkID:    n.NetworkID,
+			Hostname:     n.Hostname,
+			OS:           n.OS,
+			Arch:         n.Arch,
+			NebulaIP:     n.NebulaIP,
+			AgentRealIP:  n.AgentRealIP,
+			NodeType:     n.NodeType,
+			ExposedPorts: n.ExposedPorts,
+			DNSName:      n.DNSName,
+			Status:       n.Status,
+			LastSeenAt:   n.LastSeenAt,
+			CreatedAt:    n.CreatedAt,
 		})
 	}
 
 	writeJSON(w, map[string]interface{}{
-		"id":        network.ID,
-		"name":      network.Name,
-		"slug":      network.Slug,
-		"subnet":    network.NebulaSubnet,
-		"nodeCount": len(nodeResponses),
-		"nodes":     nodeResponses,
-		"createdAt": network.CreatedAt,
+		"id":             network.ID,
+		"name":           network.Name,
+		"slug":           network.Slug,
+		"subnet":         network.NebulaSubnet,
+		"nodeCount":      len(nodeResponses),
+		"lighthousePort": network.LighthousePort,
+		"dnsDomain":      network.DNSDomain,
+		"nodes":          nodeResponses,
+		"createdAt":      network.CreatedAt,
 	})
 }
 
@@ -266,7 +275,7 @@ func (h *NetworkHandler) DeleteNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 var slugRe = regexp.MustCompile(`[^a-z0-9-]+`)

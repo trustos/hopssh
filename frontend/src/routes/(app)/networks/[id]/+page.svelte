@@ -54,6 +54,12 @@
 
 	const networkId = $derived(page.params.id);
 
+	// Filter out pending nodes — they're pre-created for IP allocation but the
+	// agent hasn't enrolled yet. Show only enrolled/online/offline nodes.
+	const visibleNodes = $derived(
+		network?.nodes.filter(n => n.status !== 'pending') ?? []
+	);
+
 	onMount(async () => {
 		await loadNetwork();
 		const interval = setInterval(() => {
@@ -285,7 +291,7 @@
 				class="px-4 py-2 text-sm font-medium {activeTab === 'nodes' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'}"
 				onclick={() => (activeTab = 'nodes')}
 			>
-				Nodes ({network.nodes.length})
+				Nodes ({visibleNodes.length})
 			</button>
 			<button
 				class="px-4 py-2 text-sm font-medium {activeTab === 'dns' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'}"
@@ -336,7 +342,7 @@
 				</div>
 			{/if}
 
-			{#if network.nodes.length === 0}
+			{#if visibleNodes.length === 0}
 				<div class="rounded-lg border border-dashed p-8 text-center">
 					<p class="mb-2 text-lg font-medium">No nodes yet</p>
 					<p class="text-sm text-muted-foreground">
@@ -358,7 +364,7 @@
 							</tr>
 						</thead>
 						<tbody>
-							{#each network.nodes as node}
+							{#each visibleNodes as node}
 								<tr class="border-b last:border-0 hover:bg-accent/50">
 									<td class="px-4 py-3">
 										<div class="flex items-center gap-2">
@@ -486,7 +492,7 @@
 				</button>
 			</div>
 
-			{@const autoRecords = network.nodes
+			{@const autoRecords = visibleNodes
 				.filter(n => n.nebulaIP && n.status !== 'pending' && (n.dnsName || n.hostname))
 				.map(n => ({ name: n.dnsName || n.hostname, ip: n.nebulaIP.split('/')[0], source: 'auto' as const, id: n.id }))}
 			{@const customRecordsMapped = dnsRecords.map(r => ({ name: r.name, ip: r.nebulaIP, source: 'custom' as const, id: r.id }))}
@@ -672,9 +678,9 @@
 	<Dialog open={showDeleteNetwork} onClose={() => { showDeleteNetwork = false; }}>
 		<h2 class="mb-2 text-lg font-semibold">Delete "{network?.name}"?</h2>
 		<p class="mb-4 text-sm text-muted-foreground">
-			{#if network && network.nodes.length > 0}
-				This will permanently delete the network and disconnect {network.nodes.length}
-				{network.nodes.length === 1 ? 'node' : 'nodes'}. Certificates and DNS records will stop working immediately.
+			{#if network && visibleNodes.length > 0}
+				This will permanently delete the network and disconnect {visibleNodes.length}
+				{visibleNodes.length === 1 ? 'node' : 'nodes'}. Certificates and DNS records will stop working immediately.
 			{:else}
 				This will permanently delete the network. This cannot be undone.
 			{/if}
