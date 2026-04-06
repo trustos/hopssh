@@ -47,9 +47,9 @@ COPY --from=builder /out/hop-server /usr/local/bin/hop-server
 COPY --from=builder /out/hop-agent /usr/local/bin/hop-agent
 
 VOLUME /data
-EXPOSE 8080
+EXPOSE 9473
 
 USER hopssh
 
 ENTRYPOINT ["hop-server"]
-CMD ["--addr", ":8080", "--data", "/data", "--endpoint", "http://localhost:8080"]
+CMD ["--addr", ":9473", "--data", "/data", "--endpoint", "http://localhost:9473"]

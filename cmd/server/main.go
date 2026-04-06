@@ -38,9 +38,9 @@ import (
 // @name Authorization
 // @description Session token from login/register. Format: "Bearer {token}"
 func main() {
-	addr := flag.String("addr", ":8080", "Listen address")
+	addr := flag.String("addr", ":9473", "Listen address")
 	dataDir := flag.String("data", "./data", "Data directory")
-	endpoint := flag.String("endpoint", "http://localhost:8080", "Public URL of this server")
+	endpoint := flag.String("endpoint", "http://localhost:9473", "Public URL of this server")
 	trustedProxy := flag.Bool("trusted-proxy", false, "Trust X-Forwarded-Proto header from reverse proxy")
 	allowedOrigins := flag.String("allowed-origins", "", "Comma-separated allowed CORS origins (empty = same-origin only)")
 	flag.Parse()
