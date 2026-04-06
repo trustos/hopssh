@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -34,8 +35,11 @@ func (p *DBPair) Close() error {
 
 // Open creates a dual read/write connection pool for SQLite.
 func Open(path string) (*DBPair, error) {
-	pragmas := "_journal_mode=WAL&_foreign_keys=on&_busy_timeout=10000" +
-		"&_synchronous=NORMAL&_cache_size=-32000&_temp_store=MEMORY"
+	// busy_timeout MUST come before journal_mode=WAL (connection must block
+	// on busy before WAL mode is set, per PocketBase's findings).
+	pragmas := "_busy_timeout=10000&_journal_mode=WAL&_foreign_keys=on" +
+		"&_synchronous=NORMAL&_cache_size=-32000&_temp_store=MEMORY" +
+		"&_journal_size_limit=200000000" // 200MB WAL file cap
 	var dsn string
 	switch {
 	case path == ":memory:":
@@ -52,6 +56,7 @@ func Open(path string) (*DBPair, error) {
 	}
 	writeDB.SetMaxOpenConns(1)
 	writeDB.SetMaxIdleConns(1)
+	writeDB.SetConnMaxIdleTime(3 * time.Minute)
 
 	readDB, err := sql.Open("sqlite", dsn)
 	if err != nil {
@@ -60,6 +65,7 @@ func Open(path string) (*DBPair, error) {
 	}
 	readDB.SetMaxOpenConns(20)
 	readDB.SetMaxIdleConns(5)
+	readDB.SetConnMaxIdleTime(3 * time.Minute)
 
 	return &DBPair{ReadDB: readDB, WriteDB: writeDB}, nil
 }

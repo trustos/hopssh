@@ -334,12 +334,17 @@ Node certificates are short-lived (24h). The agent auto-renews at 50% lifetime (
 
 ## Scalability Path
 
-| Scale | Architecture | Nodes | Bottleneck |
-|---|---|---|---|
-| MVP | Single binary, SQLite | ~500 | Nebula tunnels per-process (~100KB each) |
-| Growth | Batched writes, log files | ~2,000 | SQLite single writer |
-| Scale | PostgreSQL, horizontal | Unlimited | Compute for Nebula instances |
+| Nodes | Architecture | Write strategy | Database | Bottleneck |
+|-------|-------------|---------------|----------|-----------|
+| 0 – 10,000 | Single binary | `MaxOpenConns(1)` + lock retry | SQLite | None (33 writes/sec at 10K) |
+| 10,000 – 100,000 | Single binary | Write channel + batching | SQLite | Write serialization (~3.3K/sec) |
+| 100,000+ | Horizontal | Connection pool + replicas | PostgreSQL | Compute for Nebula instances |
 
-The single-binary SQLite architecture handles the first 500+ paying nodes.
-Each tunnel consumes ~100KB of memory (Nebula goroutines + service wrapper).
-A 1GB-RAM server can sustain ~1,000 concurrent tunnels.
+**Current hardening (PocketBase-inspired):**
+- Lock retry with escalating backoff (50ms → 3s) for "database is locked" errors
+- Default 30-second query timeout on all operations
+- Daily WAL checkpoint (`PRAGMA wal_checkpoint(TRUNCATE)`) + `PRAGMA optimize`
+- Connection idle timeout (3 minutes), WAL journal size limit (200MB)
+- Tunnels close properly via vendor patch (no more goroutine leak)
+
+See [docs/roadmap.md](roadmap.md) for detailed scaling thresholds and migration triggers.

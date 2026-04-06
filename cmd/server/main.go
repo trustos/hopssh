@@ -133,14 +133,21 @@ func main() {
 	// Clean up expired sessions periodically with graceful shutdown.
 	stopCleanup := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(1 * time.Hour)
-		defer ticker.Stop()
+		hourly := time.NewTicker(1 * time.Hour)
+		daily := time.NewTicker(24 * time.Hour)
+		defer hourly.Stop()
+		defer daily.Stop()
 		for {
 			select {
-			case <-ticker.C:
+			case <-hourly.C:
 				sessions.DeleteExpired()
 				deviceCodes.DeleteExpired()
 				bundles.DeleteExpired()
+			case <-daily.C:
+				// WAL checkpoint + query planner optimization (PocketBase pattern).
+				database.WriteDB.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+				database.WriteDB.Exec("PRAGMA optimize")
+				log.Printf("[db] daily maintenance: WAL checkpoint + optimize")
 			case <-stopCleanup:
 				return
 			}

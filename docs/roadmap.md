@@ -95,6 +95,74 @@ Only if demand warrants it.
 | SOC 2 compliance documentation | P2 | |
 | SLA + priority support | P2 | |
 
+## Scaling Thresholds
+
+The control plane uses a single-binary SQLite architecture. This section documents
+the known scaling limits and the changes needed at each threshold.
+
+### Current architecture (handles ~100,000 nodes)
+
+**SQLite write path:** Single writer (`MaxOpenConns=1`) with WAL mode. Writes are
+serialized through Go's `database/sql` connection pool — no explicit channels or
+mutexes. PocketBase uses the identical pattern and serves thousands of concurrent
+users at production scale.
+
+**Why this works:** The heaviest write path is `UpdateLastSeen`, called once per
+health check poll. At 30-second polling intervals:
+- 1,000 nodes = 33 writes/sec (trivial)
+- 10,000 nodes = 333 writes/sec (comfortable)
+- 100,000 nodes = 3,333 writes/sec (near SQLite WAL limit of ~5-10K writes/sec)
+
+**Hardening (implemented):**
+- Lock retry with escalating backoff (50ms → 3s, 12 attempts) for "database is locked"
+- Default 30-second query timeout on all operations
+- Daily WAL checkpoint + PRAGMA optimize
+- Connection idle timeout (3 minutes)
+- WAL journal size limit (200MB)
+
+### ~100,000 nodes: Write channel + batching
+
+**When to implement:** When monitoring shows write queue latency exceeding 100ms
+or "database is locked" retries becoming frequent.
+
+**What to do:**
+- Replace implicit `MaxOpenConns(1)` serialization with an explicit write channel
+- Single goroutine consumes from the channel, batches compatible writes
+- `UpdateLastSeen` for N nodes becomes 1 batch `UPDATE ... WHERE id IN (?...)`
+  instead of N individual statements
+- Priority queue: enrollment/auth writes before health check writes
+- Metrics: queue depth, write latency, batch sizes
+
+**Why not now:** The write channel adds ~200 lines of synchronization code, a new
+failure mode (channel full/blocked), and makes transactions harder to reason about.
+PocketBase proves the simple pattern handles production load. We add complexity only
+when monitoring demands it.
+
+### ~100,000+ nodes: PostgreSQL migration
+
+**When to implement:** When SQLite's single-writer fundamentally limits throughput,
+or when horizontal scaling is needed (multiple control plane instances).
+
+**What to do:**
+- Swap `modernc.org/sqlite` for `pgx` driver
+- All SQL queries are already in `.sql` files (sqlc) — port SQLite-specific syntax
+  (e.g., `unixepoch()`, `PRAGMA`) to PostgreSQL equivalents
+- The `DBPair` abstraction becomes a connection pool to the same PostgreSQL instance
+  (reads can go to replicas)
+- The `authz` package already abstracts authorization — team/RBAC queries go here
+
+**Why not now:** PostgreSQL adds operational burden (provisioning, backups, monitoring,
+connection management). SQLite in a single binary is zero-ops. The entire database is
+one file that can be backed up with `cp`.
+
+### Node count to architecture mapping
+
+| Nodes | Architecture | Write strategy | Database |
+|-------|-------------|---------------|----------|
+| 0 – 10,000 | Single binary | `MaxOpenConns(1)` + lock retry | SQLite |
+| 10,000 – 100,000 | Single binary | Write channel + batching | SQLite |
+| 100,000+ | Horizontal | Connection pool + replicas | PostgreSQL |
+
 ## Launch Checklist
 
 - [ ] Domain: hopssh.com (bought)
