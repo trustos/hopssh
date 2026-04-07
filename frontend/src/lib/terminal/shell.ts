@@ -34,9 +34,28 @@ export function connectShell(
 		fontFamily: "'JetBrains Mono', monospace",
 		theme: {
 			background: '#0a0e14',
-			foreground: '#e0e0e0',
+			foreground: '#d4d4d8',
 			cursor: '#22d3a0',
-			selectionBackground: '#22d3a033'
+			cursorAccent: '#0a0e14',
+			selectionBackground: '#22d3a033',
+			selectionForeground: '#ffffff',
+			// ANSI colors (One Dark inspired, with hopssh teal accent)
+			black: '#1e2028',
+			red: '#f87171',
+			green: '#22d3a0',
+			yellow: '#fbbf24',
+			blue: '#60a5fa',
+			magenta: '#c084fc',
+			cyan: '#22d3ee',
+			white: '#d4d4d8',
+			brightBlack: '#52525b',
+			brightRed: '#fca5a5',
+			brightGreen: '#6ee7b7',
+			brightYellow: '#fde68a',
+			brightBlue: '#93c5fd',
+			brightMagenta: '#d8b4fe',
+			brightCyan: '#67e8f9',
+			brightWhite: '#fafafa'
 		}
 	});
 
