@@ -33,6 +33,7 @@ type ProxyHandler struct {
 	Nodes          *db.NodeStore
 	Audit          *db.AuditStore
 	AllowedOrigins []string // allowed WebSocket origins; empty = same-origin only
+	EventHub       *EventHub
 }
 
 // requireNode validates network ownership and returns the node.
@@ -88,6 +89,9 @@ func (h *ProxyHandler) NodeHealth(w http.ResponseWriter, r *http.Request) {
 
 	// Update node status on successful health check.
 	h.Nodes.UpdateLastSeen(node.ID)
+	if h.EventHub != nil {
+		h.EventHub.Publish(node.NetworkID, Event{Type: "node.status", Data: map[string]string{"nodeId": node.ID, "status": "online"}})
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	io.Copy(w, resp.Body)
@@ -437,6 +441,9 @@ func (h *ProxyHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	networkID := chi.URLParam(r, "networkID")
 	h.audit(user.ID, "node.delete", &networkID, &node.ID, nil)
+	if h.EventHub != nil {
+		h.EventHub.Publish(networkID, Event{Type: "node.deleted", Data: map[string]string{"nodeId": node.ID}})
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }

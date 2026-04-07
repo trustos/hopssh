@@ -62,6 +62,18 @@ func (q *Queries) CountNodesForNetwork(ctx context.Context, networkID string) (i
 	return count, err
 }
 
+const countNonPendingNodesForNetwork = `-- name: CountNonPendingNodesForNetwork :one
+SELECT COUNT(*) FROM nodes
+WHERE network_id = ? AND status != 'pending'
+`
+
+func (q *Queries) CountNonPendingNodesForNetwork(ctx context.Context, networkID string) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countNonPendingNodesForNetwork, networkID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteNode = `-- name: DeleteNode :exec
 DELETE FROM nodes WHERE id = ?
 `
@@ -397,6 +409,18 @@ func (q *Queries) ListNodesForNetworkByType(ctx context.Context, arg ListNodesFo
 		return nil, err
 	}
 	return items, nil
+}
+
+const maxLastSeenForNetwork = `-- name: MaxLastSeenForNetwork :one
+SELECT MAX(last_seen_at) FROM nodes
+WHERE network_id = ? AND status != 'pending'
+`
+
+func (q *Queries) MaxLastSeenForNetwork(ctx context.Context, networkID string) (interface{}, error) {
+	row := q.db.QueryRowContext(ctx, maxLastSeenForNetwork, networkID)
+	var max interface{}
+	err := row.Scan(&max)
+	return max, err
 }
 
 const updateNodeAgentRealIP = `-- name: UpdateNodeAgentRealIP :exec

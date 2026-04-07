@@ -99,6 +99,7 @@ func NewRouter(
 	distH *DistributionHandler,
 	memberH *MemberHandler,
 	inviteH *InviteHandler,
+	eventsH *EventsHandler,
 ) chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -182,6 +183,9 @@ func NewRouter(
 		// Members.
 		r.With(wt).Get("/api/networks/{networkID}/members", memberH.ListMembers)
 		r.With(wt).Delete("/api/networks/{networkID}/members/{memberID}", memberH.RemoveMember)
+
+		// Real-time events (WebSocket — no timeout, streaming).
+		r.Get("/api/networks/{networkID}/events", eventsH.Connect)
 
 		// Invites.
 		r.With(wt).Post("/api/networks/{networkID}/invites", inviteH.CreateInvite)

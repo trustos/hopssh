@@ -249,6 +249,33 @@ func (s *NodeStore) CountForNetwork(networkID string) (int, error) {
 	return int(count), err
 }
 
+// MaxLastSeenForNetwork returns the most recent last_seen_at for non-pending nodes, or nil if none.
+func (s *NodeStore) MaxLastSeenForNetwork(networkID string) (*int64, error) {
+	q := dbsqlc.New(WrapDB(s.rdb))
+	result, err := q.MaxLastSeenForNetwork(context.Background(), networkID)
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return nil, nil
+	}
+	switch v := result.(type) {
+	case int64:
+		return &v, nil
+	case float64:
+		iv := int64(v)
+		return &iv, nil
+	}
+	return nil, nil
+}
+
+// CountNonPendingForNetwork returns the count of non-pending nodes.
+func (s *NodeStore) CountNonPendingForNetwork(networkID string) (int, error) {
+	q := dbsqlc.New(WrapDB(s.rdb))
+	count, err := q.CountNonPendingNodesForNetwork(context.Background(), networkID)
+	return int(count), err
+}
+
 // NextNodeIndex returns the next available host index for a network's subnet.
 func (s *NodeStore) NextNodeIndex(networkID string) (int, error) {
 	q := dbsqlc.New(WrapDB(s.rdb))

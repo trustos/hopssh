@@ -62,6 +62,14 @@ DELETE FROM nodes WHERE id = ?;
 -- name: DeleteNodesForNetwork :exec
 DELETE FROM nodes WHERE network_id = ?;
 
+-- name: MaxLastSeenForNetwork :one
+SELECT MAX(last_seen_at) FROM nodes
+WHERE network_id = ? AND status != 'pending';
+
+-- name: CountNonPendingNodesForNetwork :one
+SELECT COUNT(*) FROM nodes
+WHERE network_id = ? AND status != 'pending';
+
 -- name: ListNodeDNSEntries :many
 SELECT hostname, dns_name, nebula_ip FROM nodes
 WHERE network_id = ? AND nebula_ip IS NOT NULL AND status != 'pending'

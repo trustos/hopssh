@@ -139,14 +139,33 @@ func (nm *NetworkManager) StartNetwork(n *db.Network) error {
 }
 
 // GetInstance returns the running NetworkInstance for a network.
-// Returns an error if the instance doesn't exist or is still starting.
+// If the instance was reaped due to inactivity, it is lazily restarted.
 func (nm *NetworkManager) GetInstance(networkID string) (*NetworkInstance, error) {
 	nm.mu.RLock()
-	defer nm.mu.RUnlock()
-
 	inst, ok := nm.instances[networkID]
-	if !ok || inst == nil {
+	nm.mu.RUnlock()
+
+	if ok && inst != nil {
+		return inst, nil
+	}
+
+	// Lazy restart: instance may have been reaped. Try to start it.
+	n, err := nm.networks.Get(networkID)
+	if err != nil || n == nil || n.LighthousePort == nil {
 		return nil, fmt.Errorf("no lighthouse running for network %s", networkID)
+	}
+
+	log.Printf("[mesh] lazy-restarting lighthouse for network %s (was reaped)", n.Slug)
+	if err := nm.startInstance(n); err != nil {
+		return nil, fmt.Errorf("failed to restart lighthouse: %w", err)
+	}
+	nm.RefreshDNS(networkID)
+
+	nm.mu.RLock()
+	inst = nm.instances[networkID]
+	nm.mu.RUnlock()
+	if inst == nil {
+		return nil, fmt.Errorf("lighthouse failed to start for network %s", networkID)
 	}
 	return inst, nil
 }
@@ -177,6 +196,62 @@ func (nm *NetworkManager) Stop() {
 		delete(nm.instances, id)
 	}
 	log.Printf("[mesh] NetworkManager stopped")
+}
+
+// StartIdleReaper runs a background goroutine that stops Nebula instances
+// for networks with no recent activity, freeing ~25-35MB per idle network.
+// Instances are lazily restarted by GetInstance when needed.
+func (nm *NetworkManager) StartIdleReaper(ctx context.Context, interval, idleThreshold time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				nm.reapIdleInstances(idleThreshold)
+			}
+		}
+	}()
+	log.Printf("[mesh] idle reaper started (check every %s, threshold %s)", interval, idleThreshold)
+}
+
+func (nm *NetworkManager) reapIdleInstances(threshold time.Duration) {
+	nm.mu.RLock()
+	var candidates []string
+	for id, inst := range nm.instances {
+		if inst != nil {
+			candidates = append(candidates, id)
+		}
+	}
+	nm.mu.RUnlock()
+
+	now := time.Now().Unix()
+	cutoff := now - int64(threshold.Seconds())
+
+	for _, networkID := range candidates {
+		// Check if there are any non-pending nodes.
+		count, err := nm.nodes.CountNonPendingForNetwork(networkID)
+		if err != nil {
+			continue
+		}
+		if count == 0 {
+			log.Printf("[mesh] reaping idle network %s (no non-pending nodes)", networkID)
+			nm.StopNetwork(networkID)
+			continue
+		}
+
+		// Check last activity.
+		lastSeen, err := nm.nodes.MaxLastSeenForNetwork(networkID)
+		if err != nil {
+			continue
+		}
+		if lastSeen == nil || *lastSeen < cutoff {
+			log.Printf("[mesh] reaping idle network %s (last activity: %v)", networkID, lastSeen)
+			nm.StopNetwork(networkID)
+		}
+	}
 }
 
 // RefreshDNS reloads DNS records for a network from the database.

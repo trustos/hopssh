@@ -126,6 +126,11 @@ func main() {
 	}
 	defer netMgr.Stop()
 
+	// Start idle network reaper: checks every 15 minutes, reaps after 2 hours idle.
+	reaperCtx, reaperCancel := context.WithCancel(context.Background())
+	defer reaperCancel()
+	netMgr.StartIdleReaper(reaperCtx, 15*time.Minute, 2*time.Hour)
+
 	fwdMgr := mesh.NewForwardManager(netMgr)
 
 	// Initialize handlers.
@@ -162,7 +167,14 @@ func main() {
 	memberH := &api.MemberHandler{Networks: networks, Members: members}
 	inviteH := &api.InviteHandler{Networks: networks, Members: members, Invites: invites}
 
-	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH)
+	eventHub := api.NewEventHub()
+	eventsH := &api.EventsHandler{Networks: networks, Members: members, Hub: eventHub}
+
+	// Wire event hub into handlers that should publish events.
+	proxyH.EventHub = eventHub
+	enrollH.EventHub = eventHub
+
+	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH, eventsH)
 
 	// Clean up expired sessions periodically with graceful shutdown.
 	stopCleanup := make(chan struct{})

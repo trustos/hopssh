@@ -85,19 +85,48 @@
 
 	onMount(() => {
 		loadNetwork();
+
 		// Tick for timeAgo display
 		const tickInterval = setInterval(() => {
 			now = Math.floor(Date.now() / 1000);
 		}, 30_000);
-		// Poll for pending node enrollment (every 5s when there are pending nodes)
+
+		// WebSocket for real-time events with polling fallback.
+		let ws: WebSocket | null = null;
+		let wsRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+		function connectEvents() {
+			const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+			ws = new WebSocket(`${proto}//${window.location.host}/api/networks/${networkId}/events`);
+			ws.onmessage = () => {
+				// Any event = reload network data.
+				loadNetwork();
+			};
+			ws.onclose = () => {
+				ws = null;
+				// Fallback to polling on disconnect.
+				wsRetryTimer = setTimeout(connectEvents, 30_000);
+			};
+			ws.onerror = () => {
+				ws?.close();
+			};
+		}
+		connectEvents();
+
+		// Fallback poll: every 30s if WS is disconnected, or 5s if pending nodes.
 		const pollInterval = setInterval(() => {
-			if (hasPendingNodes || showAddNode) {
+			if (!ws || ws.readyState !== WebSocket.OPEN) {
+				loadNetwork();
+			} else if (hasPendingNodes || showAddNode) {
 				loadNetwork();
 			}
-		}, 5_000);
+		}, 15_000);
+
 		return () => {
 			clearInterval(tickInterval);
 			clearInterval(pollInterval);
+			if (wsRetryTimer) clearTimeout(wsRetryTimer);
+			if (ws) ws.close();
 		};
 	});
 

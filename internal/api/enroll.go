@@ -25,6 +25,7 @@ type EnrollHandler struct {
 	Nodes          *db.NodeStore
 	NetworkManager *mesh.NetworkManager
 	Endpoint       string // public URL of this server (e.g. "https://hopssh.com")
+	EventHub       *EventHub
 }
 
 // CreateNode generates an enrollment token and returns the install command.
@@ -150,6 +151,9 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 	h.Nodes.UpdateAgentRealIP(node.ID, captureAgentIP(r))
 	if h.NetworkManager != nil {
 		h.NetworkManager.RefreshDNS(node.NetworkID)
+	}
+	if h.EventHub != nil {
+		h.EventHub.Publish(node.NetworkID, Event{Type: "node.enrolled", Data: map[string]string{"nodeId": node.ID, "hostname": body.Hostname}})
 	}
 
 	// Compute lighthouse VPN IP and port for agent's static_host_map.
