@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/trustos/hopssh/internal/buildinfo"
@@ -20,7 +21,7 @@ func runAgentUpdate(args []string) {
 
 	// Read endpoint from config if available.
 	endpoint := ""
-	if data, err := os.ReadFile("/etc/hop-agent/endpoint"); err == nil {
+	if data, err := os.ReadFile(filepath.Join(configDir, "endpoint")); err == nil {
 		endpoint = strings.TrimSpace(string(data))
 	}
 
