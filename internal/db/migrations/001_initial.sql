@@ -51,9 +51,10 @@ CREATE TABLE nodes (
     enrollment_token TEXT UNIQUE,
     enrollment_expires_at INTEGER,
     agent_real_ip TEXT,
-    node_type TEXT NOT NULL DEFAULT 'agent',  -- agent, user, lighthouse
+    node_type TEXT NOT NULL DEFAULT 'node',  -- node, lighthouse
     exposed_ports TEXT,                       -- JSON: [{"port":8096,"proto":"tcp","name":"Jellyfin"}]
     dns_name TEXT,                            -- custom DNS name (defaults to hostname)
+    capabilities TEXT NOT NULL DEFAULT '["terminal","health","forward"]',
     status TEXT NOT NULL DEFAULT 'pending',   -- pending, enrolled, online, offline
     last_seen_at INTEGER,
     created_at INTEGER NOT NULL DEFAULT (unixepoch())

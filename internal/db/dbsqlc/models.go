@@ -102,10 +102,10 @@ type Node struct {
 	NodeType            string
 	ExposedPorts        *string
 	DnsName             *string
+	Capabilities        string
 	Status              string
 	LastSeenAt          *int64
 	CreatedAt           int64
-	Capabilities        string
 }
 
 type Session struct {

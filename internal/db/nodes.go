@@ -35,7 +35,7 @@ type Node struct {
 	EnrollmentToken     *string // one-time, nulled after use (SHA-256 hashed at rest)
 	EnrollmentExpiresAt *int64  // TTL for enrollment token
 	AgentRealIP         *string
-	NodeType            string   // agent, user, lighthouse, node (legacy compat)
+	NodeType            string   // "node" or "lighthouse"
 	ExposedPorts        *string  // JSON: [{"port":8096,"proto":"tcp","name":"Jellyfin"}]
 	DNSName             *string  // custom DNS hostname
 	Capabilities        string   // JSON: ["terminal","health","forward"]
