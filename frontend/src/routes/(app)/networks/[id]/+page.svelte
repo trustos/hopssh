@@ -186,9 +186,41 @@
 		}
 	}
 
+	let lastCopied = $state('');
+
 	function copyToClipboard(text: string, label = 'Copied to clipboard') {
-		navigator.clipboard.writeText(text);
-		toast.success(label);
+		const doCopy = () => {
+			lastCopied = text;
+			toast.success(label);
+			setTimeout(() => { if (lastCopied === text) lastCopied = ''; }, 2000);
+		};
+		if (navigator.clipboard?.writeText) {
+			navigator.clipboard.writeText(text).then(doCopy).catch(() => fallbackCopy(text, label));
+		} else {
+			fallbackCopy(text, label);
+		}
+	}
+
+	function fallbackCopy(text: string, label: string) {
+		const textarea = document.createElement('textarea');
+		textarea.value = text;
+		textarea.style.position = 'fixed';
+		textarea.style.opacity = '0';
+		document.body.appendChild(textarea);
+		textarea.select();
+		try {
+			document.execCommand('copy');
+			lastCopied = text;
+			toast.success(label);
+			setTimeout(() => { if (lastCopied === text) lastCopied = ''; }, 2000);
+		} catch {
+			toast.error('Copy failed — please select and copy manually');
+		}
+		document.body.removeChild(textarea);
+	}
+
+	function copyBtnLabel(text: string): string {
+		return lastCopied === text ? 'Copied!' : 'Copy';
 	}
 
 	function closeAddNode() {
@@ -276,8 +308,7 @@
 			fwdRemotePort = '';
 			fwdLocalPort = '';
 			const addr = `localhost:${pf.localPort}`;
-			navigator.clipboard.writeText(addr).catch(() => {});
-			toast.success(`Forwarding ${addr} — copied to clipboard`);
+			copyToClipboard(addr, `Forwarding ${addr} — copied to clipboard`);
 		} catch (e) {
 			toast.error(e instanceof ApiError ? e.message : 'Failed to start forward');
 		} finally {
@@ -296,8 +327,7 @@
 	}
 
 	function copyAddr(port: number) {
-		navigator.clipboard.writeText(`localhost:${port}`);
-		toast.success('Copied to clipboard');
+		copyToClipboard(`localhost:${port}`);
 	}
 
 	function nodeHostname(nodeId: string): string {
@@ -334,9 +364,7 @@
 	}
 
 	function copyInviteLink(code: string) {
-		const url = `${window.location.origin}/invite/${code}`;
-		navigator.clipboard.writeText(url);
-		toast.success('Invite link copied');
+		copyToClipboard(`${window.location.origin}/invite/${code}`, 'Invite link copied');
 	}
 
 	async function revokeInvite(inviteId: string) {
@@ -774,7 +802,7 @@
 							<p class="mb-2 text-xs text-muted-foreground">Auto-detects your OS and architecture.</p>
 							<div class="relative rounded-md bg-muted p-3 pr-16">
 								<pre class="font-mono text-xs">{installScriptCmd}</pre>
-								<button onclick={() => copyToClipboard(installScriptCmd)} class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">Copy</button>
+								<button onclick={() => copyToClipboard(installScriptCmd)} class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">{copyBtnLabel(installScriptCmd)}</button>
 							</div>
 						</div>
 
@@ -782,7 +810,7 @@
 							<p class="mb-2 text-sm font-medium">2. Join the network</p>
 							<div class="relative rounded-md bg-muted p-3 pr-16">
 								<pre class="font-mono text-xs">sudo hop-agent enroll --endpoint {window.location.origin}</pre>
-								<button onclick={() => copyToClipboard(`sudo hop-agent enroll --endpoint ${window.location.origin}`)} class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">Copy</button>
+								<button onclick={() => copyToClipboard(`sudo hop-agent enroll --endpoint ${window.location.origin}`)} class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">{copyBtnLabel(`sudo hop-agent enroll --endpoint ${window.location.origin}`)}</button>
 							</div>
 							<p class="mt-2 text-xs text-muted-foreground">
 								You'll be prompted to authorize in the browser. After joining, services are reachable as <span class="font-mono">hostname.{network.dnsDomain}</span>
@@ -913,7 +941,7 @@
 						<p class="mb-2 text-sm text-muted-foreground">Share this link:</p>
 						<div class="relative rounded-md bg-muted p-3 pr-16">
 							<pre class="overflow-x-auto font-mono text-xs">{window.location.origin}/invite/{inviteResult.code}</pre>
-							<button onclick={() => copyInviteLink(inviteResult!.code)} class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">Copy</button>
+							<button onclick={() => copyInviteLink(inviteResult!.code)} class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">{copyBtnLabel(`${window.location.origin}/invite/${inviteResult.code}`)}</button>
 						</div>
 						<div class="mt-4 flex justify-end">
 							<button onclick={() => { showCreateInvite = false; }} class="rounded-md px-4 py-2 text-sm hover:bg-accent">Done</button>
@@ -977,7 +1005,7 @@
 									<button
 										onclick={() => copyToClipboard(installScriptCmd)}
 										class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-									>Copy</button>
+									>{copyBtnLabel(installScriptCmd)}</button>
 								</div>
 							</div>
 
@@ -988,7 +1016,7 @@
 									<button
 										onclick={() => copyToClipboard(enrollCommand)}
 										class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-									>Copy</button>
+									>{copyBtnLabel(enrollCommand)}</button>
 								</div>
 							</div>
 
