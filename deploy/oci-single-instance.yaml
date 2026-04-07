@@ -155,6 +155,68 @@ resources:
         nsgIds: ["${nsg.id}"]
       metadata:
         ssh_authorized_keys: "{{ .Config.sshPublicKey }}"
+        user_data:
+          fn::toBase64: |
+            #!/bin/bash
+            set -euo pipefail
+            exec > /var/log/hopssh-install.log 2>&1
+
+            ARCH=$$(uname -m)
+            case "$$ARCH" in
+              aarch64|arm64) GOARCH=arm64 ;;
+              x86_64|amd64) GOARCH=amd64 ;;
+            esac
+
+            # Install Go
+            GOVERSION=1.24.2
+            curl -fsSL "https://go.dev/dl/go$${GOVERSION}.linux-$${GOARCH}.tar.gz" | tar -C /usr/local -xzf -
+            export PATH=$$PATH:/usr/local/go/bin
+            export GOPATH=/root/go
+            export PATH=$$PATH:$$GOPATH/bin
+
+            # Install build deps
+            if command -v apt-get &>/dev/null; then
+              apt-get update -y && apt-get install -y git make patch nodejs npm
+            elif command -v dnf &>/dev/null; then
+              dnf install -y git make patch nodejs npm
+            fi
+
+            # Clone and build
+            cd /opt
+            git clone https://github.com/trustos/hopssh.git
+            cd hopssh
+            make setup
+            make build-all
+
+            cp hop-server /usr/local/bin/
+            cp hop-agent /usr/local/bin/
+            mkdir -p /var/lib/hopssh
+            chmod 700 /var/lib/hopssh
+
+            # Detect public IP
+            PUBLIC_IP=$$(curl -s http://169.254.169.254/opc/v1/vnics/ | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['publicIp'])" 2>/dev/null || curl -s ifconfig.me)
+            ENDPOINT="http://$${PUBLIC_IP}:9473"
+
+            # Create systemd service
+            cat > /etc/systemd/system/hopssh.service <<UNIT
+            [Unit]
+            Description=hopssh control plane
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            Type=simple
+            ExecStart=/usr/local/bin/hop-server --data /var/lib/hopssh --endpoint $$ENDPOINT
+            Restart=always
+            RestartSec=5
+
+            [Install]
+            WantedBy=multi-user.target
+            UNIT
+
+            systemctl daemon-reload
+            systemctl enable hopssh
+            systemctl start hopssh
       shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
     options:
       dependsOn:
