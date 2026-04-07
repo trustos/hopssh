@@ -243,3 +243,58 @@ func uninstallAgentLaunchd() {
 	}
 	fmt.Println("==> hop-agent service uninstalled.")
 }
+
+func runRestart() {
+	switch runtime.GOOS {
+	case "linux":
+		if _, err := exec.LookPath("systemctl"); err == nil {
+			if out, err := exec.Command("systemctl", "restart", agentServiceName).CombinedOutput(); err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to restart: %v\n%s", err, out)
+				os.Exit(1)
+			}
+			fmt.Println("==> hop-agent restarted.")
+			return
+		}
+	case "darwin":
+		for _, plist := range []string{
+			agentLaunchdDaemonPath,
+			filepath.Join(os.Getenv("HOME"), "Library/LaunchAgents/com.hopssh.agent.plist"),
+		} {
+			if _, err := os.Stat(plist); err == nil {
+				exec.Command("launchctl", "unload", plist).Run()
+				if out, err := exec.Command("launchctl", "load", plist).CombinedOutput(); err != nil {
+					fmt.Fprintf(os.Stderr, "Failed to restart: %v\n%s", err, out)
+					os.Exit(1)
+				}
+				fmt.Println("==> hop-agent restarted.")
+				return
+			}
+		}
+	}
+	fmt.Fprintf(os.Stderr, "No service found. Start manually: hop-agent serve\n")
+	os.Exit(1)
+}
+
+func runStop() {
+	switch runtime.GOOS {
+	case "linux":
+		if _, err := exec.LookPath("systemctl"); err == nil {
+			exec.Command("systemctl", "stop", agentServiceName).Run()
+			fmt.Println("==> hop-agent stopped.")
+			return
+		}
+	case "darwin":
+		for _, plist := range []string{
+			agentLaunchdDaemonPath,
+			filepath.Join(os.Getenv("HOME"), "Library/LaunchAgents/com.hopssh.agent.plist"),
+		} {
+			if _, err := os.Stat(plist); err == nil {
+				exec.Command("launchctl", "unload", plist).Run()
+				fmt.Println("==> hop-agent stopped.")
+				return
+			}
+		}
+	}
+	fmt.Fprintf(os.Stderr, "No service found.\n")
+	os.Exit(1)
+}

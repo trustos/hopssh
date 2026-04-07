@@ -17,6 +17,8 @@ Commands:
   enroll      Join a mesh network
   status      Show connection status and certificate info
   info        Show node information
+  restart     Restart the agent service
+  stop        Stop the agent service
   install     Install as a system/user service
   uninstall   Remove the service
   update      Update to the latest version

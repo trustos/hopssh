@@ -65,6 +65,12 @@ func main() {
 		case "update":
 			runAgentUpdate(os.Args[2:])
 			return
+		case "restart":
+			runRestart()
+			return
+		case "stop":
+			runStop()
+			return
 		case "client":
 			runClient(os.Args[2:])
 			return
