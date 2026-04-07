@@ -2,6 +2,8 @@
 	import { page } from '$app/state';
 	import { getAuth } from '$lib/stores/auth.svelte';
 	import { getTheme } from '$lib/stores/theme.svelte';
+	import TerminalPane from '$lib/components/terminal-pane.svelte';
+	import { getTerminals } from '$lib/stores/terminals.svelte';
 
 	const auth = getAuth();
 	const theme = getTheme();
@@ -76,8 +78,11 @@
 		</div>
 	</aside>
 
-	<!-- Main content -->
-	<main class="flex-1 overflow-auto">
-		{@render children()}
-	</main>
+	<!-- Main content + terminal pane -->
+	<div class="flex flex-1 flex-col overflow-hidden">
+		<main class="flex-1 overflow-auto">
+			{@render children()}
+		</main>
+		<TerminalPane />
+	</div>
 </div>

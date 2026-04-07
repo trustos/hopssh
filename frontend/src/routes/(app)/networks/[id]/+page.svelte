@@ -7,6 +7,9 @@
 	import { ApiError } from '$lib/api/client';
 	import type { NetworkDetailResponse, CreateNodeResponse, DNSRecordResponse, NodeResponse, PortForwardResponse, NetworkMemberResponse, InviteResponse } from '$lib/types/api';
 	import Dialog from '$lib/components/ui/dialog.svelte';
+	import { getTerminals } from '$lib/stores/terminals.svelte';
+
+	const termStore = getTerminals();
 
 	let network = $state<NetworkDetailResponse | null>(null);
 	let dnsRecords = $state<DNSRecordResponse[]>([]);
@@ -575,12 +578,12 @@
 										{:else}
 											<span class="group flex items-center gap-1">
 												{#if hasCap(node, 'terminal') && node.status === 'online'}
-													<a
-														href="/terminal/{networkId}/{node.id}?h={encodeURIComponent(node.hostname || node.id.slice(0, 8))}"
-														class="font-mono font-medium text-primary hover:underline"
+													<button
+														onclick={() => termStore.open(networkId, node.id, node.dnsName || node.hostname || node.id.slice(0, 8))}
+														class="cursor-pointer font-mono font-medium text-primary hover:underline"
 													>
 														{node.dnsName || node.hostname || node.id.slice(0, 8)}
-													</a>
+													</button>
 												{:else}
 													<span class="font-mono font-medium">{node.dnsName || node.hostname || node.id.slice(0, 8)}</span>
 												{/if}
@@ -635,12 +638,12 @@
 												</button>
 											{/if}
 											{#if hasCap(node, 'terminal') && node.status === 'online'}
-												<a
-													href="/terminal/{networkId}/{node.id}?h={encodeURIComponent(node.hostname || node.id.slice(0, 8))}"
+												<button
+													onclick={() => termStore.open(networkId, node.id, node.dnsName || node.hostname || node.id.slice(0, 8))}
 													class="rounded px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10"
 												>
 													Terminal
-												</a>
+												</button>
 											{/if}
 											{#if hasCap(node, 'forward') && node.status === 'online'}
 												<button
