@@ -91,6 +91,16 @@
 			now = Math.floor(Date.now() / 1000);
 		}, 30_000);
 
+		// Debounced reload: prevents flickering from rapid WebSocket events.
+		let reloadTimer: ReturnType<typeof setTimeout> | null = null;
+		function debouncedReload() {
+			if (reloadTimer) return; // already scheduled
+			reloadTimer = setTimeout(() => {
+				reloadTimer = null;
+				loadNetwork();
+			}, 500);
+		}
+
 		// WebSocket for real-time events with polling fallback.
 		let ws: WebSocket | null = null;
 		let wsRetryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -100,7 +110,7 @@
 			const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 			ws = new WebSocket(`${proto}//${window.location.host}/api/networks/${networkId}/events`);
 			ws.onmessage = () => {
-				loadNetwork();
+				debouncedReload();
 			};
 			ws.onclose = () => {
 				ws = null;
@@ -114,16 +124,17 @@
 		// Load network first, then connect WebSocket.
 		loadNetwork().then(() => connectEvents());
 
-		// Fallback poll every 15s.
+		// Fallback poll: 30s normally, 10s if pending nodes.
 		const pollInterval = setInterval(() => {
-			if (!ws || ws.readyState !== WebSocket.OPEN || hasPendingNodes || showAddNode) {
+			if (!ws || ws.readyState !== WebSocket.OPEN) {
 				loadNetwork();
 			}
-		}, 15_000);
+		}, 30_000);
 
 		return () => {
 			clearInterval(tickInterval);
 			clearInterval(pollInterval);
+			if (reloadTimer) clearTimeout(reloadTimer);
 			if (wsRetryTimer) clearTimeout(wsRetryTimer);
 			if (ws) ws.close();
 		};

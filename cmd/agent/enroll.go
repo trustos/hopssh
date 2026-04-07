@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -53,17 +54,30 @@ func runEnroll(args []string) {
 	endpoint := fs.String("endpoint", defaultEndpoint, "Control plane URL")
 	noService := fs.Bool("no-service", false, "Skip automatic service installation")
 	clientMode := fs.Bool("client", false, "Enroll as a client (personal device) instead of a server")
+	force := fs.Bool("force", false, "Re-enroll: stop service, remove old config, enroll fresh")
 	fs.Parse(args)
 	skipService = *noService
 	if *clientMode {
 		enrollNodeType = "user"
 	}
 
+	// Handle re-enrollment with --force.
+	if *force {
+		fmt.Println("==> Re-enrolling (--force): cleaning up old config...")
+		// Stop existing service.
+		if runtime.GOOS == "darwin" {
+			exec.Command("launchctl", "unload", "/Library/LaunchDaemons/com.hopssh.agent.plist").Run()
+		} else {
+			exec.Command("systemctl", "stop", "hop-agent").Run()
+		}
+		os.RemoveAll(enrollDir)
+	}
+
 	// Check if already enrolled — prevent accidental re-enrollment.
 	if _, err := os.Stat(filepath.Join(enrollDir, "node.crt")); err == nil {
 		fmt.Fprintf(os.Stderr, "Warning: This device is already enrolled (config exists at %s).\n", enrollDir)
-		fmt.Fprintf(os.Stderr, "To re-enroll, first remove the existing config:\n")
-		fmt.Fprintf(os.Stderr, "  sudo rm -rf %s\n\n", enrollDir)
+		fmt.Fprintf(os.Stderr, "To re-enroll, use --force:\n")
+		fmt.Fprintf(os.Stderr, "  sudo hop-agent enroll --force --endpoint <url>\n\n")
 		os.Exit(1)
 	}
 
