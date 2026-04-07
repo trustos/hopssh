@@ -173,6 +173,7 @@ func main() {
 	// Wire event hub into handlers that should publish events.
 	proxyH.EventHub = eventHub
 	enrollH.EventHub = eventHub
+	deviceH.EventHub = eventHub
 
 	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH, eventsH)
 

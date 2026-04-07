@@ -23,6 +23,7 @@ type DeviceHandler struct {
 	Networks       *db.NetworkStore
 	Nodes          *db.NodeStore
 	NetworkManager *mesh.NetworkManager
+	EventHub       *EventHub
 }
 
 // RequestCode is called by the agent to initiate the device flow.
@@ -157,6 +158,9 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 	h.Nodes.UpdateAgentRealIP(nodeID, captureAgentIP(r))
 	if h.NetworkManager != nil {
 		h.NetworkManager.RefreshDNS(*dc.NetworkID)
+	}
+	if h.EventHub != nil {
+		h.EventHub.Publish(*dc.NetworkID, Event{Type: "node.enrolled", Data: map[string]string{"nodeId": nodeID, "hostname": body.Hostname}})
 	}
 
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
