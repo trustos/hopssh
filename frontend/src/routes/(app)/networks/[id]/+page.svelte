@@ -730,7 +730,10 @@
 								<tr class="border-b last:border-0 hover:bg-accent/50">
 									<td class="px-4 py-3 font-mono font-medium">{record.name}</td>
 									<td class="px-4 py-3 font-mono text-muted-foreground">{record.ip}</td>
-									<td class="px-4 py-3 font-mono text-xs text-muted-foreground">{record.name}.{network.dnsDomain}</td>
+									<td class="px-4 py-3">
+										<span class="font-mono text-xs text-muted-foreground">{record.name}.{network.dnsDomain}</span>
+										<button onclick={() => copyToClipboard(`${record.name}.${network.dnsDomain}`)} class="ml-1 rounded px-1 py-0.5 text-xs text-muted-foreground/40 hover:text-foreground" title="Copy FQDN">&#128203;</button>
+									</td>
 									<td class="px-4 py-3">
 										{#if record.source === 'auto'}
 											<span class="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">auto</span>
@@ -769,15 +772,17 @@
 						<div class="rounded-lg border p-4">
 							<p class="mb-2 text-sm font-medium">1. Install hop-agent</p>
 							<p class="mb-2 text-xs text-muted-foreground">Auto-detects your OS and architecture.</p>
-							<div class="rounded-md bg-muted p-3">
+							<div class="relative rounded-md bg-muted p-3 pr-16">
 								<pre class="font-mono text-xs">{installScriptCmd}</pre>
+								<button onclick={() => copyToClipboard(installScriptCmd)} class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">Copy</button>
 							</div>
 						</div>
 
 						<div class="rounded-lg border p-4">
 							<p class="mb-2 text-sm font-medium">2. Join the network</p>
-							<div class="rounded-md bg-muted p-3">
+							<div class="relative rounded-md bg-muted p-3 pr-16">
 								<pre class="font-mono text-xs">sudo hop-agent enroll --endpoint {window.location.origin}</pre>
+								<button onclick={() => copyToClipboard(`sudo hop-agent enroll --endpoint ${window.location.origin}`)} class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">Copy</button>
 							</div>
 							<p class="mt-2 text-xs text-muted-foreground">
 								You'll be prompted to authorize in the browser. After joining, services are reachable as <span class="font-mono">hostname.{network.dnsDomain}</span>
@@ -908,9 +913,7 @@
 						<p class="mb-2 text-sm text-muted-foreground">Share this link:</p>
 						<div class="relative rounded-md bg-muted p-3 pr-16">
 							<pre class="overflow-x-auto font-mono text-xs">{window.location.origin}/invite/{inviteResult.code}</pre>
-							<button onclick={() => copyInviteLink(inviteResult!.code)} class="absolute right-2 top-2 rounded px-2 py-1 text-xs hover:bg-accent">
-								Copy
-							</button>
+							<button onclick={() => copyInviteLink(inviteResult!.code)} class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">Copy</button>
 						</div>
 						<div class="mt-4 flex justify-end">
 							<button onclick={() => { showCreateInvite = false; }} class="rounded-md px-4 py-2 text-sm hover:bg-accent">Done</button>
@@ -973,10 +976,8 @@
 									<pre class="font-mono text-xs">{installScriptCmd}</pre>
 									<button
 										onclick={() => copyToClipboard(installScriptCmd)}
-										class="absolute right-2 top-2 rounded px-2 py-1 text-xs hover:bg-accent"
-									>
-										Copy
-									</button>
+										class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+									>Copy</button>
 								</div>
 							</div>
 
@@ -986,10 +987,8 @@
 									<pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">{enrollCommand}</pre>
 									<button
 										onclick={() => copyToClipboard(enrollCommand)}
-										class="absolute right-2 top-2 rounded px-2 py-1 text-xs hover:bg-accent"
-									>
-										Copy
-									</button>
+										class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+									>Copy</button>
 								</div>
 							</div>
 
