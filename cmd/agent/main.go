@@ -425,7 +425,11 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	shell := "/bin/bash"
+	// Use the user's default shell. Fall back to /bin/bash, then /bin/sh.
+	shell := os.Getenv("SHELL")
+	if shell == "" {
+		shell = "/bin/bash"
+	}
 	if _, err := os.Stat(shell); err != nil {
 		shell = "/bin/sh"
 	}
