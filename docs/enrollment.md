@@ -1,39 +1,40 @@
 # hopssh — Enrollment Guide
 
-Five ways to add devices to your mesh network.
+Four ways to add devices to your mesh network. All produce identical nodes
+with the same capabilities — there's no server/client distinction.
 
 ---
 
 ## 1. Device Flow (Interactive — Recommended)
 
-The safest option. No token ever touches the server.
+The safest option. No token ever touches the device.
 
 ```bash
-# On the server:
-curl -fsSL https://hopssh.com/install | sh
-sudo hop-agent enroll
+# On any device:
+curl -fsSL http://your-control-plane:9473/install.sh | sh
+hop-agent enroll --endpoint http://your-control-plane:9473
 
-  To enroll this node, open:  https://hopssh.com/device
+  To enroll this node, open:  http://your-control-plane:9473/device
   Enter code:  HOP-K9M2
   Waiting for authorization...
 ```
 
 Then in your browser (already logged into the dashboard):
-1. Visit `hopssh.com/device`
+1. Visit the device auth page
 2. Enter the code `HOP-K9M2`
-3. Select the network (e.g., "production")
+3. Select the network
 4. Click **Authorize**
 
-Back on the server:
+Back on the device:
 ```
-  ✓ Enrolled (10.42.1.3)
-  ✓ Nebula config written (server: 10.42.1.1 via hopssh.com)
-  ✓ Agent started
+  ✓ Enrolled (10.42.1.3/24)
+  ✓ Nebula config written (lighthouse: 10.42.1.1 via your-control-plane:42001)
+  ==> hop-agent service installed and started.
 ```
 
 **Security**: The 6-character code is meaningless without your authenticated browser session. Nothing is stored in shell history or visible in `ps`.
 
-**Best for**: Solo developers, ad-hoc VPS setup, one-off servers.
+**Best for**: Any device — servers, laptops, NAS, Raspberry Pi.
 
 ---
 
@@ -45,17 +46,11 @@ Fast, scriptable, and the token never appears in process arguments.
 # In the dashboard: click "Add Node" → copies a token
 # Token expires in 10 minutes, single-use.
 
-curl -fsSL https://hopssh.com/install | sh
-echo "hop_Xk9mQ2..." | sudo hop-agent enroll --token-stdin
+curl -fsSL http://your-control-plane:9473/install.sh | sh
+echo "hop_Xk9mQ2..." | hop-agent enroll --token-stdin --endpoint http://your-control-plane:9473
 
-  ✓ Enrolled (10.42.1.4)
-  ✓ Agent started
-```
-
-Or in one line:
-```bash
-curl -fsSL https://hopssh.com/install | sh && \
-  echo "hop_Xk9mQ2..." | sudo hop-agent enroll --token-stdin
+  ✓ Enrolled (10.42.1.4/24)
+  ==> hop-agent service installed and started.
 ```
 
 **Security**: Token delivered via stdin — not visible in `ps` or `/proc/*/cmdline`. Single-use, expires in 10 minutes. Even if it leaks from terminal scroll-back, it's already consumed or expired.
@@ -69,8 +64,8 @@ curl -fsSL https://hopssh.com/install | sh && \
 The simplest one-liner, but the token is visible in process listings.
 
 ```bash
-curl -fsSL https://hopssh.com/install | sh
-sudo hop-agent enroll --token hop_Xk9mQ2...
+curl -fsSL http://your-control-plane:9473/install.sh | sh
+hop-agent enroll --token hop_Xk9mQ2... --endpoint http://your-control-plane:9473
 ```
 
 **Security**: Token visible in `ps` and shell history while the command runs. Acceptable if you trust all users on the machine. Still single-use + 10-minute TTL.
@@ -114,6 +109,7 @@ sudo systemctl enable --now nebula hop-agent
 For teams managing servers programmatically.
 
 ```hcl
+# Future: Terraform/Pulumi provider (not yet implemented)
 resource "hopssh_enrollment_token" "web" {
   network_id = hopssh_network.prod.id
   ttl        = "10m"
@@ -124,13 +120,11 @@ resource "aws_instance" "web" {
   instance_type = "t3.micro"
   user_data     = <<-EOF
     #!/bin/bash
-    curl -fsSL https://hopssh.com/install | sh
-    echo "${hopssh_enrollment_token.web.token}" | hop-agent enroll --token-stdin
+    curl -fsSL http://your-control-plane:9473/install.sh | sh
+    echo "${hopssh_enrollment_token.web.token}" | hop-agent enroll --token-stdin --endpoint http://your-control-plane:9473
   EOF
 }
 ```
-
-**Security**: Token generated at `terraform apply` time, injected via cloud-init user-data. Short-lived (10 min), consumed at first boot.
 
 **Best for**: Cloud-native teams, CI/CD pipelines, auto-scaling groups.
 
@@ -178,49 +172,33 @@ Agent: POST /api/device/code
 
 ---
 
-## 6. Client Join (Laptops/Phones)
+## Re-enrollment
 
-For accessing services from your personal devices (not servers).
+Already enrolled? Use `--force` to clean up and re-enroll:
 
 ```bash
-# On your laptop:
-hop client join --network <network-id> --endpoint https://hopssh.com
-
-  Authenticating... (opens browser for login)
-  ✓ Joined network "home" (10.42.1.5)
-  ✓ DNS configured: .zero → mesh
-  ✓ Connected to lighthouse
-
-# Now access your services:
-curl http://jellyfin.zero:8096
-ssh nas.zero
-ping immich.zero
+hop-agent enroll --force --endpoint http://your-control-plane:9473
 ```
 
-**How it works:**
-1. Authenticates with the control plane (browser OAuth or token)
-2. Gets a Nebula certificate with group `user` (not `agent`)
-3. Starts embedded Nebula in userspace (connects to lighthouse)
-4. Configures split DNS so `.zero` (or whatever your network domain is) resolves through the mesh
-5. P2P connections to agents when possible, relay fallback when not
-
-**Security:**
-- Client cert is `user` group — can only access ports the agent explicitly exposes
-- Cannot access the agent management API (that's `admin` group only)
-- Short-lived cert (24h), auto-renewed while the client is running
-- Split DNS: only your mesh domain goes through the mesh. All other DNS is unchanged.
-
-**Best for:** Accessing self-hosted services (Jellyfin, Immich, Paperless-ngx, Home Assistant) from anywhere.
+This stops the existing service, removes old config, and enrolls fresh.
 
 ---
 
 ## Enrollment Modes Summary
 
-| Mode | Command | Who uses it | Token on device? | Offline? |
-|------|---------|-------------|-----------------|---------|
-| Device flow | `hop-agent enroll` | Server enrollment (interactive) | No | No |
-| Token stdin | `echo <tok> \| hop-agent enroll --token-stdin` | Server enrollment (scripted) | Briefly | No |
-| Token arg | `hop-agent enroll --token <tok>` | Quick demos | Yes (ps visible) | No |
-| Bundle | `hop-agent enroll --bundle <path>` | Air-gapped servers | No | Yes |
-| Client join | `hop client join --network <id>` | Laptops, phones | Via browser auth | No |
-| Terraform | Via provider | IaC pipelines | In TF state | No |
+| Mode | Command | Best for | Token visible? | Offline? |
+|------|---------|----------|---------------|---------|
+| Device flow | `hop-agent enroll --endpoint <url>` | Any device (interactive) | No | No |
+| Token stdin | `echo <tok> \| hop-agent enroll --token-stdin --endpoint <url>` | Scripted setup | Briefly (stdin) | No |
+| Token arg | `hop-agent enroll --token <tok> --endpoint <url>` | Quick demos | Yes (ps) | No |
+| Bundle | `hop-agent enroll --bundle <path>` | Air-gapped | No | Yes |
+
+All modes produce identical nodes. Capabilities (terminal, health, forward) are toggled per-node from the dashboard after enrollment — no distinction at enrollment time.
+
+## Post-enrollment CLI
+
+```bash
+hop-agent status    # Check connection, cert expiry, service state
+hop-agent info      # Node metadata, hostname, version
+hop-agent help      # All available commands
+```

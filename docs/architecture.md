@@ -103,26 +103,23 @@ Single Go binary that runs:
 | **DNS server** (per network) | Resolves `hostname.domain` → mesh VPN IP |
 | **SQLite** | All state: users, networks, nodes, certs, audit, DNS records |
 
-### Agent (`cmd/agent serve`)
+### Node (`cmd/agent`)
 
-Installed on servers. Single binary with embedded Nebula:
-
-| Component | Purpose |
-|-----------|---------|
-| **Nebula** (embedded, userspace) | Persistent mesh connection, registers with lighthouse |
-| **HTTP server** (on VPN IP only) | /health, /exec, /shell, /upload — control plane access |
-| **Service exposure** | Configurable ports accessible to mesh members (e.g., Jellyfin :8096) |
-| **Cert renewal** | Auto-renews 24h certificates via HTTPS to control plane |
-
-### Client (`cmd/agent client join`)
-
-Installed on laptops/phones. Same binary, different mode:
+Installed on any device (server, laptop, phone, NAS). Single binary with embedded Nebula.
+All nodes are equal — capabilities (terminal, health, forward) are per-node toggles.
 
 | Component | Purpose |
 |-----------|---------|
-| **Nebula** (embedded, userspace) | Joins mesh, gets VPN IP, P2P to agents |
-| **Split DNS** | Resolves `.zero` / `.prod` / etc. through mesh DNS |
-| No HTTP server | Clients don't expose services (agents do) |
+| **Nebula** (embedded, userspace) | Persistent mesh connection via gvisor netstack |
+| **HTTP server** (on mesh) | /health, /exec, /shell, /upload — controlled by capabilities |
+| **Cert renewal** | Auto-renews 24h certificates with jitter (±10%) |
+| **Heartbeat** | Reports online status to control plane every 5 min |
+| **CLI** | help, status, info, enroll, serve, install, update |
+
+Capabilities are toggled per-node from the dashboard:
+- **terminal** — web terminal (PTY) access from browser
+- **health** — health check endpoint
+- **forward** — TCP port forwarding through mesh
 
 ---
 
@@ -150,14 +147,24 @@ networks (id, user_id, name, slug, nebula_ca_cert, nebula_ca_key[enc],
 nodes (id, network_id, hostname, os, arch, nebula_cert, nebula_key[enc],
        nebula_ip, agent_token[enc], enrollment_token[hash],
        enrollment_expires_at, agent_real_ip, node_type,
-       exposed_ports, dns_name, status, last_seen_at, created_at)
-  └─ node_type: "agent" (server), "user" (client), "lighthouse"
+       exposed_ports, dns_name, capabilities, status, last_seen_at, created_at)
+  └─ node_type: "node" (unified), "lighthouse" (control plane internal)
+  └─ capabilities: JSON array ["terminal","health","forward"] — per-node toggles
   └─ exposed_ports: JSON array of {port, proto, name} for mesh firewall
-  └─ dns_name: custom hostname for DNS (defaults to hostname)
+  └─ dns_name: auto-sanitized from hostname (lowercase, strip .local)
   └─ enrollment_token: SHA-256 hashed, single-use, 10-min TTL
   └─ agent_token: AES-GCM encrypted, constant-time comparison
   └─ nebula_key: AES-GCM encrypted
   └─ status: pending → enrolled → online → offline
+
+network_members (id, network_id, user_id, role, created_at)
+  └─ role: "admin" (owner/full access) or "member" (view + join)
+  └─ UNIQUE(network_id, user_id)
+
+network_invites (id, network_id, created_by, code, role,
+                 max_uses, use_count, expires_at, created_at)
+  └─ shareable invite links with expiry + max uses + role selector
+  └─ code: 32-byte hex, single-use atomic claim
 
 device_codes (device_code[hash], user_code, user_id, network_id,
               node_id, status, expires_at, created_at)
@@ -217,30 +224,28 @@ Regular internet DNS is unaffected — only queries for the mesh domain go throu
 
 ## Firewall Groups
 
-Nebula certificates carry groups. hopssh assigns groups based on node type:
+Nebula certificates carry groups. hopssh uses a unified model:
 
-| Group | Assigned to | Can access |
-|-------|------------|------------|
-| `admin` | Control plane (lighthouse) | All ports on all nodes |
-| `agent` | Servers | Other agents (for future P2P services) |
-| `user` | Client devices (laptops, phones) | Exposed service ports on agents |
+| Group | Assigned to | Purpose |
+|-------|------------|---------|
+| `admin` | Control plane (lighthouse) | Can reach management API on all nodes |
+| `node` | All enrolled nodes | Can reach other nodes on the mesh |
 
-### Agent firewall (generated during enrollment)
+Access control beyond network-level is handled by **per-node capabilities** at the application layer, not Nebula firewall groups. This follows the Tailscale/ZeroTier model.
+
+### Node firewall (generated during enrollment)
 
 ```yaml
 firewall:
   inbound:
-    # Control plane can reach agent management API
+    # Control plane can reach node management API
     - port: 41820
       proto: tcp
       groups: [admin]
-    # Mesh members with "user" group can reach exposed services
-    - port: 8096     # Jellyfin
+    # All mesh nodes can reach each other
+    - port: any
       proto: tcp
-      groups: [user]
-    - port: 8000     # Paperless
-      proto: tcp
-      groups: [user]
+      groups: [node]
     # ICMP for diagnostics
     - port: any
       proto: icmp
@@ -251,57 +256,72 @@ firewall:
       host: any
 ```
 
-Exposed ports are configurable per node via the dashboard.
+Per-node capabilities (terminal, health, forward) are checked at the control plane proxy layer, not the Nebula firewall. This allows toggling capabilities from the dashboard without re-issuing certificates.
 
 ---
 
 ## API Endpoints
 
-### Public (no auth, rate limited)
+### Public (no auth)
 | Method | Path | Purpose |
 |--------|------|---------|
+| GET | `/healthz` | Health check for orchestrators (no rate limit) |
+| GET | `/version` | Latest available version JSON |
+| GET | `/install.sh` | Install script with endpoint pre-baked |
+| GET | `/download/{binary}` | Redirect to GitHub Release binary |
 | GET | `/api/auth/status` | Check if any users exist |
 | POST | `/api/auth/register` | Create account |
 | POST | `/api/auth/login` | Login → session cookie |
-| POST | `/api/enroll` | Token-based agent enrollment |
+| POST | `/api/enroll` | Token-based node enrollment |
 | POST | `/api/device/code` | Device flow: request code |
 | POST | `/api/device/poll` | Device flow: agent polls |
-| POST | `/api/renew` | Agent cert renewal (bearer token auth) |
-| GET | `/api/bundles/{token}` | Download enrollment bundle (HTTPS required) |
+| POST | `/api/renew` | Node cert renewal (bearer token) |
+| POST | `/api/heartbeat` | Node heartbeat (bearer token) |
+| GET | `/api/bundles/{token}` | Download enrollment bundle |
+| GET | `/api/invites/{code}` | Invite details (for accept page) |
 
 ### Authenticated (session cookie)
 | Method | Path | Purpose |
 |--------|------|---------|
 | POST | `/api/auth/logout` | Destroy session |
 | GET | `/api/auth/me` | Current user info |
+| GET | `/api/audit` | Audit log |
 | **Networks** | | |
-| POST | `/api/networks` | Create network (+ start lighthouse, allocate UDP port) |
-| GET | `/api/networks` | List user's networks |
-| GET | `/api/networks/{id}` | Network detail + nodes |
-| DELETE | `/api/networks/{id}` | Delete network (+ stop lighthouse, cleanup) |
+| POST | `/api/networks` | Create network |
+| GET | `/api/networks` | List networks (owned + member) |
+| GET | `/api/networks/{id}` | Network detail + nodes (with role) |
+| DELETE | `/api/networks/{id}` | Delete network (admin only) |
 | **Nodes** | | |
 | POST | `/api/networks/{id}/nodes` | Generate enrollment token |
-| GET | `/api/networks/{id}/nodes` | List nodes in network |
-| DELETE | `/api/networks/{id}/nodes/{nodeId}` | Delete node (revoke access) |
-| GET | `/api/networks/{id}/nodes/{nodeId}/health` | Health check via mesh |
-| GET | `/api/networks/{id}/nodes/{nodeId}/shell` | WebSocket terminal via mesh |
-| POST | `/api/networks/{id}/nodes/{nodeId}/exec` | Command exec (streaming) |
-| PUT | `/api/networks/{id}/nodes/{nodeId}/ports` | Configure exposed service ports |
+| GET | `/api/networks/{id}/nodes` | List nodes |
+| PATCH | `/api/networks/{id}/nodes/{nodeId}` | Rename node |
+| PUT | `/api/networks/{id}/nodes/{nodeId}/capabilities` | Update capabilities |
+| DELETE | `/api/networks/{id}/nodes/{nodeId}` | Delete node |
+| GET | `/api/networks/{id}/nodes/{nodeId}/health` | Health check (capability gated) |
+| GET | `/api/networks/{id}/nodes/{nodeId}/shell` | WebSocket terminal (capability gated) |
+| POST | `/api/networks/{id}/nodes/{nodeId}/exec` | Command exec (capability gated) |
 | **Port Forwards** | | |
-| POST | `/api/networks/{id}/nodes/{nodeId}/port-forwards` | Start port forward |
-| DELETE | `/api/networks/{id}/port-forwards/{fwdId}` | Stop port forward |
+| POST | `/api/networks/{id}/nodes/{nodeId}/port-forwards` | Start forward (capability gated) |
+| DELETE | `/api/networks/{id}/port-forwards/{fwdId}` | Stop forward |
 | GET | `/api/networks/{id}/port-forwards` | List active forwards |
 | **DNS** | | |
 | GET | `/api/networks/{id}/dns` | List DNS records |
-| POST | `/api/networks/{id}/dns` | Add custom DNS record |
-| DELETE | `/api/networks/{id}/dns/{recordId}` | Remove DNS record |
-| **Mesh** | | |
-| POST | `/api/networks/{id}/join` | Client joins network (issues "user" cert) |
-| GET | `/api/networks/{id}/peers` | List connected peers with P2P/relay status |
-| **Device Flow** | | |
-| POST | `/api/device/authorize` | User authorizes device code |
-| GET | `/api/device/verify/{code}` | Check device code status |
-| **Bundles** | | |
+| POST | `/api/networks/{id}/dns` | Add custom DNS record (admin) |
+| DELETE | `/api/networks/{id}/dns/{recordId}` | Remove DNS record (admin) |
+| **Members** | | |
+| GET | `/api/networks/{id}/members` | List members |
+| DELETE | `/api/networks/{id}/members/{memberId}` | Remove member (admin) |
+| **Invites** | | |
+| POST | `/api/networks/{id}/invites` | Create invite (admin) |
+| GET | `/api/networks/{id}/invites` | List invites (admin) |
+| DELETE | `/api/networks/{id}/invites/{inviteId}` | Revoke invite (admin) |
+| POST | `/api/invites/{code}/accept` | Accept invite |
+| **Events** | | |
+| GET | `/api/networks/{id}/events` | WebSocket real-time events |
+| **Other** | | |
+| POST | `/api/networks/{id}/join` | Join network (issues cert) |
+| POST | `/api/device/authorize` | Authorize device code |
+| GET | `/api/device/verify/{code}` | Check device code |
 | POST | `/api/networks/{id}/bundles` | Generate enrollment bundle |
 
 ---
@@ -310,15 +330,15 @@ Exposed ports are configurable per node via the dashboard.
 
 See [enrollment.md](enrollment.md) for detailed user flows and examples.
 
-### Agent enrollment (servers)
-Four modes: device flow, token stdin, token argument, pre-bundled tarball.
-All modes issue a Nebula certificate with group `agent` and return lighthouse endpoint info.
+### Node enrollment
+Four modes, all produce identical nodes with `node` cert group:
 
-### Client join (laptops/phones)
-```
-hop client join --network <id> --endpoint https://hopssh.com
-```
-Authenticates via browser, gets a Nebula cert with group `user`, starts embedded Nebula, configures split DNS.
+1. **Device flow** (default, interactive): `hop-agent enroll --endpoint <url>`
+2. **Token stdin** (scriptable): `echo '<token>' | hop-agent enroll --token-stdin --endpoint <url>`
+3. **Token arg** (quick): `hop-agent enroll --token <token> --endpoint <url>`
+4. **Bundle** (air-gapped): `hop-agent enroll --bundle <path>`
+
+All modes issue a Nebula certificate with group `node`, configure the mesh, and auto-install the service. Use `--force` to re-enroll an already-enrolled device.
 
 ---
 
@@ -348,11 +368,11 @@ Authenticates via browser, gets a Nebula cert with group `user`, starts embedded
 └──────────┬──────────┬────────────┘
            │ (mesh)   │ (mesh)
      ┌─────▼────┐ ┌───▼──────┐
-     │  Agent   │ │  Client  │
+     │  Node A  │ │  Node B  │
      │  Has:    │ │  Has:    │
-     │  cert,   │ │  cert    │
-     │  token   │ │  (user)  │
-     │  (agent) │ │          │
+     │  cert    │ │  cert    │
+     │  (node)  │ │  (node)  │
+     │  token   │ │  token   │
      └──────────┘ └──────────┘
          ↕ P2P (direct or relayed)
 ```
@@ -360,10 +380,11 @@ Authenticates via browser, gets a Nebula cert with group `user`, starts embedded
 ### What makes it safe
 1. **E2E encryption** — relay cannot read traffic. Only endpoints with valid certs can communicate.
 2. **Per-network CA** — compromising one network's CA has zero effect on others.
-3. **Short-lived certs (24h)** — auto-renewed. Node deletion = cert not renewed = access revoked within 24h.
-4. **Firewall groups** — agents, users, and admins have different access levels enforced by Nebula certs.
-5. **No inbound ports** — agents and clients connect outbound to the lighthouse.
+3. **Short-lived certs (24h)** — auto-renewed with jitter. Node deletion = cert not renewed = access revoked within 24h.
+4. **Per-node capabilities** — terminal, health, forward checked at application layer. Toggleable without re-enrollment.
+5. **No inbound ports** — nodes connect outbound to the lighthouse. Userspace networking (gvisor) = no OS-level interfaces.
 6. **Single binary** — no dependency chain, no supply chain attack surface beyond Go stdlib + Nebula.
+7. **Non-root capable** — agent runs in userspace with user-level config. No kernel TUN required.
 
 ---
 
