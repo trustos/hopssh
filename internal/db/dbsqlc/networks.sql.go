@@ -18,6 +18,28 @@ func (q *Queries) DeleteNetwork(ctx context.Context, id string) error {
 	return err
 }
 
+const firstAvailableLighthousePort = `-- name: FirstAvailableLighthousePort :one
+SELECT COALESCE(
+    (SELECT n1.lighthouse_port + 1
+     FROM networks n1
+     WHERE n1.lighthouse_port IS NOT NULL
+     AND NOT EXISTS (
+         SELECT 1 FROM networks n2
+         WHERE n2.lighthouse_port = n1.lighthouse_port + 1
+     )
+     ORDER BY n1.lighthouse_port
+     LIMIT 1),
+    42001
+) AS next_port
+`
+
+func (q *Queries) FirstAvailableLighthousePort(ctx context.Context) (interface{}, error) {
+	row := q.db.QueryRowContext(ctx, firstAvailableLighthousePort)
+	var next_port interface{}
+	err := row.Scan(&next_port)
+	return next_port, err
+}
+
 const getNetworkByID = `-- name: GetNetworkByID :one
 SELECT id, user_id, name, slug, nebula_ca_cert, nebula_ca_key, nebula_subnet, server_cert, server_key, lighthouse_port, dns_domain, created_at
 FROM networks WHERE id = ?

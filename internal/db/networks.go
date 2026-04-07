@@ -187,6 +187,26 @@ func (s *NetworkStore) MaxLighthousePort() (int, error) {
 	return 0, nil
 }
 
+// FirstAvailableLighthousePort finds the first gap in lighthouse port sequence,
+// reusing ports from deleted networks. Falls back to 42001 if no networks exist.
+func (s *NetworkStore) FirstAvailableLighthousePort() (int, error) {
+	q := dbsqlc.New(WrapDB(s.rdb))
+	result, err := q.FirstAvailableLighthousePort(context.Background())
+	if err != nil {
+		return 0, err
+	}
+	if result == nil {
+		return 42001, nil
+	}
+	switch v := result.(type) {
+	case int64:
+		return int(v), nil
+	case float64:
+		return int(v), nil
+	}
+	return 42001, nil
+}
+
 // SlugExists checks if a network slug is already taken.
 func (s *NetworkStore) SlugExists(slug string) bool {
 	q := dbsqlc.New(WrapDB(s.rdb))

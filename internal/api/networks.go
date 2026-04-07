@@ -24,6 +24,7 @@ const caDuration = 10 * 365 * 24 * time.Hour // 10 years
 type NetworkHandler struct {
 	Networks       *db.NetworkStore
 	Nodes          *db.NodeStore
+	Members        *db.NetworkMemberStore
 	NetworkManager *mesh.NetworkManager
 	ForwardManager ForwardNetworkStopper // for cleaning up port forwards on network delete
 }
@@ -127,6 +128,11 @@ func (h *NetworkHandler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Add creator as admin member.
+	if h.Members != nil {
+		h.Members.Add(network.ID+"-owner", network.ID, user.ID, "admin")
+	}
+
 	// Start the lighthouse for this network.
 	if err := h.NetworkManager.StartNetwork(network); err != nil {
 		log.Printf("[networks] failed to start lighthouse for %s: %v", network.Slug, err)
@@ -140,6 +146,7 @@ func (h *NetworkHandler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 		"subnet":         network.NebulaSubnet,
 		"lighthousePort": lighthousePort,
 		"dnsDomain":      dnsDomain,
+		"role":           "admin",
 	})
 }
 
@@ -160,6 +167,27 @@ func (h *NetworkHandler) ListNetworks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Build a set of owned network IDs for role determination.
+	ownedIDs := make(map[string]bool, len(networks))
+	for _, n := range networks {
+		ownedIDs[n.ID] = true
+	}
+
+	// Also include networks where user is a member (not owner).
+	if h.Members != nil {
+		memberNetworkIDs, _ := h.Members.ListNetworkIDsForUser(user.ID)
+		for _, nid := range memberNetworkIDs {
+			if ownedIDs[nid] {
+				continue // already in list as owner
+			}
+			n, err := h.Networks.Get(nid)
+			if err != nil || n == nil {
+				continue
+			}
+			networks = append(networks, n)
+		}
+	}
+
 	type networkEntry struct {
 		ID             string `json:"id"`
 		Name           string `json:"name"`
@@ -168,12 +196,17 @@ func (h *NetworkHandler) ListNetworks(w http.ResponseWriter, r *http.Request) {
 		NodeCount      int    `json:"nodeCount"`
 		LighthousePort *int64 `json:"lighthousePort"`
 		DNSDomain      string `json:"dnsDomain"`
+		Role           string `json:"role"`
 		CreatedAt      int64  `json:"createdAt"`
 	}
 
 	result := make([]networkEntry, 0, len(networks))
 	for _, n := range networks {
 		count, _ := h.Nodes.CountForNetwork(n.ID)
+		role := "member"
+		if n.UserID == user.ID {
+			role = "admin"
+		}
 		result = append(result, networkEntry{
 			ID:             n.ID,
 			Name:           n.Name,
@@ -182,7 +215,8 @@ func (h *NetworkHandler) ListNetworks(w http.ResponseWriter, r *http.Request) {
 			NodeCount:      count,
 			LighthousePort: n.LighthousePort,
 			DNSDomain:      n.DNSDomain,
-			CreatedAt: n.CreatedAt,
+			Role:           role,
+			CreatedAt:      n.CreatedAt,
 		})
 	}
 
@@ -204,7 +238,18 @@ func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 	networkID := chi.URLParam(r, "networkID")
 
 	network, err := h.Networks.Get(networkID)
-	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
+	if err != nil || network == nil {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return
+	}
+
+	// Check access via ownership or membership.
+	var membership *db.NetworkMember
+	if h.Members != nil {
+		membership, _ = h.Members.GetMembership(networkID, user.ID)
+	}
+	access := authz.CheckAccess(user, network, membership)
+	if !access.CanView() {
 		http.Error(w, "network not found", http.StatusNotFound)
 		return
 	}
@@ -239,6 +284,7 @@ func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 		"nodeCount":      len(nodeResponses),
 		"lighthousePort": network.LighthousePort,
 		"dnsDomain":      network.DNSDomain,
+		"role":           access.Role,
 		"nodes":          nodeResponses,
 		"createdAt":      network.CreatedAt,
 	})

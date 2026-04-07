@@ -97,6 +97,8 @@ func NewRouter(
 	dnsH *DNSHandler,
 	auditH *AuditHandler,
 	distH *DistributionHandler,
+	memberH *MemberHandler,
+	inviteH *InviteHandler,
 ) chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -125,6 +127,9 @@ func NewRouter(
 
 	// Bundle download (public — token is the auth).
 	r.With(wt).Get("/api/bundles/{token}", bundleH.DownloadBundle)
+
+	// Invite details (public — for accept page).
+	r.With(publicRL.Limit, wt).Get("/api/invites/{code}", inviteH.GetInviteByCode)
 
 	// Authenticated endpoints.
 	r.Group(func(r chi.Router) {
@@ -173,6 +178,16 @@ func NewRouter(
 
 		// Enrollment bundles.
 		r.With(wt).Post("/api/networks/{networkID}/bundles", bundleH.CreateBundle)
+
+		// Members.
+		r.With(wt).Get("/api/networks/{networkID}/members", memberH.ListMembers)
+		r.With(wt).Delete("/api/networks/{networkID}/members/{memberID}", memberH.RemoveMember)
+
+		// Invites.
+		r.With(wt).Post("/api/networks/{networkID}/invites", inviteH.CreateInvite)
+		r.With(wt).Get("/api/networks/{networkID}/invites", inviteH.ListInvites)
+		r.With(wt).Delete("/api/networks/{networkID}/invites/{inviteID}", inviteH.DeleteInvite)
+		r.With(wt).Post("/api/invites/{code}/accept", inviteH.AcceptInvite)
 	})
 
 	// Distribution: install script, binary downloads, version (public, no auth).

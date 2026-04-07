@@ -66,6 +66,26 @@ type Network struct {
 	CreatedAt      int64
 }
 
+type NetworkInvite struct {
+	ID        string
+	NetworkID string
+	CreatedBy string
+	Code      string
+	Role      string
+	MaxUses   *int64
+	UseCount  int64
+	ExpiresAt *int64
+	CreatedAt int64
+}
+
+type NetworkMember struct {
+	ID        string
+	NetworkID string
+	UserID    string
+	Role      string
+	CreatedAt int64
+}
+
 type Node struct {
 	ID                  string
 	NetworkID           string

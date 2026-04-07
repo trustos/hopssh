@@ -116,6 +116,8 @@ func main() {
 	bundles := db.NewBundleStore(database)
 
 	dnsRecords := db.NewDNSRecordStore(database)
+	members := db.NewNetworkMemberStore(database)
+	invites := db.NewInviteStore(database)
 
 	// Initialize network manager (persistent per-network Nebula lighthouse+relay+DNS).
 	netMgr, err := mesh.NewNetworkManager(networks, nodes, dnsRecords)
@@ -128,7 +130,7 @@ func main() {
 
 	// Initialize handlers.
 	authH := &api.AuthHandler{Users: users, Sessions: sessions, Audit: audit}
-	networkH := &api.NetworkHandler{Networks: networks, Nodes: nodes, NetworkManager: netMgr, ForwardManager: fwdMgr}
+	networkH := &api.NetworkHandler{Networks: networks, Nodes: nodes, Members: members, NetworkManager: netMgr, ForwardManager: fwdMgr}
 	enrollH := &api.EnrollHandler{Networks: networks, Nodes: nodes, NetworkManager: netMgr, Endpoint: *endpoint}
 	proxyH := &api.ProxyHandler{
 		NetworkManager: netMgr,
@@ -157,8 +159,10 @@ func main() {
 	auditH := &api.AuditHandler{Audit: audit}
 
 	distH := &api.DistributionHandler{Endpoint: *endpoint}
+	memberH := &api.MemberHandler{Networks: networks, Members: members}
+	inviteH := &api.InviteHandler{Networks: networks, Members: members, Invites: invites}
 
-	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH)
+	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH)
 
 	// Clean up expired sessions periodically with graceful shutdown.
 	stopCleanup := make(chan struct{})
@@ -173,6 +177,7 @@ func main() {
 				sessions.DeleteExpired()
 				deviceCodes.DeleteExpired()
 				bundles.DeleteExpired()
+				invites.DeleteExpired()
 			case <-daily.C:
 				// WAL checkpoint + query planner optimization (PocketBase pattern).
 				database.WriteDB.Exec("PRAGMA wal_checkpoint(TRUNCATE)")

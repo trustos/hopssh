@@ -26,3 +26,17 @@ FROM networks WHERE nebula_subnet IS NOT NULL;
 
 -- name: MaxLighthousePort :one
 SELECT MAX(lighthouse_port) FROM networks WHERE lighthouse_port IS NOT NULL;
+
+-- name: FirstAvailableLighthousePort :one
+SELECT COALESCE(
+    (SELECT n1.lighthouse_port + 1
+     FROM networks n1
+     WHERE n1.lighthouse_port IS NOT NULL
+     AND NOT EXISTS (
+         SELECT 1 FROM networks n2
+         WHERE n2.lighthouse_port = n1.lighthouse_port + 1
+     )
+     ORDER BY n1.lighthouse_port
+     LIMIT 1),
+    42001
+) AS next_port;

@@ -244,14 +244,11 @@ func parseNodeIPForDNS(nebulaIP string) net.IP {
 }
 
 // AllocatePort returns the next available lighthouse UDP port.
+// Uses gap-filling: reuses ports from deleted networks before allocating new ones.
 func (nm *NetworkManager) AllocatePort() (int, error) {
-	maxPort, err := nm.networks.MaxLighthousePort()
+	port, err := nm.networks.FirstAvailableLighthousePort()
 	if err != nil {
-		return 0, fmt.Errorf("query max lighthouse port: %w", err)
-	}
-	port := baseLighthousePort
-	if maxPort > 0 {
-		port = maxPort + 1
+		return 0, fmt.Errorf("query available lighthouse port: %w", err)
 	}
 	if port > 65535 {
 		return 0, fmt.Errorf("no available UDP ports (max 65535)")

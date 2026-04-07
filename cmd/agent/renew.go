@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -77,8 +78,10 @@ func timeUntilRenewal() (time.Duration, error) {
 		return 0, nil // already expired, renew immediately
 	}
 
-	// Renew at 50% of remaining lifetime.
-	return remaining / 2, nil
+	// Renew at 50% of remaining lifetime, with ±10% jitter to spread load.
+	base := remaining / 2
+	jitter := time.Duration(rand.Int63n(int64(remaining)/5)) - (remaining / 10)
+	return base + jitter, nil
 }
 
 // renewCert calls the control plane's /api/renew endpoint to get a fresh cert.
