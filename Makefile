@@ -1,3 +1,7 @@
+# Load .env if it exists
+-include .env
+export
+
 .PHONY: all setup vendor patch-vendor build build-all build-linux vet test \
        generate check-patches clean clean-vendor frontend frontend-embed \
        run dev
@@ -73,6 +77,24 @@ run: build-all
 # Ctrl+C cleanly kills both processes.
 dev:
 	@./scripts/dev.sh
+
+SSH_CMD = ssh -o StrictHostKeyChecking=no -i $(DEPLOY_KEY) $(or $(DEPLOY_USER),ubuntu)@$(DEPLOY_HOST)
+
+# SSH into the remote control plane server.
+ssh:
+	@test -n "$(DEPLOY_HOST)" || (echo "Set DEPLOY_HOST in .env" && exit 1)
+	$(SSH_CMD)
+
+# Deploy hopssh to a remote server.
+deploy:
+	@test -n "$(DEPLOY_HOST)" || (echo "Set DEPLOY_HOST in .env" && exit 1)
+	cat deploy/install.sh | $(SSH_CMD) 'sudo bash -s'
+
+# Run a command on the remote server.
+# Usage: make remote-exec CMD="sudo ufw status"
+remote-exec:
+	@test -n "$(DEPLOY_HOST)" || (echo "Set DEPLOY_HOST in .env" && exit 1)
+	$(SSH_CMD) '$(CMD)'
 
 # Remove build artifacts.
 clean:

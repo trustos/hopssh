@@ -18,16 +18,24 @@ esac
 GOVERSION=1.24.2
 echo "==> Installing Go $GOVERSION ($GOARCH)..."
 curl -fsSL "https://go.dev/dl/go${GOVERSION}.linux-${GOARCH}.tar.gz" | sudo tar -C /usr/local -xzf -
-export PATH=$PATH:/usr/local/go/bin
-export GOPATH=$HOME/go
-export PATH=$PATH:$GOPATH/bin
+export PATH=/usr/local/go/bin:$PATH
+export GOPATH=/root/go
+export PATH=$GOPATH/bin:$PATH
+# Make Go available system-wide for make/sudo
+sudo ln -sf /usr/local/go/bin/go /usr/local/bin/go
+sudo ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 
 # Install build deps
 echo "==> Installing build dependencies..."
 if command -v apt-get &>/dev/null; then
-  sudo apt-get update -y && sudo apt-get install -y git make patch nodejs npm
+  sudo apt-get update -y && sudo apt-get install -y git make patch curl ca-certificates
+  # Node.js 22 from NodeSource (Ubuntu default is too old for Svelte/Vite)
+  curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+  sudo apt-get install -y nodejs
 elif command -v dnf &>/dev/null; then
-  sudo dnf install -y git make patch nodejs npm
+  sudo dnf install -y git make patch curl
+  curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash -
+  sudo dnf install -y nodejs
 fi
 
 # Clone and build

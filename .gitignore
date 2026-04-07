@@ -13,6 +13,11 @@ frontend/.svelte-kit/
 internal/frontend/dist/
 !internal/frontend/dist/.gitkeep
 
+# Environment and secrets
+.env
+deploy/key.pem
+deploy/*.pem
+
 # Runtime
 data/
 
