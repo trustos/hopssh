@@ -19,7 +19,7 @@ const (
 	githubRepo       = "trustos/hopssh"
 	githubReleasesURL = "https://api.github.com/repos/" + githubRepo + "/releases/latest"
 	githubDownloadURL = "https://github.com/" + githubRepo + "/releases/download"
-	versionCacheTTL  = 1 * time.Hour
+	versionCacheTTL  = 5 * time.Minute
 )
 
 // validBinaryName matches hop-agent-linux-amd64, hop-server-darwin-arm64, etc.
