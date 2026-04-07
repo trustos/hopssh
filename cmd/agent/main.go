@@ -455,10 +455,15 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.Close()
 
-	// Use the user's default shell. Fall back to /bin/bash, then /bin/sh.
+	// Determine shell: $SHELL env, then platform default, then fallbacks.
 	shell := os.Getenv("SHELL")
 	if shell == "" {
-		shell = "/bin/bash"
+		// macOS default is zsh since Catalina; Linux typically has bash.
+		if runtime.GOOS == "darwin" {
+			shell = "/bin/zsh"
+		} else {
+			shell = "/bin/bash"
+		}
 	}
 	if _, err := os.Stat(shell); err != nil {
 		shell = "/bin/sh"
