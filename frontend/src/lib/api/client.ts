@@ -142,6 +142,45 @@ export const audit = {
 		>('GET', '/api/audit')
 };
 
+// --- Members ---
+export const members = {
+	list: (networkId: string) =>
+		request<import('$lib/types/api').NetworkMemberResponse[]>(
+			'GET',
+			`/api/networks/${e(networkId)}/members`
+		),
+	remove: (networkId: string, memberId: string) =>
+		request<void>('DELETE', `/api/networks/${e(networkId)}/members/${e(memberId)}`)
+};
+
+// --- Invites ---
+export const invites = {
+	create: (networkId: string, opts: { maxUses?: number; expiresIn?: number }) =>
+		request<import('$lib/types/api').InviteResponse>(
+			'POST',
+			`/api/networks/${e(networkId)}/invites`,
+			opts
+		),
+	list: (networkId: string) =>
+		request<import('$lib/types/api').InviteResponse[]>(
+			'GET',
+			`/api/networks/${e(networkId)}/invites`
+		),
+	delete: (networkId: string, inviteId: string) =>
+		request<void>('DELETE', `/api/networks/${e(networkId)}/invites/${e(inviteId)}`),
+	get: (code: string) =>
+		request<import('$lib/types/api').InviteDetailResponse>(
+			'GET',
+			`/api/invites/${e(code)}`
+		),
+	accept: (code: string) =>
+		request<{ networkId: string; role: string }>(
+			'POST',
+			`/api/invites/${e(code)}/accept`,
+			{}
+		)
+};
+
 // --- Device Flow ---
 export const device = {
 	verify: (code: string) =>

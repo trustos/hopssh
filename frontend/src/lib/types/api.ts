@@ -25,11 +25,39 @@ export interface NetworkResponse {
 	nodeCount: number;
 	lighthousePort: number | null;
 	dnsDomain: string;
+	role: string;
 	createdAt: number;
 }
 
 export interface NetworkDetailResponse extends NetworkResponse {
 	nodes: NodeResponse[];
+}
+
+export interface NetworkMemberResponse {
+	id: string;
+	userId: string;
+	email: string;
+	name: string;
+	role: string;
+	createdAt: number;
+}
+
+export interface InviteResponse {
+	id: string;
+	code: string;
+	role: string;
+	maxUses: number | null;
+	useCount: number;
+	expiresAt: number | null;
+	createdAt: number;
+}
+
+export interface InviteDetailResponse {
+	code: string;
+	networkId: string;
+	networkName: string;
+	role: string;
+	expiresAt: number | null;
 }
 
 export interface NodeResponse {

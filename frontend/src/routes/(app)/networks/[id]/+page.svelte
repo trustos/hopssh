@@ -3,13 +3,15 @@
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { toast } from 'svelte-sonner';
-	import { networks as networksApi, nodes as nodesApi, dns as dnsApi, portForwards as fwdApi } from '$lib/api/client';
+	import { networks as networksApi, nodes as nodesApi, dns as dnsApi, portForwards as fwdApi, members as membersApi, invites as invitesApi } from '$lib/api/client';
 	import { ApiError } from '$lib/api/client';
-	import type { NetworkDetailResponse, CreateNodeResponse, DNSRecordResponse, NodeResponse, PortForwardResponse } from '$lib/types/api';
+	import type { NetworkDetailResponse, CreateNodeResponse, DNSRecordResponse, NodeResponse, PortForwardResponse, NetworkMemberResponse, InviteResponse } from '$lib/types/api';
 	import Dialog from '$lib/components/ui/dialog.svelte';
 
 	let network = $state<NetworkDetailResponse | null>(null);
 	let dnsRecords = $state<DNSRecordResponse[]>([]);
+	let networkMembers = $state<NetworkMemberResponse[]>([]);
+	let networkInvites = $state<InviteResponse[]>([]);
 	let loading = $state(true);
 	let error = $state('');
 
@@ -47,8 +49,19 @@
 	let deleteNodeError = $state('');
 
 	// Active tab — default to "join" for new networks, "nodes" once there are nodes
-	let activeTab = $state<'nodes' | 'dns' | 'join'>('nodes');
+	let activeTab = $state<'nodes' | 'dns' | 'join' | 'members'>('nodes');
 	let initialTabSet = $state(false);
+
+	// Create invite dialog
+	let showCreateInvite = $state(false);
+	let inviteExpiresIn = $state<string>('86400');
+	let inviteMaxUses = $state<string>('');
+	let creatingInvite = $state(false);
+	let inviteResult = $state<{ code: string } | null>(null);
+	let inviteCopied = $state(false);
+
+	// Role-based access
+	const isAdmin = $derived(network?.role === 'admin');
 
 	// Install command using the control plane's install script
 	const installScriptCmd = $derived(`curl -fsSL ${window.location.origin}/install.sh | sh`);
@@ -95,6 +108,10 @@
 			network = await networksApi.get(networkId);
 			dnsRecords = await dnsApi.list(networkId);
 			activeForwards = await fwdApi.list(networkId).catch(() => []);
+			networkMembers = await membersApi.list(networkId).catch(() => []);
+			if (network.role === 'admin') {
+				networkInvites = await invitesApi.list(networkId).catch(() => []);
+			}
 			// Default to "join" tab for empty networks on first load
 			if (!initialTabSet) {
 				initialTabSet = true;
@@ -252,6 +269,51 @@
 		}
 	}
 
+	async function createInvite(ev: Event) {
+		ev.preventDefault();
+		creatingInvite = true;
+		try {
+			const opts: { maxUses?: number; expiresIn?: number } = {};
+			if (inviteExpiresIn && inviteExpiresIn !== '0') opts.expiresIn = parseInt(inviteExpiresIn);
+			if (inviteMaxUses) opts.maxUses = parseInt(inviteMaxUses);
+			const result = await invitesApi.create(networkId, opts);
+			inviteResult = { code: result.code };
+			networkInvites = await invitesApi.list(networkId).catch(() => []);
+		} catch (e) {
+			toast.error(e instanceof ApiError ? e.message : 'Failed to create invite');
+		} finally {
+			creatingInvite = false;
+		}
+	}
+
+	function copyInviteLink(code: string) {
+		const url = `${window.location.origin}/invite/${code}`;
+		navigator.clipboard.writeText(url);
+		inviteCopied = true;
+		setTimeout(() => (inviteCopied = false), 2000);
+		toast.success('Invite link copied');
+	}
+
+	async function revokeInvite(inviteId: string) {
+		try {
+			await invitesApi.delete(networkId, inviteId);
+			networkInvites = networkInvites.filter(i => i.id !== inviteId);
+			toast.success('Invite revoked');
+		} catch (e) {
+			toast.error(e instanceof ApiError ? e.message : 'Failed to revoke invite');
+		}
+	}
+
+	async function removeMember(memberId: string) {
+		try {
+			await membersApi.remove(networkId, memberId);
+			networkMembers = networkMembers.filter(m => m.id !== memberId);
+			toast.success('Member removed');
+		} catch (e) {
+			toast.error(e instanceof ApiError ? e.message : 'Failed to remove member');
+		}
+	}
+
 	function statusColor(status: string) {
 		switch (status) {
 			case 'online': return 'bg-primary animate-hop-pulse';
@@ -306,12 +368,14 @@
 					<span>DNS: <span class="font-mono">.{network.dnsDomain}</span></span>
 				</div>
 			</div>
-			<button
-				onclick={() => { showDeleteNetwork = true; deleteNetworkConfirm = ''; deleteNetworkError = ''; }}
-				class="rounded-md px-3 py-2 text-sm text-destructive hover:bg-destructive/10"
-			>
-				Delete Network
-			</button>
+			{#if isAdmin}
+				<button
+					onclick={() => { showDeleteNetwork = true; deleteNetworkConfirm = ''; deleteNetworkError = ''; }}
+					class="rounded-md px-3 py-2 text-sm text-destructive hover:bg-destructive/10"
+				>
+					Delete Network
+				</button>
+			{/if}
 		</div>
 
 		<!-- Tabs -->
@@ -333,6 +397,12 @@
 				onclick={() => (activeTab = 'dns')}
 			>
 				DNS
+			</button>
+			<button
+				class="px-4 py-2 text-sm font-medium {activeTab === 'members' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'}"
+				onclick={() => (activeTab = 'members')}
+			>
+				Members ({networkMembers.length})
 			</button>
 		</div>
 
@@ -519,12 +589,14 @@
 				<p class="text-sm text-muted-foreground">
 					All resolvable names on <span class="font-mono">.{network.dnsDomain}</span>
 				</p>
-				<button
-					onclick={() => (showAddDNS = true)}
-					class="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
-				>
-					Add Record
-				</button>
+				{#if isAdmin}
+					<button
+						onclick={() => (showAddDNS = true)}
+						class="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+					>
+						Add Record
+					</button>
+				{/if}
 			</div>
 
 			{@const autoRecords = visibleNodes
@@ -611,18 +683,151 @@
 					</div>
 				</div>
 
-				<div class="border-t pt-6">
-					<h3 class="mb-1 font-medium text-muted-foreground">Add a server instead?</h3>
-					<p class="mb-3 text-sm text-muted-foreground">
-						Install the agent on a server to manage it from the dashboard and make
-						its services available on the mesh.
-					</p>
-					<button
-						onclick={() => { showAddNode = true; addNode(); }}
-						class="rounded-md border px-4 py-2 text-sm font-medium hover:bg-accent"
-					>
-						Add Server
-					</button>
+				{#if isAdmin}
+					<div class="border-t pt-6">
+						<h3 class="mb-1 font-medium text-muted-foreground">Add a server instead?</h3>
+						<p class="mb-3 text-sm text-muted-foreground">
+							Install the agent on a server to manage it from the dashboard and make
+							its services available on the mesh.
+						</p>
+						<button
+							onclick={() => { showAddNode = true; addNode(); }}
+							class="rounded-md border px-4 py-2 text-sm font-medium hover:bg-accent"
+						>
+							Add Server
+						</button>
+					</div>
+				{/if}
+			</div>
+
+		<!-- Members Tab -->
+		{:else if activeTab === 'members'}
+			<div class="space-y-6">
+				{#if isAdmin}
+					<div class="flex items-center justify-between">
+						<p class="text-sm text-muted-foreground">
+							{networkMembers.length} {networkMembers.length === 1 ? 'member' : 'members'}
+						</p>
+						<button
+							onclick={() => { showCreateInvite = true; inviteResult = null; }}
+							class="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+						>
+							Create Invite
+						</button>
+					</div>
+				{/if}
+
+				{#if networkMembers.length > 0}
+					<div class="rounded-lg border">
+						<table class="w-full text-sm">
+							<thead>
+								<tr class="border-b bg-muted/50">
+									<th class="px-4 py-3 text-left font-medium">Name</th>
+									<th class="px-4 py-3 text-left font-medium">Email</th>
+									<th class="px-4 py-3 text-left font-medium">Role</th>
+									<th class="px-4 py-3 text-left font-medium">Joined</th>
+									{#if isAdmin}<th class="px-4 py-3 text-left font-medium"></th>{/if}
+								</tr>
+							</thead>
+							<tbody>
+								{#each networkMembers as member}
+									<tr class="border-b last:border-0 hover:bg-accent/50">
+										<td class="px-4 py-3 font-medium">{member.name}</td>
+										<td class="px-4 py-3 text-muted-foreground">{member.email}</td>
+										<td class="px-4 py-3">
+											<span class="rounded-full px-2 py-0.5 text-xs {member.role === 'admin' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}">{member.role === 'admin' ? 'Admin' : 'Member'}</span>
+										</td>
+										<td class="px-4 py-3 text-muted-foreground">{timeAgo(member.createdAt)}</td>
+										{#if isAdmin}
+											<td class="px-4 py-3 text-right">
+												{#if member.role !== 'admin'}
+													<button
+														onclick={() => removeMember(member.id)}
+														class="rounded px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+													>
+														Remove
+													</button>
+												{/if}
+											</td>
+										{/if}
+									</tr>
+								{/each}
+							</tbody>
+						</table>
+					</div>
+				{:else}
+					<div class="rounded-lg border border-dashed p-6 text-center">
+						<p class="text-sm text-muted-foreground">No members yet. Create an invite to share this network.</p>
+					</div>
+				{/if}
+
+				{#if isAdmin && networkInvites.length > 0}
+					<div>
+						<h3 class="mb-2 text-sm font-medium text-muted-foreground">Active Invites</h3>
+						<div class="rounded-lg border">
+							{#each networkInvites as invite}
+								<div class="flex items-center justify-between border-b px-4 py-3 last:border-0">
+									<div class="flex items-center gap-3">
+										<span class="font-mono text-xs text-muted-foreground">{invite.code.slice(0, 12)}...</span>
+										{#if invite.maxUses}
+											<span class="text-xs text-muted-foreground">{invite.useCount}/{invite.maxUses} uses</span>
+										{:else}
+											<span class="text-xs text-muted-foreground">{invite.useCount} uses</span>
+										{/if}
+									</div>
+									<div class="flex gap-1">
+										<button onclick={() => copyInviteLink(invite.code)} class="rounded px-2 py-1 text-xs text-muted-foreground hover:text-foreground">Copy Link</button>
+										<button onclick={() => revokeInvite(invite.id)} class="rounded px-2 py-1 text-xs text-destructive hover:bg-destructive/10">Revoke</button>
+									</div>
+								</div>
+							{/each}
+						</div>
+					</div>
+				{/if}
+			</div>
+		{/if}
+
+		<!-- Create Invite Dialog -->
+		{#if showCreateInvite}
+			<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+				<div class="w-full max-w-sm rounded-lg border bg-card p-6 shadow-lg">
+					{#if inviteResult}
+						<h2 class="mb-4 text-lg font-semibold">Invite Created</h2>
+						<p class="mb-2 text-sm text-muted-foreground">Share this link:</p>
+						<div class="relative rounded-md bg-muted p-3 pr-16">
+							<pre class="overflow-x-auto font-mono text-xs">{window.location.origin}/invite/{inviteResult.code}</pre>
+							<button onclick={() => copyInviteLink(inviteResult!.code)} class="absolute right-2 top-2 rounded px-2 py-1 text-xs hover:bg-accent">
+								{inviteCopied ? 'Copied!' : 'Copy'}
+							</button>
+						</div>
+						<div class="mt-4 flex justify-end">
+							<button onclick={() => { showCreateInvite = false; }} class="rounded-md px-4 py-2 text-sm hover:bg-accent">Done</button>
+						</div>
+					{:else}
+						<h2 class="mb-4 text-lg font-semibold">Create Invite</h2>
+						<form onsubmit={createInvite} class="space-y-4">
+							<div class="space-y-2">
+								<label for="invite-expiry" class="text-sm font-medium">Expires in</label>
+								<select id="invite-expiry" bind:value={inviteExpiresIn} class="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
+									<option value="3600">1 hour</option>
+									<option value="86400">24 hours</option>
+									<option value="604800">7 days</option>
+									<option value="2592000">30 days</option>
+									<option value="0">Never</option>
+								</select>
+							</div>
+							<div class="space-y-2">
+								<label for="invite-max-uses" class="text-sm font-medium">Max uses</label>
+								<input id="invite-max-uses" type="number" bind:value={inviteMaxUses} min="1" placeholder="Unlimited" class="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
+							</div>
+							<div class="flex justify-end gap-2">
+								<button type="button" onclick={() => { showCreateInvite = false; }} class="rounded-md px-4 py-2 text-sm hover:bg-accent">Cancel</button>
+								<button type="submit" disabled={creatingInvite} class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
+									{creatingInvite ? 'Creating...' : 'Create Invite'}
+								</button>
+							</div>
+						</form>
+					{/if}
 				</div>
 			</div>
 		{/if}

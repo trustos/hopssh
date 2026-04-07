@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import { getAuth } from '$lib/stores/auth.svelte';
 	import { auth as authApi, ApiError } from '$lib/api/client';
 
 	const auth = getAuth();
+	const redirectTo = $derived(page.url.searchParams.get('redirect') || '/');
 
 	let email = $state('');
 	let password = $state('');
@@ -27,7 +29,7 @@
 		submitting = true;
 		try {
 			await auth.login(email, password);
-			goto('/');
+			goto(redirectTo);
 		} catch (e) {
 			if (e instanceof ApiError) {
 				if (e.status === 401) {

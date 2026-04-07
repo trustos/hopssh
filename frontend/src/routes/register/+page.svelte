@@ -1,9 +1,11 @@
 <script lang="ts">
 	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import { getAuth } from '$lib/stores/auth.svelte';
 	import { ApiError } from '$lib/api/client';
 
 	const auth = getAuth();
+	const redirectTo = $derived(page.url.searchParams.get('redirect') || '/');
 
 	let email = $state('');
 	let name = $state('');
@@ -17,7 +19,7 @@
 		submitting = true;
 		try {
 			await auth.register(email, name, password);
-			goto('/');
+			goto(redirectTo);
 		} catch (e) {
 			error = e instanceof ApiError ? e.message : 'Registration failed';
 		} finally {

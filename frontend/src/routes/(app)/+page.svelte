@@ -156,7 +156,12 @@
 					class="flex items-center justify-between rounded-lg border p-4 transition-colors hover:bg-accent"
 				>
 					<div>
-						<div class="font-medium">{network.name}</div>
+						<div class="flex items-center gap-2">
+							<span class="font-medium">{network.name}</span>
+							{#if network.role === 'member'}
+								<span class="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">Shared</span>
+							{/if}
+						</div>
 						<div class="flex gap-3 text-sm text-muted-foreground">
 							<span class="font-mono">{network.subnet}</span>
 							<span class="font-mono">.{network.dnsDomain}</span>
