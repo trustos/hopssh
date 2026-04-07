@@ -123,8 +123,9 @@ func NewRouter(
 	r.With(publicRL.Limit, wt).Post("/api/device/code", deviceH.RequestCode)
 	r.With(publicRL.Limit, wt).Post("/api/device/poll", deviceH.Poll)
 
-	// Cert renewal (public — agent authenticates via bearer token).
+	// Cert renewal + heartbeat (public — agent authenticates via bearer token).
 	r.With(publicRL.Limit, wt).Post("/api/renew", renewH.Renew)
+	r.With(publicRL.Limit, wt).Post("/api/heartbeat", renewH.Heartbeat)
 
 	// Bundle download (public — token is the auth).
 	r.With(wt).Get("/api/bundles/{token}", bundleH.DownloadBundle)

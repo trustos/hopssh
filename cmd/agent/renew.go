@@ -16,6 +16,46 @@ import (
 	"github.com/slackhq/nebula/cert"
 )
 
+// runHeartbeat sends periodic heartbeats to the control plane so the
+// dashboard shows the node as "online". Runs every 5 minutes.
+func runHeartbeat(ctx context.Context, endpoint, nodeID, agentToken string) {
+	// Send initial heartbeat immediately.
+	sendHeartbeat(endpoint, nodeID, agentToken)
+
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			sendHeartbeat(endpoint, nodeID, agentToken)
+		}
+	}
+}
+
+func sendHeartbeat(endpoint, nodeID, agentToken string) {
+	reqBody := fmt.Sprintf(`{"nodeId":%q}`, nodeID)
+	req, err := http.NewRequest("POST", endpoint+"/api/heartbeat", strings.NewReader(reqBody))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+agentToken)
+
+	client := &http.Client{Timeout: 10 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		log.Printf("[heartbeat] failed: %v", err)
+		return
+	}
+	resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		log.Printf("[heartbeat] node deleted or token revoked")
+		return
+	}
+}
+
 // runCertRenewal runs a background loop that renews the Nebula certificate
 // before it expires. Renews at 50% lifetime (12h for a 24h cert).
 // Exits the process if the node has been deleted (HTTP 401).

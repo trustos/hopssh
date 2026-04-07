@@ -14,10 +14,11 @@ import (
 
 const renewCertDuration = 24 * time.Hour
 
-// RenewHandler manages agent certificate renewal.
+// RenewHandler manages agent certificate renewal and heartbeat.
 type RenewHandler struct {
 	Networks *db.NetworkStore
 	Nodes    *db.NodeStore
+	EventHub *EventHub
 }
 
 // Renew issues a fresh short-lived certificate for an enrolled node.
@@ -103,4 +104,45 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 		"nodeKey":   string(nodeCert.KeyPEM),
 		"expiresIn": int(renewCertDuration.Seconds()),
 	})
+}
+
+// Heartbeat updates a node's last_seen_at and status to "online".
+// Called periodically by agents (all types) to report they're alive.
+// POST /api/heartbeat — agent-authenticated via bearer token.
+func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+
+	authHeader := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+
+	var body struct {
+		NodeID string `json:"nodeId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NodeID == "" {
+		http.Error(w, "nodeId is required", http.StatusBadRequest)
+		return
+	}
+
+	node, err := h.Nodes.Get(body.NodeID)
+	if err != nil || node == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(token), []byte(node.AgentToken)) != 1 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	h.Nodes.UpdateLastSeen(node.ID)
+	h.Nodes.UpdateAgentRealIP(node.ID, captureAgentIP(r))
+
+	if h.EventHub != nil {
+		h.EventHub.Publish(node.NetworkID, Event{Type: "node.status", Data: map[string]string{"nodeId": node.ID, "status": "online"}})
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }

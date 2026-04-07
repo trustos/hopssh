@@ -174,6 +174,7 @@ func main() {
 	proxyH.EventHub = eventHub
 	enrollH.EventHub = eventHub
 	deviceH.EventHub = eventHub
+	renewH.EventHub = eventHub
 
 	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH, eventsH)
 

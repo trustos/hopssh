@@ -95,7 +95,8 @@ func runServe(args []string) {
 			nodeID := strings.TrimSpace(string(idData))
 			if ep != "" && nodeID != "" {
 				go runCertRenewal(renewCtx, ep, nodeID, authToken)
-				log.Printf("[agent] cert auto-renewal enabled (endpoint: %s)", ep)
+				go runHeartbeat(renewCtx, ep, nodeID, authToken)
+				log.Printf("[agent] cert auto-renewal + heartbeat enabled (endpoint: %s)", ep)
 			}
 		}
 	}
