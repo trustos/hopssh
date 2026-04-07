@@ -251,10 +251,14 @@ case "$COMPONENT" in
     install_binary "agent"
     echo ""
     echo "==> hop-agent installed!"
-    echo "    Next steps:"
+    echo ""
+    echo "    To add a SERVER (VPS, NAS, Raspberry Pi):"
     echo "      sudo hop-agent enroll --endpoint ${ENDPOINT}"
     echo ""
-    echo "    Or with a token from the dashboard:"
+    echo "    To join as a CLIENT (laptop, phone, personal device):"
+    echo "      sudo hop-agent enroll --client --endpoint ${ENDPOINT}"
+    echo ""
+    echo "    With a token from the dashboard:"
     echo "      echo '<token>' | sudo hop-agent enroll --token-stdin --endpoint ${ENDPOINT}"
     ;;
   server)

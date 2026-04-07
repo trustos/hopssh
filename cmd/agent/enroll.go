@@ -42,6 +42,9 @@ type enrollResponse struct {
 //   - --token-stdin (read token from stdin)
 //   - --token <token> (token as argument)
 //   - --bundle <path> (offline tarball)
+// enrollNodeType is set by --client flag. "agent" for servers, "user" for personal devices.
+var enrollNodeType = "agent"
+
 func runEnroll(args []string) {
 	fs := flag.NewFlagSet("enroll", flag.ExitOnError)
 	token := fs.String("token", "", "Enrollment token (visible in ps — prefer --token-stdin)")
@@ -49,8 +52,20 @@ func runEnroll(args []string) {
 	bundlePath := fs.String("bundle", "", "Path to pre-generated enrollment bundle (.tar.gz)")
 	endpoint := fs.String("endpoint", defaultEndpoint, "Control plane URL")
 	noService := fs.Bool("no-service", false, "Skip automatic service installation")
+	clientMode := fs.Bool("client", false, "Enroll as a client (personal device) instead of a server")
 	fs.Parse(args)
 	skipService = *noService
+	if *clientMode {
+		enrollNodeType = "user"
+	}
+
+	// Check if already enrolled — prevent accidental re-enrollment.
+	if _, err := os.Stat(filepath.Join(enrollDir, "node.crt")); err == nil {
+		fmt.Fprintf(os.Stderr, "Warning: This device is already enrolled (config exists at %s).\n", enrollDir)
+		fmt.Fprintf(os.Stderr, "To re-enroll, first remove the existing config:\n")
+		fmt.Fprintf(os.Stderr, "  sudo rm -rf %s\n\n", enrollDir)
+		os.Exit(1)
+	}
 
 	switch {
 	case *bundlePath != "":
@@ -105,8 +120,8 @@ func enrollDeviceFlow(endpoint string) {
 		time.Sleep(interval)
 
 		hostname, _ := os.Hostname()
-		pollBody := fmt.Sprintf(`{"deviceCode":%q,"hostname":%q,"os":"linux","arch":"%s"}`,
-			codeResp.DeviceCode, hostname, detectArch())
+		pollBody := fmt.Sprintf(`{"deviceCode":%q,"hostname":%q,"os":%q,"arch":"%s","nodeType":%q}`,
+			codeResp.DeviceCode, hostname, runtime.GOOS, detectArch(), enrollNodeType)
 		pollResp, err := http.Post(endpoint+"/api/device/poll", "application/json",
 			strings.NewReader(pollBody))
 		if err != nil {

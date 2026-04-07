@@ -697,12 +697,12 @@
 						</div>
 
 						<div class="rounded-lg border p-4">
-							<p class="mb-2 text-sm font-medium">2. Join the network</p>
+							<p class="mb-2 text-sm font-medium">2. Join as a client</p>
 							<div class="rounded-md bg-muted p-3">
-								<pre class="font-mono text-xs">hop-agent client join --network {networkId} --endpoint {window.location.origin}</pre>
+								<pre class="font-mono text-xs">sudo hop-agent enroll --client --endpoint {window.location.origin}</pre>
 							</div>
 							<p class="mt-2 text-xs text-muted-foreground">
-								After joining, services are reachable as <span class="font-mono">hostname.{network.dnsDomain}</span>
+								You'll be prompted to authorize in the browser. After joining, services are reachable as <span class="font-mono">hostname.{network.dnsDomain}</span>
 							</p>
 						</div>
 					</div>
