@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 )
 
 var dnsUnsafe = regexp.MustCompile(`[^a-z0-9-]`)
@@ -31,6 +32,21 @@ func sanitizeDNSName(hostname string) string {
 		return "node"
 	}
 	return name
+}
+
+const nodeStaleThreshold = 10 * 60 // 10 minutes in seconds
+
+// effectiveStatus returns the display status, marking "online" nodes as "offline"
+// if they haven't sent a heartbeat within the staleness threshold.
+func effectiveStatus(status string, lastSeenAt *int64) string {
+	if status != "online" || lastSeenAt == nil {
+		return status
+	}
+	now := time.Now().Unix()
+	if now-*lastSeenAt > int64(nodeStaleThreshold) {
+		return "offline"
+	}
+	return status
 }
 
 // parseCapabilities converts a JSON capabilities string to a slice.

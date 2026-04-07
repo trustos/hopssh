@@ -420,7 +420,7 @@ func (h *ProxyHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
 			ExposedPorts: n.ExposedPorts,
 			DNSName:      n.DNSName,
 			Capabilities: parseCapabilities(n.Capabilities),
-			Status:       n.Status,
+			Status:       effectiveStatus(n.Status, n.LastSeenAt),
 			LastSeenAt:   n.LastSeenAt,
 			CreatedAt:    n.CreatedAt,
 		})

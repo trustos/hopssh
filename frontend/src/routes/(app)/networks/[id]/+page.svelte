@@ -148,7 +148,8 @@
 	});
 
 	async function loadNetwork() {
-		loading = true;
+		// Only show loading skeleton on first load — subsequent refreshes update silently.
+		if (!network) loading = true;
 		error = '';
 		try {
 			network = await networksApi.get(networkId);
@@ -552,7 +553,7 @@
 								<tr class="border-b last:border-0 hover:bg-accent/50">
 									<td class="px-4 py-3">
 										<div class="flex items-center gap-2" title={node.status === 'pending' ? 'Waiting for agent enrollment. Run the enroll command on your device.' : ''}>
-											<div class="h-2.5 w-2.5 rounded-full {statusColor(node.status)}"></div>
+											<div class="h-2.5 w-2.5 rounded-full transition-colors duration-500 {statusColor(node.status)}"></div>
 											<span class="text-xs capitalize text-muted-foreground">{node.status}</span>
 											{#if node.status === 'pending'}
 												<span class="text-xs text-yellow-500">awaiting enrollment</span>

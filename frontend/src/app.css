@@ -81,3 +81,13 @@
 @utility animate-hop-pulse {
 	animation: hop-pulse 2s ease-in-out infinite;
 }
+
+/* Smooth transitions for dynamic content updates */
+@layer base {
+	td, th {
+		transition: background-color 0.2s ease;
+	}
+	.transition-opacity {
+		transition: opacity 0.2s ease;
+	}
+}
