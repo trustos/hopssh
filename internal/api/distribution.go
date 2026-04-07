@@ -251,12 +251,24 @@ case "$COMPONENT" in
     install_binary "agent"
     echo ""
     echo "==> hop-agent installed!"
-    echo ""
-    echo "    Next: enroll this device into your network:"
-    echo "      sudo hop-agent enroll --endpoint ${ENDPOINT}"
-    echo ""
-    echo "    Or with a token from the dashboard:"
-    echo "      echo '<token>' | sudo hop-agent enroll --token-stdin --endpoint ${ENDPOINT}"
+    # Check if already enrolled — show different message for updates vs first install.
+    if [ -f /etc/hop-agent/node.crt ] || [ -f "${HOME}/Library/Application Support/hopssh/node.crt" ] || [ -f "${HOME}/.config/hopssh/node.crt" ]; then
+      echo ""
+      echo "    Existing enrollment found. Restart the service to use the new version:"
+      if command -v launchctl &>/dev/null; then
+        echo "      sudo launchctl unload /Library/LaunchDaemons/com.hopssh.agent.plist"
+        echo "      sudo launchctl load /Library/LaunchDaemons/com.hopssh.agent.plist"
+      else
+        echo "      sudo systemctl restart hop-agent"
+      fi
+    else
+      echo ""
+      echo "    Next: enroll this device into your network:"
+      echo "      sudo hop-agent enroll --endpoint ${ENDPOINT}"
+      echo ""
+      echo "    Or with a token from the dashboard:"
+      echo "      echo '<token>' | sudo hop-agent enroll --token-stdin --endpoint ${ENDPOINT}"
+    fi
     ;;
   server)
     install_binary "server"
