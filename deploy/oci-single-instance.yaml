@@ -4,10 +4,21 @@ description: "Deploy hopssh control plane on a single OCI instance with public I
 
 meta:
   displayName: hopssh Control Plane
+  groups:
+    - name: Compartment
+      fields: [compartmentName, compartmentDescription]
+    - name: Instance
+      fields: [imageId, shape, ocpus, memoryInGbs, sshPublicKey]
 
 config:
-  compartmentId:
+  compartmentName:
     type: string
+    default: "hopssh"
+    description: "Name for the OCI compartment"
+  compartmentDescription:
+    type: string
+    default: "hopssh control plane deployment"
+    description: "Description for the OCI compartment"
   imageId:
     type: string
     default: ""
@@ -36,18 +47,30 @@ variables:
       return: availabilityDomains
 
 resources:
+  # --- section: identity ---
+  hopssh-compartment:
+    type: oci:Identity/compartment:Compartment
+    properties:
+      compartmentId: ${oci:tenancyOcid}
+      name: {{ .Config.compartmentName }}
+      description: {{ .Config.compartmentDescription | quote }}
+      enableDelete: false
+
   # --- section: networking ---
   vcn:
     type: oci:Core/vcn:Vcn
     properties:
-      compartmentId: {{ .Config.compartmentId }}
+      compartmentId: ${hopssh-compartment.id}
       cidrBlocks: ["10.0.0.0/16"]
       displayName: "hopssh-vcn"
       dnsLabel: "hopssh"
+    options:
+      dependsOn:
+        - ${hopssh-compartment}
   igw:
     type: oci:Core/internetGateway:InternetGateway
     properties:
-      compartmentId: {{ .Config.compartmentId }}
+      compartmentId: ${hopssh-compartment.id}
       vcnId: ${vcn.id}
       displayName: "hopssh-igw"
       enabled: "true"
@@ -57,7 +80,7 @@ resources:
   route-table:
     type: oci:Core/routeTable:RouteTable
     properties:
-      compartmentId: {{ .Config.compartmentId }}
+      compartmentId: ${hopssh-compartment.id}
       vcnId: ${vcn.id}
       displayName: "hopssh-rt"
       routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]
@@ -67,7 +90,7 @@ resources:
   nsg:
     type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
     properties:
-      compartmentId: {{ .Config.compartmentId }}
+      compartmentId: ${hopssh-compartment.id}
       vcnId: ${vcn.id}
       displayName: "hopssh-nsg"
     options:
@@ -129,7 +152,7 @@ resources:
   subnet:
     type: oci:Core/subnet:Subnet
     properties:
-      compartmentId: {{ .Config.compartmentId }}
+      compartmentId: ${hopssh-compartment.id}
       vcnId: ${vcn.id}
       cidrBlock: "10.0.1.0/24"
       displayName: "hopssh-subnet"
@@ -140,11 +163,12 @@ resources:
     options:
       dependsOn:
         - ${route-table}
+
   # --- section: compute ---
   instance:
     type: oci:Core/instance:Instance
     properties:
-      compartmentId: {{ .Config.compartmentId }}
+      compartmentId: ${hopssh-compartment.id}
       availabilityDomain: ${availabilityDomains[0].name}
       shape: "{{ .Config.shape }}"
       displayName: "hopssh-control-plane"
@@ -161,6 +185,7 @@ resources:
         - ${subnet}
 
 outputs:
+  compartmentId: ${hopssh-compartment.id}
   instancePublicIp: ${instance.publicIp}
   dashboardUrl: http://${instance.publicIp}:9473
   sshCommand: ssh ubuntu@${instance.publicIp}
