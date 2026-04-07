@@ -124,7 +124,7 @@ type NetworkResponse struct {
 type CreateNodeResponse struct {
 	NodeID          string `json:"nodeId" example:"550e8400-e29b-41d4-a716-446655440000"`
 	EnrollmentToken string `json:"enrollmentToken" example:"a1b2c3d4..."`
-	InstallCommand  string `json:"installCommand" example:"curl -fsSL https://hopssh.com/install | sudo bash -s -- --token a1b2c3d4..."`
+	Endpoint        string `json:"endpoint" example:"https://hopssh.com:9473"`
 	NebulaIP        string `json:"nebulaIP" example:"10.42.1.2/24"`
 }
 

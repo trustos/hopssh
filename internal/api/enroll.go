@@ -81,12 +81,10 @@ func (h *EnrollHandler) CreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	installCmd := fmt.Sprintf("echo '%s' | sudo hop-agent enroll --token-stdin --endpoint %s", enrollToken, h.Endpoint)
-
 	writeJSONStatus(w, http.StatusCreated, map[string]interface{}{
 		"nodeId":          node.ID,
 		"enrollmentToken": enrollToken,
-		"installCommand":  installCmd,
+		"endpoint":        h.Endpoint,
 		"nebulaIP":        node.NebulaIP,
 	})
 }

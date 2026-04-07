@@ -49,6 +49,23 @@
 	// Active tab
 	let activeTab = $state<'nodes' | 'dns' | 'join'>('nodes');
 
+	// Add Server: OS/arch selection
+	let selectedOS = $state<'linux' | 'darwin' | 'windows'>('linux');
+	let selectedArch = $state<'amd64' | 'arm64'>('amd64');
+
+	const installCommand = $derived.by(() => {
+		if (!nodeResult) return '';
+		const ext = selectedOS === 'windows' ? '.exe' : '';
+		const bin = `hop-agent-${selectedOS}-${selectedArch}${ext}`;
+		const url = `https://github.com/trustos/hopssh/releases/latest/download/${bin}`;
+		const token = nodeResult.enrollmentToken;
+		const endpoint = nodeResult.endpoint;
+		if (selectedOS === 'windows') {
+			return `Invoke-WebRequest -Uri "${url}" -OutFile hop-agent.exe\necho '${token}' | .\\hop-agent.exe enroll --token-stdin --endpoint ${endpoint}`;
+		}
+		return `curl -fsSL ${url} -o /usr/local/bin/hop-agent && chmod +x /usr/local/bin/hop-agent && echo '${token}' | sudo hop-agent enroll --token-stdin --endpoint ${endpoint}`;
+	});
+
 	// Time ticker for reactive timeAgo
 	let now = $state(Math.floor(Date.now() / 1000));
 
@@ -57,12 +74,24 @@
 	// All nodes including pending (pending shown with special style).
 	const visibleNodes = $derived(network?.nodes ?? []);
 
+	const hasPendingNodes = $derived(network?.nodes.some(n => n.status === 'pending') ?? false);
+
 	onMount(async () => {
 		await loadNetwork();
-		const interval = setInterval(() => {
+		// Tick for timeAgo display
+		const tickInterval = setInterval(() => {
 			now = Math.floor(Date.now() / 1000);
 		}, 30_000);
-		return () => clearInterval(interval);
+		// Poll for pending node enrollment (every 5s when there are pending nodes)
+		const pollInterval = setInterval(() => {
+			if (hasPendingNodes || showAddNode) {
+				loadNetwork();
+			}
+		}, 5_000);
+		return () => {
+			clearInterval(tickInterval);
+			clearInterval(pollInterval);
+		};
 	});
 
 	async function loadNetwork() {
@@ -93,8 +122,8 @@
 	}
 
 	function copyCommand() {
-		if (!nodeResult) return;
-		navigator.clipboard.writeText(nodeResult.installCommand);
+		if (!installCommand) return;
+		navigator.clipboard.writeText(installCommand);
 		copied = true;
 		setTimeout(() => (copied = false), 2000);
 	}
@@ -282,7 +311,7 @@
 					onclick={() => { showAddNode = true; addNode(); }}
 					class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
 				>
-					Add Node
+					Add Server
 				</button>
 				<button
 					onclick={() => { showDeleteNetwork = true; deleteNetworkConfirm = ''; deleteNetworkError = ''; }}
@@ -354,7 +383,7 @@
 				<div class="rounded-lg border border-dashed p-8 text-center">
 					<p class="mb-2 text-lg font-medium">No nodes yet</p>
 					<p class="text-sm text-muted-foreground">
-						Add a node to get started.
+						Add a server to get started.
 					</p>
 				</div>
 			{:else}
@@ -586,17 +615,17 @@
 						onclick={() => { showAddNode = true; addNode(); }}
 						class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
 					>
-						Add Node
+						Add Server
 					</button>
 				</div>
 			</div>
 		{/if}
 
-		<!-- Add Node Dialog -->
+		<!-- Add Server Dialog -->
 		{#if showAddNode}
 			<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-				<div class="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg">
-					<h2 class="mb-4 text-lg font-semibold">Add Node</h2>
+				<div class="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
+					<h2 class="mb-4 text-lg font-semibold">Add Server</h2>
 					{#if addingNode}
 						<div class="flex items-center gap-3 py-4">
 							<div class="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent"></div>
@@ -607,9 +636,33 @@
 					{:else if nodeResult}
 						<div class="space-y-4">
 							<div>
-								<p class="mb-2 text-sm text-muted-foreground">Run this on your server:</p>
+								<p class="mb-2 text-sm text-muted-foreground">Select the target platform, then run the command on your server:</p>
+								<div class="mb-3 flex gap-2">
+									<div class="flex gap-1 rounded-md border p-1">
+										{#each [['linux', 'Linux'], ['darwin', 'macOS'], ['windows', 'Windows']] as [val, label]}
+											<button
+												onclick={() => (selectedOS = val as 'linux' | 'darwin' | 'windows')}
+												class="rounded px-2.5 py-1 text-xs font-medium transition-colors {selectedOS === val ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}"
+											>
+												{label}
+											</button>
+										{/each}
+									</div>
+									{#if selectedOS !== 'windows'}
+										<div class="flex gap-1 rounded-md border p-1">
+											{#each [['amd64', 'x86_64'], ['arm64', 'ARM64']] as [val, label]}
+												<button
+													onclick={() => (selectedArch = val as 'amd64' | 'arm64')}
+													class="rounded px-2.5 py-1 text-xs font-medium transition-colors {selectedArch === val ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}"
+												>
+													{label}
+												</button>
+											{/each}
+										</div>
+									{/if}
+								</div>
 								<div class="relative">
-									<pre class="overflow-x-auto rounded-md bg-muted p-3 font-mono text-xs">{nodeResult.installCommand}</pre>
+									<pre class="overflow-x-auto whitespace-pre-wrap break-all rounded-md bg-muted p-3 pr-16 font-mono text-xs leading-relaxed">{installCommand}</pre>
 									<button
 										onclick={copyCommand}
 										class="absolute right-2 top-2 rounded px-2 py-1 text-xs hover:bg-accent"

@@ -51,7 +51,7 @@ export interface NodeResponse {
 export interface CreateNodeResponse {
 	nodeId: string;
 	enrollmentToken: string;
-	installCommand: string;
+	endpoint: string;
 	nebulaIP: string;
 }
 
