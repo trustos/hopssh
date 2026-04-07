@@ -56,6 +56,9 @@ UPDATE nodes SET exposed_ports = ? WHERE id = ?;
 -- name: UpdateNodeDNSName :exec
 UPDATE nodes SET dns_name = ? WHERE id = ?;
 
+-- name: RenameNode :exec
+UPDATE nodes SET dns_name = ?, hostname = ? WHERE id = ?;
+
 -- name: DeleteNode :exec
 DELETE FROM nodes WHERE id = ?;
 

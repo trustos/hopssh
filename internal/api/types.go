@@ -5,8 +5,33 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 )
+
+var dnsUnsafe = regexp.MustCompile(`[^a-z0-9-]`)
+
+// sanitizeDNSName converts a hostname to a DNS-safe short name.
+// "Yavors-MacBook-Pro.local" → "yavors-macbook-pro"
+// "my-server.example.com" → "my-server"
+func sanitizeDNSName(hostname string) string {
+	name := strings.ToLower(hostname)
+	// Take only the first label (before first dot).
+	if idx := strings.Index(name, "."); idx >= 0 {
+		name = name[:idx]
+	}
+	// Replace unsafe chars with hyphens, collapse multiple hyphens.
+	name = dnsUnsafe.ReplaceAllString(name, "-")
+	name = strings.Trim(name, "-")
+	// Collapse consecutive hyphens.
+	for strings.Contains(name, "--") {
+		name = strings.ReplaceAll(name, "--", "-")
+	}
+	if name == "" {
+		return "node"
+	}
+	return name
+}
 
 // captureAgentIP extracts the client IP from an HTTP request.
 // Used to record the agent's real IP for mesh tunnel creation.

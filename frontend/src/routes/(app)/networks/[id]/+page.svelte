@@ -51,6 +51,10 @@
 	let activeTab = $state<'nodes' | 'dns' | 'join' | 'members'>('nodes');
 	let initialTabSet = $state(false);
 
+	// Rename node
+	let renamingNodeId = $state<string | null>(null);
+	let renameValue = $state('');
+
 	// Create invite dialog
 	let showCreateInvite = $state(false);
 	let inviteExpiresIn = $state<string>('86400');
@@ -335,6 +339,20 @@
 		}
 	}
 
+	async function renameNode(nodeId: string) {
+		const name = renameValue.trim();
+		if (!name) return;
+		try {
+			await nodesApi.rename(networkId, nodeId, name);
+			renamingNodeId = null;
+			renameValue = '';
+			await loadNetwork();
+			toast.success('Node renamed');
+		} catch (e) {
+			toast.error(e instanceof ApiError ? e.message : 'Failed to rename node');
+		}
+	}
+
 	function statusColor(status: string) {
 		switch (status) {
 			case 'online': return 'bg-primary animate-hop-pulse';
@@ -497,15 +515,39 @@
 										</div>
 									</td>
 									<td class="px-4 py-3">
-										{#if node.nodeType === 'agent'}
-											<a
-												href="/terminal/{networkId}/{node.id}?h={encodeURIComponent(node.hostname || node.id.slice(0, 8))}"
-												class="font-mono font-medium text-primary hover:underline"
-											>
-												{node.hostname || node.id.slice(0, 8)}
-											</a>
+										{#if renamingNodeId === node.id}
+											<form onsubmit={(e) => { e.preventDefault(); renameNode(node.id); }} class="flex items-center gap-1">
+												<input
+													type="text"
+													bind:value={renameValue}
+													class="w-32 rounded border bg-background px-2 py-0.5 font-mono text-sm focus:outline-none focus:ring-1 focus:ring-ring"
+													autofocus
+												/>
+												<button type="submit" class="rounded px-1.5 py-0.5 text-xs text-primary hover:bg-primary/10">Save</button>
+												<button type="button" onclick={() => { renamingNodeId = null; }} class="rounded px-1.5 py-0.5 text-xs text-muted-foreground hover:text-foreground">Cancel</button>
+											</form>
 										{:else}
-											<span class="font-mono font-medium">{node.hostname || node.id.slice(0, 8)}</span>
+											<span class="group flex items-center gap-1">
+												{#if node.nodeType === 'agent'}
+													<a
+														href="/terminal/{networkId}/{node.id}?h={encodeURIComponent(node.hostname || node.id.slice(0, 8))}"
+														class="font-mono font-medium text-primary hover:underline"
+													>
+														{node.dnsName || node.hostname || node.id.slice(0, 8)}
+													</a>
+												{:else}
+													<span class="font-mono font-medium">{node.dnsName || node.hostname || node.id.slice(0, 8)}</span>
+												{/if}
+												{#if isAdmin}
+													<button
+														onclick={() => { renamingNodeId = node.id; renameValue = node.dnsName || node.hostname || ''; }}
+														class="invisible rounded px-1 text-xs text-muted-foreground hover:text-foreground group-hover:visible"
+														title="Rename"
+													>
+														&#9998;
+													</button>
+												{/if}
+											</span>
 										{/if}
 									</td>
 									<td class="px-4 py-3">

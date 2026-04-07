@@ -366,6 +366,23 @@ func (s *NodeStore) UpdateAgentRealIP(id, ip string) error {
 	})
 }
 
+func (s *NodeStore) UpdateDNSName(id, dnsName string) error {
+	q := dbsqlc.New(WrapDB(s.wdb))
+	return q.UpdateNodeDNSName(context.Background(), dbsqlc.UpdateNodeDNSNameParams{
+		DnsName: &dnsName,
+		ID:      id,
+	})
+}
+
+func (s *NodeStore) Rename(id, hostname, dnsName string) error {
+	q := dbsqlc.New(WrapDB(s.wdb))
+	return q.RenameNode(context.Background(), dbsqlc.RenameNodeParams{
+		DnsName:  &dnsName,
+		Hostname: hostname,
+		ID:       id,
+	})
+}
+
 func (s *NodeStore) Delete(id string) error {
 	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.DeleteNode(context.Background(), id)

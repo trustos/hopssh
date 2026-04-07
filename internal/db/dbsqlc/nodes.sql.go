@@ -423,6 +423,21 @@ func (q *Queries) MaxLastSeenForNetwork(ctx context.Context, networkID string) (
 	return max, err
 }
 
+const renameNode = `-- name: RenameNode :exec
+UPDATE nodes SET dns_name = ?, hostname = ? WHERE id = ?
+`
+
+type RenameNodeParams struct {
+	DnsName  *string
+	Hostname string
+	ID       string
+}
+
+func (q *Queries) RenameNode(ctx context.Context, arg RenameNodeParams) error {
+	_, err := q.db.ExecContext(ctx, renameNode, arg.DnsName, arg.Hostname, arg.ID)
+	return err
+}
+
 const updateNodeAgentRealIP = `-- name: UpdateNodeAgentRealIP :exec
 UPDATE nodes SET agent_real_ip = ? WHERE id = ?
 `

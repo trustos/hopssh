@@ -422,6 +422,40 @@ func (h *ProxyHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
 // @Success      204
 // @Failure      404 {object} ErrorResponse
 // @Router       /api/networks/{networkID}/nodes/{nodeID} [delete]
+// RenameNode updates a node's display name and DNS name.
+// PATCH /api/networks/{networkID}/nodes/{nodeID}
+func (h *ProxyHandler) RenameNode(w http.ResponseWriter, r *http.Request) {
+	network, node, err := h.requireNode(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
+		http.Error(w, "name is required", http.StatusBadRequest)
+		return
+	}
+
+	dnsName := sanitizeDNSName(body.Name)
+	if err := h.Nodes.Rename(node.ID, body.Name, dnsName); err != nil {
+		http.Error(w, "failed to rename node: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if h.NetworkManager != nil {
+		h.NetworkManager.RefreshDNS(network.ID)
+	}
+	if h.EventHub != nil {
+		h.EventHub.Publish(network.ID, Event{Type: "node.renamed", Data: map[string]string{"nodeId": node.ID, "name": body.Name}})
+	}
+
+	writeJSON(w, map[string]string{"name": body.Name, "dnsName": dnsName})
+}
+
 func (h *ProxyHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
 	_, node, err := h.requireNode(r)
 	if err != nil {

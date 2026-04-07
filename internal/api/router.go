@@ -153,6 +153,7 @@ func NewRouter(
 		r.With(wt).Get("/api/networks/{networkID}/nodes", proxyH.ListNodes)
 
 		// Node management.
+		r.With(wt).Patch("/api/networks/{networkID}/nodes/{nodeID}", proxyH.RenameNode)
 		r.With(wt).Delete("/api/networks/{networkID}/nodes/{nodeID}", proxyH.DeleteNode)
 
 		// Node proxy (health has timeout; shell + exec are streaming — no timeout).

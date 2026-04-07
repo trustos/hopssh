@@ -147,6 +147,10 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set DNS name from sanitized hostname.
+	dnsName := sanitizeDNSName(body.Hostname)
+	h.Nodes.UpdateDNSName(node.ID, dnsName)
+
 	// Record the agent's real IP and refresh DNS.
 	h.Nodes.UpdateAgentRealIP(node.ID, captureAgentIP(r))
 	if h.NetworkManager != nil {
@@ -249,6 +253,8 @@ func (h *EnrollHandler) JoinNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	dnsName := sanitizeDNSName(body.Hostname)
+	h.Nodes.UpdateDNSName(nodeID, dnsName)
 	h.Nodes.UpdateAgentRealIP(nodeID, captureAgentIP(r))
 	if h.NetworkManager != nil {
 		h.NetworkManager.RefreshDNS(networkID)

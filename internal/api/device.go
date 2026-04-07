@@ -168,6 +168,10 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Set DNS name from sanitized hostname.
+	dnsName := sanitizeDNSName(body.Hostname)
+	h.Nodes.UpdateDNSName(nodeID, dnsName)
+
 	h.DeviceCodes.SetNodeID(dc.DeviceCode, nodeID)
 	h.Nodes.UpdateAgentRealIP(nodeID, captureAgentIP(r))
 	if h.NetworkManager != nil {
