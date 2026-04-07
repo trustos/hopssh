@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"net"
 	"sync"
 
 	"github.com/sirupsen/logrus"
@@ -18,6 +19,10 @@ var (
 	currentNebula *nebulaService
 	nebulaMu      sync.Mutex
 )
+
+// onNebulaRestart is called after Nebula is successfully restarted (cert renewal).
+// Set by runServe() to recreate the mesh HTTP listener.
+var onNebulaRestart func(svc *nebulaService)
 
 // nebulaService wraps an embedded Nebula userspace instance.
 type nebulaService struct {
@@ -46,6 +51,12 @@ func startNebula(configPath string) (*nebulaService, error) {
 	}
 
 	return &nebulaService{svc: svc}, nil
+}
+
+// Listen creates a TCP listener on the Nebula mesh's userspace network stack.
+// Connections arriving through the mesh tunnel are accepted by this listener.
+func (n *nebulaService) Listen(network, address string) (net.Listener, error) {
+	return n.svc.Listen(network, address)
 }
 
 // Close shuts down the Nebula instance gracefully.

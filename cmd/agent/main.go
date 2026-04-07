@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -71,7 +72,7 @@ func runServe(args []string) {
 	endpointFile := fs.String("endpoint-file", "/etc/hop-agent/endpoint", "Path to control plane endpoint URL")
 	nodeIDFile := fs.String("node-id-file", "/etc/hop-agent/node-id", "Path to node ID file")
 	nebulaConfig := fs.String("nebula-config", "/etc/hop-agent/nebula.yaml", "Path to Nebula config")
-	listenAddr := fs.String("listen", "", "Override listen address (default: Nebula VPN IP:41820)")
+	listenAddr := fs.String("listen", "", "Override listen address (bypasses mesh, uses OS stack)")
 	fs.Parse(args)
 
 	authToken := *token
@@ -86,7 +87,15 @@ func runServe(args []string) {
 		log.Fatal("No authentication token configured")
 	}
 
-	// Start cert renewal if endpoint + nodeID are available.
+	// Build HTTP handler once — it never changes across Nebula restarts.
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /health", handleHealth)
+	mux.HandleFunc("POST /exec", handleExec)
+	mux.HandleFunc("POST /upload", handleUpload)
+	mux.HandleFunc("GET /shell", handleShell)
+	authed := authMiddleware(authToken, mux)
+
+	// Start cert renewal + heartbeat if endpoint + nodeID are available.
 	renewCtx, renewCancel := context.WithCancel(context.Background())
 	defer renewCancel()
 	if epData, err := os.ReadFile(*endpointFile); err == nil {
@@ -101,68 +110,133 @@ func runServe(args []string) {
 		}
 	}
 
-	// Start embedded Nebula mesh connection (if config exists).
-	if _, err := os.Stat(*nebulaConfig); err == nil {
+	// serveMu protects srv for concurrent access from reload callback + shutdown.
+	var serveMu sync.Mutex
+	newServer := func() *http.Server {
+		return &http.Server{
+			Handler:           authed,
+			ReadTimeout:       30 * time.Second,
+			ReadHeaderTimeout: 10 * time.Second,
+			WriteTimeout:      0, // streaming responses for /exec and /shell
+		}
+	}
+	srv := newServer()
+
+	if *listenAddr != "" {
+		// Explicit --listen override: use OS network stack directly.
+		ln, err := net.Listen("tcp", *listenAddr)
+		if err != nil {
+			log.Fatalf("Listen %s: %v", *listenAddr, err)
+		}
+		log.Printf("hop-agent listening on %s (OS stack override)", ln.Addr())
+		// Still start Nebula for outbound mesh connectivity.
+		if _, err := os.Stat(*nebulaConfig); err == nil {
+			if svc, err := startNebula(*nebulaConfig); err == nil {
+				nebulaMu.Lock()
+				currentNebula = svc
+				nebulaMu.Unlock()
+				log.Printf("[agent] Nebula mesh connected (outbound only)")
+			}
+		}
+		go func() {
+			if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("Serve: %v", err)
+			}
+		}()
+	} else if _, err := os.Stat(*nebulaConfig); err == nil {
+		// Normal path: listen on the Nebula mesh's userspace network stack.
 		svc, err := startNebula(*nebulaConfig)
 		if err != nil {
-			log.Printf("[agent] WARNING: Nebula failed to start: %v (running without mesh)", err)
+			log.Printf("[agent] WARNING: Nebula failed to start: %v (falling back to OS stack)", err)
+			ln, err := net.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
+			if err != nil {
+				log.Fatalf("Listen :%d: %v", agentAPIPort, err)
+			}
+			log.Printf("hop-agent listening on %s (OS stack fallback)", ln.Addr())
+			go func() {
+				if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+					log.Fatalf("Serve: %v", err)
+				}
+			}()
 		} else {
 			nebulaMu.Lock()
 			currentNebula = svc
 			nebulaMu.Unlock()
-			defer svc.Close()
 			log.Printf("[agent] Nebula mesh connected")
+
+			meshLn, err := svc.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
+			if err != nil {
+				log.Fatalf("Nebula mesh listen: %v", err)
+			}
+			log.Printf("hop-agent listening on :%d (Nebula mesh)", agentAPIPort)
+
+			go func() {
+				if err := srv.Serve(meshLn); err != nil && err != http.ErrServerClosed {
+					log.Fatalf("Serve: %v", err)
+				}
+			}()
+
+			// Register callback for Nebula restarts (cert renewal).
+			// Called AFTER nebulaMu is released by reloadNebula().
+			onNebulaRestart = func(newSvc *nebulaService) {
+				serveMu.Lock()
+				defer serveMu.Unlock()
+
+				// Gracefully shut down current server.
+				shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+				srv.Shutdown(shutCtx)
+				shutCancel()
+
+				// Create new listener on the new Nebula service.
+				newLn, err := newSvc.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
+				if err != nil {
+					log.Printf("[agent] CRITICAL: cannot listen on new Nebula instance: %v", err)
+					return
+				}
+
+				srv = newServer()
+				go func() {
+					if err := srv.Serve(newLn); err != nil && err != http.ErrServerClosed {
+						log.Printf("[agent] Serve after Nebula restart: %v", err)
+					}
+				}()
+				log.Printf("[agent] HTTP server restarted on new Nebula mesh listener")
+			}
 		}
 	} else {
-		log.Printf("[agent] no Nebula config at %s, running without mesh", *nebulaConfig)
-	}
-
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /health", handleHealth)
-	mux.HandleFunc("POST /exec", handleExec)
-	mux.HandleFunc("POST /upload", handleUpload)
-	mux.HandleFunc("GET /shell", handleShell)
-
-	authed := authMiddleware(authToken, mux)
-
-	// Listen on all interfaces. The agent API is protected by bearer token auth.
-	// In the mesh architecture, the control plane reaches the agent through
-	// the Nebula mesh (which appears as a connection to the VPN IP).
-	// The Nebula firewall (configured during enrollment) restricts which
-	// mesh groups can reach which ports.
-	addr := *listenAddr
-	if addr == "" {
-		addr = fmt.Sprintf(":%d", 41820)
-	}
-
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		log.Fatalf("Listen %s: %v", addr, err)
-	}
-	log.Printf("hop-agent listening on %s", ln.Addr())
-
-	srv := &http.Server{
-		Handler:           authed,
-		ReadTimeout:       30 * time.Second,
-		ReadHeaderTimeout: 10 * time.Second,
-		WriteTimeout:      0, // streaming responses for /exec
+		// No Nebula config — listen on OS stack.
+		log.Printf("[agent] no Nebula config at %s, running on OS stack", *nebulaConfig)
+		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
+		if err != nil {
+			log.Fatalf("Listen :%d: %v", agentAPIPort, err)
+		}
+		log.Printf("hop-agent listening on %s", ln.Addr())
+		go func() {
+			if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("Serve: %v", err)
+			}
+		}()
 	}
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-
-	go func() {
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Serve: %v", err)
-		}
-	}()
-
 	<-stop
+
 	log.Println("Shutting down agent...")
 	renewCancel()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	srv.Shutdown(ctx)
+	serveMu.Lock()
+	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	srv.Shutdown(shutCtx)
+	shutCancel()
+	serveMu.Unlock()
+
+	// Close Nebula.
+	nebulaMu.Lock()
+	if currentNebula != nil {
+		currentNebula.Close()
+		currentNebula = nil
+	}
+	nebulaMu.Unlock()
 }
 
 func authMiddleware(token string, next http.Handler) http.Handler {

@@ -193,9 +193,9 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 // Since the agent embeds Nebula in-process, we restart our own Nebula service.
 func reloadNebula() {
 	nebulaMu.Lock()
-	defer nebulaMu.Unlock()
 
 	if currentNebula == nil {
+		nebulaMu.Unlock()
 		log.Printf("[renew] no embedded Nebula instance to reload")
 		return
 	}
@@ -208,9 +208,18 @@ func reloadNebula() {
 		log.Printf("[renew] CRITICAL: failed to restart Nebula after cert renewal: %v", err)
 		log.Printf("[renew] agent will lose mesh connectivity when old cert expires")
 		currentNebula = nil
+		nebulaMu.Unlock()
 		return
 	}
 
 	currentNebula = svc
+	nebulaMu.Unlock()
+
 	log.Printf("[renew] Nebula restarted with new certificate")
+
+	// Notify the HTTP server to recreate its mesh listener.
+	// Called AFTER releasing nebulaMu to avoid deadlock.
+	if onNebulaRestart != nil {
+		onNebulaRestart(svc)
+	}
 }
