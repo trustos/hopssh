@@ -99,7 +99,8 @@ Browser → HTTPS to control plane → Nebula mesh → Agent. Always through con
 - Enrollment tokens SHA-256 hashed, single-use, 10-minute TTL
 - Control plane never stores SSH keys, cloud credentials, or server passwords
 - Relay is blind — cannot decrypt traffic (just forwards opaque Nebula packets)
-- Firewall groups (agent/user/admin) control what each node type can access
+- Unified node model — all nodes equal, per-node capabilities (terminal, health, forward)
+- Nebula firewall groups (node/admin) control mesh-level access
 - If agent stops, control plane loses access — customer always in control
 
 ---
@@ -132,12 +133,14 @@ Packages NOT carried over (Pulumi/OCI-specific):
 
 | Layer | Technology |
 |---|---|
-| Backend | Go, single binary, `net/http` + chi router |
-| Database | SQLite (dual read/write pool, WAL mode) |
-| Encryption | AES-256-GCM at rest, Nebula/Noise in transit |
-| Mesh | Nebula (userspace, gvisor), Curve25519 PKI — see Fork Notes below |
+| Backend | Go, single binary, `net/http` + chi router, sqlc |
+| Database | SQLite via modernc.org/sqlite (pure Go, no CGO), WAL mode |
+| Encryption | AES-256-GCM at rest, Nebula/Noise (ChaCha20-Poly1305) in transit |
+| Mesh | Nebula (userspace, gvisor netstack), Curve25519 PKI — see Vendor Patch below |
 | Frontend | Svelte 5 SPA, embedded in Go binary |
-| Auth | Session-based + API keys |
+| Auth | Session-based (cookie) + bearer tokens (agents) |
+| Container | Distroless (gcr.io/distroless/base-debian12:nonroot) |
+| CI/CD | GitHub Actions (build, vet, test, cross-compile, release on tag) |
 
 ---
 
@@ -161,25 +164,34 @@ mode returns `io.ErrClosedPipe`. Our patch adds the missing error check.
 
 ## Core Features
 
-### Phase 1 — Mesh Networking (current)
+### Phase 1 — Mesh Networking (complete)
 - [x] Agent enrollment (4 modes: device flow, token, bundle, IaC)
 - [x] Networks (isolated mesh per network, auto PKI, per-network CA)
 - [x] Web terminal (browser shell via WebSocket PTY through mesh)
 - [x] Port forwarding (TCP tunnel, any port)
-- [x] Node health dashboard (connected, OS, uptime)
+- [x] Node health dashboard (connected, OS, uptime, heartbeat)
 - [x] Audit logging (login, shell, exec, port-forward)
-- [x] Short-lived certificates (24h) with auto-renewal
-- [ ] Persistent lighthouse + relay per network
+- [x] Short-lived certificates (24h) with auto-renewal + jitter
+- [x] Persistent lighthouse + relay per network
+- [x] Built-in DNS with user-defined domains (`.hop`, `.prod`, `.lab`)
+- [x] Per-node capabilities (terminal, health, forward) — toggleable from dashboard
+- [x] Unified node model (no server/client distinction — all nodes equal)
+- [x] Non-root agent support (user-level config + launchd/systemd)
+- [x] Self-update (`hop-agent update`, `hop-server update`)
+- [x] Install script served by control plane (`/install.sh`)
+- [x] Container support (distroless Dockerfile, env vars, healthz, Nomad)
+- [x] WebSocket real-time dashboard events (replace polling)
+- [x] Idle network reaper (stops unused Nebula instances)
+- [x] Node rename with DNS auto-update
 - [ ] P2P direct connections via Nebula hole punching
 - [ ] Relay fallback through lighthouse when P2P fails
-- [ ] Client app (`hop client join`) for laptops/phones
-- [ ] Built-in DNS with user-defined domains (`.zero`, `.prod`, `.lab`)
 - [ ] Service exposure config (which ports are mesh-accessible)
-- [ ] Firewall groups (agent/user/admin roles via Nebula certs)
 
-### Phase 2 — Teams + Management
-- [ ] Team invitations (email invite, instant mesh access)
-- [ ] ACL rules (fine-grained access control beyond groups)
+### Phase 2 — Teams + Management (in progress)
+- [x] Team invitations (invite link with expiry + max uses + role selector)
+- [x] Network sharing (admin/member roles, role-gated UI)
+- [x] Accept invite page with auth redirect
+- [ ] ACL rules (fine-grained access control beyond capabilities)
 - [ ] Regional relay nodes (add relays via dashboard)
 - [ ] Peer connectivity map (P2P vs relayed status)
 - [ ] API keys for automation
@@ -188,7 +200,7 @@ mode returns `io.ErrClosedPipe`. Our patch adds the missing error check.
 
 ### Phase 3 — Enterprise + Scale
 - [ ] SSO / SAML
-- [ ] RBAC (granular permissions)
+- [ ] RBAC (granular permissions beyond admin/member)
 - [ ] Session recording
 - [ ] Desktop tray app (macOS, Windows, Linux)
 - [ ] Mobile clients (iOS, Android)
@@ -214,27 +226,32 @@ Free forever. Run the single binary on your own server. All features included.
 
 ```
 cmd/
-  agent/              Agent + client binary (serve, enroll, client join)
-  server/             Control plane server (API, lighthouse, relay, DNS)
+  agent/              Agent binary (serve, enroll, install, status, info, help, update)
+  server/             Control plane binary (API, lighthouse, relay, DNS, install, healthz)
 
 internal/
-  api/                HTTP handlers (auth, networks, nodes, proxy, device, bundles, dns, peers)
+  api/                HTTP handlers (auth, networks, nodes, proxy, device, bundles, dns,
+                      members, invites, events, distribution)
   auth/               Middleware (session auth, rate limiting)
-  authz/              Authorization (CanAccessNetwork — future: teams, ACLs)
+  authz/              Authorization (CheckAccess — role-based: admin/member)
+  buildinfo/          Version + commit (injected via ldflags)
   crypto/             AES-256-GCM encryption at rest
   db/                 SQLite stores + migrations + sqlc generated code
   frontend/           Embedded SPA (built from frontend/)
-  mesh/               NetworkManager (persistent per-network Nebula instances)
+  mesh/               NetworkManager (persistent per-network Nebula instances, idle reaper)
   pki/                Nebula CA + cert generation
+  selfupdate/         Binary self-update from control plane or GitHub
 
 frontend/             Svelte 5 SPA (shadcn-svelte, Tailwind, xterm.js)
 patches/              Vendor patches (Nebula graceful shutdown)
-scripts/              Maintenance scripts
+scripts/              Maintenance scripts (install.sh)
 docs/                 Architecture, enrollment guide, developer guide
+deploy/               Deployment templates (OCI, Nomad, install script)
 
-.github/workflows/    CI (build, vet, test, cross-compile, patch check)
-Dockerfile            Multi-stage build
-Makefile              Build, vendor, patch, frontend, test
+.github/workflows/    CI (build, vet, test, cross-compile) + Release (cross-platform)
+Dockerfile            Distroless multi-stage build (control plane only)
+docker-compose.yml    Local dev with Docker Compose
+Makefile              Build, vendor, patch, frontend, test, release
 ```
 
 ---
@@ -251,17 +268,29 @@ make setup
 make build-all
 
 # Run control plane:
-./hop-server
+./hop-server --endpoint http://localhost:9473
 
-# Enroll a server:
-echo '<token>' | sudo ./hop-agent enroll --token-stdin --endpoint http://<control-plane>:9473
+# Enroll a node (interactive device flow):
+hop-agent enroll --endpoint http://<control-plane>:9473
 
-# Join as a client (laptop):
-./hop-agent client join --network <id> --endpoint http://<control-plane>:9473
+# Enroll with token from dashboard:
+echo '<token>' | hop-agent enroll --token-stdin --endpoint http://<control-plane>:9473
+
+# Check status:
+hop-agent status
+hop-agent info
 
 # Docker:
+docker compose up --build
+
+# Or manually:
 docker build -t hopssh .
-docker run -p 9473:9473 -p 42001-42100:42001-42100/udp -v hopssh-data:/data hopssh
+docker run -p 9473:9473 -p 42001-42100:42001-42100/udp -p 15300-15400:15300-15400/udp \
+  -v hopssh-data:/data -e HOPSSH_ENDPOINT=http://YOUR_IP:9473 hopssh
+
+# Release:
+make release              # patch bump (v0.1.0 → v0.1.1)
+make release BUMP=minor   # minor bump (v0.1.1 → v0.2.0)
 ```
 
 ---
