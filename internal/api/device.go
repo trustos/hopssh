@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -156,10 +157,14 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 
 	// Set DNS name from sanitized hostname.
 	dnsName := sanitizeDNSName(body.Hostname)
-	h.Nodes.UpdateDNSName(nodeID, dnsName)
+	if err := h.Nodes.UpdateDNSName(nodeID, dnsName); err != nil {
+		log.Printf("[device] failed to update DNS name for %s: %v", nodeID, err)
+	}
 
 	h.DeviceCodes.SetNodeID(dc.DeviceCode, nodeID)
-	h.Nodes.UpdateAgentRealIP(nodeID, captureAgentIP(r))
+	if err := h.Nodes.UpdateAgentRealIP(nodeID, captureAgentIP(r)); err != nil {
+		log.Printf("[device] failed to update agent IP for %s: %v", nodeID, err)
+	}
 	if h.NetworkManager != nil {
 		h.NetworkManager.RefreshDNS(*dc.NetworkID)
 	}

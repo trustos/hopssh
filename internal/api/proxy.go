@@ -73,6 +73,10 @@ func (h *ProxyHandler) NodeHealth(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	if !node.HasCapability("health") {
+		http.Error(w, "health checks not enabled for this node. Enable it in the dashboard.", http.StatusForbidden)
+		return
+	}
 
 	inst, err := h.getNetworkInstance(node.NetworkID)
 	if err != nil {
@@ -112,6 +116,10 @@ func (h *ProxyHandler) NodeShell(w http.ResponseWriter, r *http.Request) {
 	_, node, err := h.requireNode(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if !node.HasCapability("terminal") {
+		http.Error(w, "terminal not enabled for this node. Enable it in the dashboard.", http.StatusForbidden)
 		return
 	}
 
@@ -207,6 +215,10 @@ func (h *ProxyHandler) NodeExec(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	if !node.HasCapability("terminal") {
+		http.Error(w, "exec not enabled for this node. Enable terminal in the dashboard.", http.StatusForbidden)
+		return
+	}
 
 	user := auth.UserFromContext(r.Context())
 	networkID := chi.URLParam(r, "networkID")
@@ -267,6 +279,10 @@ func (h *ProxyHandler) StartPortForward(w http.ResponseWriter, r *http.Request) 
 	_, node, err := h.requireNode(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if !node.HasCapability("forward") {
+		http.Error(w, "port forwarding not enabled for this node. Enable it in the dashboard.", http.StatusForbidden)
 		return
 	}
 

@@ -60,6 +60,7 @@
 	let inviteExpiresIn = $state<string>('86400');
 	let inviteMaxUses = $state<string>('');
 	let creatingInvite = $state(false);
+	let inviteRole = $state<string>('member');
 	let inviteResult = $state<{ code: string } | null>(null);
 
 	// Role-based access
@@ -124,12 +125,17 @@
 		// Load network first, then connect WebSocket.
 		loadNetwork().then(() => connectEvents());
 
-		// Fallback poll: 30s normally, 10s if pending nodes.
+		// Fallback poll: 30s normally. Faster (10s) when pending nodes exist.
+		let lastPoll = 0;
 		const pollInterval = setInterval(() => {
-			if (!ws || ws.readyState !== WebSocket.OPEN) {
+			const now = Date.now();
+			const interval = hasPendingNodes ? 10_000 : 30_000;
+			if (now - lastPoll < interval) return;
+			if (!ws || ws.readyState !== WebSocket.OPEN || hasPendingNodes) {
+				lastPoll = now;
 				loadNetwork();
 			}
-		}, 30_000);
+		}, 5_000);
 
 		return () => {
 			clearInterval(tickInterval);
@@ -311,9 +317,10 @@
 		ev.preventDefault();
 		creatingInvite = true;
 		try {
-			const opts: { maxUses?: number; expiresIn?: number } = {};
+			const opts: { maxUses?: number; expiresIn?: number; role?: string } = {};
 			if (inviteExpiresIn && inviteExpiresIn !== '0') opts.expiresIn = parseInt(inviteExpiresIn);
 			if (inviteMaxUses) opts.maxUses = parseInt(inviteMaxUses);
+			if (inviteRole) opts.role = inviteRole;
 			const result = await invitesApi.create(networkId, opts);
 			inviteResult = { code: result.code };
 			networkInvites = await invitesApi.list(networkId).catch(() => []);
@@ -502,11 +509,11 @@
 				<div class="rounded-lg border border-dashed p-8 text-center">
 					<p class="mb-2 text-lg font-medium">No nodes yet</p>
 					<p class="text-sm text-muted-foreground">
-						Add a server to get started.
+						Add a node to get started — go to the <strong>Join</strong> tab.
 					</p>
 				</div>
 			{:else}
-				<div class="rounded-lg border">
+				<div class="overflow-x-auto rounded-lg border">
 					<table class="w-full text-sm">
 						<thead>
 							<tr class="border-b bg-muted/50">
@@ -523,7 +530,7 @@
 							{#each visibleNodes as node}
 								<tr class="border-b last:border-0 hover:bg-accent/50">
 									<td class="px-4 py-3">
-										<div class="flex items-center gap-2" title={node.status === 'pending' ? 'Waiting for agent enrollment. Run the install command on your server.' : ''}>
+										<div class="flex items-center gap-2" title={node.status === 'pending' ? 'Waiting for agent enrollment. Run the enroll command on your device.' : ''}>
 											<div class="h-2.5 w-2.5 rounded-full {statusColor(node.status)}"></div>
 											<span class="text-xs capitalize text-muted-foreground">{node.status}</span>
 											{#if node.status === 'pending'}
@@ -619,7 +626,7 @@
 													Forward
 												</button>
 											{/if}
-											{#if node.nodeType !== 'lighthouse'}
+											{#if isAdmin}
 												<button
 													onclick={() => confirmDeleteNode(node)}
 													class="rounded px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
@@ -711,7 +718,7 @@
 					<p class="text-xs text-muted-foreground">Node hostnames are added automatically when agents enroll. You can also add custom records.</p>
 				</div>
 			{:else}
-				<div class="rounded-lg border">
+				<div class="overflow-x-auto rounded-lg border">
 					<table class="w-full text-sm">
 						<thead>
 							<tr class="border-b bg-muted/50">
@@ -785,16 +792,15 @@
 
 				{#if isAdmin}
 					<div class="border-t pt-6">
-						<h3 class="mb-1 font-medium text-muted-foreground">Add a server instead?</h3>
+						<h3 class="mb-1 font-medium text-muted-foreground">Add with a token instead?</h3>
 						<p class="mb-3 text-sm text-muted-foreground">
-							Install the agent on a server to manage it from the dashboard and make
-							its services available on the mesh.
+							Generate a one-time token to enroll a node without the interactive device flow.
 						</p>
 						<button
 							onclick={() => { showAddNode = true; addNode(); }}
 							class="rounded-md border px-4 py-2 text-sm font-medium hover:bg-accent"
 						>
-							Add Server
+							Add Node
 						</button>
 					</div>
 				{/if}
@@ -930,6 +936,13 @@
 								<label for="invite-max-uses" class="text-sm font-medium">Max uses</label>
 								<input id="invite-max-uses" type="number" bind:value={inviteMaxUses} min="1" placeholder="Unlimited" class="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
 							</div>
+							<div class="space-y-2">
+								<label for="invite-role" class="text-sm font-medium">Role</label>
+								<select id="invite-role" bind:value={inviteRole} class="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
+									<option value="member">Member — can view nodes, join network, use terminal</option>
+									<option value="admin">Admin — full access, can manage nodes, DNS, invites</option>
+								</select>
+							</div>
 							<div class="flex justify-end gap-2">
 								<button type="button" onclick={() => { showCreateInvite = false; }} class="rounded-md px-4 py-2 text-sm hover:bg-accent">Cancel</button>
 								<button type="submit" disabled={creatingInvite} class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
@@ -942,11 +955,11 @@
 			</div>
 		{/if}
 
-		<!-- Add Server Dialog -->
+		<!-- Add Node Dialog -->
 		{#if showAddNode}
 			<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
 				<div class="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
-					<h2 class="mb-4 text-lg font-semibold">Add Server</h2>
+					<h2 class="mb-4 text-lg font-semibold">Add Node</h2>
 					{#if addingNode}
 						<div class="flex items-center gap-3 py-4">
 							<div class="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent"></div>
@@ -956,7 +969,7 @@
 						<div class="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">{addNodeError}</div>
 					{:else if nodeResult}
 						<div class="space-y-4">
-							<p class="text-sm text-muted-foreground">Run these commands on your server:</p>
+							<p class="text-sm text-muted-foreground">Run these commands on the device you want to add:</p>
 
 							<div class="rounded-lg border p-4">
 								<p class="mb-2 text-sm font-medium">1. Install hop-agent</p>

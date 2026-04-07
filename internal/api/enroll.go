@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -149,10 +150,14 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 
 	// Set DNS name from sanitized hostname.
 	dnsName := sanitizeDNSName(body.Hostname)
-	h.Nodes.UpdateDNSName(node.ID, dnsName)
+	if err := h.Nodes.UpdateDNSName(node.ID, dnsName); err != nil {
+		log.Printf("[enroll] failed to update DNS name for %s: %v", node.ID, err)
+	}
 
 	// Record the agent's real IP and refresh DNS.
-	h.Nodes.UpdateAgentRealIP(node.ID, captureAgentIP(r))
+	if err := h.Nodes.UpdateAgentRealIP(node.ID, captureAgentIP(r)); err != nil {
+		log.Printf("[enroll] failed to update agent IP for %s: %v", node.ID, err)
+	}
 	if h.NetworkManager != nil {
 		h.NetworkManager.RefreshDNS(node.NetworkID)
 	}
@@ -207,9 +212,11 @@ func (h *EnrollHandler) JoinNetwork(w http.ResponseWriter, r *http.Request) {
 		OS       string `json:"os"`
 		Arch     string `json:"arch"`
 	}
-	json.NewDecoder(r.Body).Decode(&body)
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
 
-	// Allocate an IP for the client.
 	nextIndex, err := h.Nodes.NextNodeIndex(networkID)
 	if err != nil {
 		http.Error(w, "failed to allocate IP: "+err.Error(), http.StatusInternalServerError)
@@ -232,7 +239,7 @@ func (h *EnrollHandler) JoinNetwork(w http.ResponseWriter, r *http.Request) {
 		Arch:       body.Arch,
 		NebulaIP:   nextIP.String(),
 		AgentToken: agentToken,
-		NodeType:   "user", // client, not agent
+		NodeType:   "node",
 		Status:     "enrolled",
 	}
 	if err := h.Nodes.Create(node); err != nil {
@@ -254,7 +261,9 @@ func (h *EnrollHandler) JoinNetwork(w http.ResponseWriter, r *http.Request) {
 
 	dnsName := sanitizeDNSName(body.Hostname)
 	h.Nodes.UpdateDNSName(nodeID, dnsName)
-	h.Nodes.UpdateAgentRealIP(nodeID, captureAgentIP(r))
+	if err := h.Nodes.UpdateAgentRealIP(nodeID, captureAgentIP(r)); err != nil {
+		log.Printf("[enroll] failed to update agent IP for %s: %v", nodeID, err)
+	}
 	if h.NetworkManager != nil {
 		h.NetworkManager.RefreshDNS(networkID)
 	}

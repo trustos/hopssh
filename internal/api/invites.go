@@ -43,10 +43,16 @@ func (h *InviteHandler) CreateInvite(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		MaxUses   *int64 `json:"maxUses"`
 		ExpiresIn *int64 `json:"expiresIn"` // seconds from now
+		Role      string `json:"role"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
+	}
+
+	role := req.Role
+	if role != "admin" {
+		role = "member" // default
 	}
 
 	code := generateInviteCode()
@@ -61,7 +67,7 @@ func (h *InviteHandler) CreateInvite(w http.ResponseWriter, r *http.Request) {
 		NetworkID: networkID,
 		CreatedBy: user.ID,
 		Code:      code,
-		Role:      "member",
+		Role:      role,
 		MaxUses:   req.MaxUses,
 		ExpiresAt: expiresAt,
 	}

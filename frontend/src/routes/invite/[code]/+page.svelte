@@ -52,7 +52,7 @@
 		} catch (e) {
 			if (e instanceof ApiError) {
 				if (e.status === 401) {
-					goto(`/login?redirect=/invite/${code}?auto=1`);
+					goto(`/login?redirect=${encodeURIComponent(`/invite/${code}?auto=1`)}`);
 					return;
 				}
 				error = e.message;
@@ -120,13 +120,13 @@
 				{:else}
 					<div class="space-y-2">
 						<a
-							href="/login?redirect=/invite/{code}?auto=1"
+							href="/login?redirect={encodeURIComponent(`/invite/${code}?auto=1`)}"
 							class="block w-full rounded-md bg-primary px-4 py-2 text-center text-sm font-medium text-primary-foreground hover:bg-primary/90"
 						>
 							Log in to join
 						</a>
 						<a
-							href="/register?redirect=/invite/{code}?auto=1"
+							href="/register?redirect={encodeURIComponent(`/invite/${code}?auto=1`)}"
 							class="block w-full rounded-md border px-4 py-2 text-center text-sm font-medium hover:bg-accent"
 						>
 							Register to join
