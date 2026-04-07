@@ -38,8 +38,17 @@ var execCommand = exec.Command
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
-		case "version":
+		case "help", "--help", "-h":
+			runHelp()
+			return
+		case "version", "--version":
 			fmt.Printf("hop-agent %s (%s)\n", buildinfo.Version, buildinfo.Commit)
+			return
+		case "status":
+			runStatus(os.Args[2:])
+			return
+		case "info":
+			runInfo(os.Args[2:])
 			return
 		case "enroll":
 			runEnroll(os.Args[2:])
@@ -59,6 +68,9 @@ func main() {
 		case "client":
 			runClient(os.Args[2:])
 			return
+		default:
+			fmt.Fprintf(os.Stderr, "Unknown command: %s\nRun 'hop-agent help' for usage.\n", os.Args[1])
+			os.Exit(1)
 		}
 	}
 	// Default: serve (backwards compatible with existing systemd units).
@@ -67,13 +79,31 @@ func main() {
 
 func runServe(args []string) {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	tokenFile := fs.String("token-file", "/etc/hop-agent/token", "Path to the bearer token file")
+	cfgDir := fs.String("config-dir", "", "Override config directory")
+	tokenFile := fs.String("token-file", "", "Path to the bearer token file")
 	token := fs.String("token", "", "Bearer token (overrides -token-file)")
-	endpointFile := fs.String("endpoint-file", "/etc/hop-agent/endpoint", "Path to control plane endpoint URL")
-	nodeIDFile := fs.String("node-id-file", "/etc/hop-agent/node-id", "Path to node ID file")
-	nebulaConfig := fs.String("nebula-config", "/etc/hop-agent/nebula.yaml", "Path to Nebula config")
+	endpointFile := fs.String("endpoint-file", "", "Path to control plane endpoint URL")
+	nodeIDFile := fs.String("node-id-file", "", "Path to node ID file")
+	nebulaConfig := fs.String("nebula-config", "", "Path to Nebula config")
 	listenAddr := fs.String("listen", "", "Override listen address (bypasses mesh, uses OS stack)")
 	fs.Parse(args)
+
+	if *cfgDir != "" {
+		configDir = resolveConfigDir(*cfgDir)
+	}
+	// Derive defaults from configDir if not explicitly set.
+	if *tokenFile == "" {
+		*tokenFile = filepath.Join(configDir, "token")
+	}
+	if *endpointFile == "" {
+		*endpointFile = filepath.Join(configDir, "endpoint")
+	}
+	if *nodeIDFile == "" {
+		*nodeIDFile = filepath.Join(configDir, "node-id")
+	}
+	if *nebulaConfig == "" {
+		*nebulaConfig = filepath.Join(configDir, "nebula.yaml")
+	}
 
 	authToken := *token
 	if authToken == "" {

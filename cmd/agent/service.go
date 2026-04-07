@@ -14,7 +14,6 @@ const (
 	agentServiceName      = "hop-agent"
 	agentSystemdPath      = "/etc/systemd/system/hop-agent.service"
 	agentLaunchdDaemonPath = "/Library/LaunchDaemons/com.hopssh.agent.plist"
-	agentConfigDir        = "/etc/hop-agent"
 )
 
 const agentSystemdUnit = `[Unit]
@@ -62,7 +61,7 @@ func runAgentInstall(args []string) {
 	// Verify enrollment has been completed.
 	requiredFiles := []string{"token", "endpoint", "node-id", "ca.crt", "node.crt"}
 	for _, f := range requiredFiles {
-		path := filepath.Join(agentConfigDir, f)
+		path := filepath.Join(configDir, f)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "Error: Enrollment not complete — %s not found.\n\n", path)
 			fmt.Fprintf(os.Stderr, "Run 'hop-agent enroll' first:\n")
@@ -75,7 +74,11 @@ func runAgentInstall(args []string) {
 	case "linux":
 		installAgentSystemd()
 	case "darwin":
-		installAgentLaunchd()
+		if os.Getuid() == 0 {
+			installAgentLaunchd()
+		} else {
+			installAgentLaunchdUser()
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "Error: Unsupported operating system: %s\n", runtime.GOOS)
 		fmt.Fprintf(os.Stderr, "Start manually: hop-agent serve\n")
@@ -135,6 +138,67 @@ func installAgentLaunchd() {
 	fmt.Println("    Start:  sudo launchctl load " + plistPath)
 }
 
+func installAgentLaunchdUser() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("Cannot determine home directory: %v", err)
+	}
+	plistDir := filepath.Join(home, "Library", "LaunchAgents")
+	plistPath := filepath.Join(plistDir, "com.hopssh.agent.plist")
+
+	if err := os.MkdirAll(plistDir, 0755); err != nil {
+		log.Fatalf("Cannot create LaunchAgents directory: %v", err)
+	}
+
+	// Unload existing service if present.
+	exec.Command("launchctl", "unload", plistPath).Run()
+
+	// User-level plist runs as current user.
+	binPath, _ := os.Executable()
+	if binPath == "" {
+		binPath = "/usr/local/bin/hop-agent"
+	}
+	logPath := filepath.Join(home, "Library", "Logs", "hop-agent.log")
+
+	plist := fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.hopssh.agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>%s</string>
+    <string>serve</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>%s</string>
+  <key>StandardErrorPath</key>
+  <string>%s</string>
+</dict>
+</plist>
+`, binPath, logPath, logPath)
+
+	if err := os.WriteFile(plistPath, []byte(plist), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: Cannot write %s: %v\n", plistPath, err)
+		os.Exit(1)
+	}
+
+	if out, err := exec.Command("launchctl", "load", plistPath).CombinedOutput(); err != nil {
+		log.Fatalf("Failed to load launchd service: %v\n%s", err, out)
+	}
+
+	fmt.Println("==> hop-agent service installed and started (user-level).")
+	fmt.Printf("    Plist:  %s\n", plistPath)
+	fmt.Printf("    Logs:   %s\n", logPath)
+	fmt.Println("    Stop:   launchctl unload " + plistPath)
+	fmt.Println("    Start:  launchctl load " + plistPath)
+}
+
 func runAgentUninstall(args []string) {
 	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
 	purge := fs.Bool("purge", false, "Also remove config directory (/etc/hop-agent/)")
@@ -151,10 +215,10 @@ func runAgentUninstall(args []string) {
 	}
 
 	if *purge {
-		if err := os.RemoveAll(agentConfigDir); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Could not remove %s: %v\n", agentConfigDir, err)
+		if err := os.RemoveAll(configDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: Could not remove %s: %v\n", configDir, err)
 		} else {
-			fmt.Printf("    Removed: %s\n", agentConfigDir)
+			fmt.Printf("    Removed: %s\n", configDir)
 		}
 	}
 }

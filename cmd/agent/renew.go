@@ -102,7 +102,7 @@ func runCertRenewal(ctx context.Context, endpoint, nodeID, agentToken string) {
 // timeUntilRenewal reads the current cert and returns the duration until
 // renewal should happen (50% of remaining validity).
 func timeUntilRenewal() (time.Duration, error) {
-	certPEM, err := os.ReadFile(filepath.Join(enrollDir, "node.crt"))
+	certPEM, err := os.ReadFile(filepath.Join(configDir, "node.crt"))
 	if err != nil {
 		return 0, fmt.Errorf("read cert: %w", err)
 	}
@@ -163,8 +163,8 @@ func renewCert(endpoint, nodeID, agentToken string) error {
 	}
 
 	// Write new cert atomically (temp file + rename) to prevent partial reads.
-	certPath := filepath.Join(enrollDir, "node.crt")
-	keyPath := filepath.Join(enrollDir, "node.key")
+	certPath := filepath.Join(configDir, "node.crt")
+	keyPath := filepath.Join(configDir, "node.key")
 
 	if err := atomicWrite(certPath, []byte(renewResp.NodeCert), 0644); err != nil {
 		return fmt.Errorf("write cert: %w", err)
@@ -200,7 +200,7 @@ func reloadNebula() {
 		return
 	}
 
-	configPath := filepath.Join(enrollDir, "nebula.yaml")
+	configPath := filepath.Join(configDir, "nebula.yaml")
 	currentNebula.Close()
 
 	svc, err := startNebula(configPath)

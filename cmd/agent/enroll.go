@@ -18,10 +18,42 @@ import (
 )
 
 const (
-	enrollDir       = "/etc/hop-agent"
 	defaultEndpoint = "https://hopssh.com"
 	agentAPIPort    = 41820
 )
+
+// configDir is the directory where agent config, certs, and keys are stored.
+// Set once at startup by resolveConfigDir(). All subcommands use this.
+var configDir = resolveConfigDir("")
+
+// resolveConfigDir determines the config directory.
+// Priority: explicit override → existing system install → root → user home.
+func resolveConfigDir(override string) string {
+	if override != "" {
+		return override
+	}
+	// Backward compat: if system-wide install exists, use it.
+	if _, err := os.Stat("/etc/hop-agent/node.crt"); err == nil {
+		return "/etc/hop-agent"
+	}
+	// Root → system path.
+	if os.Getuid() == 0 {
+		return "/etc/hop-agent"
+	}
+	// User-level paths.
+	if runtime.GOOS == "darwin" {
+		if home, _ := os.UserHomeDir(); home != "" {
+			return filepath.Join(home, "Library", "Application Support", "hopssh")
+		}
+	}
+	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
+		return filepath.Join(xdg, "hopssh")
+	}
+	if home, _ := os.UserHomeDir(); home != "" {
+		return filepath.Join(home, ".config", "hopssh")
+	}
+	return "/etc/hop-agent"
+}
 
 // skipService is set by --no-service flag during enrollment.
 var skipService bool
@@ -51,8 +83,12 @@ func runEnroll(args []string) {
 	endpoint := fs.String("endpoint", defaultEndpoint, "Control plane URL")
 	noService := fs.Bool("no-service", false, "Skip automatic service installation")
 	force := fs.Bool("force", false, "Re-enroll: stop service, remove old config, enroll fresh")
+	cfgDir := fs.String("config-dir", "", "Override config directory")
 	fs.Parse(args)
 	skipService = *noService
+	if *cfgDir != "" {
+		configDir = resolveConfigDir(*cfgDir)
+	}
 
 	// Handle re-enrollment with --force.
 	if *force {
@@ -63,12 +99,15 @@ func runEnroll(args []string) {
 		} else {
 			exec.Command("systemctl", "stop", "hop-agent").Run()
 		}
-		os.RemoveAll(enrollDir)
+		// Safety: don't RemoveAll on paths that are too short.
+		if len(configDir) > 5 {
+			os.RemoveAll(configDir)
+		}
 	}
 
 	// Check if already enrolled — prevent accidental re-enrollment.
-	if _, err := os.Stat(filepath.Join(enrollDir, "node.crt")); err == nil {
-		fmt.Fprintf(os.Stderr, "Warning: This device is already enrolled (config exists at %s).\n", enrollDir)
+	if _, err := os.Stat(filepath.Join(configDir, "node.crt")); err == nil {
+		fmt.Fprintf(os.Stderr, "Warning: This device is already enrolled (config exists at %s).\n", configDir)
 		fmt.Fprintf(os.Stderr, "To re-enroll, use --force:\n")
 		fmt.Fprintf(os.Stderr, "  sudo hop-agent enroll --force --endpoint <url>\n\n")
 		os.Exit(1)
@@ -199,10 +238,10 @@ func enrollFromBundle(path, endpoint string) {
 	if err != nil {
 		log.Fatalf("Failed to extract bundle: %v\n%s", err, out)
 	}
-	fmt.Println("  ✓ Bundle extracted to " + enrollDir)
+	fmt.Println("  ✓ Bundle extracted to " + configDir)
 
 	// Read config.json from the extracted bundle to generate Nebula config.
-	configData, err := os.ReadFile(filepath.Join(enrollDir, "config.json"))
+	configData, err := os.ReadFile(filepath.Join(configDir, "config.json"))
 	if err != nil {
 		log.Fatalf("Failed to read bundle config: %v", err)
 	}
@@ -224,9 +263,9 @@ func enrollFromBundle(path, endpoint string) {
 	}
 
 	// Persist endpoint + nodeID for cert renewal.
-	writeFileSecure(filepath.Join(enrollDir, "endpoint"), []byte(ep), 0600)
+	writeFileSecure(filepath.Join(configDir, "endpoint"), []byte(ep), 0600)
 	if bundleConfig.NodeID != "" {
-		writeFileSecure(filepath.Join(enrollDir, "node-id"), []byte(bundleConfig.NodeID), 0600)
+		writeFileSecure(filepath.Join(configDir, "node-id"), []byte(bundleConfig.NodeID), 0600)
 	}
 
 	// Generate Nebula config from bundle data.
@@ -247,15 +286,15 @@ func readTokenFromStdin() string {
 }
 
 func installCerts(er *enrollResponse, endpoint string) {
-	os.MkdirAll(enrollDir, 0700)
+	os.MkdirAll(configDir, 0700)
 
-	writeFileSecure(filepath.Join(enrollDir, "ca.crt"), []byte(er.CACert), 0644)
-	writeFileSecure(filepath.Join(enrollDir, "node.crt"), []byte(er.NodeCert), 0644)
-	writeFileSecure(filepath.Join(enrollDir, "node.key"), []byte(er.NodeKey), 0600)
-	writeFileSecure(filepath.Join(enrollDir, "token"), []byte(er.AgentToken), 0600)
-	writeFileSecure(filepath.Join(enrollDir, "endpoint"), []byte(endpoint), 0600)
+	writeFileSecure(filepath.Join(configDir, "ca.crt"), []byte(er.CACert), 0644)
+	writeFileSecure(filepath.Join(configDir, "node.crt"), []byte(er.NodeCert), 0644)
+	writeFileSecure(filepath.Join(configDir, "node.key"), []byte(er.NodeKey), 0600)
+	writeFileSecure(filepath.Join(configDir, "token"), []byte(er.AgentToken), 0600)
+	writeFileSecure(filepath.Join(configDir, "endpoint"), []byte(endpoint), 0600)
 	if er.NodeID != "" {
-		writeFileSecure(filepath.Join(enrollDir, "node-id"), []byte(er.NodeID), 0600)
+		writeFileSecure(filepath.Join(configDir, "node-id"), []byte(er.NodeID), 0600)
 	}
 
 	fmt.Printf("\n  ✓ Enrolled (%s)\n", er.NebulaIP)
@@ -320,13 +359,13 @@ firewall:
     - port: any
       proto: icmp
       host: any
-`, enrollDir, enrollDir, enrollDir,
+`, configDir, configDir, configDir,
 		serverIP, serverHost, lighthousePort,
 		serverIP,
 		serverIP,
 		agentAPIPort)
 
-	writeFileSecure(filepath.Join(enrollDir, "nebula.yaml"), []byte(nebulaConfig), 0644)
+	writeFileSecure(filepath.Join(configDir, "nebula.yaml"), []byte(nebulaConfig), 0644)
 	fmt.Printf("  ✓ Nebula config written (lighthouse: %s via %s:%d)\n", serverIP, serverHost, lighthousePort)
 }
 
