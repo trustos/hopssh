@@ -403,6 +403,7 @@ func (h *ProxyHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
 			NodeType:     n.NodeType,
 			ExposedPorts: n.ExposedPorts,
 			DNSName:      n.DNSName,
+			Capabilities: parseCapabilities(n.Capabilities),
 			Status:       n.Status,
 			LastSeenAt:   n.LastSeenAt,
 			CreatedAt:    n.CreatedAt,
@@ -454,6 +455,45 @@ func (h *ProxyHandler) RenameNode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, map[string]string{"name": body.Name, "dnsName": dnsName})
+}
+
+// UpdateCapabilities changes a node's enabled capabilities. Admin only.
+// PUT /api/networks/{networkID}/nodes/{nodeID}/capabilities
+func (h *ProxyHandler) UpdateCapabilities(w http.ResponseWriter, r *http.Request) {
+	_, node, err := h.requireNode(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body struct {
+		Capabilities []string `json:"capabilities"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Validate capabilities.
+	valid := map[string]bool{"terminal": true, "health": true, "forward": true}
+	for _, c := range body.Capabilities {
+		if !valid[c] {
+			http.Error(w, "invalid capability: "+c+". Valid: terminal, health, forward", http.StatusBadRequest)
+			return
+		}
+	}
+
+	if err := h.Nodes.UpdateCapabilities(node.ID, body.Capabilities); err != nil {
+		http.Error(w, "failed to update capabilities", http.StatusInternalServerError)
+		return
+	}
+
+	if h.EventHub != nil {
+		h.EventHub.Publish(node.NetworkID, Event{Type: "node.capabilities", Data: map[string]interface{}{"nodeId": node.ID, "capabilities": body.Capabilities}})
+	}
+
+	writeJSON(w, map[string]interface{}{"capabilities": body.Capabilities})
 }
 
 func (h *ProxyHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {

@@ -70,7 +70,6 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		Hostname   string `json:"hostname"`
 		OS         string `json:"os"`
 		Arch       string `json:"arch"`
-		NodeType   string `json:"nodeType"` // "agent" (server) or "user" (client)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DeviceCode == "" {
 		http.Error(w, "deviceCode is required", http.StatusBadRequest)
@@ -130,24 +129,12 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 	agentToken := generateToken()
 	nodeID := uuid.New().String()
 
-	// Determine node type: "agent" (server) or "user" (client).
-	nodeType := body.NodeType
-	if nodeType != "user" {
-		nodeType = "agent" // default to server
-	}
-	certGroup := nodeType
-	if certGroup == "user" {
-		certGroup = "user"
-	} else {
-		certGroup = "agent"
-	}
-
 	node := &db.Node{
 		ID:         nodeID,
 		NetworkID:  *dc.NetworkID,
 		NebulaIP:   nextIP.String(),
 		AgentToken: agentToken,
-		NodeType:   nodeType,
+		NodeType:   "node",
 		Status:     "pending",
 	}
 	if err := h.Nodes.Create(node); err != nil {
@@ -155,9 +142,8 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Issue node certificate with appropriate group.
 	nodeCert, err := pki.IssueCert(network.NebulaCACert, network.NebulaCAKey,
-		fmt.Sprintf("node-%s", nodeID[:8]), nextIP, []string{certGroup}, deviceNodeCertDuration)
+		fmt.Sprintf("node-%s", nodeID[:8]), nextIP, []string{"node"}, deviceNodeCertDuration)
 	if err != nil {
 		http.Error(w, "failed to issue cert: "+err.Error(), http.StatusInternalServerError)
 		return

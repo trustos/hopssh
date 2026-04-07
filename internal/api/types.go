@@ -33,6 +33,18 @@ func sanitizeDNSName(hostname string) string {
 	return name
 }
 
+// parseCapabilities converts a JSON capabilities string to a slice.
+func parseCapabilities(capsJSON string) []string {
+	if capsJSON == "" || capsJSON == "null" {
+		return []string{}
+	}
+	var caps []string
+	if err := json.Unmarshal([]byte(capsJSON), &caps); err != nil {
+		return []string{}
+	}
+	return caps
+}
+
 // captureAgentIP extracts the client IP from an HTTP request.
 // Used to record the agent's real IP for mesh tunnel creation.
 func captureAgentIP(r *http.Request) string {
@@ -172,9 +184,10 @@ type NodeResponse struct {
 	Arch         string  `json:"arch" example:"arm64"`
 	NebulaIP     string  `json:"nebulaIP" example:"10.42.1.2/24"`
 	AgentRealIP  *string `json:"agentRealIP" example:"203.0.113.10"`
-	NodeType     string  `json:"nodeType" example:"agent"`
-	ExposedPorts *string `json:"exposedPorts,omitempty"`
-	DNSName      *string `json:"dnsName,omitempty"`
+	NodeType     string   `json:"nodeType" example:"node"`
+	ExposedPorts *string  `json:"exposedPorts,omitempty"`
+	DNSName      *string  `json:"dnsName,omitempty"`
+	Capabilities []string `json:"capabilities" example:"terminal,health,forward"`
 	Status       string  `json:"status" example:"online"`
 	LastSeenAt   *int64  `json:"lastSeenAt" example:"1712361600"`
 	CreatedAt    int64   `json:"createdAt" example:"1712361600"`

@@ -135,7 +135,7 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 
 	// Issue node certificate.
 	nodeCert, err := pki.IssueCert(network.NebulaCACert, network.NebulaCAKey,
-		fmt.Sprintf("node-%s", node.ID[:8]), nodeIP, []string{"agent"}, nodeCertDuration)
+		fmt.Sprintf("node-%s", node.ID[:8]), nodeIP, []string{"node"}, nodeCertDuration)
 	if err != nil {
 		http.Error(w, "failed to issue node cert: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -240,9 +240,8 @@ func (h *EnrollHandler) JoinNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Issue cert with "user" group (not "agent").
 	nodeCert, err := pki.IssueCert(network.NebulaCACert, network.NebulaCAKey,
-		fmt.Sprintf("client-%s", nodeID[:8]), nextIP, []string{"user"}, nodeCertDuration)
+		fmt.Sprintf("node-%s", nodeID[:8]), nextIP, []string{"node"}, nodeCertDuration)
 	if err != nil {
 		http.Error(w, "failed to issue cert: "+err.Error(), http.StatusInternalServerError)
 		return

@@ -270,6 +270,7 @@ func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 			NodeType:     n.NodeType,
 			ExposedPorts: n.ExposedPorts,
 			DNSName:      n.DNSName,
+			Capabilities: parseCapabilities(n.Capabilities),
 			Status:       n.Status,
 			LastSeenAt:   n.LastSeenAt,
 			CreatedAt:    n.CreatedAt,

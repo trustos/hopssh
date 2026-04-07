@@ -77,14 +77,9 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Issue fresh certificate with the same identity and group.
-	// Must preserve the original group (agent vs user) to maintain firewall rules.
-	groups := []string{"agent"}
-	if node.NodeType == "user" {
-		groups = []string{"user"}
-	}
+	// Issue fresh certificate — all nodes use "node" group.
 	nodeCert, err := pki.IssueCert(network.NebulaCACert, network.NebulaCAKey,
-		fmt.Sprintf("node-%s", node.ID[:8]), nodeIP, groups, renewCertDuration)
+		fmt.Sprintf("node-%s", node.ID[:8]), nodeIP, []string{"node"}, renewCertDuration)
 	if err != nil {
 		http.Error(w, "failed to issue cert: "+err.Error(), http.StatusInternalServerError)
 		return

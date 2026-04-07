@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -34,12 +35,31 @@ type Node struct {
 	EnrollmentToken     *string // one-time, nulled after use (SHA-256 hashed at rest)
 	EnrollmentExpiresAt *int64  // TTL for enrollment token
 	AgentRealIP         *string
-	NodeType            string  // agent, user, lighthouse
-	ExposedPorts        *string // JSON: [{"port":8096,"proto":"tcp","name":"Jellyfin"}]
-	DNSName             *string // custom DNS hostname
-	Status              string  // pending, enrolled, online, offline
+	NodeType            string   // agent, user, lighthouse, node (legacy compat)
+	ExposedPorts        *string  // JSON: [{"port":8096,"proto":"tcp","name":"Jellyfin"}]
+	DNSName             *string  // custom DNS hostname
+	Capabilities        string   // JSON: ["terminal","health","forward"]
+	Status              string   // pending, enrolled, online, offline
 	LastSeenAt          *int64
 	CreatedAt           int64
+}
+
+// HasCapability checks if a node has a specific capability enabled.
+func (n *Node) HasCapability(cap string) bool {
+	// Fast path for common defaults.
+	if n.Capabilities == "" || n.Capabilities == "null" {
+		return false
+	}
+	var caps []string
+	if err := json.Unmarshal([]byte(n.Capabilities), &caps); err != nil {
+		return false
+	}
+	for _, c := range caps {
+		if c == cap {
+			return true
+		}
+	}
+	return false
 }
 
 type NodeStore struct {
@@ -127,6 +147,7 @@ func (s *NodeStore) mapNodeRow(row dbsqlc.GetNodeByIDRow) (*Node, error) {
 		NodeType:        row.NodeType,
 		ExposedPorts:    row.ExposedPorts,
 		DNSName:         row.DnsName,
+		Capabilities:    row.Capabilities,
 		Status:          row.Status,
 		LastSeenAt:      row.LastSeenAt,
 		CreatedAt:       row.CreatedAt,
@@ -231,6 +252,7 @@ func (s *NodeStore) ListForNetwork(networkID string) ([]*Node, error) {
 			NodeType:     r.NodeType,
 			ExposedPorts: r.ExposedPorts,
 			DNSName:      r.DnsName,
+			Capabilities: r.Capabilities,
 			Status:       r.Status,
 			LastSeenAt:   r.LastSeenAt,
 			CreatedAt:    r.CreatedAt,
@@ -371,6 +393,18 @@ func (s *NodeStore) UpdateDNSName(id, dnsName string) error {
 	return q.UpdateNodeDNSName(context.Background(), dbsqlc.UpdateNodeDNSNameParams{
 		DnsName: &dnsName,
 		ID:      id,
+	})
+}
+
+func (s *NodeStore) UpdateCapabilities(id string, caps []string) error {
+	capsJSON, err := json.Marshal(caps)
+	if err != nil {
+		return err
+	}
+	q := dbsqlc.New(WrapDB(s.wdb))
+	return q.UpdateNodeCapabilities(context.Background(), dbsqlc.UpdateNodeCapabilitiesParams{
+		Capabilities: string(capsJSON),
+		ID:           id,
 	})
 }
 

@@ -43,9 +43,6 @@ type enrollResponse struct {
 //   - --token-stdin (read token from stdin)
 //   - --token <token> (token as argument)
 //   - --bundle <path> (offline tarball)
-// enrollNodeType is set by --client flag. "agent" for servers, "user" for personal devices.
-var enrollNodeType = "agent"
-
 func runEnroll(args []string) {
 	fs := flag.NewFlagSet("enroll", flag.ExitOnError)
 	token := fs.String("token", "", "Enrollment token (visible in ps — prefer --token-stdin)")
@@ -53,13 +50,9 @@ func runEnroll(args []string) {
 	bundlePath := fs.String("bundle", "", "Path to pre-generated enrollment bundle (.tar.gz)")
 	endpoint := fs.String("endpoint", defaultEndpoint, "Control plane URL")
 	noService := fs.Bool("no-service", false, "Skip automatic service installation")
-	clientMode := fs.Bool("client", false, "Enroll as a client (personal device) instead of a server")
 	force := fs.Bool("force", false, "Re-enroll: stop service, remove old config, enroll fresh")
 	fs.Parse(args)
 	skipService = *noService
-	if *clientMode {
-		enrollNodeType = "user"
-	}
 
 	// Handle re-enrollment with --force.
 	if *force {
@@ -134,8 +127,8 @@ func enrollDeviceFlow(endpoint string) {
 		time.Sleep(interval)
 
 		hostname, _ := os.Hostname()
-		pollBody := fmt.Sprintf(`{"deviceCode":%q,"hostname":%q,"os":%q,"arch":"%s","nodeType":%q}`,
-			codeResp.DeviceCode, hostname, runtime.GOOS, detectArch(), enrollNodeType)
+		pollBody := fmt.Sprintf(`{"deviceCode":%q,"hostname":%q,"os":%q,"arch":"%s"}`,
+			codeResp.DeviceCode, hostname, runtime.GOOS, detectArch())
 		pollResp, err := http.Post(endpoint+"/api/device/poll", "application/json",
 			strings.NewReader(pollBody))
 		if err != nil {
@@ -318,16 +311,11 @@ firewall:
       proto: tcp
       groups:
         - admin
-    # Mesh users can reach all TCP ports (service exposure controlled by app layer)
+    # All mesh nodes can reach each other
     - port: any
       proto: tcp
       groups:
-        - user
-    # Other agents can reach for P2P services
-    - port: any
-      proto: tcp
-      groups:
-        - agent
+        - node
     # ICMP for diagnostics
     - port: any
       proto: icmp

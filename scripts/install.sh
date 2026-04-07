@@ -117,13 +117,10 @@ case "$COMPONENT" in
     echo ""
     echo "==> hop-agent installed!"
     echo ""
-    echo "    To add a SERVER (VPS, NAS, Raspberry Pi):"
+    echo "    Next: enroll this device into your network:"
     echo "      sudo hop-agent enroll --endpoint https://your-control-plane:9473"
     echo ""
-    echo "    To join as a CLIENT (laptop, phone, personal device):"
-    echo "      sudo hop-agent enroll --client --endpoint https://your-control-plane:9473"
-    echo ""
-    echo "    With a token from the dashboard:"
+    echo "    Or with a token from the dashboard:"
     echo "      echo '<token>' | sudo hop-agent enroll --token-stdin --endpoint https://your-control-plane:9473"
     ;;
   server)

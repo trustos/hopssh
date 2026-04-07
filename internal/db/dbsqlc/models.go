@@ -105,6 +105,7 @@ type Node struct {
 	Status              string
 	LastSeenAt          *int64
 	CreatedAt           int64
+	Capabilities        string
 }
 
 type Session struct {

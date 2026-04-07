@@ -91,6 +91,8 @@ export const nodes = {
 		request<CreateNodeResponse>('POST', `/api/networks/${e(networkId)}/nodes`, {}),
 	rename: (networkId: string, nodeId: string, name: string) =>
 		request<{ name: string; dnsName: string }>('PATCH', `/api/networks/${e(networkId)}/nodes/${e(nodeId)}`, { name }),
+	updateCapabilities: (networkId: string, nodeId: string, capabilities: string[]) =>
+		request<{ capabilities: string[] }>('PUT', `/api/networks/${e(networkId)}/nodes/${e(nodeId)}/capabilities`, { capabilities }),
 	delete: (networkId: string, nodeId: string) =>
 		request<void>('DELETE', `/api/networks/${e(networkId)}/nodes/${e(nodeId)}`),
 	health: (networkId: string, nodeId: string) =>

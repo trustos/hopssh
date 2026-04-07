@@ -383,12 +383,18 @@
 		return `${Math.floor(diff / 86400)}d ago`;
 	}
 
-	function nodeTypeLabel(t: string) {
-		switch (t) {
-			case 'agent': return 'Server';
-			case 'user': return 'Client';
-			case 'lighthouse': return 'Lighthouse';
-			default: return t;
+	function hasCap(node: NodeResponse, cap: string): boolean {
+		return node.capabilities?.includes(cap) ?? false;
+	}
+
+	async function toggleCapability(node: NodeResponse, cap: string) {
+		const caps = node.capabilities || [];
+		const newCaps = caps.includes(cap) ? caps.filter(c => c !== cap) : [...caps, cap];
+		try {
+			await nodesApi.updateCapabilities(networkId, node.id, newCaps);
+			await loadNetwork();
+		} catch (e) {
+			toast.error(e instanceof ApiError ? e.message : 'Failed to update capabilities');
 		}
 	}
 </script>
@@ -506,7 +512,7 @@
 							<tr class="border-b bg-muted/50">
 								<th class="px-4 py-3 text-left font-medium">Status</th>
 								<th class="px-4 py-3 text-left font-medium">Name</th>
-								<th class="px-4 py-3 text-left font-medium">Type</th>
+								<th class="px-4 py-3 text-left font-medium">Capabilities</th>
 								<th class="px-4 py-3 text-left font-medium">IP</th>
 								<th class="px-4 py-3 text-left font-medium">DNS</th>
 								<th class="px-4 py-3 text-left font-medium">Last Seen</th>
@@ -539,7 +545,7 @@
 											</form>
 										{:else}
 											<span class="group flex items-center gap-1">
-												{#if node.nodeType === 'agent'}
+												{#if hasCap(node, 'terminal')}
 													<a
 														href="/terminal/{networkId}/{node.id}?h={encodeURIComponent(node.hostname || node.id.slice(0, 8))}"
 														class="font-mono font-medium text-primary hover:underline"
@@ -562,7 +568,21 @@
 										{/if}
 									</td>
 									<td class="px-4 py-3">
-										<span class="rounded-full bg-muted px-2 py-0.5 text-xs">{nodeTypeLabel(node.nodeType)}</span>
+										<div class="flex gap-1">
+											{#each ['terminal', 'health', 'forward'] as cap}
+												{#if isAdmin}
+													<button
+														onclick={() => toggleCapability(node, cap)}
+														class="rounded-full px-2 py-0.5 text-xs transition-colors {hasCap(node, cap) ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground/50 line-through'}"
+														title="{hasCap(node, cap) ? 'Disable' : 'Enable'} {cap}"
+													>
+														{cap === 'terminal' ? 'TTY' : cap === 'health' ? 'Health' : 'Fwd'}
+													</button>
+												{:else if hasCap(node, cap)}
+													<span class="rounded-full bg-primary/15 px-2 py-0.5 text-xs text-primary">{cap === 'terminal' ? 'TTY' : cap === 'health' ? 'Health' : 'Fwd'}</span>
+												{/if}
+											{/each}
+										</div>
 									</td>
 									<td class="px-4 py-3 font-mono text-muted-foreground">{node.nebulaIP}</td>
 									<td class="px-4 py-3 font-mono text-muted-foreground text-xs">
@@ -575,13 +595,15 @@
 									<td class="px-4 py-3 text-muted-foreground">{timeAgo(node.lastSeenAt)}</td>
 									<td class="px-4 py-3">
 										<div class="flex gap-1">
-											{#if node.nodeType === 'agent' && node.status !== 'pending'}
+											{#if hasCap(node, 'health') && node.status !== 'pending'}
 												<button
 													onclick={() => checkHealth(node)}
 													class="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
 												>
 													Health
 												</button>
+											{/if}
+											{#if hasCap(node, 'terminal') && node.status !== 'pending'}
 												<a
 													href="/terminal/{networkId}/{node.id}?h={encodeURIComponent(node.hostname || node.id.slice(0, 8))}"
 													class="rounded px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10"
@@ -589,7 +611,7 @@
 													Terminal
 												</a>
 											{/if}
-											{#if node.nodeType === 'agent' && node.status === 'online'}
+											{#if hasCap(node, 'forward') && node.status === 'online'}
 												<button
 													onclick={() => { forwardNodeId = forwardNodeId === node.id ? null : node.id; fwdRemotePort = ''; fwdLocalPort = ''; }}
 													class="rounded px-2 py-1 text-xs text-primary hover:bg-primary/10"
@@ -750,9 +772,9 @@
 						</div>
 
 						<div class="rounded-lg border p-4">
-							<p class="mb-2 text-sm font-medium">2. Join as a client</p>
+							<p class="mb-2 text-sm font-medium">2. Join the network</p>
 							<div class="rounded-md bg-muted p-3">
-								<pre class="font-mono text-xs">sudo hop-agent enroll --client --endpoint {window.location.origin}</pre>
+								<pre class="font-mono text-xs">sudo hop-agent enroll --endpoint {window.location.origin}</pre>
 							</div>
 							<p class="mt-2 text-xs text-muted-foreground">
 								You'll be prompted to authorize in the browser. After joining, services are reachable as <span class="font-mono">hostname.{network.dnsDomain}</span>

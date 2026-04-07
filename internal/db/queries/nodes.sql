@@ -5,17 +5,17 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 -- name: GetNodeByID :one
 SELECT id, network_id, hostname, os, arch, nebula_cert, nebula_key, nebula_ip,
        agent_token, enrollment_token, agent_real_ip, node_type, exposed_ports,
-       dns_name, status, last_seen_at, created_at
+       dns_name, capabilities, status, last_seen_at, created_at
 FROM nodes WHERE id = ?;
 
 -- name: ListNodesForNetwork :many
 SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, node_type,
-       exposed_ports, dns_name, status, last_seen_at, created_at
+       exposed_ports, dns_name, capabilities, status, last_seen_at, created_at
 FROM nodes WHERE network_id = ? ORDER BY created_at ASC;
 
 -- name: ListNodesForNetworkByType :many
 SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, node_type,
-       exposed_ports, dns_name, status, last_seen_at, created_at
+       exposed_ports, dns_name, capabilities, status, last_seen_at, created_at
 FROM nodes WHERE network_id = ? AND node_type = ? ORDER BY created_at ASC;
 
 -- name: CountNodesForNetwork :one
@@ -58,6 +58,9 @@ UPDATE nodes SET dns_name = ? WHERE id = ?;
 
 -- name: RenameNode :exec
 UPDATE nodes SET dns_name = ?, hostname = ? WHERE id = ?;
+
+-- name: UpdateNodeCapabilities :exec
+UPDATE nodes SET capabilities = ? WHERE id = ?;
 
 -- name: DeleteNode :exec
 DELETE FROM nodes WHERE id = ?;

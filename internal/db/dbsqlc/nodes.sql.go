@@ -135,7 +135,7 @@ func (q *Queries) GetNodeByEnrollmentToken(ctx context.Context, arg GetNodeByEnr
 const getNodeByID = `-- name: GetNodeByID :one
 SELECT id, network_id, hostname, os, arch, nebula_cert, nebula_key, nebula_ip,
        agent_token, enrollment_token, agent_real_ip, node_type, exposed_ports,
-       dns_name, status, last_seen_at, created_at
+       dns_name, capabilities, status, last_seen_at, created_at
 FROM nodes WHERE id = ?
 `
 
@@ -154,6 +154,7 @@ type GetNodeByIDRow struct {
 	NodeType        string
 	ExposedPorts    *string
 	DnsName         *string
+	Capabilities    string
 	Status          string
 	LastSeenAt      *int64
 	CreatedAt       int64
@@ -177,6 +178,7 @@ func (q *Queries) GetNodeByID(ctx context.Context, id string) (GetNodeByIDRow, e
 		&i.NodeType,
 		&i.ExposedPorts,
 		&i.DnsName,
+		&i.Capabilities,
 		&i.Status,
 		&i.LastSeenAt,
 		&i.CreatedAt,
@@ -290,7 +292,7 @@ func (q *Queries) ListNodeIPsForNetwork(ctx context.Context, networkID string) (
 
 const listNodesForNetwork = `-- name: ListNodesForNetwork :many
 SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, node_type,
-       exposed_ports, dns_name, status, last_seen_at, created_at
+       exposed_ports, dns_name, capabilities, status, last_seen_at, created_at
 FROM nodes WHERE network_id = ? ORDER BY created_at ASC
 `
 
@@ -305,6 +307,7 @@ type ListNodesForNetworkRow struct {
 	NodeType     string
 	ExposedPorts *string
 	DnsName      *string
+	Capabilities string
 	Status       string
 	LastSeenAt   *int64
 	CreatedAt    int64
@@ -330,6 +333,7 @@ func (q *Queries) ListNodesForNetwork(ctx context.Context, networkID string) ([]
 			&i.NodeType,
 			&i.ExposedPorts,
 			&i.DnsName,
+			&i.Capabilities,
 			&i.Status,
 			&i.LastSeenAt,
 			&i.CreatedAt,
@@ -349,7 +353,7 @@ func (q *Queries) ListNodesForNetwork(ctx context.Context, networkID string) ([]
 
 const listNodesForNetworkByType = `-- name: ListNodesForNetworkByType :many
 SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, node_type,
-       exposed_ports, dns_name, status, last_seen_at, created_at
+       exposed_ports, dns_name, capabilities, status, last_seen_at, created_at
 FROM nodes WHERE network_id = ? AND node_type = ? ORDER BY created_at ASC
 `
 
@@ -369,6 +373,7 @@ type ListNodesForNetworkByTypeRow struct {
 	NodeType     string
 	ExposedPorts *string
 	DnsName      *string
+	Capabilities string
 	Status       string
 	LastSeenAt   *int64
 	CreatedAt    int64
@@ -394,6 +399,7 @@ func (q *Queries) ListNodesForNetworkByType(ctx context.Context, arg ListNodesFo
 			&i.NodeType,
 			&i.ExposedPorts,
 			&i.DnsName,
+			&i.Capabilities,
 			&i.Status,
 			&i.LastSeenAt,
 			&i.CreatedAt,
@@ -449,6 +455,20 @@ type UpdateNodeAgentRealIPParams struct {
 
 func (q *Queries) UpdateNodeAgentRealIP(ctx context.Context, arg UpdateNodeAgentRealIPParams) error {
 	_, err := q.db.ExecContext(ctx, updateNodeAgentRealIP, arg.AgentRealIp, arg.ID)
+	return err
+}
+
+const updateNodeCapabilities = `-- name: UpdateNodeCapabilities :exec
+UPDATE nodes SET capabilities = ? WHERE id = ?
+`
+
+type UpdateNodeCapabilitiesParams struct {
+	Capabilities string
+	ID           string
+}
+
+func (q *Queries) UpdateNodeCapabilities(ctx context.Context, arg UpdateNodeCapabilitiesParams) error {
+	_, err := q.db.ExecContext(ctx, updateNodeCapabilities, arg.Capabilities, arg.ID)
 	return err
 }
 

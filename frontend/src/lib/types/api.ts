@@ -71,6 +71,7 @@ export interface NodeResponse {
 	nodeType: string;
 	exposedPorts: string | null;
 	dnsName: string | null;
+	capabilities: string[];
 	status: string;
 	lastSeenAt: number | null;
 	createdAt: number;

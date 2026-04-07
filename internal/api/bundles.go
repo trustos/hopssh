@@ -76,7 +76,7 @@ func (h *BundleHandler) CreateBundle(w http.ResponseWriter, r *http.Request) {
 
 	// Issue node certificate.
 	nodeCert, err := pki.IssueCert(network.NebulaCACert, network.NebulaCAKey,
-		fmt.Sprintf("node-%s", nodeID[:8]), nextIP, []string{"agent"}, bundleCertDuration)
+		fmt.Sprintf("node-%s", nodeID[:8]), nextIP, []string{"node"}, bundleCertDuration)
 	if err != nil {
 		http.Error(w, "failed to issue cert: "+err.Error(), http.StatusInternalServerError)
 		return
