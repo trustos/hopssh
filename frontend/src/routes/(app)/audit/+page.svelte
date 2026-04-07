@@ -68,14 +68,14 @@
 			<p class="text-sm text-muted-foreground">No audit entries yet. Actions like logins, terminal sessions, and node changes will appear here.</p>
 		</div>
 	{:else}
-		<div class="rounded-lg border">
+		<div class="overflow-x-auto rounded-lg border">
 			<table class="w-full text-sm">
 				<thead>
 					<tr class="border-b bg-muted/50">
 						<th class="px-4 py-3 text-left font-medium">Action</th>
-						<th class="px-4 py-3 text-left font-medium">Details</th>
+						<th class="px-4 py-3 text-left font-medium">Info</th>
 						<th class="px-4 py-3 text-left font-medium">Node</th>
-						<th class="px-4 py-3 text-left font-medium">When</th>
+						<th class="px-4 py-3 text-right font-medium">When</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -88,7 +88,7 @@
 							<td class="px-4 py-3 font-mono text-xs text-muted-foreground">
 								{entry.nodeId?.slice(0, 8) || '—'}
 							</td>
-							<td class="px-4 py-3 text-muted-foreground">{timeAgo(entry.createdAt)}</td>
+							<td class="px-4 py-3 text-right text-muted-foreground">{timeAgo(entry.createdAt)}</td>
 						</tr>
 					{/each}
 				</tbody>

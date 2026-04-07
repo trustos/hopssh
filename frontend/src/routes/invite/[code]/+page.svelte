@@ -89,7 +89,7 @@
 			</div>
 		{:else if accepted}
 			<div class="rounded-lg border bg-card p-6 text-center">
-				<div class="mb-2 text-2xl">&#10003;</div>
+				<div class="mb-2 text-3xl text-primary">&#10003;</div>
 				<p class="mb-2 font-medium">Joined {invite?.networkName}!</p>
 				<p class="text-sm text-muted-foreground">Redirecting to network...</p>
 			</div>

@@ -56,7 +56,7 @@
 
 		{#if success}
 			<div class="rounded-lg border border-primary/50 bg-primary/10 p-6 text-center">
-				<div class="mb-2 text-4xl">✓</div>
+				<div class="mb-2 text-3xl text-primary">&#10003;</div>
 				<p class="font-medium text-primary">Device authorized!</p>
 				<p class="mt-1 text-sm text-muted-foreground">The agent will connect momentarily.</p>
 			</div>

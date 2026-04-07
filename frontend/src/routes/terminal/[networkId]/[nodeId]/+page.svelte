@@ -51,7 +51,7 @@
 		<div class="flex items-center gap-3">
 			<button
 				onclick={() => goto(`/networks/${networkId}`)}
-				class="text-sm text-white/60 hover:text-white"
+				class="rounded px-2 py-1 text-sm text-white/60 hover:text-white hover:bg-white/10 transition-colors"
 				aria-label="Back to network"
 			>
 				← Back
@@ -69,7 +69,7 @@
 			{:else if status === 'failed' || status === 'ended'}
 				<button
 					onclick={handleReconnect}
-					class="rounded bg-white/10 px-3 py-1 text-xs text-white hover:bg-white/20"
+					class="rounded bg-primary/20 px-3 py-1 text-xs text-primary hover:bg-primary/30"
 				>
 					Reconnect
 				</button>
@@ -77,7 +77,7 @@
 					onclick={() => goto(`/networks/${networkId}`)}
 					class="rounded bg-white/10 px-3 py-1 text-xs text-white/60 hover:bg-white/20"
 				>
-					Back to Network
+					Back
 				</button>
 			{/if}
 		</div>

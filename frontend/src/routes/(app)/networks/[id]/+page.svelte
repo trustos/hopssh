@@ -445,31 +445,22 @@
 		</div>
 
 		<!-- Tabs -->
-		<div class="mb-4 flex gap-1 border-b">
-			<button
-				class="px-4 py-2 text-sm font-medium {activeTab === 'join' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'}"
-				onclick={() => (activeTab = 'join')}
-			>
-				Join
-			</button>
-			<button
-				class="px-4 py-2 text-sm font-medium {activeTab === 'nodes' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'}"
-				onclick={() => (activeTab = 'nodes')}
-			>
-				Nodes ({visibleNodes.length})
-			</button>
-			<button
-				class="px-4 py-2 text-sm font-medium {activeTab === 'dns' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'}"
-				onclick={() => (activeTab = 'dns')}
-			>
-				DNS
-			</button>
-			<button
-				class="px-4 py-2 text-sm font-medium {activeTab === 'members' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'}"
-				onclick={() => (activeTab = 'members')}
-			>
-				Members ({networkMembers.length})
-			</button>
+		<div class="mb-4 flex gap-1 border-b" role="tablist">
+			{#each [
+				{ id: 'join', label: 'Join' },
+				{ id: 'nodes', label: `Nodes (${visibleNodes.length})` },
+				{ id: 'dns', label: 'DNS' },
+				{ id: 'members', label: `Members (${networkMembers.length})` }
+			] as tab}
+				<button
+					role="tab"
+					aria-selected={activeTab === tab.id}
+					class="px-4 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 {activeTab === tab.id ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'}"
+					onclick={() => (activeTab = tab.id as typeof activeTab)}
+				>
+					{tab.label}
+				</button>
+			{/each}
 		</div>
 
 		<!-- Nodes Tab -->
@@ -525,7 +516,7 @@
 								<th class="px-4 py-3 text-left font-medium">IP</th>
 								<th class="px-4 py-3 text-left font-medium">DNS</th>
 								<th class="px-4 py-3 text-left font-medium">Last Seen</th>
-								<th class="px-4 py-3 text-left font-medium">Actions</th>
+								<th class="px-4 py-3 text-right font-medium">Actions</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -604,8 +595,8 @@
 										{/if}
 									</td>
 									<td class="px-4 py-3 text-muted-foreground">{timeAgo(node.lastSeenAt)}</td>
-									<td class="px-4 py-3">
-										<div class="flex gap-1">
+									<td class="px-4 py-3 text-right">
+										<div class="flex justify-end gap-1">
 											{#if hasCap(node, 'health') && node.status !== 'pending'}
 												<button
 													onclick={() => checkHealth(node)}
@@ -718,7 +709,7 @@
 			{@const allRecords = [...autoRecords, ...customRecordsMapped]}
 
 			{#if allRecords.length === 0}
-				<div class="rounded-lg border border-dashed p-6 text-center">
+				<div class="rounded-lg border border-dashed p-8 text-center">
 					<p class="mb-1 text-sm text-muted-foreground">No DNS records yet.</p>
 					<p class="text-xs text-muted-foreground">Node hostnames are added automatically when agents enroll. You can also add custom records.</p>
 				</div>
@@ -867,7 +858,7 @@
 						</table>
 					</div>
 				{:else}
-					<div class="rounded-lg border border-dashed p-6 text-center">
+					<div class="rounded-lg border border-dashed p-8 text-center">
 						<p class="text-sm text-muted-foreground">You're the only member. Create an invite link to share this network with your team.</p>
 					</div>
 				{/if}
