@@ -9,7 +9,27 @@ permissions:
   contents: write
 
 jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Build frontend
+        run: |
+          cd frontend && npm ci && npm run build
+
+      - name: Upload frontend dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/build/
+
   build:
+    needs: frontend
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -34,6 +54,12 @@ jobs:
 
       - name: Vendor + patch
         run: make setup
+
+      - name: Download frontend dist
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-dist
+          path: internal/frontend/dist/
 
       - name: Build agent
         env:
@@ -71,6 +97,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
+          pattern: binaries-*
           merge-multiple: true
 
       - name: Generate checksums
