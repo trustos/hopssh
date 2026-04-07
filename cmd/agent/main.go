@@ -509,10 +509,11 @@ PS1='\[\033[32m\]\u@\h\[\033[0m\] \[\033[36m\]\w\[\033[0m\]$(__hop_git_branch) \
 	bashRCPath := filepath.Join(hopShellDir, ".bashrc")
 	os.WriteFile(bashRCPath, []byte(bashRC), 0644)
 
-	// Use --rcfile for bash, ZDOTDIR for zsh.
+	// Launch shell with color config.
+	// ZDOTDIR for zsh, BASH_ENV for bash (sources our rc on every invocation).
 	var cmd *exec.Cmd
 	if strings.HasSuffix(shell, "bash") {
-		cmd = exec.Command(shell, "--rcfile", bashRCPath, "-l")
+		cmd = exec.Command(shell, "--rcfile", bashRCPath)
 	} else {
 		cmd = exec.Command(shell, "-l")
 	}
@@ -524,6 +525,8 @@ PS1='\[\033[32m\]\u@\h\[\033[0m\] \[\033[36m\]\w\[\033[0m\]$(__hop_git_branch) \
 		"LSCOLORS=GxFxCxDxBxegedabagaced",
 		`LS_COLORS=di=36:ln=35:so=32:pi=33:ex=31:bd=34;46:cd=34;43:su=30;41:sg=30;46:tw=30;42:ow=30;43`,
 		"ZDOTDIR="+hopShellDir,
+		"BASH_ENV="+bashRCPath,  // bash sources this for child shells too
+		"ENV="+bashRCPath,       // sh sources this
 	)
 
 	ptmx, err := pty.Start(cmd)
