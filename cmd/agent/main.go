@@ -469,13 +469,35 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 		shell = "/bin/sh"
 	}
 
+	// Write a minimal .zshrc that enables colors for common tools.
+	// ZDOTDIR tells zsh to source .zshrc from this directory.
+	hopZshDir := filepath.Join(os.TempDir(), "hop-shell")
+	os.MkdirAll(hopZshDir, 0755)
+	shellRC := `# hopssh terminal colors
+export CLICOLOR=1
+export CLICOLOR_FORCE=1
+export LSCOLORS="GxFxCxDxBxegedabagaced"
+export LS_COLORS="di=36:ln=35:so=32:pi=33:ex=31:bd=34;46:cd=34;43:su=30;41:sg=30;46:tw=30;42:ow=30;43"
+alias grep='grep --color=auto'
+alias fgrep='fgrep --color=auto'
+alias egrep='egrep --color=auto'
+alias diff='diff --color=auto'
+# Colored prompt: green user@host, blue cwd
+autoload -U colors && colors 2>/dev/null
+PS1="%F{green}%n@%m%f %F{blue}%~%f %# "
+`
+	os.WriteFile(filepath.Join(hopZshDir, ".zshrc"), []byte(shellRC), 0644)
+	os.WriteFile(filepath.Join(hopZshDir, ".zshenv"), []byte(shellRC), 0644)
+
 	cmd := exec.Command(shell, "-l")
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
-		"CLICOLOR=1",           // macOS: enable ls colors
-		"CLICOLOR_FORCE=1",     // force colors even in non-interactive
-		"LSCOLORS=GxFxCxDxBxegedabagaced", // macOS ls color scheme
+		"CLICOLOR=1",
+		"CLICOLOR_FORCE=1",
+		"LSCOLORS=GxFxCxDxBxegedabagaced",
+		`LS_COLORS=di=36:ln=35:so=32:pi=33:ex=31:bd=34;46:cd=34;43:su=30;41:sg=30;46:tw=30;42:ow=30;43`,
+		"ZDOTDIR="+hopZshDir,
 	)
 
 	ptmx, err := pty.Start(cmd)
