@@ -469,8 +469,8 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 		shell = "/bin/sh"
 	}
 
-	cmd := exec.Command(shell)
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
+	cmd := exec.Command(shell, "-l")
+	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
