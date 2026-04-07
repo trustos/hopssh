@@ -22,7 +22,7 @@
 	--color-muted-foreground: var(--hop-muted-fg);
 	--color-accent: var(--hop-muted);
 	--color-accent-foreground: var(--hop-fg);
-	--color-destructive: hsl(0 63% 31%);
+	--color-destructive: var(--hop-destructive);
 	--color-destructive-foreground: hsl(0 0% 98%);
 	--color-border: var(--hop-border);
 	--color-input: var(--hop-border);
@@ -41,9 +41,10 @@
 	--hop-card-fg: hsl(0 0% 95%);
 	--hop-secondary: hsl(220 10% 14%);
 	--hop-secondary-fg: hsl(0 0% 95%);
-	--hop-muted: hsl(220 10% 14%);
-	--hop-muted-fg: hsl(220 9% 55%);
-	--hop-border: hsl(220 10% 18%);
+	--hop-muted: hsl(220 10% 12%);
+	--hop-muted-fg: hsl(220 9% 65%);
+	--hop-border: hsl(220 10% 22%);
+	--hop-destructive: hsl(0 72% 51%);
 }
 
 /* Light mode */
@@ -57,6 +58,7 @@
 	--hop-muted: hsl(220 14% 96%);
 	--hop-muted-fg: hsl(220 9% 46%);
 	--hop-border: hsl(220 13% 91%);
+	--hop-destructive: hsl(0 63% 31%);
 }
 
 @layer base {
