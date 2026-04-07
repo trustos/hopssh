@@ -12,7 +12,7 @@
 
 	let { children } = $props();
 
-	const PUBLIC_ROUTES = ['/login', '/register'];
+	const PUBLIC_ROUTES = ['/login', '/register', '/invite'];
 
 	const isPublicRoute = $derived(
 		PUBLIC_ROUTES.some((r) => page.url.pathname.startsWith(r))
@@ -35,7 +35,8 @@
 			goto('/login').catch(() => {});
 		}
 		if (auth.isAuthenticated && (page.url.pathname === '/login' || page.url.pathname === '/register')) {
-			goto('/').catch(() => {});
+			const redirect = page.url.searchParams.get('redirect');
+			goto(redirect || '/').catch(() => {});
 		}
 	});
 </script>
