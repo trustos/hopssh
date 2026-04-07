@@ -469,11 +469,13 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 		shell = "/bin/sh"
 	}
 
-	// Write a minimal .zshrc that enables colors for common tools.
-	// ZDOTDIR tells zsh to source .zshrc from this directory.
-	hopZshDir := filepath.Join(os.TempDir(), "hop-shell")
-	os.MkdirAll(hopZshDir, 0755)
-	shellRC := `# hopssh terminal colors
+	// Write shell config files that enable colors for common tools.
+	// Works for both zsh (ZDOTDIR) and bash (--rcfile).
+	hopShellDir := filepath.Join(os.TempDir(), "hop-shell")
+	os.MkdirAll(hopShellDir, 0755)
+
+	// Shared color config (sourced by both zsh and bash rc files).
+	colorConf := `
 export CLICOLOR=1
 export CLICOLOR_FORCE=1
 export LSCOLORS="GxFxCxDxBxegedabagaced"
@@ -482,14 +484,38 @@ alias grep='grep --color=auto'
 alias fgrep='fgrep --color=auto'
 alias egrep='egrep --color=auto'
 alias diff='diff --color=auto'
-# Colored prompt: green user@host, blue cwd
-autoload -U colors && colors 2>/dev/null
-PS1="%F{green}%n@%m%f %F{blue}%~%f %# "
 `
-	os.WriteFile(filepath.Join(hopZshDir, ".zshrc"), []byte(shellRC), 0644)
-	os.WriteFile(filepath.Join(hopZshDir, ".zshenv"), []byte(shellRC), 0644)
+	// Zsh: colored prompt with git branch
+	zshRC := colorConf + `
+autoload -U colors && colors 2>/dev/null
+# Git branch in prompt
+__hop_git_branch() {
+  local b=$(git symbolic-ref --short HEAD 2>/dev/null)
+  [ -n "$b" ] && echo " %F{yellow}($b)%f"
+}
+setopt PROMPT_SUBST
+PS1='%F{green}%n@%m%f %F{cyan}%~%f$(__hop_git_branch) %F{white}%#%f '
+`
+	// Bash: colored prompt with git branch
+	bashRC := colorConf + `
+__hop_git_branch() {
+  local b=$(git symbolic-ref --short HEAD 2>/dev/null)
+  [ -n "$b" ] && echo " \[\033[33m\]($b)\[\033[0m\]"
+}
+PS1='\[\033[32m\]\u@\h\[\033[0m\] \[\033[36m\]\w\[\033[0m\]$(__hop_git_branch) \[\033[37m\]\$\[\033[0m\] '
+`
+	os.WriteFile(filepath.Join(hopShellDir, ".zshrc"), []byte(zshRC), 0644)
+	os.WriteFile(filepath.Join(hopShellDir, ".zshenv"), []byte(colorConf), 0644)
+	bashRCPath := filepath.Join(hopShellDir, ".bashrc")
+	os.WriteFile(bashRCPath, []byte(bashRC), 0644)
 
-	cmd := exec.Command(shell, "-l")
+	// Use --rcfile for bash, ZDOTDIR for zsh.
+	var cmd *exec.Cmd
+	if strings.HasSuffix(shell, "bash") {
+		cmd = exec.Command(shell, "--rcfile", bashRCPath, "-l")
+	} else {
+		cmd = exec.Command(shell, "-l")
+	}
 	cmd.Env = append(os.Environ(),
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
@@ -497,7 +523,7 @@ PS1="%F{green}%n@%m%f %F{blue}%~%f %# "
 		"CLICOLOR_FORCE=1",
 		"LSCOLORS=GxFxCxDxBxegedabagaced",
 		`LS_COLORS=di=36:ln=35:so=32:pi=33:ex=31:bd=34;46:cd=34;43:su=30;41:sg=30;46:tw=30;42:ow=30;43`,
-		"ZDOTDIR="+hopZshDir,
+		"ZDOTDIR="+hopShellDir,
 	)
 
 	ptmx, err := pty.Start(cmd)
