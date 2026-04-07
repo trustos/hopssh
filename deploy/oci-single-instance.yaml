@@ -3,30 +3,18 @@ runtime: yaml
 description: "Deploy hopssh control plane on a single OCI instance with public IP"
 
 meta:
-  displayName: "hopssh Control Plane"
-  groups:
-    - name: Instance
-      fields: [compartmentId, imageId, shape, ocpus, memoryInGbs, sshPublicKey]
-    - name: hopssh
-      fields: [hopsshVersion, hopsshEndpoint]
-
-  fields:
-    compartmentId:
-      type: oci-compartment
-    imageId:
-      type: oci-image
-    shape:
-      type: oci-shape
+  displayName: hopssh Control Plane
 
 config:
   compartmentId:
     type: string
-    description: "OCI compartment OCID"
   imageId:
     type: string
+    default: ""
     description: "OCI image OCID (Ubuntu 22.04 or Oracle Linux 9)"
   sshPublicKey:
     type: string
+    default: ""
     description: "SSH public key for instance access"
   shape:
     type: string
@@ -35,24 +23,9 @@ config:
   ocpus:
     type: string
     default: "2"
-    description: "Number of OCPUs"
   memoryInGbs:
     type: string
     default: "12"
-    description: "Memory in GB"
-  hopsshVersion:
-    type: string
-    default: "latest"
-    description: "hopssh version to install (git tag or 'latest')"
-  hopsshEndpoint:
-    type: string
-    default: ""
-    description: "Public endpoint URL (auto-detected if empty)"
-
-plugins:
-  providers:
-    - name: oci
-      version: "4.4.0"
 
 variables:
   availabilityDomains:
@@ -63,99 +36,88 @@ variables:
       return: availabilityDomains
 
 resources:
-  # --- Networking ---
+  # --- section: networking ---
   vcn:
     type: oci:Core/vcn:Vcn
     properties:
       compartmentId: {{ .Config.compartmentId }}
-      displayName: hopssh-vcn
-      cidrBlocks:
-        - "10.0.0.0/16"
-      dnsLabel: hopssh
-
-  internet-gateway:
+      cidrBlocks: ["10.0.0.0/16"]
+      displayName: "hopssh-vcn"
+      dnsLabel: "hopssh"
+  igw:
     type: oci:Core/internetGateway:InternetGateway
     properties:
       compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
-      displayName: hopssh-igw
-      enabled: true
-
+      displayName: "hopssh-igw"
+      enabled: "true"
+    options:
+      dependsOn:
+        - ${vcn}
   route-table:
     type: oci:Core/routeTable:RouteTable
     properties:
       compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
-      displayName: hopssh-rt
-      routeRules:
-        - destination: "0.0.0.0/0"
-          destinationType: CIDR_BLOCK
-          networkEntityId: ${internet-gateway.id}
-
+      displayName: "hopssh-rt"
+      routeRules: [{ destination: "0.0.0.0/0", networkEntityId: "${igw.id}" }]
+    options:
+      dependsOn:
+        - ${igw}
   nsg:
     type: oci:Core/networkSecurityGroup:NetworkSecurityGroup
     properties:
       compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
-      displayName: hopssh-nsg
-
-  # SSH access
+      displayName: "hopssh-nsg"
+    options:
+      dependsOn:
+        - ${vcn}
+  # SSH
   nsg-ssh:
     type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
     properties:
       networkSecurityGroupId: ${nsg.id}
       direction: INGRESS
-      protocol: "6"  # TCP
+      protocol: "6"
       source: "0.0.0.0/0"
       sourceType: CIDR_BLOCK
       tcpOptions:
-        destinationPortRange:
-          min: 22
-          max: 22
-
+        destinationPortRange: { min: 22, max: 22 }
   # hopssh API + Dashboard
   nsg-api:
     type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
     properties:
       networkSecurityGroupId: ${nsg.id}
       direction: INGRESS
-      protocol: "6"  # TCP
+      protocol: "6"
       source: "0.0.0.0/0"
       sourceType: CIDR_BLOCK
       tcpOptions:
-        destinationPortRange:
-          min: 9473
-          max: 9473
-
-  # Nebula lighthouse (UDP, one port per network)
+        destinationPortRange: { min: 9473, max: 9473 }
+  # Nebula lighthouse (UDP)
   nsg-nebula:
     type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
     properties:
       networkSecurityGroupId: ${nsg.id}
       direction: INGRESS
-      protocol: "17"  # UDP
+      protocol: "17"
       source: "0.0.0.0/0"
       sourceType: CIDR_BLOCK
       udpOptions:
-        destinationPortRange:
-          min: 42001
-          max: 42100
-
-  # DNS server (UDP, one port per network)
+        destinationPortRange: { min: 42001, max: 42100 }
+  # DNS server (UDP)
   nsg-dns:
     type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
     properties:
       networkSecurityGroupId: ${nsg.id}
       direction: INGRESS
-      protocol: "17"  # UDP
+      protocol: "17"
       source: "0.0.0.0/0"
       sourceType: CIDR_BLOCK
       udpOptions:
-        destinationPortRange:
-          min: 15300
-          max: 15400
-
-  # Allow all egress
+        destinationPortRange: { min: 15300, max: 15400 }
+  # Egress all
   nsg-egress:
     type: oci:Core/networkSecurityGroupSecurityRule:NetworkSecurityGroupSecurityRule
     properties:
@@ -164,112 +126,41 @@ resources:
       protocol: all
       destination: "0.0.0.0/0"
       destinationType: CIDR_BLOCK
-
   subnet:
     type: oci:Core/subnet:Subnet
     properties:
       compartmentId: {{ .Config.compartmentId }}
       vcnId: ${vcn.id}
-      displayName: hopssh-subnet
       cidrBlock: "10.0.1.0/24"
+      displayName: "hopssh-subnet"
+      dnsLabel: "hopssh"
       routeTableId: ${route-table.id}
-      dnsLabel: hopssh
-      prohibitPublicIpOnVnic: false
+      prohibitPublicIpOnVnic: "false"
+      dhcpOptionsId: ${vcn.defaultDhcpOptionsId}
     options:
       dependsOn:
-        - ${internet-gateway}
-
-  # --- Compute ---
+        - ${route-table}
+  # --- section: compute ---
   instance:
     type: oci:Core/instance:Instance
     properties:
       compartmentId: {{ .Config.compartmentId }}
       availabilityDomain: ${availabilityDomains[0].name}
-      displayName: hopssh-control-plane
-      shape: {{ .Config.shape }}
-      shapeConfig:
-        ocpus: {{ .Config.ocpus }}
-        memoryInGbs: {{ .Config.memoryInGbs }}
-      sourceDetails:
-        sourceType: image
-        sourceId: {{ .Config.imageId }}
+      shape: "{{ .Config.shape }}"
+      displayName: "hopssh-control-plane"
+      sourceDetails: { sourceType: "image", sourceId: "{{ .Config.imageId }}" }
       createVnicDetails:
-        subnetId: ${subnet.id}
-        assignPublicIp: "true"
-        nsgIds:
-          - ${nsg.id}
+        subnetId: "${subnet.id}"
+        assignPublicIp: true
+        nsgIds: ["${nsg.id}"]
       metadata:
-        ssh_authorized_keys: {{ .Config.sshPublicKey }}
-        user_data:
-          fn::toBase64: |
-            #!/bin/bash
-            set -euo pipefail
-
-            # --- Install hopssh control plane ---
-            echo "==> Installing hopssh control plane..."
-
-            # Install Go (for building from source)
-            export GOVERSION=1.24.2
-            export ARCH=$(uname -m)
-            case "$ARCH" in
-              aarch64|arm64) GOARCH=arm64 ;;
-              x86_64|amd64) GOARCH=amd64 ;;
-            esac
-
-            curl -fsSL "https://go.dev/dl/go${GOVERSION}.linux-${GOARCH}.tar.gz" | tar -C /usr/local -xzf -
-            export PATH=$PATH:/usr/local/go/bin
-            export GOPATH=/root/go
-            export PATH=$PATH:$GOPATH/bin
-
-            # Clone and build hopssh
-            apt-get update -y && apt-get install -y git make patch
-            cd /opt
-            git clone https://github.com/trustos/hopssh.git
-            cd hopssh
-            make setup
-            make build-all
-
-            # Install binaries
-            cp hop-server /usr/local/bin/
-            cp hop-agent /usr/local/bin/
-
-            # Create data directory
-            mkdir -p /var/lib/hopssh
-            chmod 700 /var/lib/hopssh
-
-            # Detect public IP for endpoint
-            PUBLIC_IP=$(curl -s http://169.254.169.254/opc/v1/vnics/ | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['publicIp'])" 2>/dev/null || curl -s ifconfig.me)
-            ENDPOINT="{{ if .Config.hopsshEndpoint }}{{ .Config.hopsshEndpoint }}{{ else }}http://${PUBLIC_IP}:9473{{ end }}"
-
-            # Create systemd service
-            cat > /etc/systemd/system/hopssh.service <<EOF
-            [Unit]
-            Description=hopssh control plane
-            After=network-online.target
-            Wants=network-online.target
-
-            [Service]
-            Type=simple
-            ExecStart=/usr/local/bin/hop-server --data /var/lib/hopssh --endpoint ${ENDPOINT}
-            Restart=always
-            RestartSec=5
-
-            [Install]
-            WantedBy=multi-user.target
-            EOF
-
-            systemctl daemon-reload
-            systemctl enable hopssh
-            systemctl start hopssh
-
-            echo "==> hopssh control plane installed!"
-            echo "    Dashboard: ${ENDPOINT}"
-            echo "    Data: /var/lib/hopssh"
+        ssh_authorized_keys: "{{ .Config.sshPublicKey }}"
+      shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
     options:
       dependsOn:
         - ${subnet}
 
 outputs:
   instancePublicIp: ${instance.publicIp}
-  instanceId: ${instance.id}
   dashboardUrl: http://${instance.publicIp}:9473
+  sshCommand: ssh ubuntu@${instance.publicIp}
