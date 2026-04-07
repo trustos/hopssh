@@ -101,6 +101,29 @@ CREATE TABLE audit_log (
     created_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 
+-- Network membership (teams).
+CREATE TABLE network_members (
+    id TEXT PRIMARY KEY,
+    network_id TEXT NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL REFERENCES users(id),
+    role TEXT NOT NULL DEFAULT 'member',  -- admin, member
+    created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+    UNIQUE(network_id, user_id)
+);
+
+-- Network invite codes.
+CREATE TABLE network_invites (
+    id TEXT PRIMARY KEY,
+    network_id TEXT NOT NULL REFERENCES networks(id) ON DELETE CASCADE,
+    created_by TEXT NOT NULL REFERENCES users(id),
+    code TEXT NOT NULL UNIQUE,
+    role TEXT NOT NULL DEFAULT 'member',
+    max_uses INTEGER,
+    use_count INTEGER NOT NULL DEFAULT 0,
+    expires_at INTEGER,
+    created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+
 -- Indexes
 CREATE INDEX idx_sessions_user ON sessions(user_id);
 CREATE INDEX idx_sessions_expires ON sessions(expires_at);
@@ -117,3 +140,6 @@ CREATE UNIQUE INDEX idx_dns_name ON dns_records(network_id, name);
 CREATE INDEX idx_audit_user ON audit_log(user_id);
 CREATE INDEX idx_audit_network ON audit_log(network_id);
 CREATE INDEX idx_audit_created ON audit_log(created_at);
+CREATE INDEX idx_members_network ON network_members(network_id);
+CREATE INDEX idx_members_user ON network_members(user_id);
+CREATE INDEX idx_invites_code ON network_invites(code);
