@@ -257,18 +257,21 @@ func restartService(component string) {
 		}
 	}
 
-	// Try launchd.
+	// Try launchd (check both LaunchDaemons and LaunchAgents).
 	if _, err := exec.LookPath("launchctl"); err == nil {
 		label := "com.hopssh." + component
-		// Check if loaded.
 		if err := exec.Command("launchctl", "list", label).Run(); err == nil {
-			home, _ := os.UserHomeDir()
+			// Try LaunchDaemons first (system-level), then LaunchAgents (user-level).
 			var plistPath string
-			switch component {
-			case "agent":
-				plistPath = filepath.Join(home, "Library/LaunchAgents/com.hopssh.agent.plist")
-			case "server":
-				plistPath = filepath.Join(home, "Library/LaunchAgents/com.hopssh.server.plist")
+			daemonPath := "/Library/LaunchDaemons/com.hopssh." + component + ".plist"
+			if _, err := os.Stat(daemonPath); err == nil {
+				plistPath = daemonPath
+			} else {
+				home, _ := os.UserHomeDir()
+				agentPath := filepath.Join(home, "Library/LaunchAgents/com.hopssh."+component+".plist")
+				if _, err := os.Stat(agentPath); err == nil {
+					plistPath = agentPath
+				}
 			}
 			if plistPath != "" {
 				exec.Command("launchctl", "unload", plistPath).Run()

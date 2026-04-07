@@ -11,10 +11,10 @@ import (
 )
 
 const (
-	agentServiceName  = "hop-agent"
-	agentSystemdPath  = "/etc/systemd/system/hop-agent.service"
-	agentLaunchdPath  = "Library/LaunchAgents/com.hopssh.agent.plist"
-	agentConfigDir    = "/etc/hop-agent"
+	agentServiceName      = "hop-agent"
+	agentSystemdPath      = "/etc/systemd/system/hop-agent.service"
+	agentLaunchdDaemonPath = "/Library/LaunchDaemons/com.hopssh.agent.plist"
+	agentConfigDir        = "/etc/hop-agent"
 )
 
 const agentSystemdUnit = `[Unit]
@@ -113,18 +113,14 @@ func installAgentSystemd() {
 }
 
 func installAgentLaunchd() {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		log.Fatalf("Cannot determine home directory: %v", err)
-	}
-	plistPath := filepath.Join(home, agentLaunchdPath)
+	plistPath := agentLaunchdDaemonPath
 
-	if err := os.MkdirAll(filepath.Dir(plistPath), 0755); err != nil {
-		log.Fatalf("Cannot create LaunchAgents directory: %v", err)
-	}
+	// Unload existing service if present (ignore errors).
+	exec.Command("launchctl", "unload", plistPath).Run()
 
 	if err := os.WriteFile(plistPath, []byte(agentLaunchdPlist), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Cannot write %s: %v\n", plistPath, err)
+		fmt.Fprintf(os.Stderr, "Run with sudo: sudo hop-agent install\n")
 		os.Exit(1)
 	}
 
@@ -135,6 +131,8 @@ func installAgentLaunchd() {
 	fmt.Println("==> hop-agent service installed and started.")
 	fmt.Printf("    Plist:  %s\n", plistPath)
 	fmt.Println("    Logs:   /var/log/hop-agent.log")
+	fmt.Println("    Stop:   sudo launchctl unload " + plistPath)
+	fmt.Println("    Start:  sudo launchctl load " + plistPath)
 }
 
 func runAgentUninstall(args []string) {
@@ -170,9 +168,14 @@ func uninstallAgentSystemd() {
 }
 
 func uninstallAgentLaunchd() {
-	home, _ := os.UserHomeDir()
-	plistPath := filepath.Join(home, agentLaunchdPath)
+	plistPath := agentLaunchdDaemonPath
 	exec.Command("launchctl", "unload", plistPath).Run()
 	os.Remove(plistPath)
+	// Also clean up old LaunchAgents location if it exists.
+	if home, err := os.UserHomeDir(); err == nil {
+		oldPath := filepath.Join(home, "Library/LaunchAgents/com.hopssh.agent.plist")
+		exec.Command("launchctl", "unload", oldPath).Run()
+		os.Remove(oldPath)
+	}
 	fmt.Println("==> hop-agent service uninstalled.")
 }
