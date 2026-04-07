@@ -4,7 +4,7 @@ export
 
 .PHONY: all setup vendor patch-vendor build build-all build-linux vet test \
        generate check-patches clean clean-vendor frontend frontend-embed \
-       run dev
+       run dev release
 
 # Default: build Go binaries only (assumes frontend already built or not needed).
 all: build
@@ -95,6 +95,31 @@ deploy:
 remote-exec:
 	@test -n "$(DEPLOY_HOST)" || (echo "Set DEPLOY_HOST in .env" && exit 1)
 	$(SSH_CMD) '$(CMD)'
+
+# Create a new release: bumps patch version, tags, and pushes.
+# Usage:
+#   make release          → v0.1.0 → v0.1.1
+#   make release BUMP=minor → v0.1.1 → v0.2.0
+#   make release BUMP=major → v0.2.0 → v1.0.0
+BUMP ?= patch
+release:
+	@LATEST=$$(git tag --sort=-v:refname | grep '^v' | head -1); \
+	if [ -z "$$LATEST" ]; then \
+		NEXT="v0.1.0"; \
+	else \
+		MAJOR=$$(echo $$LATEST | sed 's/^v//' | cut -d. -f1); \
+		MINOR=$$(echo $$LATEST | sed 's/^v//' | cut -d. -f2); \
+		PATCH=$$(echo $$LATEST | sed 's/^v//' | cut -d. -f3); \
+		case "$(BUMP)" in \
+			major) MAJOR=$$((MAJOR+1)); MINOR=0; PATCH=0 ;; \
+			minor) MINOR=$$((MINOR+1)); PATCH=0 ;; \
+			patch) PATCH=$$((PATCH+1)) ;; \
+			*) echo "Invalid BUMP=$(BUMP). Use: patch, minor, major" && exit 1 ;; \
+		esac; \
+		NEXT="v$$MAJOR.$$MINOR.$$PATCH"; \
+	fi; \
+	echo "==> Releasing $$NEXT (previous: $${LATEST:-none})"; \
+	git tag "$$NEXT" && git push origin "$$NEXT"
 
 # Remove build artifacts.
 clean:
