@@ -16,8 +16,15 @@
 	let accepting = $state(false);
 	let accepted = $state(false);
 
-	onMount(() => {
-		loadInvite();
+	// Check if user returned from login redirect — auto-accept if so.
+	const autoAccept = $derived(page.url.searchParams.get('auto') === '1');
+
+	onMount(async () => {
+		await loadInvite();
+		// If user is logged in and came from a redirect, auto-accept.
+		if (autoAccept && authStore.user && invite && !error) {
+			acceptInvite();
+		}
 	});
 
 	async function loadInvite() {
@@ -45,8 +52,7 @@
 		} catch (e) {
 			if (e instanceof ApiError) {
 				if (e.status === 401) {
-					// Not logged in — redirect to login with return URL
-					goto(`/login?redirect=/invite/${code}`);
+					goto(`/login?redirect=/invite/${code}?auto=1`);
 					return;
 				}
 				error = e.message;
@@ -114,13 +120,13 @@
 				{:else}
 					<div class="space-y-2">
 						<a
-							href="/login?redirect=/invite/{code}"
+							href="/login?redirect=/invite/{code}?auto=1"
 							class="block w-full rounded-md bg-primary px-4 py-2 text-center text-sm font-medium text-primary-foreground hover:bg-primary/90"
 						>
 							Log in to join
 						</a>
 						<a
-							href="/register?redirect=/invite/{code}"
+							href="/register?redirect=/invite/{code}?auto=1"
 							class="block w-full rounded-md border px-4 py-2 text-center text-sm font-medium hover:bg-accent"
 						>
 							Register to join

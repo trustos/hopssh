@@ -20,7 +20,6 @@
 	let addingNode = $state(false);
 	let nodeResult = $state<CreateNodeResponse | null>(null);
 	let addNodeError = $state('');
-	let copied = $state(false);
 
 	// Add DNS dialog
 	let showAddDNS = $state(false);
@@ -58,7 +57,6 @@
 	let inviteMaxUses = $state<string>('');
 	let creatingInvite = $state(false);
 	let inviteResult = $state<{ code: string } | null>(null);
-	let inviteCopied = $state(false);
 
 	// Role-based access
 	const isAdmin = $derived(network?.role === 'admin');
@@ -168,10 +166,9 @@
 		}
 	}
 
-	function copyCommand(text: string) {
+	function copyToClipboard(text: string, label = 'Copied to clipboard') {
 		navigator.clipboard.writeText(text);
-		copied = true;
-		setTimeout(() => (copied = false), 2000);
+		toast.success(label);
 	}
 
 	function closeAddNode() {
@@ -318,8 +315,6 @@
 	function copyInviteLink(code: string) {
 		const url = `${window.location.origin}/invite/${code}`;
 		navigator.clipboard.writeText(url);
-		inviteCopied = true;
-		setTimeout(() => (inviteCopied = false), 2000);
 		toast.success('Invite link copied');
 	}
 
@@ -348,6 +343,7 @@
 			case 'online': return 'bg-primary animate-hop-pulse';
 			case 'enrolled': return 'bg-yellow-500';
 			case 'offline': return 'bg-gray-500';
+			case 'pending': return 'border-2 border-dashed border-yellow-500 animate-pulse';
 			default: return 'border border-dashed border-muted-foreground';
 		}
 	}
@@ -495,9 +491,12 @@
 							{#each visibleNodes as node}
 								<tr class="border-b last:border-0 hover:bg-accent/50">
 									<td class="px-4 py-3">
-										<div class="flex items-center gap-2">
+										<div class="flex items-center gap-2" title={node.status === 'pending' ? 'Waiting for agent enrollment. Run the install command on your server.' : ''}>
 											<div class="h-2.5 w-2.5 rounded-full {statusColor(node.status)}"></div>
 											<span class="text-xs capitalize text-muted-foreground">{node.status}</span>
+											{#if node.status === 'pending'}
+												<span class="text-xs text-yellow-500">awaiting enrollment</span>
+											{/if}
 										</div>
 									</td>
 									<td class="px-4 py-3">
@@ -803,6 +802,16 @@
 										{:else}
 											<span class="text-xs text-muted-foreground">{invite.useCount} uses</span>
 										{/if}
+										{#if invite.expiresAt}
+											{@const remaining = invite.expiresAt - Math.floor(Date.now() / 1000)}
+											{#if remaining > 0}
+												<span class="text-xs text-muted-foreground">expires {remaining > 86400 ? `in ${Math.floor(remaining / 86400)}d` : remaining > 3600 ? `in ${Math.floor(remaining / 3600)}h` : `in ${Math.floor(remaining / 60)}m`}</span>
+											{:else}
+												<span class="text-xs text-destructive">expired</span>
+											{/if}
+										{:else}
+											<span class="text-xs text-muted-foreground">no expiry</span>
+										{/if}
 									</div>
 									<div class="flex gap-1">
 										<button onclick={() => copyInviteLink(invite.code)} class="rounded px-2 py-1 text-xs text-muted-foreground hover:text-foreground">Copy Link</button>
@@ -826,7 +835,7 @@
 						<div class="relative rounded-md bg-muted p-3 pr-16">
 							<pre class="overflow-x-auto font-mono text-xs">{window.location.origin}/invite/{inviteResult.code}</pre>
 							<button onclick={() => copyInviteLink(inviteResult!.code)} class="absolute right-2 top-2 rounded px-2 py-1 text-xs hover:bg-accent">
-								{inviteCopied ? 'Copied!' : 'Copy'}
+								Copy
 							</button>
 						</div>
 						<div class="mt-4 flex justify-end">
@@ -882,10 +891,10 @@
 								<div class="relative rounded-md bg-muted p-3 pr-16">
 									<pre class="font-mono text-xs">{installScriptCmd}</pre>
 									<button
-										onclick={() => copyCommand(installScriptCmd)}
+										onclick={() => copyToClipboard(installScriptCmd)}
 										class="absolute right-2 top-2 rounded px-2 py-1 text-xs hover:bg-accent"
 									>
-										{copied ? 'Copied!' : 'Copy'}
+										Copy
 									</button>
 								</div>
 							</div>
@@ -895,10 +904,10 @@
 								<div class="relative rounded-md bg-muted p-3 pr-16">
 									<pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">{enrollCommand}</pre>
 									<button
-										onclick={() => copyCommand(enrollCommand)}
+										onclick={() => copyToClipboard(enrollCommand)}
 										class="absolute right-2 top-2 rounded px-2 py-1 text-xs hover:bg-accent"
 									>
-										{copied ? 'Copied!' : 'Copy'}
+										Copy
 									</button>
 								</div>
 							</div>

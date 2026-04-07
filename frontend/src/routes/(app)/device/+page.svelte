@@ -17,8 +17,9 @@
 	onMount(async () => {
 		try {
 			networkList = await networksApi.list();
-			if (networkList.length > 0) {
-				selectedNetwork = networkList[0].id;
+			const adminNetworks = networkList.filter(n => n.role === 'admin');
+			if (adminNetworks.length > 0) {
+				selectedNetwork = adminNetworks[0].id;
 			}
 		} catch (e) {
 			loadError = e instanceof Error ? e.message : 'Failed to load networks';
@@ -65,10 +66,16 @@
 			<div class="flex items-center justify-center py-8">
 				<div class="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent"></div>
 			</div>
-		{:else if networkList.length === 0}
+		{:else if networkList.filter(n => n.role === 'admin').length === 0}
 			<div class="rounded-lg border border-dashed p-6 text-center">
-				<p class="text-sm text-muted-foreground">No networks yet. Create a network first.</p>
-				<a href="/" class="mt-2 inline-block text-sm text-primary hover:underline">Go to Networks</a>
+				{#if networkList.length === 0}
+					<p class="mb-1 text-sm font-medium">No networks yet</p>
+					<p class="text-sm text-muted-foreground">Create a network first to authorize devices.</p>
+					<a href="/" class="mt-2 inline-block text-sm text-primary hover:underline">Go to Networks</a>
+				{:else}
+					<p class="mb-1 text-sm font-medium">No admin access</p>
+					<p class="text-sm text-muted-foreground">You need admin access to a network to authorize devices. Ask your network admin to authorize the device for you.</p>
+				{/if}
 			</div>
 		{:else}
 			<form onsubmit={handleSubmit} class="space-y-4">
@@ -96,7 +103,7 @@
 						required
 						class="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
 					>
-						{#each networkList as network}
+						{#each networkList.filter(n => n.role === 'admin') as network}
 							<option value={network.id}>{network.name}</option>
 						{/each}
 					</select>
