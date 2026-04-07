@@ -71,7 +71,8 @@ jobs:
         run: |
           EXT=""
           if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
-          CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags='-s -w' \
+          LDFLAGS="-s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=${{ github.ref_name }} -X github.com/trustos/hopssh/internal/buildinfo.Commit=${{ github.sha }}"
+          CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="$LDFLAGS" \
             -o hop-agent-${GOOS}-${GOARCH}${EXT} ./cmd/agent
 
       - name: Build server
@@ -81,7 +82,8 @@ jobs:
         run: |
           EXT=""
           if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
-          CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags='-s -w' \
+          LDFLAGS="-s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=${{ github.ref_name }} -X github.com/trustos/hopssh/internal/buildinfo.Commit=${{ github.sha }}"
+          CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="$LDFLAGS" \
             -o hop-server-${GOOS}-${GOARCH}${EXT} ./cmd/server
 
       - name: Upload artifacts
@@ -109,6 +111,9 @@ jobs:
           sha256sum hop-* > SHA256SUMS
           cat SHA256SUMS
 
+      - name: Copy install script
+        run: cp scripts/install.sh dist/install.sh
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -116,3 +121,4 @@ jobs:
           files: |
             dist/hop-*
             dist/SHA256SUMS
+            dist/install.sh

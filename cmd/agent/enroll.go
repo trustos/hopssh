@@ -22,6 +22,9 @@ const (
 	agentAPIPort    = 41820
 )
 
+// skipService is set by --no-service flag during enrollment.
+var skipService bool
+
 type enrollResponse struct {
 	NodeID         string `json:"nodeId"`
 	CACert         string `json:"caCert"`
@@ -45,7 +48,9 @@ func runEnroll(args []string) {
 	tokenStdin := fs.Bool("token-stdin", false, "Read enrollment token from stdin")
 	bundlePath := fs.String("bundle", "", "Path to pre-generated enrollment bundle (.tar.gz)")
 	endpoint := fs.String("endpoint", defaultEndpoint, "Control plane URL")
+	noService := fs.Bool("no-service", false, "Skip automatic service installation")
 	fs.Parse(args)
+	skipService = *noService
 
 	switch {
 	case *bundlePath != "":
@@ -206,7 +211,7 @@ func enrollFromBundle(path, endpoint string) {
 	serverHost := extractHost(ep)
 	writeNebulaConfig(bundleConfig.ServerIP, serverHost, bundleConfig.LighthousePort)
 
-	installSystemdServices()
+	installService()
 	fmt.Println("  ✓ Agent started")
 }
 
@@ -235,7 +240,7 @@ func installCerts(er *enrollResponse, endpoint string) {
 
 	serverHost := extractHost(endpoint)
 	writeNebulaConfig(er.ServerIP, serverHost, er.LighthousePort)
-	installSystemdServices()
+	installService()
 	fmt.Println("  ✓ Agent started")
 }
 
@@ -308,28 +313,13 @@ firewall:
 	fmt.Printf("  ✓ Nebula config written (lighthouse: %s via %s:%d)\n", serverIP, serverHost, lighthousePort)
 }
 
-func installSystemdServices() {
-	// Single service — agent embeds Nebula (no separate nebula daemon needed).
-	agentUnit := `[Unit]
-Description=hopssh agent (mesh networking + server management)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/hop-agent serve --token-file /etc/hop-agent/token --endpoint-file /etc/hop-agent/endpoint --node-id-file /etc/hop-agent/node-id --nebula-config /etc/hop-agent/nebula.yaml
-ExecReload=/bin/kill -HUP $MAINPID
-Restart=always
-RestartSec=5
-
-[Install]
-WantedBy=multi-user.target
-`
-	writeFileSecure("/etc/systemd/system/hop-agent.service", []byte(agentUnit), 0644)
-
-	runShellCmd("systemctl daemon-reload")
-	runShellCmd("systemctl enable hop-agent")
-	runShellCmd("systemctl start hop-agent")
+func installService() {
+	if skipService {
+		fmt.Println("  Skipping service installation (--no-service)")
+		fmt.Println("  Start manually: hop-agent serve")
+		return
+	}
+	runAgentInstall(nil)
 }
 
 func writeFileSecure(path string, data []byte, mode os.FileMode) {

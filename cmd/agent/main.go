@@ -21,6 +21,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/gorilla/websocket"
+	"github.com/trustos/hopssh/internal/buildinfo"
 )
 
 const (
@@ -36,11 +37,23 @@ var execCommand = exec.Command
 func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case "version":
+			fmt.Printf("hop-agent %s (%s)\n", buildinfo.Version, buildinfo.Commit)
+			return
 		case "enroll":
 			runEnroll(os.Args[2:])
 			return
 		case "serve":
 			runServe(os.Args[2:])
+			return
+		case "install":
+			runAgentInstall(os.Args[2:])
+			return
+		case "uninstall":
+			runAgentUninstall(os.Args[2:])
+			return
+		case "update":
+			runAgentUpdate(os.Args[2:])
 			return
 		case "client":
 			runClient(os.Args[2:])

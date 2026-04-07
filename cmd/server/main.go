@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"flag"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/trustos/hopssh/internal/api"
+	"github.com/trustos/hopssh/internal/buildinfo"
 	"github.com/trustos/hopssh/internal/crypto"
 	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/mesh"
@@ -38,6 +40,23 @@ import (
 // @name Authorization
 // @description Session token from login/register. Format: "Bearer {token}"
 func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "version":
+			fmt.Printf("hop-server %s (%s)\n", buildinfo.Version, buildinfo.Commit)
+			return
+		case "install":
+			runServerInstall(os.Args[2:])
+			return
+		case "uninstall":
+			runServerUninstall(os.Args[2:])
+			return
+		case "update":
+			runServerUpdate(os.Args[2:])
+			return
+		}
+	}
+
 	addr := flag.String("addr", ":9473", "Listen address")
 	dataDir := flag.String("data", "./data", "Data directory")
 	endpoint := flag.String("endpoint", "http://localhost:9473", "Public URL of this server")
@@ -137,7 +156,9 @@ func main() {
 
 	auditH := &api.AuditHandler{Audit: audit}
 
-	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH)
+	distH := &api.DistributionHandler{Endpoint: *endpoint}
+
+	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH)
 
 	// Clean up expired sessions periodically with graceful shutdown.
 	stopCleanup := make(chan struct{})

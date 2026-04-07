@@ -96,6 +96,7 @@ func NewRouter(
 	renewH *RenewHandler,
 	dnsH *DNSHandler,
 	auditH *AuditHandler,
+	distH *DistributionHandler,
 ) chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -173,6 +174,12 @@ func NewRouter(
 		// Enrollment bundles.
 		r.With(wt).Post("/api/networks/{networkID}/bundles", bundleH.CreateBundle)
 	})
+
+	// Distribution: install script, binary downloads, version (public, no auth).
+	r.Get("/install.sh", distH.InstallScript)
+	r.Get("/version", distH.Version)
+	r.Get("/download/SHA256SUMS", distH.DownloadChecksums)
+	r.Get("/download/{binary}", distH.Download)
 
 	// Serve frontend SPA (catch-all — must be last).
 	r.NotFound(frontend.Handler().ServeHTTP)

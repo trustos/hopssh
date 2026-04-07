@@ -6,6 +6,11 @@ export
        generate check-patches clean clean-vendor frontend frontend-embed \
        run dev release
 
+# Version injection via ldflags.
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+LDFLAGS  = -s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=$(VERSION) -X github.com/trustos/hopssh/internal/buildinfo.Commit=$(COMMIT)
+
 # Default: build Go binaries only (assumes frontend already built or not needed).
 all: build
 
@@ -30,8 +35,8 @@ patch-vendor:
 # Build Go binaries.
 build:
 	@test -d vendor || (echo "Run 'make setup' first." && exit 1)
-	go build -mod=vendor -o hop-agent ./cmd/agent
-	go build -mod=vendor -o hop-server ./cmd/server
+	go build -mod=vendor -ldflags='$(LDFLAGS)' -o hop-agent ./cmd/agent
+	go build -mod=vendor -ldflags='$(LDFLAGS)' -o hop-server ./cmd/server
 
 # Build frontend (SvelteKit SPA).
 frontend:
@@ -49,8 +54,8 @@ build-all: frontend-embed build
 # Build for a specific Linux platform.
 build-linux:
 	@test -d vendor || (echo "Run 'make setup' first." && exit 1)
-	GOOS=linux GOARCH=$(or $(GOARCH),amd64) go build -mod=vendor -trimpath -ldflags='-s -w' -o hop-agent-linux-$(or $(GOARCH),amd64) ./cmd/agent
-	GOOS=linux GOARCH=$(or $(GOARCH),amd64) go build -mod=vendor -trimpath -ldflags='-s -w' -o hop-server-linux-$(or $(GOARCH),amd64) ./cmd/server
+	GOOS=linux GOARCH=$(or $(GOARCH),amd64) go build -mod=vendor -trimpath -ldflags='$(LDFLAGS)' -o hop-agent-linux-$(or $(GOARCH),amd64) ./cmd/agent
+	GOOS=linux GOARCH=$(or $(GOARCH),amd64) go build -mod=vendor -trimpath -ldflags='$(LDFLAGS)' -o hop-server-linux-$(or $(GOARCH),amd64) ./cmd/server
 
 # Run go vet.
 vet:

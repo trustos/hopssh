@@ -50,22 +50,14 @@
 	let activeTab = $state<'nodes' | 'dns' | 'join'>('nodes');
 	let initialTabSet = $state(false);
 
-	// OS/arch selection (shared between Join and Add Server)
-	let selectedOS = $state<'linux' | 'darwin' | 'windows'>('darwin');
-	let selectedArch = $state<'amd64' | 'arm64'>('arm64');
+	// Install command using the control plane's install script
+	const installScriptCmd = $derived(`curl -fsSL ${window.location.origin}/install.sh | sh`);
 
-	const binaryExt = $derived(selectedOS === 'windows' ? '.exe' : '');
-	const binaryName = $derived(`hop-agent-${selectedOS}-${selectedArch}${binaryExt}`);
-	const downloadUrl = $derived(`https://github.com/trustos/hopssh/releases/latest/download/${binaryName}`);
-
-	const installCommand = $derived.by(() => {
+	const enrollCommand = $derived.by(() => {
 		if (!nodeResult) return '';
 		const token = nodeResult.enrollmentToken;
 		const endpoint = nodeResult.endpoint;
-		if (selectedOS === 'windows') {
-			return `Invoke-WebRequest -Uri "${downloadUrl}" -OutFile hop-agent.exe\necho '${token}' | .\\hop-agent.exe enroll --token-stdin --endpoint ${endpoint}`;
-		}
-		return `curl -fsSL ${downloadUrl} -o /usr/local/bin/hop-agent && chmod +x /usr/local/bin/hop-agent && echo '${token}' | sudo hop-agent enroll --token-stdin --endpoint ${endpoint}`;
+		return `echo '${token}' | sudo hop-agent enroll --token-stdin --endpoint ${endpoint}`;
 	});
 
 	// Time ticker for reactive timeAgo
@@ -130,9 +122,8 @@
 		}
 	}
 
-	function copyCommand() {
-		if (!installCommand) return;
-		navigator.clipboard.writeText(installCommand);
+	function copyCommand(text: string) {
+		navigator.clipboard.writeText(text);
 		copied = true;
 		setTimeout(() => (copied = false), 2000);
 	}
@@ -601,44 +592,17 @@
 
 					<div class="space-y-3">
 						<div class="rounded-lg border p-4">
-							<p class="mb-2 text-sm font-medium">1. Download hop-agent</p>
-							<div class="mb-2 flex gap-2">
-								<div class="flex gap-1 rounded-md border p-1">
-									{#each [['darwin', 'macOS'], ['linux', 'Linux'], ['windows', 'Windows']] as [val, label]}
-										<button
-											onclick={() => (selectedOS = val as 'linux' | 'darwin' | 'windows')}
-											class="rounded px-2.5 py-1 text-xs font-medium transition-colors {selectedOS === val ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}"
-										>
-											{label}
-										</button>
-									{/each}
-								</div>
-								{#if selectedOS !== 'windows'}
-									<div class="flex gap-1 rounded-md border p-1">
-										{#each [['amd64', 'x86_64'], ['arm64', 'ARM64']] as [val, label]}
-											<button
-												onclick={() => (selectedArch = val as 'amd64' | 'arm64')}
-												class="rounded px-2.5 py-1 text-xs font-medium transition-colors {selectedArch === val ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}"
-											>
-												{label}
-											</button>
-										{/each}
-									</div>
-								{/if}
-							</div>
+							<p class="mb-2 text-sm font-medium">1. Install hop-agent</p>
+							<p class="mb-2 text-xs text-muted-foreground">Auto-detects your OS and architecture.</p>
 							<div class="rounded-md bg-muted p-3">
-								{#if selectedOS === 'windows'}
-									<pre class="font-mono text-xs">Invoke-WebRequest -Uri "{downloadUrl}" -OutFile hop-agent.exe</pre>
-								{:else}
-									<pre class="font-mono text-xs">curl -fsSL {downloadUrl} -o /usr/local/bin/hop-agent && chmod +x /usr/local/bin/hop-agent</pre>
-								{/if}
+								<pre class="font-mono text-xs">{installScriptCmd}</pre>
 							</div>
 						</div>
 
 						<div class="rounded-lg border p-4">
 							<p class="mb-2 text-sm font-medium">2. Join the network</p>
 							<div class="rounded-md bg-muted p-3">
-								<pre class="font-mono text-xs">{selectedOS === 'windows' ? '.\\hop-agent.exe' : 'hop-agent'} client join --network {networkId} --endpoint {window.location.origin}</pre>
+								<pre class="font-mono text-xs">hop-agent client join --network {networkId} --endpoint {window.location.origin}</pre>
 							</div>
 							<p class="mt-2 text-xs text-muted-foreground">
 								After joining, services are reachable as <span class="font-mono">hostname.{network.dnsDomain}</span>
@@ -677,42 +641,34 @@
 						<div class="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">{addNodeError}</div>
 					{:else if nodeResult}
 						<div class="space-y-4">
-							<div>
-								<p class="mb-2 text-sm text-muted-foreground">Select the target platform, then run the command on your server:</p>
-								<div class="mb-3 flex gap-2">
-									<div class="flex gap-1 rounded-md border p-1">
-										{#each [['linux', 'Linux'], ['darwin', 'macOS'], ['windows', 'Windows']] as [val, label]}
-											<button
-												onclick={() => (selectedOS = val as 'linux' | 'darwin' | 'windows')}
-												class="rounded px-2.5 py-1 text-xs font-medium transition-colors {selectedOS === val ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}"
-											>
-												{label}
-											</button>
-										{/each}
-									</div>
-									{#if selectedOS !== 'windows'}
-										<div class="flex gap-1 rounded-md border p-1">
-											{#each [['amd64', 'x86_64'], ['arm64', 'ARM64']] as [val, label]}
-												<button
-													onclick={() => (selectedArch = val as 'amd64' | 'arm64')}
-													class="rounded px-2.5 py-1 text-xs font-medium transition-colors {selectedArch === val ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}"
-												>
-													{label}
-												</button>
-											{/each}
-										</div>
-									{/if}
-								</div>
-								<div class="relative">
-									<pre class="overflow-x-auto whitespace-pre-wrap break-all rounded-md bg-muted p-3 pr-16 font-mono text-xs leading-relaxed">{installCommand}</pre>
+							<p class="text-sm text-muted-foreground">Run these commands on your server:</p>
+
+							<div class="rounded-lg border p-4">
+								<p class="mb-2 text-sm font-medium">1. Install hop-agent</p>
+								<div class="relative rounded-md bg-muted p-3 pr-16">
+									<pre class="font-mono text-xs">{installScriptCmd}</pre>
 									<button
-										onclick={copyCommand}
+										onclick={() => copyCommand(installScriptCmd)}
 										class="absolute right-2 top-2 rounded px-2 py-1 text-xs hover:bg-accent"
 									>
 										{copied ? 'Copied!' : 'Copy'}
 									</button>
 								</div>
 							</div>
+
+							<div class="rounded-lg border p-4">
+								<p class="mb-2 text-sm font-medium">2. Enroll</p>
+								<div class="relative rounded-md bg-muted p-3 pr-16">
+									<pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">{enrollCommand}</pre>
+									<button
+										onclick={() => copyCommand(enrollCommand)}
+										class="absolute right-2 top-2 rounded px-2 py-1 text-xs hover:bg-accent"
+									>
+										{copied ? 'Copied!' : 'Copy'}
+									</button>
+								</div>
+							</div>
+
 							<div class="text-xs text-muted-foreground">
 								<p>Token expires in 10 minutes. IP: <span class="font-mono">{nodeResult.nebulaIP}</span></p>
 							</div>
