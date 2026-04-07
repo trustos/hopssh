@@ -470,7 +470,13 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cmd := exec.Command(shell, "-l")
-	cmd.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
+	cmd.Env = append(os.Environ(),
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+		"CLICOLOR=1",           // macOS: enable ls colors
+		"CLICOLOR_FORCE=1",     // force colors even in non-interactive
+		"LSCOLORS=GxFxCxDxBxegedabagaced", // macOS ls color scheme
+	)
 
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
