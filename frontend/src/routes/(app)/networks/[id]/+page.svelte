@@ -46,24 +46,26 @@
 	let deletingNode = $state(false);
 	let deleteNodeError = $state('');
 
-	// Active tab
+	// Active tab — default to "join" for new networks, "nodes" once there are nodes
 	let activeTab = $state<'nodes' | 'dns' | 'join'>('nodes');
+	let initialTabSet = $state(false);
 
-	// Add Server: OS/arch selection
-	let selectedOS = $state<'linux' | 'darwin' | 'windows'>('linux');
-	let selectedArch = $state<'amd64' | 'arm64'>('amd64');
+	// OS/arch selection (shared between Join and Add Server)
+	let selectedOS = $state<'linux' | 'darwin' | 'windows'>('darwin');
+	let selectedArch = $state<'amd64' | 'arm64'>('arm64');
+
+	const binaryExt = $derived(selectedOS === 'windows' ? '.exe' : '');
+	const binaryName = $derived(`hop-agent-${selectedOS}-${selectedArch}${binaryExt}`);
+	const downloadUrl = $derived(`https://github.com/trustos/hopssh/releases/latest/download/${binaryName}`);
 
 	const installCommand = $derived.by(() => {
 		if (!nodeResult) return '';
-		const ext = selectedOS === 'windows' ? '.exe' : '';
-		const bin = `hop-agent-${selectedOS}-${selectedArch}${ext}`;
-		const url = `https://github.com/trustos/hopssh/releases/latest/download/${bin}`;
 		const token = nodeResult.enrollmentToken;
 		const endpoint = nodeResult.endpoint;
 		if (selectedOS === 'windows') {
-			return `Invoke-WebRequest -Uri "${url}" -OutFile hop-agent.exe\necho '${token}' | .\\hop-agent.exe enroll --token-stdin --endpoint ${endpoint}`;
+			return `Invoke-WebRequest -Uri "${downloadUrl}" -OutFile hop-agent.exe\necho '${token}' | .\\hop-agent.exe enroll --token-stdin --endpoint ${endpoint}`;
 		}
-		return `curl -fsSL ${url} -o /usr/local/bin/hop-agent && chmod +x /usr/local/bin/hop-agent && echo '${token}' | sudo hop-agent enroll --token-stdin --endpoint ${endpoint}`;
+		return `curl -fsSL ${downloadUrl} -o /usr/local/bin/hop-agent && chmod +x /usr/local/bin/hop-agent && echo '${token}' | sudo hop-agent enroll --token-stdin --endpoint ${endpoint}`;
 	});
 
 	// Time ticker for reactive timeAgo
@@ -101,6 +103,13 @@
 			network = await networksApi.get(networkId);
 			dnsRecords = await dnsApi.list(networkId);
 			activeForwards = await fwdApi.list(networkId).catch(() => []);
+			// Default to "join" tab for empty networks on first load
+			if (!initialTabSet) {
+				initialTabSet = true;
+				if (network.nodes.length === 0) {
+					activeTab = 'join';
+				}
+			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to load network';
 		} finally {
@@ -306,24 +315,22 @@
 					<span>DNS: <span class="font-mono">.{network.dnsDomain}</span></span>
 				</div>
 			</div>
-			<div class="flex items-center gap-2">
-				<button
-					onclick={() => { showAddNode = true; addNode(); }}
-					class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-				>
-					Add Server
-				</button>
-				<button
-					onclick={() => { showDeleteNetwork = true; deleteNetworkConfirm = ''; deleteNetworkError = ''; }}
-					class="rounded-md px-3 py-2 text-sm text-destructive hover:bg-destructive/10"
-				>
-					Delete Network
-				</button>
-			</div>
+			<button
+				onclick={() => { showDeleteNetwork = true; deleteNetworkConfirm = ''; deleteNetworkError = ''; }}
+				class="rounded-md px-3 py-2 text-sm text-destructive hover:bg-destructive/10"
+			>
+				Delete Network
+			</button>
 		</div>
 
 		<!-- Tabs -->
 		<div class="mb-4 flex gap-1 border-b">
+			<button
+				class="px-4 py-2 text-sm font-medium {activeTab === 'join' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'}"
+				onclick={() => (activeTab = 'join')}
+			>
+				Join
+			</button>
 			<button
 				class="px-4 py-2 text-sm font-medium {activeTab === 'nodes' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'}"
 				onclick={() => (activeTab = 'nodes')}
@@ -335,12 +342,6 @@
 				onclick={() => (activeTab = 'dns')}
 			>
 				DNS
-			</button>
-			<button
-				class="px-4 py-2 text-sm font-medium {activeTab === 'join' ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'}"
-				onclick={() => (activeTab = 'join')}
-			>
-				Join
 			</button>
 		</div>
 
@@ -590,30 +591,71 @@
 
 		<!-- Join Tab -->
 		{:else if activeTab === 'join'}
-			<div class="max-w-lg space-y-6">
+			<div class="max-w-xl space-y-8">
 				<div>
-					<h3 class="mb-2 font-medium">Join from a laptop or phone</h3>
-					<p class="mb-3 text-sm text-muted-foreground">
-						Connect your personal device to this network to access services like
-						Jellyfin, Immich, or Paperless by name.
+					<h3 class="mb-1 text-lg font-medium">Join this network</h3>
+					<p class="mb-4 text-sm text-muted-foreground">
+						Connect your device to <span class="font-mono font-medium">{network.name}</span> and
+						access services by name (e.g. <span class="font-mono">jellyfin.{network.dnsDomain}</span>).
 					</p>
-					<div class="rounded-md bg-muted p-3">
-						<pre class="font-mono text-xs">hop-agent client join --network {networkId} --endpoint {window.location.origin}</pre>
+
+					<div class="space-y-3">
+						<div class="rounded-lg border p-4">
+							<p class="mb-2 text-sm font-medium">1. Download hop-agent</p>
+							<div class="mb-2 flex gap-2">
+								<div class="flex gap-1 rounded-md border p-1">
+									{#each [['darwin', 'macOS'], ['linux', 'Linux'], ['windows', 'Windows']] as [val, label]}
+										<button
+											onclick={() => (selectedOS = val as 'linux' | 'darwin' | 'windows')}
+											class="rounded px-2.5 py-1 text-xs font-medium transition-colors {selectedOS === val ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}"
+										>
+											{label}
+										</button>
+									{/each}
+								</div>
+								{#if selectedOS !== 'windows'}
+									<div class="flex gap-1 rounded-md border p-1">
+										{#each [['amd64', 'x86_64'], ['arm64', 'ARM64']] as [val, label]}
+											<button
+												onclick={() => (selectedArch = val as 'amd64' | 'arm64')}
+												class="rounded px-2.5 py-1 text-xs font-medium transition-colors {selectedArch === val ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'}"
+											>
+												{label}
+											</button>
+										{/each}
+									</div>
+								{/if}
+							</div>
+							<div class="rounded-md bg-muted p-3">
+								{#if selectedOS === 'windows'}
+									<pre class="font-mono text-xs">Invoke-WebRequest -Uri "{downloadUrl}" -OutFile hop-agent.exe</pre>
+								{:else}
+									<pre class="font-mono text-xs">curl -fsSL {downloadUrl} -o /usr/local/bin/hop-agent && chmod +x /usr/local/bin/hop-agent</pre>
+								{/if}
+							</div>
+						</div>
+
+						<div class="rounded-lg border p-4">
+							<p class="mb-2 text-sm font-medium">2. Join the network</p>
+							<div class="rounded-md bg-muted p-3">
+								<pre class="font-mono text-xs">{selectedOS === 'windows' ? '.\\hop-agent.exe' : 'hop-agent'} client join --network {networkId} --endpoint {window.location.origin}</pre>
+							</div>
+							<p class="mt-2 text-xs text-muted-foreground">
+								After joining, services are reachable as <span class="font-mono">hostname.{network.dnsDomain}</span>
+							</p>
+						</div>
 					</div>
-					<p class="mt-2 text-xs text-muted-foreground">
-						After joining, services are reachable as <span class="font-mono">hostname.{network.dnsDomain}</span>
-					</p>
 				</div>
 
-				<div>
-					<h3 class="mb-2 font-medium">Add a server</h3>
+				<div class="border-t pt-6">
+					<h3 class="mb-1 font-medium text-muted-foreground">Add a server instead?</h3>
 					<p class="mb-3 text-sm text-muted-foreground">
 						Install the agent on a server to manage it from the dashboard and make
 						its services available on the mesh.
 					</p>
 					<button
 						onclick={() => { showAddNode = true; addNode(); }}
-						class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+						class="rounded-md border px-4 py-2 text-sm font-medium hover:bg-accent"
 					>
 						Add Server
 					</button>
