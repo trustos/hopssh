@@ -19,6 +19,7 @@
 	let showAddNode = $state(false);
 	let addingNode = $state(false);
 	let nodeResult = $state<CreateNodeResponse | null>(null);
+	let nodeResultCreatedAt = $state(0);
 	let addNodeError = $state('');
 
 	// Add DNS dialog
@@ -87,10 +88,10 @@
 	const hasPendingNodes = $derived(network?.nodes.some(n => n.status === 'pending') ?? false);
 
 	onMount(() => {
-		// Tick for timeAgo display
+		// Tick every second for timeAgo + token countdown.
 		const tickInterval = setInterval(() => {
 			now = Math.floor(Date.now() / 1000);
-		}, 30_000);
+		}, 1_000);
 
 		// Debounced reload: prevents flickering from rapid WebSocket events.
 		let reloadTimer: ReturnType<typeof setTimeout> | null = null;
@@ -177,6 +178,7 @@
 		nodeResult = null;
 		try {
 			nodeResult = await nodesApi.create(networkId);
+			nodeResultCreatedAt = Math.floor(Date.now() / 1000);
 		} catch (e) {
 			addNodeError = e instanceof ApiError ? e.message : 'Failed to create node';
 		} finally {
@@ -375,9 +377,9 @@
 		switch (status) {
 			case 'online': return 'bg-primary animate-hop-pulse';
 			case 'enrolled': return 'bg-yellow-500';
-			case 'offline': return 'bg-gray-500';
-			case 'pending': return 'border-2 border-dashed border-yellow-500 animate-pulse';
-			default: return 'border border-dashed border-muted-foreground';
+			case 'offline': return 'bg-gray-400 dark:bg-gray-600';
+			case 'pending': return 'bg-yellow-500/50 animate-pulse';
+			default: return 'bg-muted-foreground/30';
 		}
 	}
 
@@ -565,8 +567,9 @@
 												{#if isAdmin}
 													<button
 														onclick={() => { renamingNodeId = node.id; renameValue = node.dnsName || node.hostname || ''; }}
-														class="invisible rounded px-1 text-xs text-muted-foreground hover:text-foreground group-hover:visible"
-														title="Rename"
+														class="cursor-pointer rounded px-1 text-xs text-muted-foreground/40 hover:text-foreground transition-colors"
+														title="Rename node"
+														aria-label="Rename node"
 													>
 														&#9998;
 													</button>
@@ -580,8 +583,9 @@
 												{#if isAdmin}
 													<button
 														onclick={() => toggleCapability(node, cap)}
-														class="rounded-full px-2 py-0.5 text-xs transition-colors {hasCap(node, cap) ? 'bg-primary/15 text-primary' : 'bg-muted text-muted-foreground/50 line-through'}"
-														title="{hasCap(node, cap) ? 'Disable' : 'Enable'} {cap}"
+														class="cursor-pointer rounded-full border px-2 py-0.5 text-xs transition-all {hasCap(node, cap) ? 'border-primary/30 bg-primary/15 text-primary hover:bg-primary/25' : 'border-transparent bg-muted text-muted-foreground/40 line-through hover:border-muted-foreground/20 hover:text-muted-foreground/60'}"
+														title="{hasCap(node, cap) ? 'Click to disable' : 'Click to enable'} {cap}"
+														aria-label="{hasCap(node, cap) ? 'Disable' : 'Enable'} {cap}"
 													>
 														{cap === 'terminal' ? 'TTY' : cap === 'health' ? 'Health' : 'Fwd'}
 													</button>
@@ -627,9 +631,10 @@
 												</button>
 											{/if}
 											{#if isAdmin}
+												<span class="mx-0.5 border-l border-muted"></span>
 												<button
 													onclick={() => confirmDeleteNode(node)}
-													class="rounded px-2 py-1 text-xs text-destructive hover:bg-destructive/10"
+													class="rounded px-2 py-1 text-xs text-destructive/60 hover:text-destructive hover:bg-destructive/10"
 												>
 													Delete
 												</button>
@@ -642,9 +647,9 @@
 									<tr class="bg-muted/50">
 										<td colspan="7" class="px-4 py-3">
 											<form onsubmit={(e) => startForward(node.id, e)} class="flex items-center gap-3">
-												<span class="text-sm text-muted-foreground">Forward port from {node.hostname || node.id.slice(0, 8)}:</span>
+												<span class="text-sm text-muted-foreground">Forward from {node.dnsName || node.hostname || node.id.slice(0, 8)}:</span>
 												<div class="flex items-center gap-1">
-													<span class="text-xs text-muted-foreground">Remote</span>
+													<span class="text-xs text-muted-foreground" title="Port on the remote node">Remote port</span>
 													<input
 														type="number"
 														bind:value={fwdRemotePort}
@@ -656,7 +661,7 @@
 													/>
 												</div>
 												<div class="flex items-center gap-1">
-													<span class="text-xs text-muted-foreground">Local</span>
+													<span class="text-xs text-muted-foreground" title="Local port on your machine (auto-assigned if empty)">Local port</span>
 													<input
 														type="number"
 														bind:value={fwdLocalPort}
@@ -863,7 +868,7 @@
 					</div>
 				{:else}
 					<div class="rounded-lg border border-dashed p-6 text-center">
-						<p class="text-sm text-muted-foreground">No members yet. Create an invite to share this network.</p>
+						<p class="text-sm text-muted-foreground">You're the only member. Create an invite link to share this network with your team.</p>
 					</div>
 				{/if}
 
@@ -998,7 +1003,15 @@
 							</div>
 
 							<div class="text-xs text-muted-foreground">
-								<p>Token expires in 10 minutes. IP: <span class="font-mono">{nodeResult.nebulaIP}</span></p>
+								{#if nodeResultCreatedAt > 0}
+									{#if (now - nodeResultCreatedAt) < 480}
+										<p>Token expires in {Math.floor((600 - (now - nodeResultCreatedAt)) / 60)}m {(600 - (now - nodeResultCreatedAt)) % 60}s. IP: <span class="font-mono">{nodeResult.nebulaIP}</span></p>
+									{:else if (now - nodeResultCreatedAt) < 600}
+										<p class="text-destructive font-medium">Token expires in {600 - (now - nodeResultCreatedAt)}s! IP: <span class="font-mono">{nodeResult.nebulaIP}</span></p>
+									{:else}
+										<p class="text-destructive font-medium">Token expired — close and generate a new one.</p>
+									{/if}
+								{/if}
 							</div>
 						</div>
 					{/if}
