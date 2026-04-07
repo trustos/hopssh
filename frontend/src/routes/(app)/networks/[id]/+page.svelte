@@ -574,7 +574,7 @@
 											</form>
 										{:else}
 											<span class="group flex items-center gap-1">
-												{#if hasCap(node, 'terminal')}
+												{#if hasCap(node, 'terminal') && node.status === 'online'}
 													<a
 														href="/terminal/{networkId}/{node.id}?h={encodeURIComponent(node.hostname || node.id.slice(0, 8))}"
 														class="font-mono font-medium text-primary hover:underline"
@@ -626,7 +626,7 @@
 									<td class="px-4 py-3 text-muted-foreground">{timeAgo(node.lastSeenAt)}</td>
 									<td class="px-4 py-3 text-right">
 										<div class="flex justify-end gap-1">
-											{#if hasCap(node, 'health') && node.status !== 'pending'}
+											{#if hasCap(node, 'health') && node.status === 'online'}
 												<button
 													onclick={() => checkHealth(node)}
 													class="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -634,7 +634,7 @@
 													Health
 												</button>
 											{/if}
-											{#if hasCap(node, 'terminal') && node.status !== 'pending'}
+											{#if hasCap(node, 'terminal') && node.status === 'online'}
 												<a
 													href="/terminal/{networkId}/{node.id}?h={encodeURIComponent(node.hostname || node.id.slice(0, 8))}"
 													class="rounded px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10"
