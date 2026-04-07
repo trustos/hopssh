@@ -8,8 +8,8 @@
 	let shell = $state<ShellConnection | null>(null);
 	let status = $state<'connecting' | 'connected' | 'reconnecting' | 'failed' | 'ended'>('connecting');
 
-	const networkId = $derived(page.params.networkId);
-	const nodeId = $derived(page.params.nodeId);
+	const networkId = $derived(page.params.networkId!);
+	const nodeId = $derived(page.params.nodeId!);
 	const hostname = $derived(
 		page.url.searchParams.get('h') || nodeId.slice(0, 8)
 	);

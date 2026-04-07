@@ -69,15 +69,15 @@
 	// Time ticker for reactive timeAgo
 	let now = $state(Math.floor(Date.now() / 1000));
 
-	const networkId = $derived(page.params.id);
+	const networkId = $derived(page.params.id!);
 
 	// All nodes including pending (pending shown with special style).
 	const visibleNodes = $derived(network?.nodes ?? []);
 
 	const hasPendingNodes = $derived(network?.nodes.some(n => n.status === 'pending') ?? false);
 
-	onMount(async () => {
-		await loadNetwork();
+	onMount(() => {
+		loadNetwork();
 		// Tick for timeAgo display
 		const tickInterval = setInterval(() => {
 			now = Math.floor(Date.now() / 1000);

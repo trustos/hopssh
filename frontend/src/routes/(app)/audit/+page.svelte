@@ -16,14 +16,11 @@
 
 	let now = $state(Math.floor(Date.now() / 1000));
 
-	onMount(async () => {
-		try {
-			entries = await auditApi.list();
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Failed to load audit log';
-		} finally {
-			loading = false;
-		}
+	onMount(() => {
+		auditApi.list()
+			.then(data => { entries = data; })
+			.catch(e => { error = e instanceof Error ? e.message : 'Failed to load audit log'; })
+			.finally(() => { loading = false; });
 		const interval = setInterval(() => { now = Math.floor(Date.now() / 1000); }, 30_000);
 		return () => clearInterval(interval);
 	});
