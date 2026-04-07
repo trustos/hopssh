@@ -197,6 +197,12 @@ func NewRouter(
 		r.With(wt).Post("/api/invites/{code}/accept", inviteH.AcceptInvite)
 	})
 
+	// Health check for container orchestrators (no auth, no rate limit).
+	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("ok"))
+	})
+
 	// Distribution: install script, binary downloads, version (public, no auth).
 	r.Get("/install.sh", distH.InstallScript)
 	r.Get("/version", distH.Version)

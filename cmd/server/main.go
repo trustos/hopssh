@@ -54,15 +54,27 @@ func main() {
 		case "update":
 			runServerUpdate(os.Args[2:])
 			return
+		case "healthz":
+			// Probe the local server — used by Docker HEALTHCHECK in distroless images.
+			resp, err := http.Get("http://localhost:9473/healthz")
+			if err != nil || resp.StatusCode != 200 {
+				os.Exit(1)
+			}
+			fmt.Println("ok")
+			return
 		}
 	}
 
-	addr := flag.String("addr", ":9473", "Listen address")
-	dataDir := flag.String("data", "./data", "Data directory")
-	endpoint := flag.String("endpoint", "http://localhost:9473", "Public URL of this server")
-	trustedProxy := flag.Bool("trusted-proxy", false, "Trust X-Forwarded-Proto header from reverse proxy")
-	allowedOrigins := flag.String("allowed-origins", "", "Comma-separated allowed CORS origins (empty = same-origin only)")
+	addr := flag.String("addr", envOrDefault("HOPSSH_ADDR", ":9473"), "Listen address (env: HOPSSH_ADDR)")
+	dataDir := flag.String("data", envOrDefault("HOPSSH_DATA", "./data"), "Data directory (env: HOPSSH_DATA)")
+	endpoint := flag.String("endpoint", envOrDefault("HOPSSH_ENDPOINT", ""), "Public URL of this server (env: HOPSSH_ENDPOINT, required)")
+	trustedProxy := flag.Bool("trusted-proxy", os.Getenv("HOPSSH_TRUSTED_PROXY") == "true", "Trust X-Forwarded-Proto header (env: HOPSSH_TRUSTED_PROXY)")
+	allowedOrigins := flag.String("allowed-origins", envOrDefault("HOPSSH_ALLOWED_ORIGINS", ""), "Comma-separated CORS origins (env: HOPSSH_ALLOWED_ORIGINS)")
 	flag.Parse()
+
+	if *endpoint == "" {
+		log.Fatal("--endpoint is required (or set HOPSSH_ENDPOINT env var).\nExample: hop-server --endpoint http://YOUR_IP:9473")
+	}
 
 	api.TrustedProxy = *trustedProxy
 	api.AllowedOrigins = api.ParseOriginsFlag(*allowedOrigins)
@@ -238,4 +250,11 @@ func generateEncryptionKey() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(key), nil
+}
+
+func envOrDefault(key, fallback string) string {
+	if v := os.Getenv(key); v != "" {
+		return v
+	}
+	return fallback
 }

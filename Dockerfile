@@ -1,12 +1,11 @@
-# Multi-stage build for hopssh.
+# Multi-stage build for hopssh control plane.
 #
 # Usage:
 #   docker build -t hopssh .
-#   docker run -p 8080:8080 -v hopssh-data:/data hopssh
+#   docker run -p 9473:9473 -p 42001-42100:42001-42100/udp -v hopssh-data:/data -e HOPSSH_ENDPOINT=http://YOUR_IP:9473 hopssh
 
 # --- Frontend build stage ---
-FROM node:20-slim AS frontend
-
+FROM node:22-slim AS frontend
 WORKDIR /frontend
 COPY frontend/package*.json ./
 RUN npm ci
@@ -15,41 +14,34 @@ RUN npm run build
 
 # --- Go build stage ---
 FROM golang:1.24-bookworm AS builder
-
 RUN apt-get update && apt-get install -y --no-install-recommends patch && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /src
-COPY go.mod go.sum ./
-COPY patches/ patches/
-COPY Makefile ./
-
-RUN go mod download
 COPY . .
-RUN make vendor
-
-# Copy built frontend into embed location.
+RUN make setup
 COPY --from=frontend /frontend/build ./internal/frontend/dist/
 
-# Build static binaries.
-RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -trimpath -ldflags='-s -w' -o /out/hop-server ./cmd/server
-RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -trimpath -ldflags='-s -w' -o /out/hop-agent ./cmd/agent
+ARG VERSION=dev
+ARG COMMIT=unknown
+RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -trimpath \
+    -ldflags="-s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=${VERSION} -X github.com/trustos/hopssh/internal/buildinfo.Commit=${COMMIT}" \
+    -o /out/hop-server ./cmd/server
 
-# --- Runtime stage ---
-FROM debian:bookworm-slim
+# --- Runtime stage (distroless, no shell, minimal attack surface) ---
+FROM gcr.io/distroless/base-debian12:nonroot
 
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends ca-certificates && \
-    rm -rf /var/lib/apt/lists/* && \
-    useradd -r -s /bin/false hopssh && \
-    mkdir -p /data && chown hopssh:hopssh /data
-
-COPY --from=builder /out/hop-server /usr/local/bin/hop-server
-COPY --from=builder /out/hop-agent /usr/local/bin/hop-agent
+COPY --from=builder /out/hop-server /hop-server
 
 VOLUME /data
-EXPOSE 9473
 
-USER hopssh
+# API + dashboard
+EXPOSE 9473/tcp
+# Nebula lighthouse (one per network, starting at 42001)
+EXPOSE 42001-42100/udp
+# DNS server (one per network, starting at 15300)
+EXPOSE 15300-15400/udp
 
-ENTRYPOINT ["hop-server"]
-CMD ["--addr", ":9473", "--data", "/data", "--endpoint", "http://localhost:9473"]
+HEALTHCHECK --interval=10s --timeout=5s --retries=3 \
+    CMD ["/hop-server", "healthz"]
+
+ENTRYPOINT ["/hop-server"]
+CMD ["--addr", ":9473", "--data", "/data"]

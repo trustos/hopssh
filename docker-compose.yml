@@ -1,0 +1,22 @@
+# Local development with Docker Compose.
+#
+# Usage:
+#   docker compose up --build
+#
+# Then open http://localhost:9473 in your browser.
+
+services:
+  hopssh:
+    build: .
+    ports:
+      - "9473:9473"
+      - "42001-42100:42001-42100/udp"
+      - "15300-15400:15300-15400/udp"
+    volumes:
+      - hopssh-data:/data
+    environment:
+      HOPSSH_ENDPOINT: "http://localhost:9473"
+    restart: unless-stopped
+
+volumes:
+  hopssh-data:
