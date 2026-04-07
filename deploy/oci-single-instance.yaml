@@ -179,6 +179,70 @@ resources:
         nsgIds: ["${nsg.id}"]
       metadata:
         ssh_authorized_keys: "{{ .Config.sshPublicKey }}"
+        user_data:
+          fn::toBase64: |
+            #!/bin/bash
+            set -euo pipefail
+            exec > /var/log/hopssh-install.log 2>&1
+
+            echo "==> Installing hopssh control plane..."
+
+            ARCH=$(uname -m)
+            case "$ARCH" in
+              aarch64|arm64) GOARCH=arm64 ;;
+              x86_64|amd64) GOARCH=amd64 ;;
+            esac
+
+            # Install Go
+            GOVERSION=1.24.2
+            curl -fsSL "https://go.dev/dl/go${GOVERSION}.linux-${GOARCH}.tar.gz" | tar -C /usr/local -xzf -
+            ln -sf /usr/local/go/bin/go /usr/local/bin/go
+            ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+            export PATH=/usr/local/go/bin:$PATH
+            export GOPATH=/root/go
+            export PATH=$GOPATH/bin:$PATH
+
+            # Install Node.js 22 + build deps
+            apt-get update -y && apt-get install -y git make patch curl ca-certificates
+            curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+            apt-get install -y nodejs
+
+            # Clone and build
+            cd /opt
+            git clone https://github.com/trustos/hopssh.git
+            cd hopssh
+            make setup
+            make build-all
+
+            cp hop-server /usr/local/bin/
+            cp hop-agent /usr/local/bin/
+            mkdir -p /var/lib/hopssh
+            chmod 700 /var/lib/hopssh
+
+            # Detect public IP
+            PUBLIC_IP=$(curl -s http://169.254.169.254/opc/v1/vnics/ | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['publicIp'])" 2>/dev/null || curl -s ifconfig.me)
+            ENDPOINT="http://${PUBLIC_IP}:9473"
+
+            cat > /etc/systemd/system/hopssh.service <<UNIT
+            [Unit]
+            Description=hopssh control plane
+            After=network-online.target
+            Wants=network-online.target
+
+            [Service]
+            Type=simple
+            ExecStart=/usr/local/bin/hop-server --data /var/lib/hopssh --endpoint ${ENDPOINT}
+            Restart=always
+            RestartSec=5
+
+            [Install]
+            WantedBy=multi-user.target
+            UNIT
+
+            systemctl daemon-reload
+            systemctl enable hopssh
+            systemctl start hopssh
+            echo "==> hopssh installed! Dashboard: ${ENDPOINT}"
       shapeConfig: { ocpus: {{ .Config.ocpus }}, memoryInGbs: {{ .Config.memoryInGbs }} }
     options:
       dependsOn:
