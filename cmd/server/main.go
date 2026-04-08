@@ -154,6 +154,7 @@ func main() {
 		ForwardManager: fwdMgr,
 		Networks:       networks,
 		Nodes:          nodes,
+		Members:        members,
 		Audit:          audit,
 		AllowedOrigins: api.AllowedOrigins,
 	}
@@ -200,10 +201,18 @@ func main() {
 		for {
 			select {
 			case <-hourly.C:
-				sessions.DeleteExpired()
-				deviceCodes.DeleteExpired()
-				bundles.DeleteExpired()
-				invites.DeleteExpired()
+				if err := sessions.DeleteExpired(); err != nil {
+					log.Printf("[cleanup] sessions: %v", err)
+				}
+				if err := deviceCodes.DeleteExpired(); err != nil {
+					log.Printf("[cleanup] device codes: %v", err)
+				}
+				if err := bundles.DeleteExpired(); err != nil {
+					log.Printf("[cleanup] bundles: %v", err)
+				}
+				if err := invites.DeleteExpired(); err != nil {
+					log.Printf("[cleanup] invites: %v", err)
+				}
 			case <-daily.C:
 				// WAL checkpoint + query planner optimization (PocketBase pattern).
 				database.WriteDB.Exec("PRAGMA wal_checkpoint(TRUNCATE)")

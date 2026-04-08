@@ -59,6 +59,25 @@ func (q *Queries) IncrementInviteUseCount(ctx context.Context, id string) error 
 	return err
 }
 
+const atomicClaimInvite = `-- name: AtomicClaimInvite :execresult
+UPDATE network_invites SET use_count = use_count + 1
+WHERE code = ?
+  AND (expires_at IS NULL OR expires_at > unixepoch())
+  AND (max_uses IS NULL OR use_count < max_uses)
+`
+
+type AtomicClaimInviteResult struct {
+	RowsAffected int64
+}
+
+func (q *Queries) AtomicClaimInvite(ctx context.Context, code string) (int64, error) {
+	result, err := q.db.ExecContext(ctx, atomicClaimInvite, code)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const insertInvite = `-- name: InsertInvite :exec
 INSERT INTO network_invites (id, network_id, created_by, code, role, max_uses, expires_at)
 VALUES (?, ?, ?, ?, ?, ?, ?)

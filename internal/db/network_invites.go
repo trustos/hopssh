@@ -64,27 +64,39 @@ func (s *InviteStore) GetByCode(code string) (*NetworkInvite, error) {
 }
 
 // Claim atomically validates and consumes one use of an invite.
+// Uses a single UPDATE with WHERE conditions to prevent TOCTOU races.
 // Returns the invite if valid, or an error describing why it's invalid.
 func (s *InviteStore) Claim(code string) (*NetworkInvite, error) {
+	ctx := context.Background()
+
+	// Atomically increment use_count only if the invite is still valid.
+	q := dbsqlc.New(WrapDB(s.wdb))
+	affected, err := q.AtomicClaimInvite(ctx, code)
+	if err != nil {
+		return nil, fmt.Errorf("failed to claim invite: %w", err)
+	}
+	if affected == 0 {
+		// No rows updated — either not found, expired, or maxed out.
+		// Read to give a better error message.
+		invite, err := s.GetByCode(code)
+		if err != nil {
+			return nil, fmt.Errorf("invite not found")
+		}
+		now := time.Now().Unix()
+		if invite.ExpiresAt != nil && *invite.ExpiresAt < now {
+			return nil, fmt.Errorf("invite has expired")
+		}
+		if invite.MaxUses != nil && invite.UseCount >= *invite.MaxUses {
+			return nil, fmt.Errorf("invite has reached its maximum uses")
+		}
+		return nil, fmt.Errorf("invite not found")
+	}
+
+	// Read back the invite (post-increment) for the caller.
 	invite, err := s.GetByCode(code)
 	if err != nil {
 		return nil, fmt.Errorf("invite not found")
 	}
-
-	now := time.Now().Unix()
-	if invite.ExpiresAt != nil && *invite.ExpiresAt < now {
-		return nil, fmt.Errorf("invite has expired")
-	}
-	if invite.MaxUses != nil && invite.UseCount >= *invite.MaxUses {
-		return nil, fmt.Errorf("invite has reached its maximum uses")
-	}
-
-	// Increment use count.
-	q := dbsqlc.New(WrapDB(s.wdb))
-	if err := q.IncrementInviteUseCount(context.Background(), invite.ID); err != nil {
-		return nil, fmt.Errorf("failed to claim invite: %w", err)
-	}
-
 	return invite, nil
 }
 
@@ -116,7 +128,7 @@ func (s *InviteStore) Delete(id string) error {
 	return q.DeleteInvite(context.Background(), id)
 }
 
-func (s *InviteStore) DeleteExpired() {
+func (s *InviteStore) DeleteExpired() error {
 	q := dbsqlc.New(WrapDB(s.wdb))
-	q.DeleteExpiredInvites(context.Background())
+	return q.DeleteExpiredInvites(context.Background())
 }

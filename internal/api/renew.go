@@ -135,9 +135,11 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.Nodes.UpdateLastSeen(node.ID)
+	if err := h.Nodes.UpdateLastSeen(node.ID); err != nil {
+		log.Printf("[heartbeat] failed to update last_seen for %s: %v", node.ID, err)
+	}
 	if err := h.Nodes.UpdateAgentRealIP(node.ID, captureAgentIP(r)); err != nil {
-		log.Printf("[renew] failed to update agent IP for %s: %v", node.ID, err)
+		log.Printf("[heartbeat] failed to update agent IP for %s: %v", node.ID, err)
 	}
 
 	if h.EventHub != nil {

@@ -69,6 +69,9 @@ export function getTerminals() {
 
 		toggleCollapse() {
 			collapsed = !collapsed;
+			if (browser) {
+				localStorage.setItem('hop_terminal_collapsed', String(collapsed));
+			}
 		}
 	};
 }

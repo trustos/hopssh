@@ -299,8 +299,9 @@ func (s *NodeStore) CountNonPendingForNetwork(networkID string) (int, error) {
 }
 
 // NextNodeIndex returns the next available host index for a network's subnet.
+// Uses the write DB to serialize with concurrent node creation (prevents IP collisions).
 func (s *NodeStore) NextNodeIndex(networkID string) (int, error) {
-	q := dbsqlc.New(WrapDB(s.rdb))
+	q := dbsqlc.New(WrapDB(s.wdb))
 	rows, err := q.ListNodeIPsForNetwork(context.Background(), networkID)
 	if err != nil {
 		return 0, err

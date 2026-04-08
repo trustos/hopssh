@@ -91,3 +91,8 @@
 		transition: opacity 0.2s ease;
 	}
 }
+
+/* Terminal internal padding — FitAddon reads this automatically */
+.xterm {
+	padding: 12px 14px;
+}

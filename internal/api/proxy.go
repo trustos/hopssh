@@ -31,20 +31,52 @@ type ProxyHandler struct {
 	ForwardManager *mesh.ForwardManager
 	Networks       *db.NetworkStore
 	Nodes          *db.NodeStore
+	Members        *db.NetworkMemberStore
 	Audit          *db.AuditStore
 	AllowedOrigins []string // allowed WebSocket origins; empty = same-origin only
 	EventHub       *EventHub
 }
 
-// requireNode validates network ownership and returns the node.
+// requireNode validates network access (owner or member) and returns the node.
 func (h *ProxyHandler) requireNode(r *http.Request) (*db.Network, *db.Node, error) {
 	user := auth.UserFromContext(r.Context())
 	networkID := chi.URLParam(r, "networkID")
 	nodeID := chi.URLParam(r, "nodeID")
 
 	network, err := h.Networks.Get(networkID)
-	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
+	if err != nil || network == nil {
 		return nil, nil, fmt.Errorf("network not found")
+	}
+
+	membership, _ := h.Members.GetMembership(networkID, user.ID)
+	access := authz.CheckAccess(user, network, membership)
+	if !access.CanView() {
+		return nil, nil, fmt.Errorf("network not found")
+	}
+
+	node, err := h.Nodes.Get(nodeID)
+	if err != nil || node == nil || node.NetworkID != networkID {
+		return nil, nil, fmt.Errorf("node not found")
+	}
+
+	return network, node, nil
+}
+
+// requireAdmin validates network access and ensures the user is an admin.
+func (h *ProxyHandler) requireAdmin(r *http.Request) (*db.Network, *db.Node, error) {
+	user := auth.UserFromContext(r.Context())
+	networkID := chi.URLParam(r, "networkID")
+	nodeID := chi.URLParam(r, "nodeID")
+
+	network, err := h.Networks.Get(networkID)
+	if err != nil || network == nil {
+		return nil, nil, fmt.Errorf("network not found")
+	}
+
+	membership, _ := h.Members.GetMembership(networkID, user.ID)
+	access := authz.CheckAccess(user, network, membership)
+	if !access.CanAdmin() {
+		return nil, nil, fmt.Errorf("admin access required")
 	}
 
 	node, err := h.Nodes.Get(nodeID)
@@ -92,7 +124,9 @@ func (h *ProxyHandler) NodeHealth(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	// Update node status on successful health check.
-	h.Nodes.UpdateLastSeen(node.ID)
+	if err := h.Nodes.UpdateLastSeen(node.ID); err != nil {
+		log.Printf("[health] failed to update last_seen for %s: %v", node.ID, err)
+	}
 	if h.EventHub != nil {
 		h.EventHub.Publish(node.NetworkID, Event{Type: "node.status", Data: map[string]string{"nodeId": node.ID, "status": "online"}})
 	}
@@ -338,9 +372,14 @@ func (h *ProxyHandler) StopPortForward(w http.ResponseWriter, r *http.Request) {
 	networkID := chi.URLParam(r, "networkID")
 	fwdID := chi.URLParam(r, "fwdID")
 
-	// Verify the user owns this network before allowing stop.
+	// Verify the user can access this network before allowing stop.
 	network, err := h.Networks.Get(networkID)
-	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
+	if err != nil || network == nil {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return
+	}
+	membership, _ := h.Members.GetMembership(networkID, user.ID)
+	if !authz.CheckAccess(user, network, membership).CanView() {
 		http.Error(w, "network not found", http.StatusNotFound)
 		return
 	}
@@ -365,9 +404,14 @@ func (h *ProxyHandler) ListPortForwards(w http.ResponseWriter, r *http.Request) 
 	user := auth.UserFromContext(r.Context())
 	networkID := chi.URLParam(r, "networkID")
 
-	// Verify the user owns this network.
+	// Verify the user can access this network.
 	network, err := h.Networks.Get(networkID)
-	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
+	if err != nil || network == nil {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return
+	}
+	membership, _ := h.Members.GetMembership(networkID, user.ID)
+	if !authz.CheckAccess(user, network, membership).CanView() {
 		http.Error(w, "network not found", http.StatusNotFound)
 		return
 	}
@@ -394,7 +438,12 @@ func (h *ProxyHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
 	networkID := chi.URLParam(r, "networkID")
 
 	network, err := h.Networks.Get(networkID)
-	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
+	if err != nil || network == nil {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return
+	}
+	membership, _ := h.Members.GetMembership(networkID, user.ID)
+	if !authz.CheckAccess(user, network, membership).CanView() {
 		http.Error(w, "network not found", http.StatusNotFound)
 		return
 	}
@@ -442,9 +491,13 @@ func (h *ProxyHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
 // RenameNode updates a node's display name and DNS name.
 // PATCH /api/networks/{networkID}/nodes/{nodeID}
 func (h *ProxyHandler) RenameNode(w http.ResponseWriter, r *http.Request) {
-	network, node, err := h.requireNode(r)
+	network, node, err := h.requireAdmin(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		if err.Error() == "admin access required" {
+			http.Error(w, err.Error(), http.StatusForbidden)
+		} else {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		}
 		return
 	}
 
@@ -476,9 +529,13 @@ func (h *ProxyHandler) RenameNode(w http.ResponseWriter, r *http.Request) {
 // UpdateCapabilities changes a node's enabled capabilities. Admin only.
 // PUT /api/networks/{networkID}/nodes/{nodeID}/capabilities
 func (h *ProxyHandler) UpdateCapabilities(w http.ResponseWriter, r *http.Request) {
-	_, node, err := h.requireNode(r)
+	_, node, err := h.requireAdmin(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		if err.Error() == "admin access required" {
+			http.Error(w, err.Error(), http.StatusForbidden)
+		} else {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		}
 		return
 	}
 
@@ -513,9 +570,13 @@ func (h *ProxyHandler) UpdateCapabilities(w http.ResponseWriter, r *http.Request
 }
 
 func (h *ProxyHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
-	_, node, err := h.requireNode(r)
+	_, node, err := h.requireAdmin(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusNotFound)
+		if err.Error() == "admin access required" {
+			http.Error(w, err.Error(), http.StatusForbidden)
+		} else {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		}
 		return
 	}
 

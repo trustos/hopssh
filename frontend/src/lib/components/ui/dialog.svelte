@@ -42,12 +42,15 @@
 <svelte:window onkeydown={handleKeydown} />
 
 {#if open}
+	<!-- svelte-ignore a11y_click_events_have_key_events a11y_interactive_supports_focus -->
 	<div
 		class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 transition-opacity"
 		onclick={handleBackdropClick}
 		role="dialog"
 		aria-modal="true"
+		tabindex="-1"
 	>
+		<!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions -->
 		<div
 			bind:this={dialogEl}
 			class="w-full max-w-md rounded-lg border bg-card p-6 shadow-lg"

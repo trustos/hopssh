@@ -1,6 +1,7 @@
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import '@xterm/xterm/css/xterm.css';
 
 const RESIZE_PREFIX = 1;
 const MAX_RECONNECT_ATTEMPTS = 5;
@@ -8,6 +9,7 @@ const RECONNECT_DELAYS = [1000, 2000, 4000, 8000, 16000]; // ms, exponential
 
 export interface ShellConnection {
 	terminal: Terminal;
+	fit: () => void;
 	dispose: () => void;
 	reconnect: () => void;
 }
@@ -30,14 +32,17 @@ export function connectShell(
 
 	const terminal = new Terminal({
 		cursorBlink: true,
+		cursorStyle: 'bar',
+		cursorWidth: 2,
 		fontSize: 14,
 		fontFamily: "'JetBrains Mono', monospace",
+		scrollback: 5000,
 		theme: {
 			background: '#0a0e14',
 			foreground: '#d4d4d8',
 			cursor: '#22d3a0',
 			cursorAccent: '#0a0e14',
-			selectionBackground: '#22d3a033',
+			selectionBackground: '#22d3a044',
 			selectionForeground: '#ffffff',
 			// ANSI colors (One Dark inspired, with hopssh teal accent)
 			black: '#1e2028',
@@ -179,6 +184,9 @@ export function connectShell(
 
 	return {
 		terminal,
+		fit() {
+			fitAddon.fit();
+		},
 		reconnect() {
 			if (reconnectTimer) {
 				clearTimeout(reconnectTimer);
