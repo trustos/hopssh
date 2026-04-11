@@ -67,6 +67,7 @@ type enrollResponse struct {
 	ServerIP       string `json:"serverIP"`
 	NebulaIP       string `json:"nebulaIP"`
 	LighthousePort int    `json:"lighthousePort"`
+	LighthouseHost string `json:"lighthouseHost"`
 	DNSDomain      string `json:"dnsDomain"`
 }
 
@@ -250,6 +251,7 @@ func enrollFromBundle(path, endpoint string) {
 		ServerIP       string `json:"serverIP"`
 		NebulaIP       string `json:"nebulaIP"`
 		LighthousePort int    `json:"lighthousePort"`
+		LighthouseHost string `json:"lighthouseHost"`
 		DNSDomain      string `json:"dnsDomain"`
 		Endpoint       string `json:"endpoint"`
 	}
@@ -269,7 +271,10 @@ func enrollFromBundle(path, endpoint string) {
 	}
 
 	// Generate Nebula config from bundle data.
-	serverHost := extractHost(ep)
+	serverHost := bundleConfig.LighthouseHost
+	if serverHost == "" {
+		serverHost = extractHost(ep)
+	}
 	writeNebulaConfig(bundleConfig.ServerIP, serverHost, bundleConfig.LighthousePort)
 
 	installService()
@@ -299,7 +304,10 @@ func installCerts(er *enrollResponse, endpoint string) {
 
 	fmt.Printf("\n  ✓ Enrolled (%s)\n", er.NebulaIP)
 
-	serverHost := extractHost(endpoint)
+	serverHost := er.LighthouseHost
+	if serverHost == "" {
+		serverHost = extractHost(endpoint)
+	}
 	writeNebulaConfig(er.ServerIP, serverHost, er.LighthousePort)
 	installService()
 	fmt.Println("  ✓ Agent started")

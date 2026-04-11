@@ -68,6 +68,7 @@ func main() {
 	addr := flag.String("addr", envOrDefault("HOPSSH_ADDR", ":9473"), "Listen address (env: HOPSSH_ADDR)")
 	dataDir := flag.String("data", envOrDefault("HOPSSH_DATA", "./data"), "Data directory (env: HOPSSH_DATA)")
 	endpoint := flag.String("endpoint", envOrDefault("HOPSSH_ENDPOINT", ""), "Public URL of this server (env: HOPSSH_ENDPOINT, required)")
+	lighthouseHost := flag.String("lighthouse-host", envOrDefault("HOPSSH_LIGHTHOUSE_HOST", ""), "Public IP/host for Nebula lighthouse UDP (env: HOPSSH_LIGHTHOUSE_HOST)")
 	trustedProxy := flag.Bool("trusted-proxy", os.Getenv("HOPSSH_TRUSTED_PROXY") == "true", "Trust X-Forwarded-Proto header (env: HOPSSH_TRUSTED_PROXY)")
 	allowedOrigins := flag.String("allowed-origins", envOrDefault("HOPSSH_ALLOWED_ORIGINS", ""), "Comma-separated CORS origins (env: HOPSSH_ALLOWED_ORIGINS)")
 	flag.Parse()
@@ -148,7 +149,7 @@ func main() {
 	// Initialize handlers.
 	authH := &api.AuthHandler{Users: users, Sessions: sessions, Audit: audit}
 	networkH := &api.NetworkHandler{Networks: networks, Nodes: nodes, Members: members, NetworkManager: netMgr, ForwardManager: fwdMgr}
-	enrollH := &api.EnrollHandler{Networks: networks, Nodes: nodes, NetworkManager: netMgr, Endpoint: *endpoint}
+	enrollH := &api.EnrollHandler{Networks: networks, Nodes: nodes, NetworkManager: netMgr, Endpoint: *endpoint, LighthouseHost: *lighthouseHost}
 	proxyH := &api.ProxyHandler{
 		NetworkManager: netMgr,
 		ForwardManager: fwdMgr,

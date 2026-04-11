@@ -26,6 +26,7 @@ type EnrollHandler struct {
 	Nodes          *db.NodeStore
 	NetworkManager *mesh.NetworkManager
 	Endpoint       string // public URL of this server (e.g. "https://hopssh.com")
+	LighthouseHost string // public IP/host for Nebula lighthouse UDP (separate from HTTP endpoint)
 	EventHub       *EventHub
 }
 
@@ -172,7 +173,7 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		lighthousePort = int(*network.LighthousePort)
 	}
 
-	writeJSON(w, map[string]interface{}{
+	resp := map[string]interface{}{
 		"nodeId":         node.ID,
 		"caCert":         string(network.NebulaCACert),
 		"nodeCert":       string(nodeCert.CertPEM),
@@ -182,7 +183,11 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		"nebulaIP":       node.NebulaIP,
 		"lighthousePort": lighthousePort,
 		"dnsDomain":      network.DNSDomain,
-	})
+	}
+	if h.LighthouseHost != "" {
+		resp["lighthouseHost"] = h.LighthouseHost
+	}
+	writeJSON(w, resp)
 }
 
 // JoinNetwork allows a client device (laptop/phone) to join a mesh network.
@@ -274,7 +279,7 @@ func (h *EnrollHandler) JoinNetwork(w http.ResponseWriter, r *http.Request) {
 		lighthousePort = int(*network.LighthousePort)
 	}
 
-	writeJSON(w, map[string]interface{}{
+	resp := map[string]interface{}{
 		"nodeId":         nodeID,
 		"caCert":         string(network.NebulaCACert),
 		"nodeCert":       string(nodeCert.CertPEM),
@@ -284,7 +289,11 @@ func (h *EnrollHandler) JoinNetwork(w http.ResponseWriter, r *http.Request) {
 		"nebulaIP":       node.NebulaIP,
 		"lighthousePort": lighthousePort,
 		"dnsDomain":      network.DNSDomain,
-	})
+	}
+	if h.LighthouseHost != "" {
+		resp["lighthouseHost"] = h.LighthouseHost
+	}
+	writeJSON(w, resp)
 }
 
 func generateToken() string {

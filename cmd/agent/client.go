@@ -27,6 +27,7 @@ type joinResponse struct {
 	ServerIP       string `json:"serverIP"`
 	NebulaIP       string `json:"nebulaIP"`
 	LighthousePort int    `json:"lighthousePort"`
+	LighthouseHost string `json:"lighthouseHost"`
 	DNSDomain      string `json:"dnsDomain"`
 }
 
@@ -101,7 +102,10 @@ func runClientJoin(args []string) {
 	writeFileSecure(filepath.Join(clientDir, "node-id"), []byte(jr.NodeID), 0600)
 
 	// Generate Nebula config for client mode.
-	serverHost := extractHost(*endpoint)
+	serverHost := jr.LighthouseHost
+	if serverHost == "" {
+		serverHost = extractHost(*endpoint)
+	}
 	writeClientNebulaConfig(jr.ServerIP, serverHost, jr.LighthousePort)
 
 	fmt.Printf("\n  ✓ Joined network (%s)\n", jr.NebulaIP)

@@ -17,28 +17,67 @@ import (
 )
 
 // runHeartbeat sends periodic heartbeats to the control plane so the
-// dashboard shows the node as "online". Runs every 5 minutes.
+// dashboard shows the node as "online".
+//
+// Normal mode: every 5 minutes. On failure: fast retry with exponential
+// backoff (5s → 10s → 20s → ... → 2m cap) so agents recover within seconds
+// of a server redeploy. All intervals include ±10% jitter to prevent
+// thundering herd across agents.
 func runHeartbeat(ctx context.Context, endpoint, nodeID, agentToken string) {
-	// Send initial heartbeat immediately.
-	sendHeartbeat(endpoint, nodeID, agentToken)
+	const (
+		normalInterval = 5 * time.Minute
+		initialRetry   = 5 * time.Second
+		maxRetry       = 2 * time.Minute
+	)
 
-	ticker := time.NewTicker(5 * time.Minute)
-	defer ticker.Stop()
+	// Send initial heartbeat immediately.
+	failing := sendHeartbeat(endpoint, nodeID, agentToken) != nil
+	retryInterval := initialRetry
+
+	next := normalInterval
+	if failing {
+		next = initialRetry
+	}
+
+	timer := time.NewTimer(addJitter(next))
+	defer timer.Stop()
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			sendHeartbeat(endpoint, nodeID, agentToken)
+		case <-timer.C:
+			err := sendHeartbeat(endpoint, nodeID, agentToken)
+
+			if err != nil {
+				if !failing {
+					failing = true
+					retryInterval = initialRetry
+					log.Printf("[heartbeat] failed, switching to fast retry: %v", err)
+				} else {
+					retryInterval *= 2
+					if retryInterval > maxRetry {
+						retryInterval = maxRetry
+					}
+				}
+				timer.Reset(addJitter(retryInterval))
+			} else {
+				if failing {
+					log.Printf("[heartbeat] recovered after retry")
+					failing = false
+					retryInterval = initialRetry
+				}
+				timer.Reset(addJitter(normalInterval))
+			}
 		}
 	}
 }
 
-func sendHeartbeat(endpoint, nodeID, agentToken string) {
+func sendHeartbeat(endpoint, nodeID, agentToken string) error {
 	reqBody := fmt.Sprintf(`{"nodeId":%q}`, nodeID)
 	req, err := http.NewRequest("POST", endpoint+"/api/heartbeat", strings.NewReader(reqBody))
 	if err != nil {
-		return
+		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+agentToken)
@@ -46,14 +85,16 @@ func sendHeartbeat(endpoint, nodeID, agentToken string) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
-		log.Printf("[heartbeat] failed: %v", err)
-		return
+		return fmt.Errorf("request failed: %w", err)
 	}
 	resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
-		log.Printf("[heartbeat] node deleted or token revoked")
-		return
+		log.Fatal("[heartbeat] node has been deleted or token revoked — shutting down")
 	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	}
+	return nil
 }
 
 // runCertRenewal runs a background loop that renews the Nebula certificate
@@ -178,6 +219,12 @@ func renewCert(endpoint, nodeID, agentToken string) error {
 
 	log.Printf("[renew] certificate renewed successfully")
 	return nil
+}
+
+// addJitter applies ±10% random jitter to a duration to spread agent load.
+func addJitter(d time.Duration) time.Duration {
+	jitter := time.Duration(float64(d) * 0.1 * (2*rand.Float64() - 1))
+	return d + jitter
 }
 
 // atomicWrite writes data to a temp file then renames it to the target path.
