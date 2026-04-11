@@ -13,11 +13,13 @@ COPY frontend/ .
 RUN npm run build
 
 # --- Go build stage ---
-FROM golang:1.25-bookworm AS builder
+FROM golang:1.25.8-bookworm AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends patch && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
-RUN make patch-vendor
+RUN go mod vendor && make patch-vendor
 COPY --from=frontend /frontend/build ./internal/frontend/dist/
 
 ARG VERSION=dev
