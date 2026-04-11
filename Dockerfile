@@ -17,7 +17,7 @@ FROM golang:1.25-bookworm AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends patch && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
-RUN make setup
+RUN make patch-vendor
 COPY --from=frontend /frontend/build ./internal/frontend/dist/
 
 ARG VERSION=dev
