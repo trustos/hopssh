@@ -20,7 +20,7 @@ import (
 	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/mesh"
 
-	_ "github.com/trustos/hopssh/docs" // swagger generated docs
+	_ "github.com/trustos/hopssh/swagger" // swagger generated docs
 )
 
 // @title        hopssh API
