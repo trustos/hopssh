@@ -242,6 +242,75 @@ func (nm *NetworkManager) StartIdleReaper(ctx context.Context, interval, idleThr
 	log.Printf("[mesh] idle reaper started (check every %s, threshold %s)", interval, idleThreshold)
 }
 
+// StartMeshKeepalive runs a background goroutine that periodically dials each
+// online agent through the mesh. This generates real Nebula tunnel traffic,
+// keeping NAT mappings alive and preventing tunnels from going "dead" when
+// there is no application traffic (e.g., idle terminal sessions).
+func (nm *NetworkManager) StartMeshKeepalive(ctx context.Context, nodes *db.NodeStore, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				nm.keepaliveOnlineNodes(ctx, nodes)
+			}
+		}
+	}()
+	log.Printf("[mesh] keepalive started (every %s)", interval)
+}
+
+func (nm *NetworkManager) keepaliveOnlineNodes(ctx context.Context, nodes *db.NodeStore) {
+	nm.mu.RLock()
+	var networkIDs []string
+	for id, inst := range nm.instances {
+		if inst != nil {
+			networkIDs = append(networkIDs, id)
+		}
+	}
+	nm.mu.RUnlock()
+
+	cutoff := time.Now().Unix() - 600 // only ping nodes seen in last 10 minutes
+
+	for _, networkID := range networkIDs {
+		inst, err := nm.GetInstance(networkID)
+		if err != nil {
+			continue
+		}
+
+		nodeList, err := nodes.ListForNetwork(networkID)
+		if err != nil {
+			continue
+		}
+
+		for _, node := range nodeList {
+			if node.Status == "pending" || node.NebulaIP == "" {
+				continue
+			}
+			if node.LastSeenAt == nil || *node.LastSeenAt < cutoff {
+				continue
+			}
+
+			ip := parseNodeIPForDNS(node.NebulaIP)
+			if ip == nil {
+				continue
+			}
+
+			// TCP dial through the mesh and immediately close.
+			// This sends real packets that keep the NAT mapping alive.
+			dialCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			conn, err := inst.Dial(dialCtx, ip.String())
+			cancel()
+			if err != nil {
+				continue // non-fatal: node may have just gone offline
+			}
+			conn.Close()
+		}
+	}
+}
+
 func (nm *NetworkManager) reapIdleInstances(threshold time.Duration) {
 	nm.mu.RLock()
 	var candidates []string

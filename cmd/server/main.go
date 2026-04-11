@@ -144,6 +144,9 @@ func main() {
 	defer reaperCancel()
 	netMgr.StartIdleReaper(reaperCtx, 15*time.Minute, 2*time.Hour)
 
+	// Mesh keepalive: dial online agents every 30s to keep NAT mappings alive.
+	netMgr.StartMeshKeepalive(reaperCtx, nodes, 30*time.Second)
+
 	fwdMgr := mesh.NewForwardManager(netMgr)
 
 	// Initialize handlers.
