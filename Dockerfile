@@ -13,7 +13,7 @@ COPY frontend/ .
 RUN npm run build
 
 # --- Go build stage ---
-FROM golang:1.24-bookworm AS builder
+FROM golang:1.25-bookworm AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends patch && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY . .
