@@ -140,6 +140,7 @@ func (nm *NetworkManager) StartNetwork(n *db.Network) error {
 
 // GetInstance returns the running NetworkInstance for a network.
 // If the instance was reaped due to inactivity, it is lazily restarted.
+// Uses a nil-sentinel pattern (same as StartNetwork) to prevent concurrent restarts.
 func (nm *NetworkManager) GetInstance(networkID string) (*NetworkInstance, error) {
 	nm.mu.RLock()
 	inst, ok := nm.instances[networkID]
@@ -149,14 +150,38 @@ func (nm *NetworkManager) GetInstance(networkID string) (*NetworkInstance, error
 		return inst, nil
 	}
 
-	// Lazy restart: instance may have been reaped. Try to start it.
+	// Acquire write lock and double-check — another goroutine may have started it.
+	nm.mu.Lock()
+	inst, ok = nm.instances[networkID]
+	if ok && inst != nil {
+		nm.mu.Unlock()
+		return inst, nil
+	}
+	if ok {
+		// nil sentinel: another goroutine is already starting this instance.
+		nm.mu.Unlock()
+		return nil, fmt.Errorf("lighthouse for network %s is starting, retry shortly", networkID)
+	}
+
+	// Lazy restart: fetch network from DB.
 	n, err := nm.networks.Get(networkID)
 	if err != nil || n == nil || n.LighthousePort == nil {
+		nm.mu.Unlock()
 		return nil, fmt.Errorf("no lighthouse running for network %s", networkID)
 	}
 
+	// Plant nil sentinel to block concurrent restarts.
+	nm.instances[networkID] = nil
+	nm.mu.Unlock()
+
 	log.Printf("[mesh] lazy-restarting lighthouse for network %s (was reaped)", n.Slug)
 	if err := nm.startInstance(n); err != nil {
+		// Clean up sentinel on failure.
+		nm.mu.Lock()
+		if nm.instances[networkID] == nil {
+			delete(nm.instances, networkID)
+		}
+		nm.mu.Unlock()
 		return nil, fmt.Errorf("failed to restart lighthouse: %w", err)
 	}
 	nm.RefreshDNS(networkID)
@@ -237,7 +262,16 @@ func (nm *NetworkManager) reapIdleInstances(threshold time.Duration) {
 			continue
 		}
 		if count == 0 {
-			log.Printf("[mesh] reaping idle network %s (no non-pending nodes)", networkID)
+			// No non-pending nodes, but if any nodes exist at all
+			// (pending/enrolled), keep the lighthouse so they can connect.
+			total, err := nm.nodes.CountForNetwork(networkID)
+			if err != nil {
+				continue
+			}
+			if total > 0 {
+				continue
+			}
+			log.Printf("[mesh] reaping idle network %s (no nodes at all)", networkID)
 			nm.StopNetwork(networkID)
 			continue
 		}
