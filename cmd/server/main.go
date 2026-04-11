@@ -164,12 +164,14 @@ func main() {
 		Networks:       networks,
 		Nodes:          nodes,
 		NetworkManager: netMgr,
+		LighthouseHost: *lighthouseHost,
 	}
 	bundleH := &api.BundleHandler{
-		Networks: networks,
-		Nodes:    nodes,
-		Bundles:  bundles,
-		Endpoint: *endpoint,
+		Networks:       networks,
+		Nodes:          nodes,
+		Bundles:        bundles,
+		Endpoint:       *endpoint,
+		LighthouseHost: *lighthouseHost,
 	}
 
 	renewH := &api.RenewHandler{Networks: networks, Nodes: nodes}

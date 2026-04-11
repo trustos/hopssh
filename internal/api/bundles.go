@@ -20,10 +20,11 @@ const bundleCertDuration = 24 * time.Hour // short-lived, auto-renewed by agent
 
 // BundleHandler manages enrollment bundle generation and download.
 type BundleHandler struct {
-	Networks *db.NetworkStore
-	Nodes    *db.NodeStore
-	Bundles  *db.BundleStore
-	Endpoint string
+	Networks       *db.NetworkStore
+	Nodes          *db.NodeStore
+	Bundles        *db.BundleStore
+	Endpoint       string
+	LighthouseHost string
 }
 
 // CreateBundle generates a pre-enrolled node and a downloadable bundle.
@@ -148,6 +149,10 @@ func (h *BundleHandler) DownloadBundle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build the config file content.
+	lighthouseHostJSON := ""
+	if h.LighthouseHost != "" {
+		lighthouseHostJSON = fmt.Sprintf(",\n  \"lighthouseHost\": %q", h.LighthouseHost)
+	}
 	config := fmt.Sprintf(`{
   "nodeId": %q,
   "networkId": %q,
@@ -156,9 +161,9 @@ func (h *BundleHandler) DownloadBundle(w http.ResponseWriter, r *http.Request) {
   "nebulaIP": %q,
   "lighthousePort": %d,
   "dnsDomain": %q,
-  "endpoint": %q
+  "endpoint": %q%s
 }
-`, node.ID, node.NetworkID, node.AgentToken, serverIP.Addr().String(), node.NebulaIP, lighthousePort, network.DNSDomain, h.Endpoint)
+`, node.ID, node.NetworkID, node.AgentToken, serverIP.Addr().String(), node.NebulaIP, lighthousePort, network.DNSDomain, h.Endpoint, lighthouseHostJSON)
 
 	// Write tarball.
 	w.Header().Set("Content-Type", "application/gzip")

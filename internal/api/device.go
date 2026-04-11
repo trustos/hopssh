@@ -24,6 +24,7 @@ type DeviceHandler struct {
 	Networks       *db.NetworkStore
 	Nodes          *db.NodeStore
 	NetworkManager *mesh.NetworkManager
+	LighthouseHost string
 	EventHub       *EventHub
 }
 
@@ -178,7 +179,7 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		lighthousePort = int(*network.LighthousePort)
 	}
 
-	writeJSON(w, map[string]interface{}{
+	resp := map[string]interface{}{
 		"nodeId":         nodeID,
 		"caCert":         string(network.NebulaCACert),
 		"nodeCert":       string(nodeCert.CertPEM),
@@ -188,7 +189,11 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		"nebulaIP":       node.NebulaIP,
 		"lighthousePort": lighthousePort,
 		"dnsDomain":      network.DNSDomain,
-	})
+	}
+	if h.LighthouseHost != "" {
+		resp["lighthouseHost"] = h.LighthouseHost
+	}
+	writeJSON(w, resp)
 }
 
 // Authorize is called by the browser when the user enters the user code.
