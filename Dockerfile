@@ -4,16 +4,16 @@
 #   docker build -t hopssh .
 #   docker run -p 9473:9473 -p 42001-42100:42001-42100/udp -v hopssh-data:/data -e HOPSSH_ENDPOINT=http://YOUR_IP:9473 hopssh
 
-# --- Frontend build stage ---
-FROM node:22-slim AS frontend
+# --- Frontend build stage (native — output is platform-independent) ---
+FROM --platform=$BUILDPLATFORM node:22-slim AS frontend
 WORKDIR /frontend
 COPY frontend/package*.json ./
 RUN npm ci
 COPY frontend/ .
 RUN npm run build
 
-# --- Go build stage ---
-FROM golang:1.25.8-bookworm AS builder
+# --- Go build stage (native — cross-compile for target arch) ---
+FROM --platform=$BUILDPLATFORM golang:1.25.8-bookworm AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends patch && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -24,7 +24,8 @@ COPY --from=frontend /frontend/build ./internal/frontend/dist/
 
 ARG VERSION=dev
 ARG COMMIT=unknown
-RUN CGO_ENABLED=0 GOOS=linux go build -mod=vendor -trimpath \
+ARG TARGETARCH
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -mod=vendor -trimpath \
     -ldflags="-s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=${VERSION} -X github.com/trustos/hopssh/internal/buildinfo.Commit=${COMMIT}" \
     -o /out/hop-server ./cmd/server
 
