@@ -25,6 +25,13 @@
 	onMount(() => {
 		theme.init();
 		auth.init();
+
+		// Register Service Worker for proxy URL rewriting.
+		// The SW intercepts requests from proxy tabs and rewrites absolute paths
+		// to include the proxy prefix so proxied web apps load correctly.
+		if ('serviceWorker' in navigator) {
+			navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
+		}
 	});
 
 	// Auth guard: redirect unauthenticated users to login, authenticated users away from login.

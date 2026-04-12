@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -493,32 +494,50 @@ func (h *ProxyHandler) NodeProxy(w http.ResponseWriter, r *http.Request) {
 				return inst.Dial(ctx, nodeIP)
 			},
 		},
-		// Rewrite Location headers so redirects stay within the proxy prefix.
-		// e.g., "Location: /ui/" → "Location: /api/networks/.../proxy/4646/ui/"
 		ModifyResponse: func(resp *http.Response) error {
-			location := resp.Header.Get("Location")
-			if location == "" {
-				return nil
-			}
-			// Absolute path redirect (e.g., "/ui/").
-			if strings.HasPrefix(location, "/") {
-				resp.Header.Set("Location", proxyPrefix+location)
-				return nil
-			}
-			// Full URL redirect to localhost (e.g., "http://127.0.0.1:4646/ui/").
-			for _, prefix := range []string{
-				fmt.Sprintf("http://127.0.0.1:%d", port),
-				fmt.Sprintf("http://localhost:%d", port),
-			} {
-				if strings.HasPrefix(location, prefix) {
-					path := strings.TrimPrefix(location, prefix)
-					if path == "" {
-						path = "/"
+			// Rewrite Location headers so redirects stay within the proxy prefix.
+			if location := resp.Header.Get("Location"); location != "" {
+				if strings.HasPrefix(location, "/") {
+					resp.Header.Set("Location", proxyPrefix+location)
+				} else {
+					for _, lhPrefix := range []string{
+						fmt.Sprintf("http://127.0.0.1:%d", port),
+						fmt.Sprintf("http://localhost:%d", port),
+					} {
+						if strings.HasPrefix(location, lhPrefix) {
+							path := strings.TrimPrefix(location, lhPrefix)
+							if path == "" {
+								path = "/"
+							}
+							resp.Header.Set("Location", proxyPrefix+path)
+							break
+						}
 					}
-					resp.Header.Set("Location", proxyPrefix+path)
-					return nil
 				}
 			}
+
+			// For HTML responses, inject the SW bootstrap + WebSocket patch script.
+			// This ensures proxied web apps load correctly even on first visit
+			// (no SW active yet) and that WebSocket URLs are rewritten (SW can't
+			// intercept WebSocket connections).
+			ct := resp.Header.Get("Content-Type")
+			if !strings.Contains(ct, "text/html") {
+				return nil
+			}
+
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if err != nil {
+				return err
+			}
+
+			snippet := []byte(proxyBootstrapSnippet(proxyPrefix))
+			modified := injectIntoHead(body, snippet)
+
+			resp.Body = io.NopCloser(bytes.NewReader(modified))
+			resp.ContentLength = int64(len(modified))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(modified)))
+
 			return nil
 		},
 		FlushInterval: -1,
@@ -534,6 +553,70 @@ func (h *ProxyHandler) NodeProxy(w http.ResponseWriter, r *http.Request) {
 func isWSUpgrade(r *http.Request) bool {
 	return strings.EqualFold(r.Header.Get("Connection"), "upgrade") &&
 		strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+}
+
+// proxyBootstrapSnippet returns a <script> tag that bootstraps the Service Worker
+// for proxy URL rewriting and monkey-patches WebSocket for the proxied app.
+func proxyBootstrapSnippet(proxyPrefix string) string {
+	return `<script>(function(){
+var B="` + proxyPrefix + `";
+if(!("serviceWorker"in navigator))return;
+navigator.serviceWorker.register("/sw.js",{scope:"/"}).then(function(r){
+if(navigator.serviceWorker.controller){
+navigator.serviceWorker.controller.postMessage({type:"SET_PROXY_BASE",proxyBase:B});
+return;
+}
+var s=r.installing||r.waiting||r.active;
+if(!s)return;
+if(s.state==="activated"){location.reload();return;}
+s.addEventListener("statechange",function(){if(s.state==="activated")location.reload();});
+});
+var O=window.WebSocket;
+window.WebSocket=function(u,p){
+if(u&&typeof u==="string"){
+try{var x=new URL(u,location.href);
+if(x.origin===location.origin&&!x.pathname.startsWith("/api/")){x.pathname=B+x.pathname;u=x.toString();}
+}catch(e){}
+var m=u.match(/^wss?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/.*)?$/);
+if(m){var pa=m[3]||"/";u=(location.protocol==="https:"?"wss:":"ws:")+"//"+location.host+B+pa;}
+}
+return p!==undefined?new O(u,p):new O(u);
+};
+window.WebSocket.prototype=O.prototype;
+window.WebSocket.CONNECTING=O.CONNECTING;
+window.WebSocket.OPEN=O.OPEN;
+window.WebSocket.CLOSING=O.CLOSING;
+window.WebSocket.CLOSED=O.CLOSED;
+})();</script>`
+}
+
+// injectIntoHead inserts a snippet after the <head> tag in an HTML document.
+// Falls back to prepending if no <head> tag is found.
+func injectIntoHead(html, snippet []byte) []byte {
+	lower := bytes.ToLower(html)
+	idx := bytes.Index(lower, []byte("<head>"))
+	if idx >= 0 {
+		insertAt := idx + len("<head>")
+		result := make([]byte, 0, len(html)+len(snippet))
+		result = append(result, html[:insertAt]...)
+		result = append(result, snippet...)
+		result = append(result, html[insertAt:]...)
+		return result
+	}
+	// Also try <head with attributes (e.g., <head lang="en">).
+	idx = bytes.Index(lower, []byte("<head"))
+	if idx >= 0 {
+		closeIdx := bytes.IndexByte(lower[idx:], '>')
+		if closeIdx >= 0 {
+			insertAt := idx + closeIdx + 1
+			result := make([]byte, 0, len(html)+len(snippet))
+			result = append(result, html[:insertAt]...)
+			result = append(result, snippet...)
+			result = append(result, html[insertAt:]...)
+			return result
+		}
+	}
+	return append(snippet, html...)
 }
 
 // proxyNodeWebSocket relays a WebSocket connection through the mesh to the agent's proxy endpoint.
