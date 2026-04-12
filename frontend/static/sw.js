@@ -139,8 +139,12 @@ async function handleFetch(event) {
     credentials: 'include',
     redirect: event.request.redirect,
   };
+  // Force 'same-origin' mode for all non-navigate rewritten requests.
+  // Original <script>/<link> tags use 'no-cors' which can cause the browser
+  // to strip cookies even with credentials:'include'. Since rewritten requests
+  // are always same-origin, 'same-origin' mode ensures cookies are sent.
   if (event.request.mode !== 'navigate') {
-    init.mode = event.request.mode;
+    init.mode = 'same-origin';
   }
   if (event.request.method !== 'GET' && event.request.method !== 'HEAD') {
     init.body = event.request.body;

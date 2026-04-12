@@ -21,11 +21,19 @@
       });
       return;
     }
-    // First visit: SW not yet controlling. Wait for activation, then reload.
+    // First visit: SW not yet controlling. Wait for activation, then reload once.
+    // Guard with sessionStorage to prevent reload loops.
+    var reloadKey = 'sw-bootstrap-reload';
+    if (sessionStorage.getItem(reloadKey)) {
+      // Already reloaded once — don't loop. SW should be controlling now.
+      sessionStorage.removeItem(reloadKey);
+      return;
+    }
     var sw = r.installing || r.waiting || r.active;
     if (!sw) return;
     function onActive() {
       navigator.serviceWorker.ready.then(function () {
+        sessionStorage.setItem(reloadKey, '1');
         location.reload();
       });
     }
