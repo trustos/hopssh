@@ -130,10 +130,13 @@ async function handleFetch(event) {
   var rewrittenUrl = new URL(rewrittenPath + url.search, self.location.origin);
 
   // Build a clean Request init.
+  // Always use credentials:'include' — the proxied app may not send cookies
+  // (e.g., Nomad uses 'omit'), but the hopssh proxy endpoint requires the
+  // session cookie for authentication.
   var init = {
     method: event.request.method,
     headers: event.request.headers,
-    credentials: event.request.credentials,
+    credentials: 'include',
     redirect: event.request.redirect,
   };
   if (event.request.mode !== 'navigate') {
