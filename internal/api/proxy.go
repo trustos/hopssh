@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -525,7 +526,18 @@ func (h *ProxyHandler) NodeProxy(w http.ResponseWriter, r *http.Request) {
 				return nil
 			}
 
-			body, err := io.ReadAll(resp.Body)
+			// Decompress if needed — we must modify the raw HTML.
+			bodyReader := resp.Body
+			encoding := resp.Header.Get("Content-Encoding")
+			if encoding == "gzip" {
+				gr, err := gzip.NewReader(bodyReader)
+				if err != nil {
+					return nil // can't decompress, skip injection
+				}
+				bodyReader = gr
+			}
+
+			body, err := io.ReadAll(bodyReader)
 			resp.Body.Close()
 			if err != nil {
 				return err
@@ -534,6 +546,9 @@ func (h *ProxyHandler) NodeProxy(w http.ResponseWriter, r *http.Request) {
 			snippet := []byte(proxyBootstrapSnippet(proxyPrefix))
 			modified := injectIntoHead(body, snippet)
 
+			// Serve uncompressed — removes Content-Encoding so the browser
+			// reads the plain HTML directly.
+			resp.Header.Del("Content-Encoding")
 			resp.Body = io.NopCloser(bytes.NewReader(modified))
 			resp.ContentLength = int64(len(modified))
 			resp.Header.Set("Content-Length", strconv.Itoa(len(modified)))
