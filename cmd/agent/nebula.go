@@ -156,12 +156,11 @@ func readMeshIPFromCert(nebulaConfigPath string) (string, error) {
 }
 
 // readTunMode reads the persisted TUN mode from the config directory.
-// If no file exists, auto-detects: root → kernel, non-root → userspace.
+// If no file exists, auto-detects: root/admin → kernel, non-root → userspace.
 func readTunMode() string {
 	data, err := os.ReadFile(filepath.Join(configDir, "tun-mode"))
 	if err != nil {
-		// Auto-detect: root gets kernel TUN, non-root gets userspace.
-		if os.Getuid() == 0 {
+		if isPrivileged() {
 			return "kernel"
 		}
 		return "userspace"

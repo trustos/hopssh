@@ -74,15 +74,15 @@ func runAgentInstall(args []string) {
 	case "linux":
 		installAgentSystemd()
 	case "darwin":
-		if os.Getuid() == 0 {
+		if isPrivileged() {
 			installAgentLaunchd()
 		} else {
 			installAgentLaunchdUser()
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "Error: Unsupported operating system: %s\n", runtime.GOOS)
-		fmt.Fprintf(os.Stderr, "Start manually: hop-agent serve\n")
-		os.Exit(1)
+		fmt.Printf("  Service auto-install not supported on %s.\n", runtime.GOOS)
+		fmt.Println("  Start manually: hop-agent serve")
+		fmt.Println("  Or create a Windows service: sc create hop-agent binPath=\"C:\\Windows\\System32\\hop-agent.exe serve\"")
 	}
 }
 

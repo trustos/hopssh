@@ -92,10 +92,10 @@ func runEnroll(args []string) {
 	fs.Parse(args)
 	skipService = *noService
 
-	// Auto-detect TUN mode: root gets kernel TUN (real OS interface), non-root gets userspace.
+	// Auto-detect TUN mode: root/admin gets kernel TUN (real OS interface), non-root gets userspace.
 	resolved := *tunMode
 	if resolved == "" {
-		if os.Getuid() == 0 {
+		if isPrivileged() {
 			resolved = "kernel"
 		} else {
 			resolved = "userspace"
