@@ -340,7 +340,7 @@ func writeNebulaConfig(serverIP, serverHost string, lighthousePort int, tunMode 
 
 	tunConfig := "  user: true"
 	if tunMode == "kernel" {
-		tunConfig = "  mtu: 1300"
+		tunConfig = "  dev: nebula1\n  mtu: 1300"
 	}
 
 	nebulaConfig := fmt.Sprintf(`pki:

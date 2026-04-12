@@ -82,7 +82,8 @@ func runAgentInstall(args []string) {
 	default:
 		fmt.Printf("  Service auto-install not supported on %s.\n", runtime.GOOS)
 		fmt.Println("  Start manually: hop-agent serve")
-		fmt.Println("  Or create a Windows service: sc create hop-agent binPath=\"C:\\Windows\\System32\\hop-agent.exe serve\"")
+		fmt.Println("  Or create a Windows service (use sc.exe, not sc — PowerShell aliases sc to Set-Content):")
+		fmt.Println("    sc.exe create hop-agent binPath= \"C:\\Windows\\System32\\hop-agent.exe serve\"")
 	}
 }
 
