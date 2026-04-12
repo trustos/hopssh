@@ -51,8 +51,8 @@ self.addEventListener('fetch', function (event) {
   // Never rewrite API routes — they already include the proxy prefix.
   if (url.pathname.startsWith('/api/')) return;
 
-  // Never rewrite SvelteKit internals or the SW itself.
-  if (url.pathname.startsWith('/_app/') || url.pathname === '/sw.js') return;
+  // Never rewrite SvelteKit internals, SW, or bootstrap script.
+  if (url.pathname.startsWith('/_app/') || url.pathname === '/sw.js' || url.pathname === '/sw-bootstrap.js') return;
 
   // Never rewrite known hopssh static assets.
   if (url.pathname === '/favicon.svg' || url.pathname === '/robots.txt' || url.pathname === '/logo.svg') return;

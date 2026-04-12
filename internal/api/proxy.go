@@ -526,11 +526,8 @@ func (h *ProxyHandler) NodeProxy(w http.ResponseWriter, r *http.Request) {
 				return nil
 			}
 
-			// Strip CSP — the original policy was designed for the app's own
-			// origin, not for a reverse proxy. Our injected bootstrap script
-			// would be blocked by script-src 'self' since it's inline.
-			resp.Header.Del("Content-Security-Policy")
-			resp.Header.Del("Content-Security-Policy-Report-Only")
+			// No need to strip CSP — we inject an external <script src> tag
+			// which is allowed by script-src 'self' (same-origin).
 
 			// Decompress if needed — we must modify the raw HTML.
 			bodyReader := resp.Body
@@ -576,42 +573,12 @@ func isWSUpgrade(r *http.Request) bool {
 		strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
 }
 
-// proxyBootstrapSnippet returns a <script> tag that bootstraps the Service Worker
-// for proxy URL rewriting and monkey-patches WebSocket for the proxied app.
+// proxyBootstrapSnippet returns a <script src> tag that loads the external
+// bootstrap script. Using an external script (not inline) ensures compatibility
+// with any Content-Security-Policy — CSP's script-src 'self' allows same-origin
+// external scripts, so this works universally without modifying the app's CSP.
 func proxyBootstrapSnippet(proxyPrefix string) string {
-	return `<script>(function(){
-var B="` + proxyPrefix + `";
-if(!("serviceWorker"in navigator))return;
-navigator.serviceWorker.register("/sw.js",{scope:"/"}).then(function(r){
-if(navigator.serviceWorker.controller){
-navigator.serviceWorker.controller.postMessage({type:"SET_PROXY_BASE",proxyBase:B});
-return;
-}
-var s=r.installing||r.waiting||r.active;
-if(!s)return;
-function onActive(){
-navigator.serviceWorker.ready.then(function(){location.reload();});
-}
-if(s.state==="activated"){onActive();return;}
-s.addEventListener("statechange",function(){if(s.state==="activated")onActive();});
-});
-var O=window.WebSocket;
-window.WebSocket=function(u,p){
-if(u&&typeof u==="string"){
-try{var x=new URL(u,location.href);
-if(x.origin===location.origin&&!x.pathname.startsWith("/api/")){x.pathname=B+x.pathname;u=x.toString();}
-}catch(e){}
-var m=u.match(/^wss?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/.*)?$/);
-if(m){var pa=m[3]||"/";u=(location.protocol==="https:"?"wss:":"ws:")+"//"+location.host+B+pa;}
-}
-return p!==undefined?new O(u,p):new O(u);
-};
-window.WebSocket.prototype=O.prototype;
-window.WebSocket.CONNECTING=O.CONNECTING;
-window.WebSocket.OPEN=O.OPEN;
-window.WebSocket.CLOSING=O.CLOSING;
-window.WebSocket.CLOSED=O.CLOSED;
-})();</script>`
+	return fmt.Sprintf(`<script src="/sw-bootstrap.js?base=%s"></script>`, proxyPrefix)
 }
 
 // injectIntoHead inserts a snippet after the <head> tag in an HTML document.
