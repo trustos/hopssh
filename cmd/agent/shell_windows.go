@@ -79,9 +79,12 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 	}
 	defer attrList.Delete()
 
+	// The ConPTY API expects the HPCON handle value as lpValue directly,
+	// not a pointer to it. Convert uintptr→unsafe.Pointer via double-cast
+	// to avoid go vet's uintptr-to-Pointer conversion warning.
 	if err := attrList.Update(
 		windows.PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE,
-		unsafe.Pointer(&hpc),
+		*(*unsafe.Pointer)(unsafe.Pointer(&hpc)),
 		unsafe.Sizeof(hpc),
 	); err != nil {
 		log.Printf("[shell] UpdateProcThreadAttribute failed: %v", err)
@@ -129,10 +132,11 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[shell] started %s (PID %d)", shell, pi.ProcessId)
 
-	// Close only the PTY-side read end of the input pipe.
-	// Keep ptyOut open — closing it would break the output pipe before
-	// ConPTY has written anything (ConPTY may not duplicate handles).
+	// Close the PTY-side pipe ends. ConPTY duplicates these internally,
+	// and closing them here ensures ReadFile(pipeIn) gets EOF when the
+	// ConPTY closes (no extra writer keeping the pipe alive).
 	closeHandle(&ptyIn)
+	closeHandle(&ptyOut)
 
 	done := make(chan struct{})
 
