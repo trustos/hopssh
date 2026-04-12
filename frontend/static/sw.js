@@ -61,16 +61,22 @@ async function handleFetch(event) {
     self.location.origin
   );
 
-  const newRequest = new Request(rewrittenUrl, {
+  // Build a clean Request init — avoid mode:'navigate' (not allowed in
+  // constructed Requests) and add duplex:'half' for streaming bodies.
+  var init = {
     method: event.request.method,
     headers: event.request.headers,
-    body: event.request.body,
-    mode: event.request.mode,
     credentials: event.request.credentials,
     redirect: event.request.redirect,
-    referrer: event.request.referrer,
-    signal: event.request.signal,
-  });
+  };
+  if (event.request.mode !== 'navigate') {
+    init.mode = event.request.mode;
+  }
+  if (event.request.method !== 'GET' && event.request.method !== 'HEAD') {
+    init.body = event.request.body;
+    init.duplex = 'half';
+  }
+  var newRequest = new Request(rewrittenUrl, init);
 
   return fetch(newRequest);
 }
