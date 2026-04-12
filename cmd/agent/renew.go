@@ -237,7 +237,7 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 }
 
 // reloadNebula restarts the embedded Nebula instance to pick up new certs.
-// Since the agent embeds Nebula in-process, we restart our own Nebula service.
+// Supports both userspace and kernel TUN modes.
 func reloadNebula() {
 	nebulaMu.Lock()
 
@@ -248,9 +248,18 @@ func reloadNebula() {
 	}
 
 	configPath := filepath.Join(configDir, "nebula.yaml")
+	tunMode := readTunMode()
+
 	currentNebula.Close()
 
-	svc, err := startNebula(configPath)
+	var newSvc meshService
+	var err error
+	if tunMode == "kernel" {
+		newSvc, err = startNebulaKernelTun(configPath)
+	} else {
+		newSvc, err = startNebula(configPath)
+	}
+
 	if err != nil {
 		log.Printf("[renew] CRITICAL: failed to restart Nebula after cert renewal: %v", err)
 		log.Printf("[renew] agent will lose mesh connectivity when old cert expires")
@@ -259,14 +268,14 @@ func reloadNebula() {
 		return
 	}
 
-	currentNebula = svc
+	currentNebula = newSvc
 	nebulaMu.Unlock()
 
-	log.Printf("[renew] Nebula restarted with new certificate")
+	log.Printf("[renew] Nebula restarted with new certificate (mode: %s)", tunMode)
 
 	// Notify the HTTP server to recreate its mesh listener.
 	// Called AFTER releasing nebulaMu to avoid deadlock.
 	if onNebulaRestart != nil {
-		onNebulaRestart(svc)
+		onNebulaRestart(newSvc)
 	}
 }

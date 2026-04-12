@@ -180,31 +180,49 @@ func runServe(args []string) {
 			}
 		}()
 	} else if _, err := os.Stat(*nebulaConfig); err == nil {
-		// Normal path: listen on the Nebula mesh's userspace network stack.
-		svc, err := startNebula(*nebulaConfig)
-		if err != nil {
-			log.Printf("[agent] WARNING: Nebula failed to start: %v (falling back to OS stack)", err)
-			ln, err := net.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
-			if err != nil {
-				log.Fatalf("Listen :%d: %v", agentAPIPort, err)
-			}
-			log.Printf("hop-agent listening on %s (OS stack fallback)", ln.Addr())
-			go func() {
-				if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-					log.Fatalf("Serve: %v", err)
-				}
-			}()
-		} else {
-			nebulaMu.Lock()
-			currentNebula = svc
-			nebulaMu.Unlock()
-			log.Printf("[agent] Nebula mesh connected")
+		// Determine TUN mode from persisted config.
+		tunMode := readTunMode()
+		if tunMode == "kernel" && os.Getuid() != 0 {
+			log.Fatal("Kernel TUN mode requires root. Run with sudo or install as a system service.")
+		}
 
-			meshLn, err := svc.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
+		var meshSvc meshService
+		if tunMode == "kernel" {
+			svc, err := startNebulaKernelTun(*nebulaConfig)
+			if err != nil {
+				log.Fatalf("[agent] Nebula kernel TUN failed to start: %v", err)
+			}
+			meshSvc = svc
+		} else {
+			svc, err := startNebula(*nebulaConfig)
+			if err != nil {
+				log.Printf("[agent] WARNING: Nebula failed to start: %v (falling back to OS stack)", err)
+				ln, err := net.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
+				if err != nil {
+					log.Fatalf("Listen :%d: %v", agentAPIPort, err)
+				}
+				log.Printf("hop-agent listening on %s (OS stack fallback)", ln.Addr())
+				go func() {
+					if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+						log.Fatalf("Serve: %v", err)
+					}
+				}()
+				goto waitForSignal
+			}
+			meshSvc = svc
+		}
+
+		{
+			nebulaMu.Lock()
+			currentNebula = meshSvc
+			nebulaMu.Unlock()
+			log.Printf("[agent] Nebula mesh connected (mode: %s)", tunMode)
+
+			meshLn, err := meshSvc.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
 			if err != nil {
 				log.Fatalf("Nebula mesh listen: %v", err)
 			}
-			log.Printf("hop-agent listening on :%d (Nebula mesh)", agentAPIPort)
+			log.Printf("hop-agent listening on :%d (Nebula mesh, %s TUN)", agentAPIPort, tunMode)
 
 			go func() {
 				if err := srv.Serve(meshLn); err != nil && err != http.ErrServerClosed {
@@ -213,17 +231,14 @@ func runServe(args []string) {
 			}()
 
 			// Register callback for Nebula restarts (cert renewal).
-			// Called AFTER nebulaMu is released by reloadNebula().
-			onNebulaRestart = func(newSvc *nebulaService) {
+			onNebulaRestart = func(newSvc meshService) {
 				serveMu.Lock()
 				defer serveMu.Unlock()
 
-				// Gracefully shut down current server.
 				shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				srv.Shutdown(shutCtx)
 				shutCancel()
 
-				// Create new listener on the new Nebula service.
 				newLn, err := newSvc.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
 				if err != nil {
 					log.Printf("[agent] CRITICAL: cannot listen on new Nebula instance: %v", err)
@@ -254,6 +269,7 @@ func runServe(args []string) {
 		}()
 	}
 
+waitForSignal:
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
 	<-stop

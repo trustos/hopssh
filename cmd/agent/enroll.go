@@ -58,6 +58,9 @@ func resolveConfigDir(override string) string {
 // skipService is set by --no-service flag during enrollment.
 var skipService bool
 
+// enrollTunMode is set by --tun-mode flag during enrollment.
+var enrollTunMode = "userspace"
+
 type enrollResponse struct {
 	NodeID         string `json:"nodeId"`
 	CACert         string `json:"caCert"`
@@ -82,11 +85,19 @@ func runEnroll(args []string) {
 	tokenStdin := fs.Bool("token-stdin", false, "Read enrollment token from stdin")
 	bundlePath := fs.String("bundle", "", "Path to pre-generated enrollment bundle (.tar.gz)")
 	endpoint := fs.String("endpoint", defaultEndpoint, "Control plane URL")
+	tunMode := fs.String("tun-mode", "userspace", "TUN mode: userspace (default) or kernel (creates OS network interface)")
 	noService := fs.Bool("no-service", false, "Skip automatic service installation")
 	force := fs.Bool("force", false, "Re-enroll: stop service, remove old config, enroll fresh")
 	cfgDir := fs.String("config-dir", "", "Override config directory")
 	fs.Parse(args)
 	skipService = *noService
+	if *tunMode != "userspace" && *tunMode != "kernel" {
+		log.Fatalf("Invalid --tun-mode %q: must be 'userspace' or 'kernel'", enrollTunMode)
+	}
+	if *tunMode == "kernel" && os.Getuid() != 0 {
+		log.Fatal("Kernel TUN mode requires root. Run with sudo.")
+	}
+	enrollTunMode = *tunMode
 	if *cfgDir != "" {
 		configDir = resolveConfigDir(*cfgDir)
 	}
@@ -275,7 +286,7 @@ func enrollFromBundle(path, endpoint string) {
 	if serverHost == "" {
 		serverHost = extractHost(ep)
 	}
-	writeNebulaConfig(bundleConfig.ServerIP, serverHost, bundleConfig.LighthousePort)
+	writeNebulaConfig(bundleConfig.ServerIP, serverHost, bundleConfig.LighthousePort, enrollTunMode)
 
 	installService()
 	fmt.Println("  ✓ Agent started")
@@ -308,14 +319,19 @@ func installCerts(er *enrollResponse, endpoint string) {
 	if serverHost == "" {
 		serverHost = extractHost(endpoint)
 	}
-	writeNebulaConfig(er.ServerIP, serverHost, er.LighthousePort)
+	writeNebulaConfig(er.ServerIP, serverHost, er.LighthousePort, enrollTunMode)
 	installService()
 	fmt.Println("  ✓ Agent started")
 }
 
-func writeNebulaConfig(serverIP, serverHost string, lighthousePort int) {
+func writeNebulaConfig(serverIP, serverHost string, lighthousePort int, tunMode string) {
 	if lighthousePort == 0 {
 		lighthousePort = 41820 // fallback for legacy enrollment
+	}
+
+	tunConfig := "  user: true"
+	if tunMode == "kernel" {
+		tunConfig = "  mtu: 1300"
 	}
 
 	nebulaConfig := fmt.Sprintf(`pki:
@@ -345,7 +361,7 @@ punchy:
   respond: true
 
 tun:
-  user: true
+%s
 
 firewall:
   outbound:
@@ -371,10 +387,15 @@ firewall:
 		serverIP, serverHost, lighthousePort,
 		serverIP,
 		serverIP,
+		tunConfig,
 		agentAPIPort)
 
 	writeFileSecure(filepath.Join(configDir, "nebula.yaml"), []byte(nebulaConfig), 0644)
-	fmt.Printf("  ✓ Nebula config written (lighthouse: %s via %s:%d)\n", serverIP, serverHost, lighthousePort)
+
+	// Persist TUN mode so serve knows which mode to use.
+	writeFileSecure(filepath.Join(configDir, "tun-mode"), []byte(tunMode), 0644)
+
+	fmt.Printf("  ✓ Nebula config written (lighthouse: %s via %s:%d, tun: %s)\n", serverIP, serverHost, lighthousePort, tunMode)
 }
 
 func installService() {
