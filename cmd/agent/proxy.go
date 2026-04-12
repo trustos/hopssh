@@ -31,6 +31,12 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		remainingPath = "/"
 	}
 
+	// Reject path traversal attempts.
+	if strings.Contains(remainingPath, "..") {
+		http.Error(w, "invalid path", http.StatusBadRequest)
+		return
+	}
+
 	port, err := strconv.Atoi(portStr)
 	if err != nil || port < 1 || port > 65535 {
 		http.Error(w, "invalid port", http.StatusBadRequest)

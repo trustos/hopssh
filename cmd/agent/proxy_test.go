@@ -22,6 +22,8 @@ func TestHandleProxy_InvalidPort(t *testing.T) {
 		{"not a number", "/proxy/abc/", http.StatusBadRequest},
 		{"empty", "/proxy//", http.StatusBadRequest},
 		{"agent port blocked", "/proxy/41820/", http.StatusForbidden},
+		{"path traversal", "/proxy/8080/../../../etc/passwd", http.StatusBadRequest},
+		{"path traversal encoded", "/proxy/8080/foo/..%2f..%2fetc/passwd", http.StatusBadRequest},
 	}
 
 	for _, tt := range tests {

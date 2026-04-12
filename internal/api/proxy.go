@@ -530,20 +530,26 @@ func (h *ProxyHandler) NodeProxy(w http.ResponseWriter, r *http.Request) {
 			// which is allowed by script-src 'self' (same-origin).
 
 			// Decompress if needed — we must modify the raw HTML.
-			bodyReader := resp.Body
 			encoding := resp.Header.Get("Content-Encoding")
+			var body []byte
 			if encoding == "gzip" {
-				gr, err := gzip.NewReader(bodyReader)
+				gr, err := gzip.NewReader(resp.Body)
 				if err != nil {
 					return nil // can't decompress, skip injection
 				}
-				bodyReader = gr
-			}
-
-			body, err := io.ReadAll(bodyReader)
-			resp.Body.Close()
-			if err != nil {
-				return err
+				body, err = io.ReadAll(gr)
+				gr.Close()
+				resp.Body.Close()
+				if err != nil {
+					return err
+				}
+			} else {
+				var err error
+				body, err = io.ReadAll(resp.Body)
+				resp.Body.Close()
+				if err != nil {
+					return err
+				}
 			}
 
 			snippet := []byte(proxyBootstrapSnippet(proxyPrefix))
