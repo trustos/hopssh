@@ -134,44 +134,41 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 	log.Printf("[shell] started %s (PID %d)", shell, pi.ProcessId)
 
 	// Close the PTY-side pipe ends. The ConPTY holds its own references.
-	// This ensures pipeIn gets EOF when the ConPTY (and process) close.
+	// This ensures our read pipe gets EOF when the ConPTY closes.
 	windows.CloseHandle(ptyIn)
 	ptyIn = windows.InvalidHandle
 	windows.CloseHandle(ptyOut)
 	ptyOut = windows.InvalidHandle
 
-	// Wrap our pipe ends as os.File for Go I/O.
-	// os.File takes ownership — it will close the underlying handle.
-	pipeReader := os.NewFile(uintptr(pipeIn), "conpty-read")
-	pipeIn = windows.InvalidHandle // ownership transferred to os.File
-	pipeWriter := os.NewFile(uintptr(pipeOut), "conpty-write")
-	pipeOut = windows.InvalidHandle // ownership transferred to os.File
-
 	done := make(chan struct{})
 
-	// ConPTY output -> WebSocket
+	// ConPTY output -> WebSocket.
+	// Use raw windows.ReadFile to avoid os.File overlapped I/O issues
+	// with synchronous pipe handles on Windows.
 	go func() {
 		defer close(done)
 		buf := make([]byte, 4096)
 		for {
-			n, err := pipeReader.Read(buf)
-			if n > 0 {
-				if werr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
-					return
-				}
+			var n uint32
+			err := windows.ReadFile(pipeIn, buf, &n, nil)
+			if err != nil || n == 0 {
+				return
 			}
-			if err != nil {
+			if werr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
 				return
 			}
 		}
 	}()
 
-	// WebSocket -> ConPTY input
+	// WebSocket -> ConPTY input.
+	// Use raw windows.WriteFile for the same reason.
 	go func() {
 		for {
 			msgType, msg, err := conn.ReadMessage()
 			if err != nil {
-				pipeWriter.Close()
+				// Close the write pipe to signal EOF to ConPTY.
+				windows.CloseHandle(pipeOut)
+				pipeOut = windows.InvalidHandle
 				return
 			}
 
@@ -184,17 +181,21 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 
-			pipeWriter.Write(msg)
+			var written uint32
+			if err := windows.WriteFile(pipeOut, msg, &written, nil); err != nil {
+				log.Printf("[shell] write to ConPTY failed: %v", err)
+				return
+			}
 		}
 	}()
 
 	<-done
 
-	// Clean up: close ConPTY first (sends EOF to process), then wait.
+	// Clean up: close ConPTY (sends EOF to process), then wait.
 	windows.ClosePseudoConsole(hpc)
 	hpc = windows.InvalidHandle
 
-	result, _ := windows.WaitForSingleObject(pi.Process, 3000) // 3s grace
+	result, _ := windows.WaitForSingleObject(pi.Process, 3000)
 	if result == uint32(windows.WAIT_TIMEOUT) {
 		windows.TerminateProcess(pi.Process, 1)
 		waitDone := make(chan struct{})
@@ -207,5 +208,15 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 		case <-time.After(5 * time.Second):
 			log.Printf("[shell] process %d did not exit after terminate, abandoning", pi.ProcessId)
 		}
+	}
+
+	// Close remaining pipe handles.
+	if pipeIn != windows.InvalidHandle {
+		windows.CloseHandle(pipeIn)
+		pipeIn = windows.InvalidHandle
+	}
+	if pipeOut != windows.InvalidHandle {
+		windows.CloseHandle(pipeOut)
+		pipeOut = windows.InvalidHandle
 	}
 }
