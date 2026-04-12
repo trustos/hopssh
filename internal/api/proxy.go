@@ -526,6 +526,12 @@ func (h *ProxyHandler) NodeProxy(w http.ResponseWriter, r *http.Request) {
 				return nil
 			}
 
+			// Strip CSP — the original policy was designed for the app's own
+			// origin, not for a reverse proxy. Our injected bootstrap script
+			// would be blocked by script-src 'self' since it's inline.
+			resp.Header.Del("Content-Security-Policy")
+			resp.Header.Del("Content-Security-Policy-Report-Only")
+
 			// Decompress if needed — we must modify the raw HTML.
 			bodyReader := resp.Body
 			encoding := resp.Header.Get("Content-Encoding")
