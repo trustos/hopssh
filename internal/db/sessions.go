@@ -42,15 +42,30 @@ func (s *SessionStore) Create(token, userID string, ttl time.Duration) error {
 }
 
 func (s *SessionStore) GetUserID(token string) (string, error) {
-	q := dbsqlc.New(WrapDB(s.rdb))
-	userID, err := q.GetSessionUserID(context.Background(), dbsqlc.GetSessionUserIDParams{
-		Token:     hashSessionToken(token),
-		ExpiresAt: time.Now().Unix(),
-	})
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+	hash := hashSessionToken(token)
+	now := time.Now().Unix()
+	params := dbsqlc.GetSessionUserIDParams{Token: hash, ExpiresAt: now}
+
+	// Retry on transient SQLite lock errors. QueryRowContext is not retried
+	// by the resilience layer (see resilience.go), so concurrent proxy requests
+	// can fail when a write (e.g., audit log) holds the lock.
+	var userID string
+	var err error
+	for attempt := 0; attempt < 3; attempt++ {
+		q := dbsqlc.New(WrapDB(s.rdb))
+		userID, err = q.GetSessionUserID(context.Background(), params)
+		if err == nil {
+			return userID, nil
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", nil
+		}
+		if !isLockError(err) {
+			return "", err
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	return userID, err
+	return "", err
 }
 
 func (s *SessionStore) Delete(token string) error {

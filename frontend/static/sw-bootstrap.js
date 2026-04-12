@@ -1,6 +1,6 @@
 // Service Worker bootstrap for proxied apps.
 // Loaded via <script src="/sw-bootstrap.js?base=/api/networks/.../proxy/{port}">
-// Ensures the SW is active and has the proxy base mapping, then patches
+// Registers the SW and sends the proxy base mapping, then patches
 // WebSocket for URL rewriting (SW can't intercept WebSocket connections).
 (function () {
   var script = document.currentScript;
@@ -9,40 +9,35 @@
   var base = params.get('base');
   if (!base) return;
 
-  // --- SW Bootstrap ---
+  // --- SW Registration ---
+  // No reload needed — the server rewrites HTML paths directly, so assets
+  // load correctly on first visit. The SW handles runtime requests (XHR, fetch).
   if (!('serviceWorker' in navigator)) return;
 
   navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(function (r) {
+    // Push the proxy base mapping as soon as an active SW is available.
+    function sendMapping(sw) {
+      sw.postMessage({ type: 'SET_PROXY_BASE', proxyBase: base });
+    }
     if (navigator.serviceWorker.controller) {
-      // SW already active — push the proxy base mapping.
-      navigator.serviceWorker.controller.postMessage({
-        type: 'SET_PROXY_BASE',
-        proxyBase: base,
-      });
+      sendMapping(navigator.serviceWorker.controller);
       return;
     }
-    // First visit: SW not yet controlling. Wait for activation, then reload once.
-    // Guard with sessionStorage to prevent reload loops.
-    var reloadKey = 'sw-bootstrap-reload';
-    if (sessionStorage.getItem(reloadKey)) {
-      // Already reloaded once — don't loop. SW should be controlling now.
-      sessionStorage.removeItem(reloadKey);
-      return;
-    }
+    // SW just registered — wait for it to activate.
     var sw = r.installing || r.waiting || r.active;
     if (!sw) return;
-    function onActive() {
-      navigator.serviceWorker.ready.then(function () {
-        sessionStorage.setItem(reloadKey, '1');
-        location.reload();
-      });
-    }
     if (sw.state === 'activated') {
-      onActive();
+      navigator.serviceWorker.ready.then(function (reg) {
+        if (reg.active) sendMapping(reg.active);
+      });
       return;
     }
     sw.addEventListener('statechange', function () {
-      if (sw.state === 'activated') onActive();
+      if (sw.state === 'activated') {
+        navigator.serviceWorker.ready.then(function (reg) {
+          if (reg.active) sendMapping(reg.active);
+        });
+      }
     });
   });
 

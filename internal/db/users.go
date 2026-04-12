@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/trustos/hopssh/internal/db/dbsqlc"
 )
@@ -48,19 +49,27 @@ func (s *UserStore) Create(u *User) error {
 
 // GetProfileByID returns a UserProfile without the password hash.
 func (s *UserStore) GetProfileByID(id string) (*UserProfile, error) {
-	q := dbsqlc.New(WrapDB(s.rdb))
-	row, err := q.GetUserProfileByID(context.Background(), id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+	// Retry on transient SQLite lock errors. QueryRowContext is not retried
+	// by the resilience layer, so concurrent requests can fail during writes.
+	for attempt := 0; attempt < 3; attempt++ {
+		q := dbsqlc.New(WrapDB(s.rdb))
+		row, err := q.GetUserProfileByID(context.Background(), id)
+		if err == nil {
+			return &UserProfile{
+				ID:    row.ID,
+				Email: row.Email,
+				Name:  row.Name,
+			}, nil
+		}
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		if !isLockError(err) {
+			return nil, fmt.Errorf("get user profile by id: %w", err)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	if err != nil {
-		return nil, fmt.Errorf("get user profile by id: %w", err)
-	}
-	return &UserProfile{
-		ID:    row.ID,
-		Email: row.Email,
-		Name:  row.Name,
-	}, nil
+	return nil, fmt.Errorf("get user profile by id: database locked after retries")
 }
 
 func (s *UserStore) GetByEmail(email string) (*User, error) {

@@ -552,6 +552,11 @@ func (h *ProxyHandler) NodeProxy(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
+			// Rewrite absolute paths in HTML attributes so assets load
+			// on first visit without needing the SW to be active yet.
+			// e.g., src="/ui/assets/app.js" → src="{proxyPrefix}/ui/assets/app.js"
+			body = rewriteHTMLPaths(body, proxyPrefix)
+
 			snippet := []byte(proxyBootstrapSnippet(proxyPrefix))
 			modified := injectIntoHead(body, snippet)
 
@@ -614,6 +619,46 @@ func injectIntoHead(html, snippet []byte) []byte {
 		}
 	}
 	return append(snippet, html...)
+}
+
+// rewriteHTMLPaths rewrites absolute paths in HTML src, href, and action attributes
+// to include the proxy prefix. This ensures assets load on first visit before the
+// SW is active. Skips protocol-relative URLs (//), /api/, /sw, and /_app/ paths.
+func rewriteHTMLPaths(html []byte, proxyPrefix string) []byte {
+	for _, attr := range [][]byte{
+		[]byte(`src="`), []byte(`src='`),
+		[]byte(`href="`), []byte(`href='`),
+		[]byte(`action="`), []byte(`action='`),
+	} {
+		html = rewriteAttrPaths(html, attr, proxyPrefix)
+	}
+	return html
+}
+
+func rewriteAttrPaths(html, attr []byte, prefix string) []byte {
+	prefixBytes := []byte(prefix)
+	var result []byte
+	remaining := html
+	for {
+		idx := bytes.Index(remaining, attr)
+		if idx < 0 {
+			result = append(result, remaining...)
+			break
+		}
+		attrEnd := idx + len(attr)
+		result = append(result, remaining[:attrEnd]...)
+		remaining = remaining[attrEnd:]
+
+		// Check if path starts with / but not //, /api/, /sw, /_app/
+		if len(remaining) > 0 && remaining[0] == '/' &&
+			!bytes.HasPrefix(remaining, []byte("//")) &&
+			!bytes.HasPrefix(remaining, []byte("/api/")) &&
+			!bytes.HasPrefix(remaining, []byte("/sw")) &&
+			!bytes.HasPrefix(remaining, []byte("/_app/")) {
+			result = append(result, prefixBytes...)
+		}
+	}
+	return result
 }
 
 // proxyNodeWebSocket relays a WebSocket connection through the mesh to the agent's proxy endpoint.
