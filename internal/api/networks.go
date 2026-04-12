@@ -92,7 +92,7 @@ func (h *NetworkHandler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 	// Server cert must expire before the CA. Subtract a buffer to avoid
 	// the timing race where cert.NotAfter > ca.NotAfter by milliseconds.
 	serverCertDuration := caDuration - time.Hour
-	serverCert, err := pki.IssueCert(ca.CertPEM, ca.KeyPEM, "hopssh-server", serverIP, []string{"admin"}, serverCertDuration)
+	serverCert, err := pki.IssueCert(ca.CertPEM, ca.KeyPEM, "hopssh-server", serverIP, []string{"admin", "node"}, serverCertDuration)
 	if err != nil {
 		http.Error(w, "failed to issue server cert: "+err.Error(), http.StatusInternalServerError)
 		return
