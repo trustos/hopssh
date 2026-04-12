@@ -568,8 +568,11 @@ return;
 }
 var s=r.installing||r.waiting||r.active;
 if(!s)return;
-if(s.state==="activated"){location.reload();return;}
-s.addEventListener("statechange",function(){if(s.state==="activated")location.reload();});
+function onActive(){
+navigator.serviceWorker.ready.then(function(){location.reload();});
+}
+if(s.state==="activated"){onActive();return;}
+s.addEventListener("statechange",function(){if(s.state==="activated")onActive();});
 });
 var O=window.WebSocket;
 window.WebSocket=function(u,p){
