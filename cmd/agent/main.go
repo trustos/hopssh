@@ -158,6 +158,9 @@ func runServe(args []string) {
 	}
 	srv := newServer()
 
+	// DNS config for cleanup on shutdown.
+	var activeDNSConfig *dnsConfig
+
 	startOSListener := func() {
 		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
 		if err != nil {
@@ -205,6 +208,12 @@ func runServe(args []string) {
 			currentNebula = meshSvc
 			nebulaMu.Unlock()
 			log.Printf("[agent] Nebula mesh connected (mode: %s)", tunMode)
+
+			// Configure split-DNS for mesh domain in kernel TUN mode.
+			if tunMode == "kernel" {
+				activeDNSConfig = readDNSConfig()
+				configureDNS(activeDNSConfig)
+			}
 
 			meshLn, err := meshSvc.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
 			if err != nil {
@@ -259,6 +268,9 @@ func runServe(args []string) {
 	srv.Shutdown(shutCtx)
 	shutCancel()
 	serveMu.Unlock()
+
+	// Clean up DNS configuration.
+	cleanupDNS(activeDNSConfig)
 
 	// Close Nebula.
 	nebulaMu.Lock()

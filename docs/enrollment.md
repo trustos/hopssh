@@ -193,7 +193,21 @@ This stops the existing service, removes old config, and enrolls fresh.
 | Token arg | `hop-agent enroll --token <tok> --endpoint <url>` | Quick demos | Yes (ps) | No |
 | Bundle | `hop-agent enroll --bundle <path>` | Air-gapped | No | Yes |
 
-All modes produce identical nodes. Capabilities (terminal, health, forward) are toggled per-node from the dashboard after enrollment — no distinction at enrollment time.
+All modes produce identical nodes. Capabilities (terminal, health, forward) are toggled per-node from the dashboard after enrollment — no distinction at enrollment time. When enrolled with root, the agent automatically creates a real OS network interface (kernel TUN) and configures split-DNS.
+
+## TUN Mode
+
+The agent auto-detects the best TUN mode based on permissions:
+
+| Condition | TUN Mode | What happens |
+|-----------|----------|-------------|
+| Running as root (sudo, systemd, launchd daemon) | **Kernel TUN** | Real OS network interface — `ping`, `ssh`, `curl` work directly with mesh IPs |
+| Running as non-root (user-level launchd agent) | **Userspace** | In-process networking — connectivity through agent only (web terminal, port forward) |
+
+Override with `--tun-mode kernel` or `--tun-mode userspace`.
+
+In kernel TUN mode, the agent also configures **split-DNS** so that mesh hostnames
+(e.g., `myserver.zero`) resolve automatically via the control plane's DNS server.
 
 ## Post-enrollment CLI
 

@@ -73,8 +73,12 @@ echo '<token>' | sudo ./hop-agent enroll --token-stdin --endpoint http://192.168
 cmd/
   agent/                Agent + client binary
     main.go             Subcommand dispatch: serve, enroll, client
+    nebula.go           meshService interface (userspace + kernel TUN)
     enroll.go           Agent enrollment (device flow, token, bundle)
     renew.go            Certificate auto-renewal goroutine
+    dns.go              DNS split-tunnel configuration (shared)
+    dns_darwin.go       macOS DNS: /etc/resolver/<domain>
+    dns_linux.go        Linux DNS: systemd-resolved / fallback
     client.go           Client join mode (planned)
   server/
     main.go             Control plane entry point

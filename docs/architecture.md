@@ -110,11 +110,19 @@ All nodes are equal — capabilities (terminal, health, forward) are per-node to
 
 | Component | Purpose |
 |-----------|---------|
-| **Nebula** (embedded, userspace) | Persistent mesh connection via gvisor netstack |
+| **Nebula** (embedded, dual-mode) | Kernel TUN (real OS interface) when root, userspace (gvisor) when non-root |
 | **HTTP server** (on mesh) | /health, /exec, /shell, /upload — controlled by capabilities |
 | **Cert renewal** | Auto-renews 24h certificates with jitter (±10%) |
 | **Heartbeat** | Reports online status to control plane every 5 min |
+| **Split-DNS** | Configures OS resolver for mesh domain (kernel TUN mode) |
 | **CLI** | help, status, info, enroll, serve, install, update |
+
+**TUN modes:**
+- **Kernel TUN** (default when root) — creates a real OS network interface (`utun` on macOS, `tun` on Linux). Mesh IPs are routable at the OS level — `ping`, `ssh`, `curl` work directly. Requires root.
+- **Userspace** (default when non-root) — in-process virtual networking via gvisor netstack. No OS interface, connectivity only through the agent process. No root required.
+- **Graceful fallback** — if kernel TUN fails (containers, missing permissions), automatically falls back to userspace, then to OS stack.
+
+Override with `--tun-mode kernel` or `--tun-mode userspace`.
 
 Capabilities are toggled per-node from the dashboard:
 - **terminal** — web terminal (PTY) access from browser
@@ -204,21 +212,26 @@ This creates DNS resolution like:
 
 ### How it works
 
-1. Each network's Nebula instance runs a DNS server on its lighthouse VPN IP
+1. Each network runs a DNS server on the control plane (unique UDP port per network)
 2. The DNS server resolves `<hostname>.<domain>` by looking up nodes in the database
 3. Auto-generated records: every node with a hostname gets a record automatically
 4. Custom records: users can add aliases (e.g., `jellyfin` pointing to a node's IP)
-5. Client devices configure split DNS so only the mesh domain goes through mesh DNS
+5. Agents in kernel TUN mode automatically configure OS split-DNS during enrollment
 
-### Split DNS configuration (automatic on `hop client join`)
+### Split DNS configuration (automatic in kernel TUN mode)
 
-| Platform | Method | Example |
-|----------|--------|---------|
-| Linux (systemd-resolved) | `resolvectl domain` | `resolvectl domain nebula1 ~zero` |
-| macOS | `/etc/resolver/<domain>` | File with `nameserver 10.42.1.1` |
-| Windows | NRPT rule | PowerShell `Add-DnsClientNrptRule` |
+When the agent starts in kernel TUN mode, it configures the OS to route mesh domain
+queries to the control plane's DNS server:
 
-Regular internet DNS is unaffected — only queries for the mesh domain go through the mesh.
+| Platform | Method | What happens |
+|----------|--------|-------------|
+| macOS | `/etc/resolver/<domain>` | File created with nameserver + port pointing to control plane |
+| Linux (systemd-resolved) | `resolvectl` | DNS + domain set on the TUN interface |
+| Linux (fallback) | `/etc/resolver/<domain>` | Resolver file created if systemd-resolved unavailable |
+
+DNS configuration is automatically cleaned up when the agent stops.
+
+Regular internet DNS is unaffected — only queries for the mesh domain go through the mesh DNS.
 
 ---
 
@@ -382,9 +395,9 @@ All modes issue a Nebula certificate with group `node`, configure the mesh, and 
 2. **Per-network CA** — compromising one network's CA has zero effect on others.
 3. **Short-lived certs (24h)** — auto-renewed with jitter. Node deletion = cert not renewed = access revoked within 24h.
 4. **Per-node capabilities** — terminal, health, forward checked at application layer. Toggleable without re-enrollment.
-5. **No inbound ports** — nodes connect outbound to the lighthouse. Userspace networking (gvisor) = no OS-level interfaces.
+5. **No inbound ports** — nodes connect outbound to the lighthouse. Even in kernel TUN mode, the agent initiates all connections.
 6. **Single binary** — no dependency chain, no supply chain attack surface beyond Go stdlib + Nebula.
-7. **Non-root capable** — agent runs in userspace with user-level config. No kernel TUN required.
+7. **Dual TUN mode** — kernel TUN (real interface, root) for full OS integration; userspace (gvisor, non-root) for restricted environments. Auto-detected based on permissions.
 
 ---
 

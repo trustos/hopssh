@@ -294,6 +294,7 @@ func enrollFromBundle(path, endpoint string) {
 		serverHost = extractHost(ep)
 	}
 	writeNebulaConfig(bundleConfig.ServerIP, serverHost, bundleConfig.LighthousePort, enrollTunMode)
+	writeDNSConfig(bundleConfig.DNSDomain, serverHost, bundleConfig.LighthousePort)
 
 	installService()
 	fmt.Println("  ✓ Agent started")
@@ -327,6 +328,7 @@ func installCerts(er *enrollResponse, endpoint string) {
 		serverHost = extractHost(endpoint)
 	}
 	writeNebulaConfig(er.ServerIP, serverHost, er.LighthousePort, enrollTunMode)
+	writeDNSConfig(er.DNSDomain, serverHost, er.LighthousePort)
 	installService()
 	fmt.Println("  ✓ Agent started")
 }
@@ -403,6 +405,22 @@ firewall:
 	writeFileSecure(filepath.Join(configDir, "tun-mode"), []byte(tunMode), 0644)
 
 	fmt.Printf("  ✓ Nebula config written (lighthouse: %s via %s:%d, tun: %s)\n", serverIP, serverHost, lighthousePort, tunMode)
+}
+
+// writeDNSConfig persists DNS configuration so the agent can set up split-DNS
+// on serve. The DNS server runs on the control plane at lighthouseHost:dnsPort.
+func writeDNSConfig(dnsDomain, lighthouseHost string, lighthousePort int) {
+	if dnsDomain == "" {
+		return
+	}
+	// DNS port follows the same offset scheme as the lighthouse port.
+	const baseLighthousePort = 42001
+	const baseDNSPort = 15300
+	dnsPort := baseDNSPort + (lighthousePort - baseLighthousePort)
+
+	writeFileSecure(filepath.Join(configDir, "dns-domain"), []byte(dnsDomain), 0644)
+	writeFileSecure(filepath.Join(configDir, "dns-server"), []byte(fmt.Sprintf("%s:%d", lighthouseHost, dnsPort)), 0644)
+	fmt.Printf("  ✓ DNS config written (domain: .%s, server: %s:%d)\n", dnsDomain, lighthouseHost, dnsPort)
 }
 
 func installService() {
