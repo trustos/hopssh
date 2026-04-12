@@ -476,6 +476,8 @@ func (h *ProxyHandler) NodeProxy(w http.ResponseWriter, r *http.Request) {
 
 	// HTTP: reverse proxy through mesh to agent's /proxy/{port}{path} endpoint.
 	agentPath := fmt.Sprintf("/proxy/%d%s", port, forwardPath)
+	nodeID := chi.URLParam(r, "nodeID")
+	proxyPrefix := fmt.Sprintf("/api/networks/%s/nodes/%s/proxy/%d", networkID, nodeID, port)
 
 	proxy := &httputil.ReverseProxy{
 		Director: func(req *http.Request) {
@@ -490,6 +492,34 @@ func (h *ProxyHandler) NodeProxy(w http.ResponseWriter, r *http.Request) {
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return inst.Dial(ctx, nodeIP)
 			},
+		},
+		// Rewrite Location headers so redirects stay within the proxy prefix.
+		// e.g., "Location: /ui/" → "Location: /api/networks/.../proxy/4646/ui/"
+		ModifyResponse: func(resp *http.Response) error {
+			location := resp.Header.Get("Location")
+			if location == "" {
+				return nil
+			}
+			// Absolute path redirect (e.g., "/ui/").
+			if strings.HasPrefix(location, "/") {
+				resp.Header.Set("Location", proxyPrefix+location)
+				return nil
+			}
+			// Full URL redirect to localhost (e.g., "http://127.0.0.1:4646/ui/").
+			for _, prefix := range []string{
+				fmt.Sprintf("http://127.0.0.1:%d", port),
+				fmt.Sprintf("http://localhost:%d", port),
+			} {
+				if strings.HasPrefix(location, prefix) {
+					path := strings.TrimPrefix(location, prefix)
+					if path == "" {
+						path = "/"
+					}
+					resp.Header.Set("Location", proxyPrefix+path)
+					return nil
+				}
+			}
+			return nil
 		},
 		FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
