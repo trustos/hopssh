@@ -168,6 +168,9 @@ func NewRouter(
 		r.With(wt).Delete("/api/networks/{networkID}/port-forwards/{fwdID}", proxyH.StopPortForward)
 		r.With(wt).Get("/api/networks/{networkID}/port-forwards", proxyH.ListPortForwards)
 
+		// HTTP proxy to node-local services (streaming — no timeout).
+		r.HandleFunc("/api/networks/{networkID}/nodes/{nodeID}/proxy/{port}/*", proxyH.NodeProxy)
+
 		// Device flow (browser-side authorization).
 		r.With(wt).Post("/api/device/authorize", deviceH.Authorize)
 		r.With(wt).Get("/api/device/verify/{code}", deviceH.VerifyCode)

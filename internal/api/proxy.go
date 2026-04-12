@@ -8,6 +8,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -421,6 +424,149 @@ func (h *ProxyHandler) ListPortForwards(w http.ResponseWriter, r *http.Request) 
 		forwards = make([]*mesh.PortForward, 0)
 	}
 	writeJSON(w, forwards)
+}
+
+// NodeProxy reverse-proxies HTTP (and WebSocket) requests to a service on a node.
+// The request is proxied through the mesh to the agent's /proxy/{port} endpoint,
+// which then forwards to localhost:{port} on the node.
+// This allows browser access to node-local services without opening host ports.
+func (h *ProxyHandler) NodeProxy(w http.ResponseWriter, r *http.Request) {
+	_, node, err := h.requireNode(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if !node.HasCapability("forward") {
+		http.Error(w, "port forwarding not enabled for this node. Enable it in the dashboard.", http.StatusForbidden)
+		return
+	}
+
+	portStr := chi.URLParam(r, "port")
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		http.Error(w, "invalid port", http.StatusBadRequest)
+		return
+	}
+
+	inst, err := h.getNetworkInstance(node.NetworkID)
+	if err != nil {
+		http.Error(w, "agent unreachable: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+
+	nodeIP := agentNodeIP(node)
+	networkID := chi.URLParam(r, "networkID")
+
+	// Compute the path to forward: strip the /api/networks/.../proxy/{port} prefix.
+	// chi's wildcard "*" captures the remainder.
+	forwardPath := chi.URLParam(r, "*")
+	if forwardPath == "" || forwardPath[0] != '/' {
+		forwardPath = "/" + forwardPath
+	}
+
+	user := auth.UserFromContext(r.Context())
+	detail := fmt.Sprintf("port=%d path=%s", port, forwardPath)
+	h.audit(user.ID, "port_forward.proxy", &networkID, &node.ID, &detail)
+
+	// WebSocket: upgrade both sides, relay through mesh (same pattern as NodeShell).
+	if isWSUpgrade(r) {
+		h.proxyNodeWebSocket(w, r, node, inst, nodeIP, port, forwardPath)
+		return
+	}
+
+	// HTTP: reverse proxy through mesh to agent's /proxy/{port}{path} endpoint.
+	agentPath := fmt.Sprintf("/proxy/%d%s", port, forwardPath)
+
+	proxy := &httputil.ReverseProxy{
+		Director: func(req *http.Request) {
+			req.URL.Scheme = "http"
+			req.URL.Host = fmt.Sprintf("%s:%d", nodeIP, 41820)
+			req.URL.Path = agentPath
+			req.URL.RawQuery = r.URL.RawQuery
+			req.Host = req.URL.Host
+			req.Header.Set("Authorization", "Bearer "+node.AgentToken)
+		},
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return inst.Dial(ctx, nodeIP)
+			},
+		},
+		FlushInterval: -1,
+		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			log.Printf("[proxy] %s → %s:%d: %v", r.Method, nodeIP, port, err)
+			http.Error(w, fmt.Sprintf("proxy error: %v", err), http.StatusBadGateway)
+		},
+	}
+
+	proxy.ServeHTTP(w, r)
+}
+
+func isWSUpgrade(r *http.Request) bool {
+	return strings.EqualFold(r.Header.Get("Connection"), "upgrade") &&
+		strings.EqualFold(r.Header.Get("Upgrade"), "websocket")
+}
+
+// proxyNodeWebSocket relays a WebSocket connection through the mesh to the agent's proxy endpoint.
+func (h *ProxyHandler) proxyNodeWebSocket(w http.ResponseWriter, r *http.Request, node *db.Node, inst *mesh.NetworkInstance, nodeIP string, port int, path string) {
+	upgrader := websocket.Upgrader{CheckOrigin: h.checkOrigin}
+	browserConn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Printf("[proxy] WebSocket upgrade failed: %v", err)
+		return
+	}
+	defer browserConn.Close()
+
+	wsDialer := websocket.Dialer{
+		NetDialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return inst.Dial(ctx, nodeIP)
+		},
+	}
+
+	agentURL := fmt.Sprintf("ws://%s:%d/proxy/%d%s", nodeIP, 41820, port, path)
+	if r.URL.RawQuery != "" {
+		agentURL += "?" + r.URL.RawQuery
+	}
+	headers := http.Header{"Authorization": []string{"Bearer " + node.AgentToken}}
+
+	agentConn, _, err := wsDialer.DialContext(r.Context(), agentURL, headers)
+	if err != nil {
+		log.Printf("[proxy] agent WebSocket dial failed: %v", err)
+		browserConn.WriteMessage(websocket.TextMessage, []byte("Error: "+err.Error()))
+		return
+	}
+	defer agentConn.Close()
+
+	done := make(chan struct{})
+
+	// Agent → Browser
+	go func() {
+		defer close(done)
+		for {
+			msgType, msg, err := agentConn.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := browserConn.WriteMessage(msgType, msg); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Browser → Agent
+	go func() {
+		for {
+			msgType, msg, err := browserConn.ReadMessage()
+			if err != nil {
+				agentConn.Close()
+				return
+			}
+			if err := agentConn.WriteMessage(msgType, msg); err != nil {
+				return
+			}
+		}
+	}()
+
+	<-done
 }
 
 // ListNodes returns all nodes for a network.

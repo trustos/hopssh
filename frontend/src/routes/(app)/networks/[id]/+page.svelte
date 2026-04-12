@@ -513,6 +513,12 @@
 							</span>
 							<div class="flex gap-1">
 								<button
+									onclick={() => window.open(fwdApi.proxyUrl(networkId, fwd.nodeId, fwd.remotePort), '_blank')}
+									class="rounded px-2 py-0.5 text-xs text-emerald-600 hover:bg-emerald-600/10"
+								>
+									Open
+								</button>
+								<button
 									onclick={() => copyAddr(fwd.localPort)}
 									class="rounded px-2 py-0.5 text-xs text-muted-foreground hover:text-foreground"
 								>
@@ -698,8 +704,18 @@
 													type="submit"
 													disabled={startingForward || !fwdRemotePort}
 													class="rounded bg-primary px-3 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+													title="Open a TCP tunnel (for self-hosted / non-HTTP services)"
 												>
-													{startingForward ? 'Starting...' : 'Start'}
+													{startingForward ? 'Starting...' : 'Start TCP'}
+												</button>
+												<button
+													type="button"
+													disabled={!fwdRemotePort}
+													onclick={() => { const port = parseInt(fwdRemotePort); if (port > 0 && port <= 65535) window.open(fwdApi.proxyUrl(networkId, node.id, port), '_blank'); }}
+													class="rounded bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+													title="Open the service in a new browser tab (proxied through the control plane)"
+												>
+													Open in Browser
 												</button>
 												<button
 													type="button"

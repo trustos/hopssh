@@ -128,6 +128,7 @@ func runServe(args []string) {
 	mux.HandleFunc("POST /exec", handleExec)
 	mux.HandleFunc("POST /upload", handleUpload)
 	mux.HandleFunc("GET /shell", handleShell)
+	mux.HandleFunc("/proxy/", handleProxy)
 	authed := authMiddleware(authToken, mux)
 
 	// Start cert renewal + heartbeat if endpoint + nodeID are available.
