@@ -85,19 +85,26 @@ func runEnroll(args []string) {
 	tokenStdin := fs.Bool("token-stdin", false, "Read enrollment token from stdin")
 	bundlePath := fs.String("bundle", "", "Path to pre-generated enrollment bundle (.tar.gz)")
 	endpoint := fs.String("endpoint", defaultEndpoint, "Control plane URL")
-	tunMode := fs.String("tun-mode", "userspace", "TUN mode: userspace (default) or kernel (creates OS network interface)")
+	tunMode := fs.String("tun-mode", "", "TUN mode: kernel (OS interface) or userspace (in-process). Auto-detected if not set: root→kernel, non-root→userspace")
 	noService := fs.Bool("no-service", false, "Skip automatic service installation")
 	force := fs.Bool("force", false, "Re-enroll: stop service, remove old config, enroll fresh")
 	cfgDir := fs.String("config-dir", "", "Override config directory")
 	fs.Parse(args)
 	skipService = *noService
-	if *tunMode != "userspace" && *tunMode != "kernel" {
-		log.Fatalf("Invalid --tun-mode %q: must be 'userspace' or 'kernel'", enrollTunMode)
+
+	// Auto-detect TUN mode: root gets kernel TUN (real OS interface), non-root gets userspace.
+	resolved := *tunMode
+	if resolved == "" {
+		if os.Getuid() == 0 {
+			resolved = "kernel"
+		} else {
+			resolved = "userspace"
+		}
 	}
-	if *tunMode == "kernel" && os.Getuid() != 0 {
-		log.Fatal("Kernel TUN mode requires root. Run with sudo.")
+	if resolved != "userspace" && resolved != "kernel" {
+		log.Fatalf("Invalid --tun-mode %q: must be 'userspace' or 'kernel'", resolved)
 	}
-	enrollTunMode = *tunMode
+	enrollTunMode = resolved
 	if *cfgDir != "" {
 		configDir = resolveConfigDir(*cfgDir)
 	}
