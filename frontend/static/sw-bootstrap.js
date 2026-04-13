@@ -72,7 +72,7 @@
     try {
       var parsed = new URL(url, location.href);
       if (parsed.origin === location.origin &&
-          !parsed.pathname.startsWith('/api/') &&
+          !parsed.pathname.startsWith(base + '/') &&
           !parsed.pathname.startsWith('/_app/') &&
           !parsed.pathname.startsWith('/proxy/') &&
           !parsed.pathname.startsWith('/sw')) {

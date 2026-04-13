@@ -86,8 +86,9 @@ self.addEventListener('fetch', function (event) {
   // Only rewrite same-origin requests.
   if (url.origin !== self.location.origin) return;
 
-  // Never rewrite API routes — they already include the proxy prefix.
-  if (url.pathname.startsWith('/api/')) return;
+  // Never rewrite paths that already include the proxy prefix.
+  // Don't skip all /api/ — proxied apps may have their own /api/ routes.
+  if (PROXY_PATTERN.test(url.pathname)) return;
 
   // Never rewrite SvelteKit internals, SW, or bootstrap script.
   if (url.pathname.startsWith('/_app/') || url.pathname === '/sw.js' || url.pathname === '/sw-bootstrap.js') return;
