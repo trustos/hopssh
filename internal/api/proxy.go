@@ -50,18 +50,27 @@ func (h *ProxyHandler) requireNode(r *http.Request) (*db.Network, *db.Node, erro
 	nodeID := chi.URLParam(r, "nodeID")
 
 	network, err := h.Networks.Get(networkID)
-	if err != nil || network == nil {
+	if err != nil {
+		log.Printf("[proxy] requireNode: Networks.Get(%s) error: %v", networkID, err)
+		return nil, nil, fmt.Errorf("network not found")
+	}
+	if network == nil {
 		return nil, nil, fmt.Errorf("network not found")
 	}
 
 	membership, _ := h.Members.GetMembership(networkID, user.ID)
 	access := authz.CheckAccess(user, network, membership)
 	if !access.CanView() {
+		log.Printf("[proxy] requireNode: access denied for user %s on network %s", user.ID, networkID)
 		return nil, nil, fmt.Errorf("network not found")
 	}
 
 	node, err := h.Nodes.Get(nodeID)
-	if err != nil || node == nil || node.NetworkID != networkID {
+	if err != nil {
+		log.Printf("[proxy] requireNode: Nodes.Get(%s) error: %v", nodeID, err)
+		return nil, nil, fmt.Errorf("node not found")
+	}
+	if node == nil || node.NetworkID != networkID {
 		return nil, nil, fmt.Errorf("node not found")
 	}
 
