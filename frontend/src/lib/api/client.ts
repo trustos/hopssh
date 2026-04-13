@@ -135,17 +135,9 @@ export const dns = {
 // --- Audit ---
 export const audit = {
 	list: () =>
-		request<
-			Array<{
-				id: string;
-				userId: string;
-				nodeId: string | null;
-				networkId: string | null;
-				action: string;
-				details: string | null;
-				createdAt: number;
-			}>
-		>('GET', '/api/audit')
+		request<import('$lib/types/api').AuditEntryResponse[]>('GET', '/api/audit'),
+	listForNetwork: (networkId: string) =>
+		request<import('$lib/types/api').AuditEntryResponse[]>('GET', `/api/networks/${e(networkId)}/audit`)
 };
 
 // --- Members ---

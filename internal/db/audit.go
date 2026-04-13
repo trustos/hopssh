@@ -15,6 +15,11 @@ type AuditEntry struct {
 	Action    string
 	Details   *string
 	CreatedAt int64
+
+	// Enrichment from LEFT JOINs (nil if user/node deleted).
+	UserEmail    *string
+	UserName     *string
+	NodeHostname *string
 }
 
 type AuditStore struct {
@@ -51,13 +56,16 @@ func (s *AuditStore) ListForNetwork(networkID string, limit int) ([]*AuditEntry,
 	entries := make([]*AuditEntry, 0, len(rows))
 	for _, r := range rows {
 		entries = append(entries, &AuditEntry{
-			ID:        r.ID,
-			UserID:    r.UserID,
-			NodeID:    r.NodeID,
-			NetworkID: r.NetworkID,
-			Action:    r.Action,
-			Details:   r.Details,
-			CreatedAt: r.CreatedAt,
+			ID:           r.ID,
+			UserID:       r.UserID,
+			NodeID:       r.NodeID,
+			NetworkID:    r.NetworkID,
+			Action:       r.Action,
+			Details:      r.Details,
+			CreatedAt:    r.CreatedAt,
+			UserEmail:    r.UserEmail,
+			UserName:     r.UserName,
+			NodeHostname: r.NodeHostname,
 		})
 	}
 	return entries, nil
@@ -76,13 +84,16 @@ func (s *AuditStore) ListForUser(userID string, limit int) ([]*AuditEntry, error
 	entries := make([]*AuditEntry, 0, len(rows))
 	for _, r := range rows {
 		entries = append(entries, &AuditEntry{
-			ID:        r.ID,
-			UserID:    r.UserID,
-			NodeID:    r.NodeID,
-			NetworkID: r.NetworkID,
-			Action:    r.Action,
-			Details:   r.Details,
-			CreatedAt: r.CreatedAt,
+			ID:           r.ID,
+			UserID:       r.UserID,
+			NodeID:       r.NodeID,
+			NetworkID:    r.NetworkID,
+			Action:       r.Action,
+			Details:      r.Details,
+			CreatedAt:    r.CreatedAt,
+			UserEmail:    r.UserEmail,
+			UserName:     r.UserName,
+			NodeHostname: r.NodeHostname,
 		})
 	}
 	return entries, nil

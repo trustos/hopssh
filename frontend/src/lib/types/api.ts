@@ -118,6 +118,19 @@ export interface DeviceCodeResponse {
 	interval: number;
 }
 
+export interface AuditEntryResponse {
+	id: string;
+	userId: string;
+	userEmail: string | null;
+	userName: string | null;
+	nodeId: string | null;
+	nodeHostname: string | null;
+	networkId: string | null;
+	action: string;
+	details: string | null;
+	createdAt: number;
+}
+
 export interface ErrorResponse {
 	error: string;
 }

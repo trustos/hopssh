@@ -36,8 +36,14 @@ func (q *Queries) InsertAuditEntry(ctx context.Context, arg InsertAuditEntryPara
 }
 
 const listAuditForNetwork = `-- name: ListAuditForNetwork :many
-SELECT id, user_id, node_id, network_id, action, details, created_at
-FROM audit_log WHERE network_id = ? ORDER BY created_at DESC LIMIT ?
+SELECT a.id, a.user_id, a.node_id, a.network_id, a.action, a.details, a.created_at,
+       u.email AS user_email, u.name AS user_name,
+       n.hostname AS node_hostname
+FROM audit_log a
+LEFT JOIN users u ON u.id = a.user_id
+LEFT JOIN nodes n ON n.id = a.node_id
+WHERE a.network_id = ?
+ORDER BY a.created_at DESC LIMIT ?
 `
 
 type ListAuditForNetworkParams struct {
@@ -45,15 +51,28 @@ type ListAuditForNetworkParams struct {
 	Limit     int64
 }
 
-func (q *Queries) ListAuditForNetwork(ctx context.Context, arg ListAuditForNetworkParams) ([]AuditLog, error) {
+type ListAuditForNetworkRow struct {
+	ID           string
+	UserID       string
+	NodeID       *string
+	NetworkID    *string
+	Action       string
+	Details      *string
+	CreatedAt    int64
+	UserEmail    *string
+	UserName     *string
+	NodeHostname *string
+}
+
+func (q *Queries) ListAuditForNetwork(ctx context.Context, arg ListAuditForNetworkParams) ([]ListAuditForNetworkRow, error) {
 	rows, err := q.db.QueryContext(ctx, listAuditForNetwork, arg.NetworkID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AuditLog{}
+	items := []ListAuditForNetworkRow{}
 	for rows.Next() {
-		var i AuditLog
+		var i ListAuditForNetworkRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.UserID,
@@ -62,6 +81,9 @@ func (q *Queries) ListAuditForNetwork(ctx context.Context, arg ListAuditForNetwo
 			&i.Action,
 			&i.Details,
 			&i.CreatedAt,
+			&i.UserEmail,
+			&i.UserName,
+			&i.NodeHostname,
 		); err != nil {
 			return nil, err
 		}
@@ -77,8 +99,14 @@ func (q *Queries) ListAuditForNetwork(ctx context.Context, arg ListAuditForNetwo
 }
 
 const listAuditForUser = `-- name: ListAuditForUser :many
-SELECT id, user_id, node_id, network_id, action, details, created_at
-FROM audit_log WHERE user_id = ? ORDER BY created_at DESC LIMIT ?
+SELECT a.id, a.user_id, a.node_id, a.network_id, a.action, a.details, a.created_at,
+       u.email AS user_email, u.name AS user_name,
+       n.hostname AS node_hostname
+FROM audit_log a
+LEFT JOIN users u ON u.id = a.user_id
+LEFT JOIN nodes n ON n.id = a.node_id
+WHERE a.user_id = ?
+ORDER BY a.created_at DESC LIMIT ?
 `
 
 type ListAuditForUserParams struct {
@@ -86,15 +114,28 @@ type ListAuditForUserParams struct {
 	Limit  int64
 }
 
-func (q *Queries) ListAuditForUser(ctx context.Context, arg ListAuditForUserParams) ([]AuditLog, error) {
+type ListAuditForUserRow struct {
+	ID           string
+	UserID       string
+	NodeID       *string
+	NetworkID    *string
+	Action       string
+	Details      *string
+	CreatedAt    int64
+	UserEmail    *string
+	UserName     *string
+	NodeHostname *string
+}
+
+func (q *Queries) ListAuditForUser(ctx context.Context, arg ListAuditForUserParams) ([]ListAuditForUserRow, error) {
 	rows, err := q.db.QueryContext(ctx, listAuditForUser, arg.UserID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AuditLog{}
+	items := []ListAuditForUserRow{}
 	for rows.Next() {
-		var i AuditLog
+		var i ListAuditForUserRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.UserID,
@@ -103,6 +144,9 @@ func (q *Queries) ListAuditForUser(ctx context.Context, arg ListAuditForUserPara
 			&i.Action,
 			&i.Details,
 			&i.CreatedAt,
+			&i.UserEmail,
+			&i.UserName,
+			&i.NodeHostname,
 		); err != nil {
 			return nil, err
 		}

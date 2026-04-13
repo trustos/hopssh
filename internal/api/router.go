@@ -142,6 +142,7 @@ func NewRouter(
 
 		// Audit log.
 		r.With(wt).Get("/api/audit", auditH.ListAuditLog)
+		r.With(wt).Get("/api/networks/{networkID}/audit", auditH.ListNetworkAuditLog)
 
 		// Networks.
 		r.With(wt).Post("/api/networks", networkH.CreateNetwork)

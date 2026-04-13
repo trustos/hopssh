@@ -1,16 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { audit as auditApi } from '$lib/api/client';
+	import type { AuditEntryResponse } from '$lib/types/api';
 
-	let entries = $state<Array<{
-		id: string;
-		userId: string;
-		nodeId: string | null;
-		networkId: string | null;
-		action: string;
-		details: string | null;
-		createdAt: number;
-	}>>([]);
+	let entries = $state<AuditEntryResponse[]>([]);
 	let loading = $state(true);
 	let error = $state('');
 
@@ -33,6 +26,10 @@
 		return `${Math.floor(diff / 86400)}d ago`;
 	}
 
+	function formatTimestamp(ts: number): string {
+		return new Date(ts * 1000).toLocaleString();
+	}
+
 	function actionLabel(action: string): string {
 		const labels: Record<string, string> = {
 			'login': 'Logged in',
@@ -40,9 +37,22 @@
 			'shell.connect': 'Terminal session',
 			'exec': 'Command exec',
 			'port_forward.start': 'Port forward started',
+			'port_forward.proxy': 'Proxy access',
 			'node.delete': 'Node deleted',
+			'node.capabilities': 'Capabilities updated',
+			'node.rename': 'Node renamed',
 		};
 		return labels[action] || action;
+	}
+
+	function displayUser(entry: AuditEntryResponse): string {
+		return entry.userName || entry.userEmail || entry.userId.slice(0, 8);
+	}
+
+	function displayNode(entry: AuditEntryResponse): string {
+		if (entry.nodeHostname) return entry.nodeHostname;
+		if (entry.nodeId) return entry.nodeId.slice(0, 8);
+		return '';
 	}
 </script>
 
@@ -73,6 +83,7 @@
 				<thead>
 					<tr class="border-b bg-muted/50">
 						<th class="px-4 py-3 text-left font-medium">Action</th>
+						<th class="px-4 py-3 text-left font-medium">User</th>
 						<th class="px-4 py-3 text-left font-medium">Info</th>
 						<th class="px-4 py-3 text-left font-medium">Node</th>
 						<th class="px-4 py-3 text-right font-medium">When</th>
@@ -82,13 +93,17 @@
 					{#each entries as entry}
 						<tr class="border-b last:border-0 hover:bg-accent/50">
 							<td class="px-4 py-3 font-medium">{actionLabel(entry.action)}</td>
+							<td class="px-4 py-3 text-muted-foreground">{displayUser(entry)}</td>
 							<td class="px-4 py-3 font-mono text-xs text-muted-foreground">
-								{entry.details || '—'}
+								{entry.details || ''}
 							</td>
 							<td class="px-4 py-3 font-mono text-xs text-muted-foreground">
-								{entry.nodeId?.slice(0, 8) || '—'}
+								{displayNode(entry)}
 							</td>
-							<td class="px-4 py-3 text-right text-muted-foreground">{timeAgo(entry.createdAt)}</td>
+							<td class="px-4 py-3 text-right text-muted-foreground"
+								title={formatTimestamp(entry.createdAt)}>
+								{timeAgo(entry.createdAt)}
+							</td>
 						</tr>
 					{/each}
 				</tbody>

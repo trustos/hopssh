@@ -182,7 +182,7 @@ func main() {
 	renewH := &api.RenewHandler{Networks: networks, Nodes: nodes}
 	dnsH := &api.DNSHandler{Networks: networks, DNSRecords: dnsRecords, NetworkManager: netMgr}
 
-	auditH := &api.AuditHandler{Audit: audit}
+	auditH := &api.AuditHandler{Audit: audit, Networks: networks, Members: members}
 
 	distH := &api.DistributionHandler{Endpoint: *endpoint}
 	memberH := &api.MemberHandler{Networks: networks, Members: members, ProxyCache: proxyH}
