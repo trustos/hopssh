@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -580,6 +581,9 @@ func (h *ProxyHandler) NodeProxy(w http.ResponseWriter, r *http.Request) {
 		},
 		FlushInterval: -1,
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
+			if errors.Is(err, context.Canceled) {
+				return // client disconnected, normal for long-polling
+			}
 			log.Printf("[proxy] %s → %s:%d: %v", r.Method, nodeIP, port, err)
 			http.Error(w, fmt.Sprintf("proxy error: %v", err), http.StatusBadGateway)
 		},

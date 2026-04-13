@@ -86,11 +86,18 @@
   var origFetch = window.fetch;
   window.fetch = function (input, init) {
     if (typeof input === 'string') {
-      input = rewriteUrl(input);
+      var rewritten = rewriteUrl(input);
+      if (rewritten !== input) {
+        input = rewritten;
+        // Force credentials — the proxied app may use 'omit' but hopssh
+        // needs the session cookie for authentication.
+        init = Object.assign({}, init, { credentials: 'include' });
+      }
     } else if (input instanceof Request) {
       var rewritten = rewriteUrl(input.url);
       if (rewritten !== input.url) {
         input = new Request(rewritten, input);
+        init = Object.assign({}, init, { credentials: 'include' });
       }
     }
     return origFetch.call(this, input, init);
