@@ -89,6 +89,18 @@ self.addEventListener('fetch', function (event) {
   // Skip paths already containing the proxy prefix (avoid double-rewriting).
   if (PROXY_PATTERN.test(url.pathname)) return;
 
+  // Skip hopssh-internal paths. The SW serves BOTH dashboard tabs and proxy
+  // iframe tabs. These paths belong to hopssh itself and must never be
+  // rewritten, even if a stale proxy mapping exists for this clientId.
+  // (The bootstrap rewriteUrl doesn't need these — it only runs in the iframe.)
+  if (url.pathname.startsWith('/_app/') ||
+      url.pathname === '/sw.js' ||
+      url.pathname === '/sw-bootstrap.js' ||
+      url.pathname === '/favicon.svg' ||
+      url.pathname === '/robots.txt' ||
+      url.pathname === '/logo.svg' ||
+      url.pathname.startsWith('/proxy/')) return;
+
   // Only intercept if we have a potential clientId to resolve.
   // Non-proxy tabs will have no mapping, so resolveProxyBase returns null
   // and the request passes through untouched.
