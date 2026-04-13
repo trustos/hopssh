@@ -86,20 +86,12 @@ self.addEventListener('fetch', function (event) {
   // Only rewrite same-origin requests.
   if (url.origin !== self.location.origin) return;
 
-  // Never rewrite paths that already include the proxy prefix.
-  // Don't skip all /api/ — proxied apps may have their own /api/ routes.
+  // Skip paths already containing the proxy prefix (avoid double-rewriting).
   if (PROXY_PATTERN.test(url.pathname)) return;
 
-  // Never rewrite SvelteKit internals, SW, or bootstrap script.
-  if (url.pathname.startsWith('/_app/') || url.pathname === '/sw.js' || url.pathname === '/sw-bootstrap.js') return;
-
-  // Never rewrite known hopssh static assets.
-  if (url.pathname === '/favicon.svg' || url.pathname === '/robots.txt' || url.pathname === '/logo.svg') return;
-
-  // Never rewrite the proxy wrapper page itself.
-  if (url.pathname.startsWith('/proxy/')) return;
-
   // Only intercept if we have a potential clientId to resolve.
+  // Non-proxy tabs will have no mapping, so resolveProxyBase returns null
+  // and the request passes through untouched.
   var cid = event.clientId || event.resultingClientId;
   if (!cid) return;
 

@@ -65,17 +65,16 @@
   }
 
   // --- URL Rewriting for fetch, XHR, and WebSocket ---
-  // The SW handles most URL rewriting, but it can lose mappings when
-  // restarted or face race conditions with Cache API loading. Monkey-patching
-  // fetch/XHR/WebSocket directly is synchronous, guaranteed, and app-generic.
+  // Rewrite all same-origin URLs through the proxy. Only skip URLs that
+  // already include the proxy prefix (to avoid double-rewriting).
+  // No framework-specific paths — this runs inside the proxied app's iframe,
+  // so every same-origin request should go through the proxy.
   function rewriteUrl(url) {
     try {
       var parsed = new URL(url, location.href);
       if (parsed.origin === location.origin &&
-          !parsed.pathname.startsWith(base + '/') &&
-          !parsed.pathname.startsWith('/_app/') &&
-          !parsed.pathname.startsWith('/proxy/') &&
-          !parsed.pathname.startsWith('/sw')) {
+          parsed.pathname !== base &&
+          !parsed.pathname.startsWith(base + '/')) {
         parsed.pathname = base + parsed.pathname;
         return parsed.toString();
       }
