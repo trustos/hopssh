@@ -1,7 +1,7 @@
 // Service Worker bootstrap for proxied apps.
 // Loaded via <script src="/sw-bootstrap.js?base=/api/networks/.../proxy/{port}">
-// Registers the SW and sends the proxy base mapping, then patches
-// WebSocket for URL rewriting (SW can't intercept WebSocket connections).
+// Ensures the SW is controlling before the proxied app's scripts execute,
+// then patches WebSocket (SW can't intercept WebSocket connections).
 (function () {
   var script = document.currentScript;
   if (!script) return;
@@ -9,38 +9,48 @@
   var base = params.get('base');
   if (!base) return;
 
-  // --- SW Registration ---
-  // Server-side HTML rewriting handles assets (src/href), but runtime
-  // XHR/fetch calls (e.g., Nomad's /v1/regions) need the SW to rewrite them.
-  // On first visit the SW isn't controlling yet, so we reload once after
-  // activation. This is invisible to the user since we're inside an iframe.
   if (!('serviceWorker' in navigator)) return;
 
-  navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(function (r) {
-    function sendMapping(sw) {
-      sw.postMessage({ type: 'SET_PROXY_BASE', proxyBase: base });
-    }
-    if (navigator.serviceWorker.controller) {
-      // SW already controlling — just send the mapping.
-      sendMapping(navigator.serviceWorker.controller);
-      return;
-    }
-    // First visit: SW not yet controlling. Wait for activation, then reload.
-    var sw = r.installing || r.waiting || r.active;
-    if (!sw) return;
-    function onActive() {
-      navigator.serviceWorker.ready.then(function () {
-        location.reload();
-      });
-    }
-    if (sw.state === 'activated') {
-      onActive();
-      return;
-    }
-    sw.addEventListener('statechange', function () {
-      if (sw.state === 'activated') onActive();
+  // --- SW Bootstrap ---
+  // If the SW is already controlling, just send the mapping and continue.
+  // If not (first visit), we MUST prevent the app's scripts from executing
+  // before the SW is ready — otherwise XHR/fetch calls (e.g., /v1/regions)
+  // go directly to hopssh and get 404, crashing the app irrecoverably.
+  //
+  // Strategy: call window.stop() to halt page loading (prevents subsequent
+  // <script> tags from executing), register the SW, wait for activation,
+  // then reload. The reload is invisible inside the iframe.
+
+  if (navigator.serviceWorker.controller) {
+    // SW already controlling — send mapping, let app scripts run normally.
+    navigator.serviceWorker.controller.postMessage({
+      type: 'SET_PROXY_BASE',
+      proxyBase: base,
     });
-  });
+  } else {
+    // No SW controlling — halt the page to prevent app scripts from firing.
+    window.stop();
+
+    navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(function (r) {
+      var sw = r.installing || r.waiting || r.active;
+      if (!sw) return;
+      function onActive() {
+        navigator.serviceWorker.ready.then(function () {
+          location.reload();
+        });
+      }
+      if (sw.state === 'activated') {
+        onActive();
+        return;
+      }
+      sw.addEventListener('statechange', function () {
+        if (sw.state === 'activated') onActive();
+      });
+    });
+
+    // Don't set up WebSocket patch — page will reload anyway.
+    return;
+  }
 
   // --- WebSocket URL Rewriting ---
   // SW cannot intercept WebSocket connections, so we monkey-patch the
