@@ -125,6 +125,11 @@ func (s *NodeStore) Create(n *Node) error {
 func (s *NodeStore) Get(id string) (*Node, error) {
 	q := dbsqlc.New(WrapDB(s.rdb))
 	row, err := q.GetNodeByID(context.Background(), id)
+	if isLockError(err) {
+		// Retry once — see NetworkStore.Get for rationale.
+		time.Sleep(100 * time.Millisecond)
+		row, err = q.GetNodeByID(context.Background(), id)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}

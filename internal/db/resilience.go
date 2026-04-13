@@ -80,8 +80,9 @@ func (r *ResilientDB) QueryContext(ctx context.Context, query string, args ...in
 }
 
 func (r *ResilientDB) QueryRowContext(ctx context.Context, query string, args ...interface{}) *sql.Row {
-	// QueryRow cannot be retried because *sql.Row defers error until Scan().
-	// Lock errors on reads are rare (WAL mode) and handled by busy_timeout pragma.
+	// QueryRow defers errors until Scan(), so we can't check/retry lock errors here.
+	// Lock errors on single-row reads are handled by retrying at the store level
+	// (e.g., NetworkStore.Get, NodeStore.Get) when they detect SQLITE_BUSY after Scan.
 	return r.db.QueryRowContext(ctx, query, args...)
 }
 

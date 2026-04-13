@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/trustos/hopssh/internal/crypto"
 	"github.com/trustos/hopssh/internal/db/dbsqlc"
@@ -65,6 +66,13 @@ func (s *NetworkStore) Create(n *Network) error {
 func (s *NetworkStore) Get(id string) (*Network, error) {
 	q := dbsqlc.New(WrapDB(s.rdb))
 	row, err := q.GetNetworkByID(context.Background(), id)
+	if isLockError(err) {
+		// Retry once after a short delay — QueryRowContext can't retry internally
+		// because *sql.Row defers errors to Scan(). Under concurrent heartbeat
+		// writes this causes spurious "network not found" in proxy requests.
+		time.Sleep(100 * time.Millisecond)
+		row, err = q.GetNetworkByID(context.Background(), id)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
