@@ -3,8 +3,11 @@
 // (e.g., /ui/assets/app.js) to include the proxy prefix
 // (e.g., /api/networks/.../proxy/4646/ui/assets/app.js).
 //
-// The proxy page loads inside an iframe, so the client URL always
-// contains the proxy prefix — no complex mapping persistence needed.
+// Mappings are persisted to the Cache API so they survive SW termination.
+// The browser can kill and restart the SW at any time; without persistence,
+// mappings are lost when the proxied app has changed the iframe URL via
+// pushState (e.g., /ui/jobs) so clients.get() no longer returns a URL
+// matching the proxy pattern.
 
 // Per-tab proxy session tracking: clientId → proxyBase string.
 var proxyClients = new Map();
@@ -15,6 +18,41 @@ var PROXY_PATTERN = /^(\/api\/networks\/[^/]+\/nodes\/[^/]+\/proxy\/\d+)/;
 // Proxy request timeout (30 seconds).
 var PROXY_TIMEOUT_MS = 30000;
 
+// Cache key for persisted mappings.
+var CACHE_NAME = 'hopssh-proxy-mappings';
+var CACHE_KEY = '/_proxy-client-mappings';
+
+// --- Persistence via Cache API ---
+
+function persistMappings() {
+  var obj = {};
+  proxyClients.forEach(function (v, k) { obj[k] = v; });
+  caches.open(CACHE_NAME).then(function (cache) {
+    cache.put(CACHE_KEY, new Response(JSON.stringify(obj)));
+  }).catch(function () {});
+}
+
+function loadMappings() {
+  return caches.open(CACHE_NAME).then(function (cache) {
+    return cache.match(CACHE_KEY);
+  }).then(function (resp) {
+    if (!resp) return;
+    return resp.text().then(function (text) {
+      try {
+        var obj = JSON.parse(text);
+        for (var k in obj) {
+          if (!proxyClients.has(k)) proxyClients.set(k, obj[k]);
+        }
+      } catch (e) {}
+    });
+  }).catch(function () {});
+}
+
+function storeMapping(clientId, proxyBase) {
+  proxyClients.set(clientId, proxyBase);
+  persistMappings();
+}
+
 // --- Lifecycle ---
 
 self.addEventListener('install', function () {
@@ -22,7 +60,12 @@ self.addEventListener('install', function () {
 });
 
 self.addEventListener('activate', function (event) {
-  event.waitUntil(self.clients.claim());
+  event.waitUntil(
+    Promise.all([
+      self.clients.claim(),
+      loadMappings()
+    ])
+  );
 });
 
 // Accept proxy base mappings pushed from the injected bootstrap script.
@@ -30,7 +73,7 @@ self.addEventListener('message', function (event) {
   if (event.data && event.data.type === 'SET_PROXY_BASE') {
     var clientId = event.source && event.source.id;
     if (clientId && event.data.proxyBase) {
-      proxyClients.set(clientId, event.data.proxyBase);
+      storeMapping(clientId, event.data.proxyBase);
     }
   }
 });
@@ -132,13 +175,13 @@ async function resolveProxyBase(event) {
   var proxyBase = proxyClients.get(clientId);
   if (proxyBase) return proxyBase;
 
-  // 2. Discover from client URL (iframe always has proxy URL).
+  // 2. Discover from client URL.
   try {
     var client = await self.clients.get(clientId);
     if (client) {
       proxyBase = extractProxyBase(client.url);
       if (proxyBase) {
-        proxyClients.set(clientId, proxyBase);
+        storeMapping(clientId, proxyBase);
         return proxyBase;
       }
     }
@@ -149,7 +192,7 @@ async function resolveProxyBase(event) {
   if (referrer) {
     proxyBase = extractProxyBase(referrer);
     if (proxyBase) {
-      proxyClients.set(clientId, proxyBase);
+      storeMapping(clientId, proxyBase);
       return proxyBase;
     }
   }
