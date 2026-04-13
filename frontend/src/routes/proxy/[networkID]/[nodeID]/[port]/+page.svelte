@@ -1,14 +1,16 @@
-<script>
-	import { page } from '$app/stores';
+<script lang="ts">
+	import { page } from '$app/state';
 
-	$: proxyUrl = `/api/networks/${$page.params.networkID}/nodes/${$page.params.nodeID}/proxy/${$page.params.port}/`;
+	const proxyUrl = $derived(
+		`/api/networks/${page.params.networkID}/nodes/${page.params.nodeID}/proxy/${page.params.port}/`
+	);
 </script>
 
 <svelte:head>
-	<title>Proxy — port {$page.params.port}</title>
+	<title>Proxy — port {page.params.port}</title>
 </svelte:head>
 
-<iframe src={proxyUrl} title="Proxied service on port {$page.params.port}"></iframe>
+<iframe src={proxyUrl} title="Proxied service on port {page.params.port}"></iframe>
 
 <style>
 	iframe {
