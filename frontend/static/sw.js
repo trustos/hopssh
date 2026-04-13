@@ -171,9 +171,39 @@ async function resolveProxyBase(event) {
   var clientId = event.clientId || event.resultingClientId;
   if (!clientId) return null;
 
-  // 1. Check in-memory mapping (fastest).
+  // 1. Check in-memory mapping.
   var proxyBase = proxyClients.get(clientId);
-  if (proxyBase) return proxyBase;
+  if (proxyBase) {
+    // Validate: verify the client is still a proxy tab (not a reused clientId).
+    // Browser can reuse clientIds — if a proxy tab closes and a dashboard tab
+    // gets the same ID, the stale mapping would rewrite dashboard requests
+    // through the proxy, breaking the entire site.
+    try {
+      var client = await self.clients.get(clientId);
+      if (client) {
+        // Client URL has proxy pattern → mapping is valid (even if pushState changed it,
+        // the mapping was set when the URL did match).
+        // Client URL does NOT have proxy pattern AND is not a pushState'd path
+        // from the proxied app → stale mapping, remove it.
+        var clientBase = extractProxyBase(client.url);
+        if (!clientBase) {
+          // Check if this looks like a hopssh dashboard page (not a proxied app page).
+          // Proxied app pages have paths like /ui/jobs, /ui/storage (Nomad).
+          // Dashboard pages have paths like /, /login, /networks/..., /proxy/...
+          var path = new URL(client.url).pathname;
+          if (path === '/' || path.startsWith('/login') || path.startsWith('/register') ||
+              path.startsWith('/networks') || path.startsWith('/proxy/') ||
+              path.startsWith('/terminal') || path.startsWith('/invite')) {
+            // This is a hopssh page, not a proxied app — stale mapping.
+            proxyClients.delete(clientId);
+            persistMappings();
+            return null;
+          }
+        }
+      }
+    } catch (e) {}
+    return proxyBase;
+  }
 
   // 2. Discover from client URL.
   try {
