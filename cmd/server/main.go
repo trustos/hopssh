@@ -148,6 +148,7 @@ func main() {
 	netMgr.StartMeshKeepalive(reaperCtx, nodes, 30*time.Second)
 
 	fwdMgr := mesh.NewForwardManager(netMgr)
+	fwdMgr.StartIdleReaper(reaperCtx)
 
 	// Initialize handlers.
 	authH := &api.AuthHandler{Users: users, Sessions: sessions, Audit: audit}

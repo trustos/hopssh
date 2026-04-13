@@ -43,11 +43,12 @@ type PortForward struct {
 
 	nebulaIP string // VPN IP of the target node
 
-	listener   net.Listener
-	netManager *NetworkManager
-	cancel     context.CancelFunc
-	connWg     sync.WaitGroup
-	active     atomic.Int32
+	listener     net.Listener
+	netManager   *NetworkManager
+	cancel       context.CancelFunc
+	connWg       sync.WaitGroup
+	active       atomic.Int32
+	lastActivity atomic.Value // time.Time — updated on each new connection
 }
 
 // ActiveConns returns the number of active proxied connections.
@@ -104,6 +105,8 @@ func (fm *ForwardManager) Start(networkID, nodeID, nebulaIP string, remotePort, 
 		netManager: fm.netManager,
 		cancel:     cancel,
 	}
+
+	pf.lastActivity.Store(time.Now())
 
 	fm.mu.Lock()
 	fm.forwards[id] = pf
@@ -192,6 +195,46 @@ func (fm *ForwardManager) StopAll() {
 	}
 }
 
+// forwardIdleTimeout is how long a port forward can be idle (zero active
+// connections) before it's automatically stopped. Prevents stale forwards
+// from persisting after users close browser tabs.
+const forwardIdleTimeout = 10 * time.Minute
+
+// StartIdleReaper starts a background goroutine that periodically stops
+// port forwards with zero active connections that have been idle too long.
+func (fm *ForwardManager) StartIdleReaper(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(60 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				fm.reapIdle()
+			}
+		}
+	}()
+}
+
+func (fm *ForwardManager) reapIdle() {
+	fm.mu.Lock()
+	var toStop []*PortForward
+	for id, pf := range fm.forwards {
+		last, _ := pf.lastActivity.Load().(time.Time)
+		if pf.active.Load() == 0 && !last.IsZero() && time.Since(last) > forwardIdleTimeout {
+			toStop = append(toStop, pf)
+			delete(fm.forwards, id)
+		}
+	}
+	fm.mu.Unlock()
+
+	for _, pf := range toStop {
+		log.Printf("[forward] idle cleanup: %s (port %d, idle %s)", pf.ID, pf.RemotePort, time.Since(pf.lastActivity.Load().(time.Time)).Round(time.Second))
+		fm.drain(pf)
+	}
+}
+
 func generateForwardID() string {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -227,6 +270,7 @@ func (pf *PortForward) acceptLoop(ctx context.Context) {
 			}
 		}
 
+		pf.lastActivity.Store(time.Now())
 		pf.connWg.Add(1)
 		pf.active.Add(1)
 		go func() {

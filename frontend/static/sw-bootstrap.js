@@ -64,23 +64,60 @@
     return;
   }
 
-  // --- WebSocket URL Rewriting ---
+  // --- URL Rewriting for fetch, XHR, and WebSocket ---
+  // The SW handles most URL rewriting, but it can lose mappings when
+  // restarted or face race conditions with Cache API loading. Monkey-patching
+  // fetch/XHR/WebSocket directly is synchronous, guaranteed, and app-generic.
+  function rewriteUrl(url) {
+    try {
+      var parsed = new URL(url, location.href);
+      if (parsed.origin === location.origin &&
+          !parsed.pathname.startsWith('/api/') &&
+          !parsed.pathname.startsWith('/_app/') &&
+          !parsed.pathname.startsWith('/proxy/') &&
+          !parsed.pathname.startsWith('/sw')) {
+        parsed.pathname = base + parsed.pathname;
+        return parsed.toString();
+      }
+    } catch (e) {}
+    return url;
+  }
+
+  // --- Fetch ---
+  var origFetch = window.fetch;
+  window.fetch = function (input, init) {
+    if (typeof input === 'string') {
+      input = rewriteUrl(input);
+    } else if (input instanceof Request) {
+      var rewritten = rewriteUrl(input.url);
+      if (rewritten !== input.url) {
+        input = new Request(rewritten, input);
+      }
+    }
+    return origFetch.call(this, input, init);
+  };
+
+  // --- XMLHttpRequest ---
+  var origXHROpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    arguments[1] = rewriteUrl(url);
+    return origXHROpen.apply(this, arguments);
+  };
+
+  // --- WebSocket ---
   // SW cannot intercept WebSocket connections, so we monkey-patch the
   // constructor to rewrite same-origin and localhost URLs.
   var OrigWS = window.WebSocket;
   window.WebSocket = function (url, protocols) {
     if (url && typeof url === 'string') {
-      try {
-        var parsed = new URL(url, location.href);
-        if (
-          parsed.origin === location.origin &&
-          !parsed.pathname.startsWith('/api/')
-        ) {
-          parsed.pathname = base + parsed.pathname;
-          url = parsed.toString();
-        }
-      } catch (e) {}
-      // Rewrite ws://localhost:{port}/... URLs.
+      // Rewrite same-origin WebSocket URLs (rewriteUrl handles http/https).
+      // Convert ws/wss to http/https for URL parsing, rewrite, convert back.
+      var httpUrl = url.replace(/^ws(s?):/, 'http$1:');
+      var rewritten = rewriteUrl(httpUrl);
+      if (rewritten !== httpUrl) {
+        url = rewritten.replace(/^http(s?):/, 'ws$1:');
+      }
+      // Also rewrite ws://localhost:{port}/... URLs (direct connections).
       var m = url.match(
         /^wss?:\/\/(localhost|127\.0\.0\.1)(:\d+)?(\/.*)?$/
       );
