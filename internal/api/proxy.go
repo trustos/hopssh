@@ -632,7 +632,7 @@ func injectIntoHead(html, snippet []byte) []byte {
 
 // rewriteHTMLPaths rewrites absolute paths in HTML src, href, and action attributes
 // to include the proxy prefix. This ensures assets load on first visit before the
-// SW is active. Skips protocol-relative URLs (//), /api/, /sw, and /_app/ paths.
+// SW is active. Only skips protocol-relative URLs (//) and already-proxied paths.
 func rewriteHTMLPaths(html []byte, proxyPrefix string) []byte {
 	for _, attr := range [][]byte{
 		[]byte(`src="`), []byte(`src='`),
@@ -658,12 +658,12 @@ func rewriteAttrPaths(html, attr []byte, prefix string) []byte {
 		result = append(result, remaining[:attrEnd]...)
 		remaining = remaining[attrEnd:]
 
-		// Check if path starts with / but not //, /api/, /sw, /_app/
+		// Rewrite paths starting with / unless they already have the proxy prefix
+		// or are protocol-relative (//). No framework-specific skips — this runs
+		// on proxied HTML only, so every absolute path should go through the proxy.
 		if len(remaining) > 0 && remaining[0] == '/' &&
 			!bytes.HasPrefix(remaining, []byte("//")) &&
-			!bytes.HasPrefix(remaining, []byte("/api/")) &&
-			!bytes.HasPrefix(remaining, []byte("/sw")) &&
-			!bytes.HasPrefix(remaining, []byte("/_app/")) {
+			!bytes.HasPrefix(remaining, prefixBytes) {
 			result = append(result, prefixBytes...)
 		}
 	}
