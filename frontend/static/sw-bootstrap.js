@@ -9,6 +9,18 @@
   var base = params.get('base');
   if (!base) return;
 
+  // --- URL Rewrite ---
+  // The proxied app (e.g., Nomad) checks window.location.pathname to match
+  // routes. Inside the iframe, pathname is /api/networks/.../proxy/4646/ui/
+  // but the app expects /ui/. Strip the proxy prefix so the app's router works.
+  // Safe because we're in an iframe — the URL bar is invisible.
+  if (location.pathname.startsWith(base + '/')) {
+    var appPath = location.pathname.slice(base.length);
+    history.replaceState(null, '', appPath + location.search + location.hash);
+  } else if (location.pathname === base) {
+    history.replaceState(null, '', '/' + location.search + location.hash);
+  }
+
   if (!('serviceWorker' in navigator)) return;
 
   // --- SW Bootstrap ---
