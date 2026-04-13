@@ -48,6 +48,12 @@ func UserFromContext(ctx context.Context) *db.UserProfile {
 	return u
 }
 
+// WithUser returns a new context with the given user profile set.
+// Used in tests to simulate authenticated requests without a real session.
+func WithUser(ctx context.Context, user *db.UserProfile) context.Context {
+	return context.WithValue(ctx, userKey, user)
+}
+
 func extractToken(r *http.Request) string {
 	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
 		return strings.TrimPrefix(auth, "Bearer ")
