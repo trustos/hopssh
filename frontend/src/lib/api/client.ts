@@ -112,7 +112,7 @@ export const portForwards = {
 	stop: (networkId: string, fwdId: string) =>
 		request<void>('DELETE', `/api/networks/${e(networkId)}/port-forwards/${e(fwdId)}`),
 	proxyUrl: (networkId: string, nodeId: string, port: number) =>
-		`/api/networks/${e(networkId)}/nodes/${e(nodeId)}/proxy/${port}/`
+		`/proxy/${e(networkId)}/${e(nodeId)}/${port}`
 };
 
 // --- DNS Records ---

@@ -517,6 +517,13 @@ func (h *ProxyHandler) NodeProxy(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 
+			// Strip framing restrictions so the proxy works inside an iframe.
+			// Only affects proxy responses — hopssh's own pages keep their headers.
+			resp.Header.Del("X-Frame-Options")
+			if csp := resp.Header.Get("Content-Security-Policy"); csp != "" {
+				resp.Header.Set("Content-Security-Policy", stripFrameAncestors(csp))
+			}
+
 			// For HTML responses, inject the SW bootstrap + WebSocket patch script.
 			// This ensures proxied web apps load correctly even on first visit
 			// (no SW active yet) and that WebSocket URLs are rewritten (SW can't
@@ -619,6 +626,20 @@ func injectIntoHead(html, snippet []byte) []byte {
 		}
 	}
 	return append(snippet, html...)
+}
+
+// stripFrameAncestors removes the frame-ancestors directive from a CSP header
+// so the proxied app can be loaded inside an iframe.
+func stripFrameAncestors(csp string) string {
+	var directives []string
+	for _, d := range strings.Split(csp, ";") {
+		d = strings.TrimSpace(d)
+		if d == "" || strings.HasPrefix(d, "frame-ancestors") {
+			continue
+		}
+		directives = append(directives, d)
+	}
+	return strings.Join(directives, "; ")
 }
 
 // rewriteHTMLPaths rewrites absolute paths in HTML src, href, and action attributes

@@ -1,11 +1,10 @@
 // Service Worker for hopssh proxy URL rewriting.
-// Intercepts requests from proxy tabs and rewrites absolute paths
+// Intercepts requests from proxy iframes and rewrites absolute paths
 // (e.g., /ui/assets/app.js) to include the proxy prefix
 // (e.g., /api/networks/.../proxy/4646/ui/assets/app.js).
 //
-// Uses event.clientId + self.clients.get() to detect which tabs are
-// proxy sessions. Mappings are stored per-tab in memory AND persisted
-// to the Cache API so they survive SW termination/restart.
+// The proxy page loads inside an iframe, so the client URL always
+// contains the proxy prefix — no complex mapping persistence needed.
 
 // Per-tab proxy session tracking: clientId → proxyBase string.
 var proxyClients = new Map();
@@ -16,39 +15,6 @@ var PROXY_PATTERN = /^(\/api\/networks\/[^/]+\/nodes\/[^/]+\/proxy\/\d+)/;
 // Proxy request timeout (30 seconds).
 var PROXY_TIMEOUT_MS = 30000;
 
-// Cleanup interval (5 minutes).
-var CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
-
-// Cache key for persisted mappings.
-var CACHE_NAME = 'hopssh-proxy-mappings';
-var CACHE_KEY = '/_proxy-client-mappings';
-
-// --- Persistence via Cache API ---
-
-function persistMappings() {
-  var obj = {};
-  proxyClients.forEach(function (v, k) { obj[k] = v; });
-  caches.open(CACHE_NAME).then(function (cache) {
-    cache.put(CACHE_KEY, new Response(JSON.stringify(obj)));
-  }).catch(function () {});
-}
-
-function loadMappings() {
-  return caches.open(CACHE_NAME).then(function (cache) {
-    return cache.match(CACHE_KEY);
-  }).then(function (resp) {
-    if (!resp) return;
-    return resp.text().then(function (text) {
-      try {
-        var obj = JSON.parse(text);
-        for (var k in obj) {
-          if (!proxyClients.has(k)) proxyClients.set(k, obj[k]);
-        }
-      } catch (e) {}
-    });
-  }).catch(function () {});
-}
-
 // --- Lifecycle ---
 
 self.addEventListener('install', function () {
@@ -56,13 +22,7 @@ self.addEventListener('install', function () {
 });
 
 self.addEventListener('activate', function (event) {
-  event.waitUntil(
-    Promise.all([
-      self.clients.claim(),
-      loadMappings()
-    ])
-  );
-  scheduleCleanup();
+  event.waitUntil(self.clients.claim());
 });
 
 // Accept proxy base mappings pushed from the injected bootstrap script.
@@ -70,15 +30,10 @@ self.addEventListener('message', function (event) {
   if (event.data && event.data.type === 'SET_PROXY_BASE') {
     var clientId = event.source && event.source.id;
     if (clientId && event.data.proxyBase) {
-      storeMapping(clientId, event.data.proxyBase);
+      proxyClients.set(clientId, event.data.proxyBase);
     }
   }
 });
-
-function storeMapping(clientId, proxyBase) {
-  proxyClients.set(clientId, proxyBase);
-  persistMappings();
-}
 
 // --- Fetch interception ---
 
@@ -97,6 +52,9 @@ self.addEventListener('fetch', function (event) {
   // Never rewrite known hopssh static assets.
   if (url.pathname === '/favicon.svg' || url.pathname === '/robots.txt' || url.pathname === '/logo.svg') return;
 
+  // Never rewrite the proxy wrapper page itself.
+  if (url.pathname.startsWith('/proxy/')) return;
+
   // Only intercept if we have a potential clientId to resolve.
   var cid = event.clientId || event.resultingClientId;
   if (!cid) return;
@@ -105,13 +63,7 @@ self.addEventListener('fetch', function (event) {
 });
 
 async function handleFetch(event) {
-  var proxyBase;
-  try {
-    proxyBase = await resolveProxyBase(event);
-  } catch (e) {
-    // Resolution failed — pass through.
-    return fetch(event.request);
-  }
+  var proxyBase = await resolveProxyBase(event);
 
   if (!proxyBase) {
     // Not a proxy tab — pass through normally.
@@ -120,14 +72,7 @@ async function handleFetch(event) {
 
   // Rewrite: prepend proxy base to the absolute path.
   var url = new URL(event.request.url);
-  var rewrittenPath = proxyBase + url.pathname;
-
-  // Validate the rewritten URL stays within the proxy scope.
-  if (!rewrittenPath.startsWith(proxyBase + '/') && rewrittenPath !== proxyBase) {
-    return fetch(event.request);
-  }
-
-  var rewrittenUrl = new URL(rewrittenPath + url.search, self.location.origin);
+  var rewrittenUrl = new URL(proxyBase + url.pathname + url.search, self.location.origin);
 
   // Build a clean Request init.
   // Always use credentials:'include' — the proxied app may not send cookies
@@ -185,20 +130,15 @@ async function resolveProxyBase(event) {
 
   // 1. Check in-memory mapping (fastest).
   var proxyBase = proxyClients.get(clientId);
-  if (proxyBase) {
-    if (event.resultingClientId && event.resultingClientId !== event.clientId && event.resultingClientId !== clientId) {
-      storeMapping(event.resultingClientId, proxyBase);
-    }
-    return proxyBase;
-  }
+  if (proxyBase) return proxyBase;
 
-  // 2. Discover from client URL.
+  // 2. Discover from client URL (iframe always has proxy URL).
   try {
     var client = await self.clients.get(clientId);
     if (client) {
       proxyBase = extractProxyBase(client.url);
       if (proxyBase) {
-        storeMapping(clientId, proxyBase);
+        proxyClients.set(clientId, proxyBase);
         return proxyBase;
       }
     }
@@ -209,16 +149,7 @@ async function resolveProxyBase(event) {
   if (referrer) {
     proxyBase = extractProxyBase(referrer);
     if (proxyBase) {
-      storeMapping(clientId, proxyBase);
-      return proxyBase;
-    }
-  }
-
-  // 4. Try the opener's mapping (for window.open()).
-  if (event.clientId && event.clientId !== clientId) {
-    proxyBase = proxyClients.get(event.clientId);
-    if (proxyBase) {
-      storeMapping(clientId, proxyBase);
+      proxyClients.set(clientId, proxyBase);
       return proxyBase;
     }
   }
@@ -234,25 +165,4 @@ function extractProxyBase(urlString) {
   } catch (e) {
     return null;
   }
-}
-
-// --- Cleanup ---
-
-var cleanupTimer = null;
-
-function scheduleCleanup() {
-  if (cleanupTimer) return;
-  cleanupTimer = setInterval(function () {
-    self.clients.matchAll().then(function (allClients) {
-      var activeIds = new Set(allClients.map(function (c) { return c.id; }));
-      var changed = false;
-      proxyClients.forEach(function (_, id) {
-        if (!activeIds.has(id)) {
-          proxyClients.delete(id);
-          changed = true;
-        }
-      });
-      if (changed) persistMappings();
-    }).catch(function () {});
-  }, CLEANUP_INTERVAL_MS);
 }
