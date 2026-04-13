@@ -8,8 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/trustos/hopssh/internal/crypto"
@@ -62,10 +64,18 @@ func (n *Node) HasCapability(cap string) bool {
 	return false
 }
 
+// heartbeatFlushInterval is how often buffered heartbeats are flushed to SQLite.
+const heartbeatFlushInterval = 5 * time.Second
+
 type NodeStore struct {
 	rdb *sql.DB
 	wdb *sql.DB
 	enc *crypto.Encryptor
+
+	// heartbeats coalesces pending UpdateLastSeen + UpdateAgentRealIP.
+	// Key: nodeID (string), Value: string (latest agent IP, "" = no IP update).
+	// sync.Map for lock-free concurrent writes from heartbeat handlers.
+	heartbeats sync.Map
 }
 
 func NewNodeStore(p *DBPair, enc *crypto.Encryptor) *NodeStore {
@@ -431,4 +441,67 @@ func (s *NodeStore) Delete(id string) error {
 func (s *NodeStore) DeleteForNetwork(networkID string) error {
 	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.DeleteNodesForNetwork(context.Background(), networkID)
+}
+
+// RecordHeartbeat buffers a heartbeat for batch writing. Non-blocking.
+// If ip is empty, only last_seen_at is updated (agent_real_ip preserved).
+// Coalesces: if the same node heartbeats multiple times between flushes,
+// only the latest IP is kept.
+func (s *NodeStore) RecordHeartbeat(nodeID, ip string) {
+	s.heartbeats.Store(nodeID, ip)
+}
+
+// StartHeartbeatFlusher starts periodic batch flushing of heartbeats.
+func (s *NodeStore) StartHeartbeatFlusher(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(heartbeatFlushInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				s.FlushHeartbeats()
+				return
+			case <-ticker.C:
+				s.FlushHeartbeats()
+			}
+		}
+	}()
+}
+
+// FlushHeartbeats drains all pending heartbeats to the database in a
+// single transaction. Safe to call from the shutdown path.
+func (s *NodeStore) FlushHeartbeats() {
+	type entry struct {
+		id string
+		ip string
+	}
+	var batch []entry
+	s.heartbeats.Range(func(key, value any) bool {
+		batch = append(batch, entry{id: key.(string), ip: value.(string)})
+		s.heartbeats.Delete(key)
+		return true
+	})
+	if len(batch) == 0 {
+		return
+	}
+
+	tx, err := s.wdb.Begin()
+	if err != nil {
+		log.Printf("[heartbeat] begin tx: %v (dropping %d entries)", err, len(batch))
+		return
+	}
+	q := dbsqlc.New(WrapTx(tx))
+	for _, e := range batch {
+		if err := q.HeartbeatNode(context.Background(), dbsqlc.HeartbeatNodeParams{
+			AgentRealIp: e.ip,
+			ID:          e.id,
+		}); err != nil {
+			log.Printf("[heartbeat] update %s: %v", e.id, err)
+			tx.Rollback()
+			return
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		log.Printf("[heartbeat] commit: %v (dropping %d entries)", err, len(batch))
+	}
 }

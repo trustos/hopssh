@@ -50,6 +50,10 @@ UPDATE nodes SET last_seen_at = unixepoch(), status = 'online' WHERE id = ?;
 -- name: UpdateNodeAgentRealIP :exec
 UPDATE nodes SET agent_real_ip = ? WHERE id = ?;
 
+-- name: HeartbeatNode :exec
+UPDATE nodes SET last_seen_at = unixepoch(), status = 'online',
+  agent_real_ip = COALESCE(NULLIF(?, ''), agent_real_ip) WHERE id = ?;
+
 -- name: UpdateNodeExposedPorts :exec
 UPDATE nodes SET exposed_ports = ? WHERE id = ?;
 

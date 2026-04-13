@@ -4,7 +4,6 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -87,9 +86,7 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update agent's real IP (may change between renewals).
-	if err := h.Nodes.UpdateAgentRealIP(node.ID, captureAgentIP(r)); err != nil {
-		log.Printf("[renew] failed to update agent IP for %s: %v", node.ID, err)
-	}
+	h.Nodes.RecordHeartbeat(node.ID, captureAgentIP(r))
 
 	// Persist to DB.
 	if err := h.Nodes.UpdateCert(node.ID, nodeCert.CertPEM, nodeCert.KeyPEM); err != nil {
@@ -135,12 +132,7 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Nodes.UpdateLastSeen(node.ID); err != nil {
-		log.Printf("[heartbeat] failed to update last_seen for %s: %v", node.ID, err)
-	}
-	if err := h.Nodes.UpdateAgentRealIP(node.ID, captureAgentIP(r)); err != nil {
-		log.Printf("[heartbeat] failed to update agent IP for %s: %v", node.ID, err)
-	}
+	h.Nodes.RecordHeartbeat(node.ID, captureAgentIP(r))
 
 	if h.EventHub != nil {
 		h.EventHub.Publish(node.NetworkID, Event{Type: "node.status", Data: map[string]string{"nodeId": node.ID, "status": "online"}})

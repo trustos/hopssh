@@ -205,9 +205,7 @@ func (h *ProxyHandler) NodeHealth(w http.ResponseWriter, r *http.Request) {
 	defer resp.Body.Close()
 
 	// Update node status on successful health check.
-	if err := h.Nodes.UpdateLastSeen(node.ID); err != nil {
-		log.Printf("[health] failed to update last_seen for %s: %v", node.ID, err)
-	}
+	h.Nodes.RecordHeartbeat(node.ID, "")
 	if h.EventHub != nil {
 		h.EventHub.Publish(node.NetworkID, Event{Type: "node.status", Data: map[string]string{"nodeId": node.ID, "status": "online"}})
 	}

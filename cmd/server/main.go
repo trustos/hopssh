@@ -150,6 +150,7 @@ func main() {
 	fwdMgr := mesh.NewForwardManager(netMgr)
 	fwdMgr.StartIdleReaper(reaperCtx)
 	audit.StartFlusher(reaperCtx)
+	nodes.StartHeartbeatFlusher(reaperCtx)
 
 	// Initialize handlers.
 	authH := &api.AuthHandler{Users: users, Sessions: sessions, Audit: audit}
@@ -257,6 +258,7 @@ func main() {
 	log.Println("Shutting down control plane...")
 	close(stopCleanup)
 	audit.Flush()
+	nodes.FlushHeartbeats()
 	fwdMgr.StopAll()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

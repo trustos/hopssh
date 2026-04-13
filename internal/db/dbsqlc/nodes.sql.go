@@ -458,6 +458,21 @@ func (q *Queries) UpdateNodeAgentRealIP(ctx context.Context, arg UpdateNodeAgent
 	return err
 }
 
+const heartbeatNode = `-- name: HeartbeatNode :exec
+UPDATE nodes SET last_seen_at = unixepoch(), status = 'online',
+  agent_real_ip = COALESCE(NULLIF(?, ''), agent_real_ip) WHERE id = ?
+`
+
+type HeartbeatNodeParams struct {
+	AgentRealIp string
+	ID          string
+}
+
+func (q *Queries) HeartbeatNode(ctx context.Context, arg HeartbeatNodeParams) error {
+	_, err := q.db.ExecContext(ctx, heartbeatNode, arg.AgentRealIp, arg.ID)
+	return err
+}
+
 const updateNodeCapabilities = `-- name: UpdateNodeCapabilities :exec
 UPDATE nodes SET capabilities = ? WHERE id = ?
 `
