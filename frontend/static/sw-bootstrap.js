@@ -104,9 +104,17 @@
   };
 
   // --- XMLHttpRequest ---
+  // Nomad's Ember adapter uses XHR (via _fetchRequest → ajax → XMLHttpRequest).
+  // We rewrite the URL and force withCredentials so the session cookie is sent.
+  // Per spec, same-origin XHR always sends cookies, but Ember's fetch polyfill
+  // may explicitly strip them when credentials:'omit' is set.
   var origXHROpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function (method, url) {
-    arguments[1] = rewriteUrl(url);
+    var rewritten = rewriteUrl(url);
+    if (rewritten !== url) {
+      arguments[1] = rewritten;
+      this.withCredentials = true;
+    }
     return origXHROpen.apply(this, arguments);
   };
 
