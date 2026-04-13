@@ -14,6 +14,8 @@ import (
 	"net/http/httputil"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -31,6 +33,18 @@ func (h *ProxyHandler) audit(userID, action string, networkID, nodeID *string, d
 	h.Audit.Log(uuid.New().String(), userID, action, networkID, nodeID, details)
 }
 
+// proxyAuthTTL controls how long cached requireNode results are valid.
+// Network/node/membership data changes rarely (admin actions only), so
+// a 2-minute TTL keeps the proxy hot path off SQLite while ensuring
+// capability changes and access revocations take effect promptly.
+const proxyAuthTTL = 2 * time.Minute
+
+type proxyAuthEntry struct {
+	network *db.Network
+	node    *db.Node
+	expires time.Time
+}
+
 // ProxyHandler proxies requests to agents through the Nebula mesh.
 type ProxyHandler struct {
 	NetworkManager *mesh.NetworkManager
@@ -41,6 +55,11 @@ type ProxyHandler struct {
 	Audit          *db.AuditStore
 	AllowedOrigins []string // allowed WebSocket origins; empty = same-origin only
 	EventHub       *EventHub
+
+	// authCache caches requireNode results for the proxy hot path.
+	// Key: "networkID:nodeID:userID", Value: *proxyAuthEntry.
+	// Prevents SQLite contention from Nomad's long-polling requests.
+	authCache sync.Map
 }
 
 // requireNode validates network access (owner or member) and returns the node.
@@ -100,6 +119,53 @@ func (h *ProxyHandler) requireAdmin(r *http.Request) (*db.Network, *db.Node, err
 	}
 
 	return network, node, nil
+}
+
+// cachedRequireNode is like requireNode but caches results for the proxy hot path.
+// This prevents SQLite contention from Nomad's frequent long-polling requests.
+func (h *ProxyHandler) cachedRequireNode(r *http.Request) (*db.Network, *db.Node, error) {
+	user := auth.UserFromContext(r.Context())
+	networkID := chi.URLParam(r, "networkID")
+	nodeID := chi.URLParam(r, "nodeID")
+
+	key := networkID + ":" + nodeID + ":" + user.ID
+
+	if v, ok := h.authCache.Load(key); ok {
+		entry := v.(*proxyAuthEntry)
+		if time.Now().Before(entry.expires) {
+			return entry.network, entry.node, nil
+		}
+		h.authCache.Delete(key)
+	}
+
+	// Cache miss — hit DB via requireNode.
+	network, node, err := h.requireNode(r)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	h.authCache.Store(key, &proxyAuthEntry{
+		network: network,
+		node:    node,
+		expires: time.Now().Add(proxyAuthTTL),
+	})
+
+	return network, node, nil
+}
+
+// InvalidateProxyCache removes cached auth entries for a network/node.
+// If nodeID is empty, all entries for the network are invalidated.
+func (h *ProxyHandler) InvalidateProxyCache(networkID, nodeID string) {
+	prefix := networkID + ":"
+	if nodeID != "" {
+		prefix = networkID + ":" + nodeID + ":"
+	}
+	h.authCache.Range(func(key, _ any) bool {
+		if strings.HasPrefix(key.(string), prefix) {
+			h.authCache.Delete(key)
+		}
+		return true
+	})
 }
 
 // NodeHealth proxies a health check to the agent through the mesh tunnel.
@@ -443,7 +509,7 @@ func (h *ProxyHandler) ListPortForwards(w http.ResponseWriter, r *http.Request) 
 // which then forwards to localhost:{port} on the node.
 // This allows browser access to node-local services without opening host ports.
 func (h *ProxyHandler) NodeProxy(w http.ResponseWriter, r *http.Request) {
-	_, node, err := h.requireNode(r)
+	_, node, err := h.cachedRequireNode(r)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -885,6 +951,8 @@ func (h *ProxyHandler) UpdateCapabilities(w http.ResponseWriter, r *http.Request
 		return
 	}
 
+	h.InvalidateProxyCache(node.NetworkID, node.ID)
+
 	if h.EventHub != nil {
 		h.EventHub.Publish(node.NetworkID, Event{Type: "node.capabilities", Data: map[string]interface{}{"nodeId": node.ID, "capabilities": body.Capabilities}})
 	}
@@ -911,6 +979,8 @@ func (h *ProxyHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to delete node: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	h.InvalidateProxyCache(node.NetworkID, node.ID)
 
 	user := auth.UserFromContext(r.Context())
 	networkID := chi.URLParam(r, "networkID")

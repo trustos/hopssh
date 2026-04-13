@@ -11,8 +11,9 @@ import (
 )
 
 type MemberHandler struct {
-	Networks *db.NetworkStore
-	Members  *db.NetworkMemberStore
+	Networks   *db.NetworkStore
+	Members    *db.NetworkMemberStore
+	ProxyCache ProxyCacheInvalidator
 }
 
 // ListMembers returns all members of a network.
@@ -90,6 +91,10 @@ func (h *MemberHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		}
 		http.Error(w, "failed to remove member", http.StatusInternalServerError)
 		return
+	}
+
+	if h.ProxyCache != nil {
+		h.ProxyCache.InvalidateProxyCache(networkID, "")
 	}
 
 	w.WriteHeader(http.StatusNoContent)

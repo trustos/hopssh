@@ -163,6 +163,7 @@ func main() {
 		Audit:          audit,
 		AllowedOrigins: api.AllowedOrigins,
 	}
+	networkH.ProxyCache = proxyH
 	deviceH := &api.DeviceHandler{
 		DeviceCodes:    deviceCodes,
 		Networks:       networks,
@@ -184,7 +185,7 @@ func main() {
 	auditH := &api.AuditHandler{Audit: audit}
 
 	distH := &api.DistributionHandler{Endpoint: *endpoint}
-	memberH := &api.MemberHandler{Networks: networks, Members: members}
+	memberH := &api.MemberHandler{Networks: networks, Members: members, ProxyCache: proxyH}
 	inviteH := &api.InviteHandler{Networks: networks, Members: members, Invites: invites}
 
 	eventHub := api.NewEventHub()

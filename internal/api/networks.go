@@ -27,11 +27,17 @@ type NetworkHandler struct {
 	Members        *db.NetworkMemberStore
 	NetworkManager *mesh.NetworkManager
 	ForwardManager ForwardNetworkStopper // for cleaning up port forwards on network delete
+	ProxyCache     ProxyCacheInvalidator // for clearing proxy auth cache on network delete
 }
 
 // ForwardNetworkStopper stops all port forwards for a network.
 type ForwardNetworkStopper interface {
 	StopAllForNetwork(networkID string)
+}
+
+// ProxyCacheInvalidator clears cached proxy auth entries.
+type ProxyCacheInvalidator interface {
+	InvalidateProxyCache(networkID, nodeID string)
 }
 
 // CreateNetwork creates a new mesh network with auto-generated Nebula CA and subnet.
@@ -316,6 +322,9 @@ func (h *NetworkHandler) DeleteNetwork(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.NetworkManager != nil {
 		h.NetworkManager.StopNetwork(networkID)
+	}
+	if h.ProxyCache != nil {
+		h.ProxyCache.InvalidateProxyCache(networkID, "")
 	}
 
 	if err := h.Nodes.DeleteForNetwork(networkID); err != nil {
