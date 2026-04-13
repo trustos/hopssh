@@ -713,6 +713,7 @@ func injectIntoHead(html, snippet []byte) []byte {
 // to include the proxy prefix. This ensures assets load on first visit before the
 // SW is active. Only skips protocol-relative URLs (//) and already-proxied paths.
 func rewriteHTMLPaths(html []byte, proxyPrefix string) []byte {
+	// Rewrite HTML attributes: src, href, action, srcset.
 	for _, attr := range [][]byte{
 		[]byte(`src="`), []byte(`src='`),
 		[]byte(`href="`), []byte(`href='`),
@@ -720,6 +721,14 @@ func rewriteHTMLPaths(html []byte, proxyPrefix string) []byte {
 	} {
 		html = rewriteAttrPaths(html, attr, proxyPrefix)
 	}
+	// srcset has different syntax: comma-separated "url descriptor" pairs.
+	for _, attr := range [][]byte{
+		[]byte(`srcset="`), []byte(`srcset='`),
+	} {
+		html = rewriteSrcsetPaths(html, attr, proxyPrefix)
+	}
+	// Rewrite CSS url() references inside <style> blocks.
+	html = rewriteStyleURLs(html, proxyPrefix)
 	return html
 }
 
@@ -744,6 +753,144 @@ func rewriteAttrPaths(html, attr []byte, prefix string) []byte {
 			!bytes.HasPrefix(remaining, []byte("//")) &&
 			!bytes.HasPrefix(remaining, prefixBytes) {
 			result = append(result, prefixBytes...)
+		}
+	}
+	return result
+}
+
+// rewriteSrcsetPaths rewrites absolute paths inside srcset attributes.
+// srcset contains comma-separated entries like "/path/img.png 2x, /other.png 1x".
+func rewriteSrcsetPaths(html, attr []byte, prefix string) []byte {
+	prefixBytes := []byte(prefix)
+	var result []byte
+	remaining := html
+
+	for {
+		idx := bytes.Index(remaining, attr)
+		if idx < 0 {
+			result = append(result, remaining...)
+			break
+		}
+		// Determine quote character (last byte of attr).
+		quote := attr[len(attr)-1]
+		attrEnd := idx + len(attr)
+		result = append(result, remaining[:attrEnd]...)
+		remaining = remaining[attrEnd:]
+
+		// Find end of attribute value.
+		closeIdx := bytes.IndexByte(remaining, quote)
+		if closeIdx < 0 {
+			result = append(result, remaining...)
+			break
+		}
+
+		// Extract the srcset value and rewrite each entry.
+		srcsetVal := remaining[:closeIdx]
+		entries := bytes.Split(srcsetVal, []byte(","))
+		for i, entry := range entries {
+			if i > 0 {
+				result = append(result, ',')
+			}
+			trimmed := bytes.TrimLeft(entry, " \t\n\r")
+			leading := entry[:len(entry)-len(trimmed)]
+			result = append(result, leading...)
+			if len(trimmed) > 0 && trimmed[0] == '/' &&
+				!bytes.HasPrefix(trimmed, []byte("//")) &&
+				!bytes.HasPrefix(trimmed, prefixBytes) {
+				result = append(result, prefixBytes...)
+			}
+			result = append(result, trimmed...)
+		}
+		remaining = remaining[closeIdx:]
+	}
+	return result
+}
+
+// rewriteStyleURLs rewrites url() references inside <style> blocks.
+// Handles both url('/path') and url("/path") and url(/path) forms.
+// This ensures fonts, background images, and other CSS resources
+// load through the proxy on first visit (before the SW is active).
+func rewriteStyleURLs(html []byte, prefix string) []byte {
+	prefixBytes := []byte(prefix)
+
+	var result []byte
+	remaining := html
+
+	for {
+		lowerRemaining := bytes.ToLower(remaining)
+
+		// Find next <style block.
+		styleOpen := bytes.Index(lowerRemaining, []byte("<style"))
+		if styleOpen < 0 {
+			result = append(result, remaining...)
+			break
+		}
+		// Find the closing > of the <style...> tag.
+		tagClose := bytes.IndexByte(lowerRemaining[styleOpen:], '>')
+		if tagClose < 0 {
+			result = append(result, remaining...)
+			break
+		}
+		contentStart := styleOpen + tagClose + 1
+
+		// Find </style>.
+		styleClose := bytes.Index(lowerRemaining[contentStart:], []byte("</style"))
+		if styleClose < 0 {
+			result = append(result, remaining...)
+			break
+		}
+		styleEnd := contentStart + styleClose
+
+		// Copy everything before the style content.
+		result = append(result, remaining[:contentStart]...)
+
+		// Rewrite url() inside the style content.
+		cssContent := remaining[contentStart:styleEnd]
+		rewritten := rewriteCSSURLs(cssContent, prefixBytes)
+		result = append(result, rewritten...)
+
+		remaining = remaining[styleEnd:]
+	}
+	return result
+}
+
+// rewriteCSSURLs rewrites url(/...) references in CSS content.
+func rewriteCSSURLs(css, prefix []byte) []byte {
+	var result []byte
+	remaining := css
+
+	for {
+		idx := bytes.Index(remaining, []byte("url("))
+		if idx < 0 {
+			result = append(result, remaining...)
+			break
+		}
+		urlStart := idx + 4 // after "url("
+		result = append(result, remaining[:urlStart]...)
+		remaining = remaining[urlStart:]
+
+		// Skip optional whitespace and quote.
+		ws := 0
+		for ws < len(remaining) && (remaining[ws] == ' ' || remaining[ws] == '\t') {
+			ws++
+		}
+		result = append(result, remaining[:ws]...)
+		remaining = remaining[ws:]
+
+		// Check for quote.
+		hasQuote := false
+		if len(remaining) > 0 && (remaining[0] == '\'' || remaining[0] == '"') {
+			result = append(result, remaining[0])
+			remaining = remaining[1:]
+			hasQuote = true
+			_ = hasQuote // used for documentation clarity
+		}
+
+		// Rewrite if path starts with / (not // and not already prefixed).
+		if len(remaining) > 0 && remaining[0] == '/' &&
+			!bytes.HasPrefix(remaining, []byte("//")) &&
+			!bytes.HasPrefix(remaining, prefix) {
+			result = append(result, prefix...)
 		}
 	}
 	return result
