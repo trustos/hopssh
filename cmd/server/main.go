@@ -149,6 +149,7 @@ func main() {
 
 	fwdMgr := mesh.NewForwardManager(netMgr)
 	fwdMgr.StartIdleReaper(reaperCtx)
+	audit.StartFlusher(reaperCtx)
 
 	// Initialize handlers.
 	authH := &api.AuthHandler{Users: users, Sessions: sessions, Audit: audit}
@@ -255,6 +256,7 @@ func main() {
 	<-stop
 	log.Println("Shutting down control plane...")
 	close(stopCleanup)
+	audit.Flush()
 	fwdMgr.StopAll()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
