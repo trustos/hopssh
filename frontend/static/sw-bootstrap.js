@@ -10,34 +10,35 @@
   if (!base) return;
 
   // --- SW Registration ---
-  // No reload needed — the server rewrites HTML paths directly, so assets
-  // load correctly on first visit. The SW handles runtime requests (XHR, fetch).
+  // Server-side HTML rewriting handles assets (src/href), but runtime
+  // XHR/fetch calls (e.g., Nomad's /v1/regions) need the SW to rewrite them.
+  // On first visit the SW isn't controlling yet, so we reload once after
+  // activation. This is invisible to the user since we're inside an iframe.
   if (!('serviceWorker' in navigator)) return;
 
   navigator.serviceWorker.register('/sw.js', { scope: '/' }).then(function (r) {
-    // Push the proxy base mapping as soon as an active SW is available.
     function sendMapping(sw) {
       sw.postMessage({ type: 'SET_PROXY_BASE', proxyBase: base });
     }
     if (navigator.serviceWorker.controller) {
+      // SW already controlling — just send the mapping.
       sendMapping(navigator.serviceWorker.controller);
       return;
     }
-    // SW just registered — wait for it to activate.
+    // First visit: SW not yet controlling. Wait for activation, then reload.
     var sw = r.installing || r.waiting || r.active;
     if (!sw) return;
-    if (sw.state === 'activated') {
-      navigator.serviceWorker.ready.then(function (reg) {
-        if (reg.active) sendMapping(reg.active);
+    function onActive() {
+      navigator.serviceWorker.ready.then(function () {
+        location.reload();
       });
+    }
+    if (sw.state === 'activated') {
+      onActive();
       return;
     }
     sw.addEventListener('statechange', function () {
-      if (sw.state === 'activated') {
-        navigator.serviceWorker.ready.then(function (reg) {
-          if (reg.active) sendMapping(reg.active);
-        });
-      }
+      if (sw.state === 'activated') onActive();
     });
   });
 
