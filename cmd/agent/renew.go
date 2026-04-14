@@ -358,7 +358,21 @@ func ensureP2PConfig(endpoint string) {
 	listen := yamlMap(cfg, "listen")
 	if port, ok := listen["port"]; !ok || port != nebulacfg.ListenPort {
 		listen["port"] = nebulacfg.ListenPort
-		cfg["listen"] = listen
+		changed = true
+	}
+	if rb, ok := listen["read_buffer"]; !ok || rb != nebulacfg.UDPReadBuffer {
+		listen["read_buffer"] = nebulacfg.UDPReadBuffer
+		changed = true
+	}
+	if wb, ok := listen["write_buffer"]; !ok || wb != nebulacfg.UDPWriteBuffer {
+		listen["write_buffer"] = nebulacfg.UDPWriteBuffer
+		changed = true
+	}
+	cfg["listen"] = listen
+
+	// ChaCha20-Poly1305 has ARM64 NEON assembly, faster than pure Go AES-GCM.
+	if c, ok := cfg["cipher"]; !ok || c != nebulacfg.Cipher {
+		cfg["cipher"] = nebulacfg.Cipher
 		changed = true
 	}
 

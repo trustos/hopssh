@@ -1,0 +1,99 @@
+# Patch: Nebula macOS performance improvements
+# Applied to: github.com/slackhq/nebula v1.10.3
+#
+# Two changes:
+#
+# 1. tun_darwin.go: Reuse read buffer instead of allocating per packet.
+#    The original Read() calls make([]byte, len(to)+4) on every packet,
+#    creating massive GC pressure under high-throughput workloads like
+#    Screen Sharing. The Write path already reuses a buffer (t.out);
+#    this adds the same pattern for Read (t.in).
+#
+# 2. udp_darwin.go: Add UDP socket buffer tuning (SO_RCVBUF/SO_SNDBUF).
+#    Linux has this (udp_linux.go:83-89, 255-284) but macOS was missing
+#    it entirely. Without buffer tuning, the default ~128KB OS buffers
+#    overflow under burst traffic, causing packet drops that prevent
+#    Screen Sharing High Performance mode from negotiating.
+
+--- a/github.com/slackhq/nebula/overlay/tun_darwin.go
++++ b/github.com/slackhq/nebula/overlay/tun_darwin.go
+@@ -34,6 +34,9 @@
+
+ 	// cache out buffer since we need to prepend 4 bytes for tun metadata
+ 	out []byte
++
++	// cache in buffer to avoid per-packet allocation in Read
++	in []byte
+ }
+
+ type ifReq struct {
+@@ -504,7 +507,12 @@
+ }
+
+ func (t *tun) Read(to []byte) (int, error) {
+-	buf := make([]byte, len(to)+4)
++	buf := t.in
++	if cap(buf) < len(to)+4 {
++		buf = make([]byte, len(to)+4)
++		t.in = buf
++	}
++	buf = buf[:len(to)+4]
+
+ 	n, err := t.ReadWriteCloser.Read(buf)
+
+--- a/github.com/slackhq/nebula/udp/udp_darwin.go
++++ b/github.com/slackhq/nebula/udp/udp_darwin.go
+@@ -156,8 +156,52 @@
+ 	}
+ }
+
++func (u *StdConn) SetRecvBuffer(n int) error {
++	return syscall.SetsockoptInt(int(u.sysFd), syscall.SOL_SOCKET, syscall.SO_RCVBUF, n)
++}
++
++func (u *StdConn) SetSendBuffer(n int) error {
++	return syscall.SetsockoptInt(int(u.sysFd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, n)
++}
++
++func (u *StdConn) GetRecvBuffer() (int, error) {
++	return syscall.GetsockoptInt(int(u.sysFd), syscall.SOL_SOCKET, syscall.SO_RCVBUF)
++}
++
++func (u *StdConn) GetSendBuffer() (int, error) {
++	return syscall.GetsockoptInt(int(u.sysFd), syscall.SOL_SOCKET, syscall.SO_SNDBUF)
++}
++
+ func (u *StdConn) ReloadConfig(c *config.C) {
+-	// TODO
++	b := c.GetInt("listen.read_buffer", 0)
++	if b > 0 {
++		err := u.SetRecvBuffer(b)
++		if err == nil {
++			s, err := u.GetRecvBuffer()
++			if err == nil {
++				u.l.WithField("size", s).Info("listen.read_buffer was set")
++			} else {
++				u.l.WithError(err).Warn("Failed to get listen.read_buffer")
++			}
++		} else {
++			u.l.WithError(err).Error("Failed to set listen.read_buffer")
++		}
++	}
++
++	b = c.GetInt("listen.write_buffer", 0)
++	if b > 0 {
++		err := u.SetSendBuffer(b)
++		if err == nil {
++			s, err := u.GetSendBuffer()
++			if err == nil {
++				u.l.WithField("size", s).Info("listen.write_buffer was set")
++			} else {
++				u.l.WithError(err).Warn("Failed to get listen.write_buffer")
++			}
++		} else {
++			u.l.WithError(err).Error("Failed to set listen.write_buffer")
++		}
++	}
+ }
+
+ func NewUDPStatsEmitter(udpConns []Conn) func() {

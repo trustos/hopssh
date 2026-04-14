@@ -168,9 +168,13 @@ relay:
     - "%s"
   use_relays: %t
 
+cipher: %s
+
 listen:
   host: 0.0.0.0
   port: %d
+  read_buffer: %d
+  write_buffer: %d
 
 routines: %d
 
@@ -199,7 +203,8 @@ firewall:
 		serverIP,
 		nebulacfg.LocalAllowListYAML(physicalIface),
 		serverIP, nebulacfg.UseRelays,
-		nebulacfg.ListenPort,
+		nebulacfg.Cipher,
+		nebulacfg.ListenPort, nebulacfg.UDPReadBuffer, nebulacfg.UDPWriteBuffer,
 		nebulacfg.Routines,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay)
 

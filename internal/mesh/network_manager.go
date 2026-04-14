@@ -446,6 +446,7 @@ func (nm *NetworkManager) startInstance(n *db.Network) error {
 	cfgStr := fmt.Sprintf(`
 tun:
   user: true
+cipher: %s
 pki:
   ca: |
 %s
@@ -456,6 +457,8 @@ pki:
 listen:
   host: 0.0.0.0
   port: %d
+  read_buffer: %d
+  write_buffer: %d
 routines: %d
 lighthouse:
   am_lighthouse: true
@@ -478,10 +481,11 @@ firewall:
       proto: any
       host: any
 `,
+		nebulacfg.Cipher,
 		indentPEM(string(n.NebulaCACert), 4),
 		indentPEM(string(n.ServerCert), 4),
 		indentPEM(string(n.ServerKey), 4),
-		port,
+		port, nebulacfg.UDPReadBuffer, nebulacfg.UDPWriteBuffer,
 		nebulacfg.Routines,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay,
 	)

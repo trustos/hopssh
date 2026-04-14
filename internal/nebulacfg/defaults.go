@@ -48,6 +48,19 @@ const TunMTU = 1420
 // Only effective on Linux (multiqueue TUN); macOS/Windows fall back to 1.
 const Routines = 4
 
+// Cipher selects the Noise Protocol cipher. ChaCha20-Poly1305 has optimized
+// ARM64 NEON assembly in Go's standard library, making it faster than pure Go
+// AES-GCM on Apple Silicon (and competitive on amd64).
+const Cipher = "chachapoly"
+
+// UDPReadBuffer is the SO_RCVBUF size for the Nebula UDP socket (2MB).
+// Larger buffers absorb burst traffic (Screen Sharing, file transfer)
+// without packet drops.
+const UDPReadBuffer = 2097152
+
+// UDPWriteBuffer is the SO_SNDBUF size for the Nebula UDP socket (2MB).
+const UDPWriteBuffer = 2097152
+
 // DetectPhysicalInterface discovers the OS network interface that routes to
 // the given remote host. This identifies the real physical interface (WiFi,
 // Ethernet) — not overlay/VPN interfaces — because the OS routing table
