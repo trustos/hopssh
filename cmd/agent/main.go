@@ -22,8 +22,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/slackhq/nebula/cert"
 	"github.com/trustos/hopssh/internal/buildinfo"
-	"gopkg.in/yaml.v3"
 
 	netpprof "net/http/pprof"
 )
@@ -302,35 +302,44 @@ func runServe(args []string) {
 	nebulaMu.Unlock()
 }
 
-// warmTunnel triggers handshakes to all peers in static_host_map by dialing
-// their mesh IPs. This pre-warms Noise tunnels so they're ready before the
-// user connects (e.g., Screen Sharing checks latency on first packet).
+// warmTunnel triggers handshakes to all peers in the mesh subnet by dialing
+// each IP. This pre-warms Noise tunnels so they're ready before the user
+// connects (e.g., Screen Sharing checks latency on first packet).
 func warmTunnel(configPath string) {
 	time.Sleep(2 * time.Second)
 
-	data, err := os.ReadFile(configPath)
+	dir := filepath.Dir(configPath)
+	certPEM, err := os.ReadFile(filepath.Join(dir, "node.crt"))
 	if err != nil {
 		return
 	}
-	var cfg map[string]interface{}
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	c, _, err := cert.UnmarshalCertificateFromPEM(certPEM)
+	if err != nil {
+		return
+	}
+	networks := c.Networks()
+	if len(networks) == 0 {
 		return
 	}
 
-	hostMap, ok := cfg["static_host_map"].(map[string]interface{})
-	if !ok {
-		return
-	}
+	prefix := networks[0]
+	myAddr := prefix.Addr()
+	responded := 0
 
-	for meshIP := range hostMap {
-		go func(ip string) {
-			conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, "41820"), 5*time.Second)
-			if err == nil {
-				conn.Close()
-			}
-			log.Printf("[agent] tunnel warm-up to %s (handshake triggered)", ip)
-		}(meshIP)
+	addr := prefix.Masked().Addr()
+	for prefix.Contains(addr) {
+		if addr != myAddr && addr != prefix.Masked().Addr() {
+			go func(ip string) {
+				conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, "41820"), 3*time.Second)
+				if err == nil {
+					conn.Close()
+				}
+			}(addr.String())
+			responded++
+		}
+		addr = addr.Next()
 	}
+	log.Printf("[agent] tunnel warm-up: triggered handshakes to %d subnet peers", responded)
 }
 
 // startMesh starts Nebula in the requested TUN mode with graceful fallback.
