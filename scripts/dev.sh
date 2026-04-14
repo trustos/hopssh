@@ -12,6 +12,9 @@ make build
 
 echo "==> Starting backend + frontend dev servers..."
 
+# Default endpoint for local development.
+export HOPSSH_ENDPOINT="${HOPSSH_ENDPOINT:-http://localhost:9473}"
+
 # Start backend.
 ./hop-server &
 SERVER_PID=$!

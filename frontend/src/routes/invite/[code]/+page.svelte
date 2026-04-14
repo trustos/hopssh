@@ -5,6 +5,12 @@
 	import { invites, ApiError } from '$lib/api/client';
 	import { getAuth } from '$lib/stores/auth.svelte';
 	import type { InviteDetailResponse } from '$lib/types/api';
+	import * as Card from '$lib/components/ui/card/index.js';
+	import * as Alert from '$lib/components/ui/alert/index.js';
+	import { Button } from '$lib/components/ui/button/index.js';
+	import { Badge } from '$lib/components/ui/badge/index.js';
+	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
+	import { CheckCircle } from 'lucide-svelte';
 
 	const authStore = getAuth();
 
@@ -72,68 +78,69 @@
 <div class="flex min-h-screen items-center justify-center bg-background p-4">
 	<div class="w-full max-w-sm space-y-6">
 		<div class="text-center">
-			<h1 class="text-2xl font-semibold">hopssh</h1>
+			<h1 class="text-2xl font-bold"><span class="text-primary">hop</span>ssh</h1>
 		</div>
 
 		{#if loading}
-			<div class="rounded-lg border bg-card p-6">
-				<div class="flex items-center justify-center gap-3 py-4">
-					<div class="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent"></div>
-					<span class="text-sm text-muted-foreground">Loading invite...</span>
-				</div>
-			</div>
+			<Card.Root>
+				<Card.Content class="space-y-3 py-6">
+					<Skeleton class="mx-auto h-6 w-48" />
+					<Skeleton class="mx-auto h-4 w-64" />
+					<Skeleton class="h-10 w-full" />
+				</Card.Content>
+			</Card.Root>
 		{:else if error}
-			<div class="rounded-lg border bg-card p-6 text-center">
-				<p class="mb-4 text-sm text-destructive">{error}</p>
-				<a href="/login" class="text-sm text-primary hover:underline">Go to login</a>
-			</div>
+			<Card.Root>
+				<Card.Content class="py-6 text-center">
+					<Alert.Root variant="destructive" class="mb-4">
+						<Alert.Description>{error}</Alert.Description>
+					</Alert.Root>
+					<a href="/login" class="text-sm text-primary hover:underline">Go to login</a>
+				</Card.Content>
+			</Card.Root>
 		{:else if accepted}
-			<div class="rounded-lg border bg-card p-6 text-center">
-				<div class="mb-2 text-3xl text-primary">&#10003;</div>
-				<p class="mb-2 font-medium">Joined {invite?.networkName}!</p>
-				<p class="text-sm text-muted-foreground">Redirecting to network...</p>
-			</div>
+			<Card.Root class="border-primary/50 bg-primary/10">
+				<Card.Content class="py-6 text-center">
+					<CheckCircle class="mx-auto mb-2 size-8 text-primary" />
+					<p class="mb-2 font-medium">Joined {invite?.networkName}!</p>
+					<p class="text-sm text-muted-foreground">Redirecting to network...</p>
+				</Card.Content>
+			</Card.Root>
 		{:else if invite}
-			<div class="rounded-lg border bg-card p-6">
-				<h2 class="mb-1 text-lg font-semibold">Join "{invite.networkName}"</h2>
-				<p class="mb-4 text-sm text-muted-foreground">
-					You've been invited to join this network as a <span class="font-medium">{invite.role}</span>.
-				</p>
-
-				{#if invite.expiresAt}
-					{@const remaining = invite.expiresAt - Math.floor(Date.now() / 1000)}
-					{#if remaining > 0}
-						<p class="mb-4 text-xs text-muted-foreground">
-							This invite expires in {remaining > 86400 ? `${Math.floor(remaining / 86400)} days` : remaining > 3600 ? `${Math.floor(remaining / 3600)} hours` : `${Math.floor(remaining / 60)} minutes`}.
-						</p>
+			<Card.Root>
+				<Card.Header>
+					<Card.Title>Join "{invite.networkName}"</Card.Title>
+					<Card.Description>
+						You've been invited to join this network as
+						<Badge variant="secondary" class="ml-1">{invite.role}</Badge>
+					</Card.Description>
+				</Card.Header>
+				<Card.Content class="space-y-4">
+					{#if invite.expiresAt}
+						{@const remaining = invite.expiresAt - Math.floor(Date.now() / 1000)}
+						{#if remaining > 0}
+							<p class="text-xs text-muted-foreground">
+								This invite expires in {remaining > 86400 ? `${Math.floor(remaining / 86400)} days` : remaining > 3600 ? `${Math.floor(remaining / 3600)} hours` : `${Math.floor(remaining / 60)} minutes`}.
+							</p>
+						{/if}
 					{/if}
-				{/if}
 
-				{#if authStore.user}
-					<button
-						onclick={acceptInvite}
-						disabled={accepting}
-						class="w-full rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-					>
-						{accepting ? 'Joining...' : 'Join Network'}
-					</button>
-				{:else}
-					<div class="space-y-2">
-						<a
-							href="/login?redirect={encodeURIComponent(`/invite/${code}?auto=1`)}"
-							class="block w-full rounded-md bg-primary px-4 py-2 text-center text-sm font-medium text-primary-foreground hover:bg-primary/90"
-						>
-							Log in to join
-						</a>
-						<a
-							href="/register?redirect={encodeURIComponent(`/invite/${code}?auto=1`)}"
-							class="block w-full rounded-md border px-4 py-2 text-center text-sm font-medium hover:bg-accent"
-						>
-							Register to join
-						</a>
-					</div>
-				{/if}
-			</div>
+					{#if authStore.user}
+						<Button class="w-full" onclick={acceptInvite} disabled={accepting}>
+							{accepting ? 'Joining...' : 'Join Network'}
+						</Button>
+					{:else}
+						<div class="space-y-2">
+							<Button class="w-full" href="/login?redirect={encodeURIComponent(`/invite/${code}?auto=1`)}">
+								Log in to join
+							</Button>
+							<Button variant="outline" class="w-full" href="/register?redirect={encodeURIComponent(`/invite/${code}?auto=1`)}">
+								Register to join
+							</Button>
+						</div>
+					{/if}
+				</Card.Content>
+			</Card.Root>
 		{/if}
 	</div>
 </div>

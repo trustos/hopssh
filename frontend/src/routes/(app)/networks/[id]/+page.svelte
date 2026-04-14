@@ -6,7 +6,14 @@
 	import { networks as networksApi, nodes as nodesApi, dns as dnsApi, portForwards as fwdApi, members as membersApi, invites as invitesApi } from '$lib/api/client';
 	import { ApiError } from '$lib/api/client';
 	import type { NetworkDetailResponse, CreateNodeResponse, DNSRecordResponse, NodeResponse, PortForwardResponse, NetworkMemberResponse, InviteResponse } from '$lib/types/api';
-	import Dialog from '$lib/components/ui/dialog.svelte';
+	import * as Dialog from '$lib/components/ui/dialog/index.js';
+	import * as Tabs from '$lib/components/ui/tabs/index.js';
+	import * as Alert from '$lib/components/ui/alert/index.js';
+	import { Button } from '$lib/components/ui/button/index.js';
+	import { Input } from '$lib/components/ui/input/index.js';
+	import { Label } from '$lib/components/ui/label/index.js';
+	import { Badge } from '$lib/components/ui/badge/index.js';
+	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { getTerminals } from '$lib/stores/terminals.svelte';
 
 	const termStore = getTerminals();
@@ -446,16 +453,16 @@
 
 <div class="p-6">
 	{#if loading}
-		<div class="mb-6 h-8 w-48 animate-pulse rounded bg-muted"></div>
+		<Skeleton class="mb-6 h-8 w-48" />
 		<div class="space-y-3">
 			{#each Array(3) as _}
-				<div class="h-16 animate-pulse rounded-lg bg-muted"></div>
+				<Skeleton class="h-16 w-full rounded-lg" />
 			{/each}
 		</div>
 	{:else if error}
-		<div class="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
-			{error}
-		</div>
+		<Alert.Root variant="destructive">
+			<Alert.Description>{error}</Alert.Description>
+		</Alert.Root>
 	{:else if network}
 		<!-- Header -->
 		<div class="mb-6 flex items-center justify-between">
@@ -467,33 +474,25 @@
 				</div>
 			</div>
 			{#if isAdmin}
-				<button
+				<Button
+					variant="destructive"
+					size="sm"
 					onclick={() => { showDeleteNetwork = true; deleteNetworkConfirm = ''; deleteNetworkError = ''; }}
-					class="rounded-md px-3 py-2 text-sm text-destructive hover:bg-destructive/10"
 				>
 					Delete Network
-				</button>
+				</Button>
 			{/if}
 		</div>
 
 		<!-- Tabs -->
-		<div class="mb-4 flex gap-1 border-b" role="tablist">
-			{#each [
-				{ id: 'join', label: 'Join' },
-				{ id: 'nodes', label: `Nodes (${visibleNodes.length})` },
-				{ id: 'dns', label: 'DNS' },
-				{ id: 'members', label: `Members (${networkMembers.length})` }
-			] as tab}
-				<button
-					role="tab"
-					aria-selected={activeTab === tab.id}
-					class="px-4 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 {activeTab === tab.id ? 'border-b-2 border-primary text-primary' : 'text-muted-foreground hover:text-foreground'}"
-					onclick={() => (activeTab = tab.id as typeof activeTab)}
-				>
-					{tab.label}
-				</button>
-			{/each}
-		</div>
+		<Tabs.Root bind:value={activeTab} class="mb-4">
+			<Tabs.List>
+				<Tabs.Trigger value="join">Join</Tabs.Trigger>
+				<Tabs.Trigger value="nodes">Nodes ({visibleNodes.length})</Tabs.Trigger>
+				<Tabs.Trigger value="dns">DNS</Tabs.Trigger>
+				<Tabs.Trigger value="members">Members ({networkMembers.length})</Tabs.Trigger>
+			</Tabs.List>
+		</Tabs.Root>
 
 		<!-- Nodes Tab -->
 		{#if activeTab === 'nodes'}
@@ -783,11 +782,9 @@
 										<button onclick={() => copyToClipboard(`${record.name}.${network.dnsDomain}`)} class="ml-1 rounded px-1 py-0.5 text-xs text-muted-foreground/40 hover:text-foreground" title="Copy FQDN">&#128203;</button>
 									</td>
 									<td class="px-4 py-3">
-										{#if record.source === 'auto'}
-											<span class="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">auto</span>
-										{:else}
-											<span class="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">custom</span>
-										{/if}
+										<Badge variant={record.source === 'auto' ? 'secondary' : 'default'}>
+											{record.source}
+										</Badge>
 									</td>
 									<td class="px-4 py-3 text-right">
 										{#if record.source === 'custom'}
@@ -890,7 +887,7 @@
 										<td class="px-4 py-3 font-medium">{member.name}</td>
 										<td class="px-4 py-3 text-muted-foreground">{member.email}</td>
 										<td class="px-4 py-3">
-											<span class="rounded-full px-2 py-0.5 text-xs {member.role === 'admin' ? 'bg-primary/10 text-primary' : 'bg-muted text-muted-foreground'}">{member.role === 'admin' ? 'Admin' : 'Member'}</span>
+											<Badge variant={member.role === 'admin' ? 'default' : 'secondary'}>{member.role === 'admin' ? 'Admin' : 'Member'}</Badge>
 										</td>
 										<td class="px-4 py-3 text-muted-foreground">{timeAgo(member.createdAt)}</td>
 										{#if isAdmin}
@@ -953,243 +950,201 @@
 		{/if}
 
 		<!-- Create Invite Dialog -->
-		{#if showCreateInvite}
-			<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-				<div class="w-full max-w-sm rounded-lg border bg-card p-6 shadow-lg">
-					{#if inviteResult}
-						<h2 class="mb-4 text-lg font-semibold">Invite Created</h2>
-						<p class="mb-2 text-sm text-muted-foreground">Share this link:</p>
-						<div class="relative rounded-md bg-muted p-3 pr-16">
-							<pre class="overflow-x-auto font-mono text-xs">{window.location.origin}/invite/{inviteResult.code}</pre>
-							<button onclick={() => copyInviteLink(inviteResult!.code)} class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">{copyBtnLabel(`${window.location.origin}/invite/${inviteResult.code}`)}</button>
+		<Dialog.Root bind:open={showCreateInvite}>
+			<Dialog.Content class="sm:max-w-sm">
+				{#if inviteResult}
+					<Dialog.Header>
+						<Dialog.Title>Invite Created</Dialog.Title>
+						<Dialog.Description>Share this link with your team.</Dialog.Description>
+					</Dialog.Header>
+					<div class="relative rounded-md bg-muted p-3 pr-16">
+						<pre class="overflow-x-auto font-mono text-xs">{window.location.origin}/invite/{inviteResult.code}</pre>
+						<button onclick={() => copyInviteLink(inviteResult!.code)} class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">{copyBtnLabel(`${window.location.origin}/invite/${inviteResult.code}`)}</button>
+					</div>
+					<Dialog.Footer>
+						<Button variant="outline" onclick={() => { showCreateInvite = false; }}>Done</Button>
+					</Dialog.Footer>
+				{:else}
+					<Dialog.Header>
+						<Dialog.Title>Create Invite</Dialog.Title>
+					</Dialog.Header>
+					<form onsubmit={createInvite} class="space-y-4">
+						<div class="space-y-2">
+							<Label for="invite-expiry">Expires in</Label>
+							<select id="invite-expiry" bind:value={inviteExpiresIn} class="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
+								<option value="3600">1 hour</option>
+								<option value="86400">24 hours</option>
+								<option value="604800">7 days</option>
+								<option value="2592000">30 days</option>
+								<option value="0">Never</option>
+							</select>
 						</div>
-						<div class="mt-4 flex justify-end">
-							<button onclick={() => { showCreateInvite = false; }} class="rounded-md px-4 py-2 text-sm hover:bg-accent">Done</button>
+						<div class="space-y-2">
+							<Label for="invite-max-uses">Max uses</Label>
+							<Input id="invite-max-uses" type="number" bind:value={inviteMaxUses} min="1" placeholder="Unlimited" />
 						</div>
-					{:else}
-						<h2 class="mb-4 text-lg font-semibold">Create Invite</h2>
-						<form onsubmit={createInvite} class="space-y-4">
-							<div class="space-y-2">
-								<label for="invite-expiry" class="text-sm font-medium">Expires in</label>
-								<select id="invite-expiry" bind:value={inviteExpiresIn} class="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
-									<option value="3600">1 hour</option>
-									<option value="86400">24 hours</option>
-									<option value="604800">7 days</option>
-									<option value="2592000">30 days</option>
-									<option value="0">Never</option>
-								</select>
-							</div>
-							<div class="space-y-2">
-								<label for="invite-max-uses" class="text-sm font-medium">Max uses</label>
-								<input id="invite-max-uses" type="number" bind:value={inviteMaxUses} min="1" placeholder="Unlimited" class="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
-							</div>
-							<div class="space-y-2">
-								<label for="invite-role" class="text-sm font-medium">Role</label>
-								<select id="invite-role" bind:value={inviteRole} class="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
-									<option value="member">Member — can view nodes, join network, use terminal</option>
-									<option value="admin">Admin — full access, can manage nodes, DNS, invites</option>
-								</select>
-							</div>
-							<div class="flex justify-end gap-2">
-								<button type="button" onclick={() => { showCreateInvite = false; }} class="rounded-md px-4 py-2 text-sm hover:bg-accent">Cancel</button>
-								<button type="submit" disabled={creatingInvite} class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">
-									{creatingInvite ? 'Creating...' : 'Create Invite'}
-								</button>
-							</div>
-						</form>
-					{/if}
-				</div>
-			</div>
-		{/if}
+						<div class="space-y-2">
+							<Label for="invite-role">Role</Label>
+							<select id="invite-role" bind:value={inviteRole} class="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
+								<option value="member">Member — can view nodes, join network, use terminal</option>
+								<option value="admin">Admin — full access, can manage nodes, DNS, invites</option>
+							</select>
+						</div>
+						<Dialog.Footer>
+							<Button type="button" variant="outline" onclick={() => { showCreateInvite = false; }}>Cancel</Button>
+							<Button type="submit" disabled={creatingInvite}>
+								{creatingInvite ? 'Creating...' : 'Create Invite'}
+							</Button>
+						</Dialog.Footer>
+					</form>
+				{/if}
+			</Dialog.Content>
+		</Dialog.Root>
 
 		<!-- Add Node Dialog -->
-		{#if showAddNode}
-			<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-				<div class="w-full max-w-lg rounded-lg border bg-card p-6 shadow-lg">
-					<h2 class="mb-4 text-lg font-semibold">Add Node</h2>
-					{#if addingNode}
-						<div class="flex items-center gap-3 py-4">
-							<div class="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent"></div>
-							<span class="text-sm text-muted-foreground">Generating enrollment token...</span>
-						</div>
-					{:else if addNodeError}
-						<div class="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">{addNodeError}</div>
-					{:else if nodeResult}
-						<div class="space-y-4">
-							<p class="text-sm text-muted-foreground">Run these commands on the device you want to add:</p>
-
-							<div class="rounded-lg border p-4">
-								<p class="mb-2 text-sm font-medium">1. Install hop-agent</p>
-								<div class="relative rounded-md bg-muted p-3 pr-16">
-									<pre class="font-mono text-xs">{installScriptCmd}</pre>
-									<button
-										onclick={() => copyToClipboard(installScriptCmd)}
-										class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-									>{copyBtnLabel(installScriptCmd)}</button>
-								</div>
-							</div>
-
-							<div class="rounded-lg border p-4">
-								<p class="mb-2 text-sm font-medium">2. Enroll</p>
-								<div class="relative rounded-md bg-muted p-3 pr-16">
-									<pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">{enrollCommand}</pre>
-									<button
-										onclick={() => copyToClipboard(enrollCommand)}
-										class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-									>{copyBtnLabel(enrollCommand)}</button>
-								</div>
-							</div>
-
-							<div class="text-xs text-muted-foreground">
-								{#if nodeResultCreatedAt > 0}
-									{#if (now - nodeResultCreatedAt) < 480}
-										<p>Token expires in {Math.floor((600 - (now - nodeResultCreatedAt)) / 60)}m {(600 - (now - nodeResultCreatedAt)) % 60}s. IP: <span class="font-mono">{nodeResult.nebulaIP}</span></p>
-									{:else if (now - nodeResultCreatedAt) < 600}
-										<p class="text-destructive font-medium">Token expires in {600 - (now - nodeResultCreatedAt)}s! IP: <span class="font-mono">{nodeResult.nebulaIP}</span></p>
-									{:else}
-										<p class="text-destructive font-medium">Token expired — close and generate a new one.</p>
-									{/if}
-								{/if}
-							</div>
-						</div>
-					{/if}
-					<div class="mt-4 flex justify-end">
-						<button onclick={closeAddNode} class="rounded-md px-4 py-2 text-sm hover:bg-accent">
-							{nodeResult ? 'Done' : 'Cancel'}
-						</button>
+		<Dialog.Root bind:open={showAddNode} onOpenChange={(open) => { if (!open) closeAddNode(); }}>
+			<Dialog.Content class="sm:max-w-lg">
+				<Dialog.Header>
+					<Dialog.Title>Add Node</Dialog.Title>
+				</Dialog.Header>
+				{#if addingNode}
+					<div class="flex items-center gap-3 py-4">
+						<div class="h-5 w-5 animate-spin rounded-full border-2 border-primary border-t-transparent"></div>
+						<span class="text-sm text-muted-foreground">Generating enrollment token...</span>
 					</div>
-				</div>
-			</div>
-		{/if}
+				{:else if addNodeError}
+					<Alert.Root variant="destructive">
+						<Alert.Description>{addNodeError}</Alert.Description>
+					</Alert.Root>
+				{:else if nodeResult}
+					<div class="space-y-4">
+						<p class="text-sm text-muted-foreground">Run these commands on the device you want to add:</p>
+						<div class="rounded-lg border p-4">
+							<p class="mb-2 text-sm font-medium">1. Install hop-agent</p>
+							<div class="relative rounded-md bg-muted p-3 pr-16">
+								<pre class="font-mono text-xs">{installScriptCmd}</pre>
+								<button onclick={() => copyToClipboard(installScriptCmd)} class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">{copyBtnLabel(installScriptCmd)}</button>
+							</div>
+						</div>
+						<div class="rounded-lg border p-4">
+							<p class="mb-2 text-sm font-medium">2. Enroll</p>
+							<div class="relative rounded-md bg-muted p-3 pr-16">
+								<pre class="overflow-x-auto whitespace-pre-wrap break-all font-mono text-xs leading-relaxed">{enrollCommand}</pre>
+								<button onclick={() => copyToClipboard(enrollCommand)} class="absolute right-2 top-2 rounded bg-muted px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground">{copyBtnLabel(enrollCommand)}</button>
+							</div>
+						</div>
+						<div class="text-xs text-muted-foreground">
+							{#if nodeResultCreatedAt > 0}
+								{#if (now - nodeResultCreatedAt) < 480}
+									<p>Token expires in {Math.floor((600 - (now - nodeResultCreatedAt)) / 60)}m {(600 - (now - nodeResultCreatedAt)) % 60}s. IP: <span class="font-mono">{nodeResult.nebulaIP}</span></p>
+								{:else if (now - nodeResultCreatedAt) < 600}
+									<p class="text-destructive font-medium">Token expires in {600 - (now - nodeResultCreatedAt)}s! IP: <span class="font-mono">{nodeResult.nebulaIP}</span></p>
+								{:else}
+									<p class="text-destructive font-medium">Token expired — close and generate a new one.</p>
+								{/if}
+							{/if}
+						</div>
+					</div>
+				{/if}
+				<Dialog.Footer>
+					<Button variant="outline" onclick={closeAddNode}>
+						{nodeResult ? 'Done' : 'Cancel'}
+					</Button>
+				</Dialog.Footer>
+			</Dialog.Content>
+		</Dialog.Root>
 
 		<!-- Add DNS Dialog -->
-		{#if showAddDNS}
-			<div class="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-				<div class="w-full max-w-sm rounded-lg border bg-card p-6 shadow-lg">
-					<h2 class="mb-4 text-lg font-semibold">Add DNS Record</h2>
-					<form onsubmit={addDNSRecord} class="space-y-4">
-						{#if addDNSError}
-							<div class="rounded-md bg-destructive/10 p-3 text-sm text-destructive">{addDNSError}</div>
-						{/if}
-						<div class="space-y-2">
-							<label for="dns-name" class="text-sm font-medium">Hostname</label>
-							<div class="flex items-center gap-1">
-								<input
-									id="dns-name"
-									type="text"
-									bind:value={dnsName}
-									required
-									placeholder="jellyfin"
-									class="w-full rounded-md border bg-background px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-								/>
-								<span class="text-sm text-muted-foreground">.{network.dnsDomain}</span>
-							</div>
+		<Dialog.Root bind:open={showAddDNS}>
+			<Dialog.Content class="sm:max-w-sm">
+				<Dialog.Header>
+					<Dialog.Title>Add DNS Record</Dialog.Title>
+				</Dialog.Header>
+				<form onsubmit={addDNSRecord} class="space-y-4">
+					{#if addDNSError}
+						<Alert.Root variant="destructive">
+							<Alert.Description>{addDNSError}</Alert.Description>
+						</Alert.Root>
+					{/if}
+					<div class="space-y-2">
+						<Label for="dns-name">Hostname</Label>
+						<div class="flex items-center gap-1">
+							<Input id="dns-name" type="text" bind:value={dnsName} required placeholder="jellyfin" class="font-mono" />
+							<span class="text-sm text-muted-foreground">.{network.dnsDomain}</span>
 						</div>
-						<div class="space-y-2">
-							<label for="dns-ip" class="text-sm font-medium">VPN IP</label>
-							<input
-								id="dns-ip"
-								type="text"
-								bind:value={dnsIP}
-								required
-								placeholder="10.42.1.3"
-								class="w-full rounded-md border bg-background px-3 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-							/>
-						</div>
-						<div class="flex justify-end gap-2">
-							<button
-								type="button"
-								onclick={() => { showAddDNS = false; addDNSError = ''; }}
-								class="rounded-md px-4 py-2 text-sm hover:bg-accent"
-							>
-								Cancel
-							</button>
-							<button
-								type="submit"
-								disabled={addingDNS || !dnsName.trim() || !dnsIP.trim()}
-								class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-							>
-								{addingDNS ? 'Creating...' : 'Create'}
-							</button>
-						</div>
-					</form>
-				</div>
-			</div>
-		{/if}
+					</div>
+					<div class="space-y-2">
+						<Label for="dns-ip">VPN IP</Label>
+						<Input id="dns-ip" type="text" bind:value={dnsIP} required placeholder="10.42.1.3" class="font-mono" />
+					</div>
+					<Dialog.Footer>
+						<Button type="button" variant="outline" onclick={() => { showAddDNS = false; addDNSError = ''; }}>Cancel</Button>
+						<Button type="submit" disabled={addingDNS || !dnsName.trim() || !dnsIP.trim()}>
+							{addingDNS ? 'Creating...' : 'Create'}
+						</Button>
+					</Dialog.Footer>
+				</form>
+			</Dialog.Content>
+		</Dialog.Root>
 	{/if}
 
 	<!-- Delete Network Dialog -->
-	<Dialog open={showDeleteNetwork} onClose={() => { showDeleteNetwork = false; }}>
-		<h2 class="mb-2 text-lg font-semibold">Delete "{network?.name}"?</h2>
-		<p class="mb-4 text-sm text-muted-foreground">
-			{#if network && visibleNodes.length > 0}
-				This will permanently delete the network and disconnect {visibleNodes.length}
-				{visibleNodes.length === 1 ? 'node' : 'nodes'}. Certificates and DNS records will stop working immediately.
-			{:else}
-				This will permanently delete the network. This cannot be undone.
+	<Dialog.Root bind:open={showDeleteNetwork}>
+		<Dialog.Content class="sm:max-w-sm">
+			<Dialog.Header>
+				<Dialog.Title>Delete "{network?.name}"?</Dialog.Title>
+				<Dialog.Description>
+					{#if network && visibleNodes.length > 0}
+						This will permanently delete the network and disconnect {visibleNodes.length}
+						{visibleNodes.length === 1 ? 'node' : 'nodes'}. Certificates and DNS records will stop working immediately.
+					{:else}
+						This will permanently delete the network. This cannot be undone.
+					{/if}
+				</Dialog.Description>
+			</Dialog.Header>
+			{#if deleteNetworkError}
+				<Alert.Root variant="destructive">
+					<Alert.Description>{deleteNetworkError}</Alert.Description>
+				</Alert.Root>
 			{/if}
-		</p>
-		{#if deleteNetworkError}
-			<div class="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">{deleteNetworkError}</div>
-		{/if}
-		<div class="mb-4 space-y-2">
-			<label for="confirm-name" class="text-sm font-medium">
-				Type "<span class="font-mono">{network?.name}</span>" to confirm
-			</label>
-			<input
-				id="confirm-name"
-				type="text"
-				bind:value={deleteNetworkConfirm}
-				class="w-full rounded-md border bg-background px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-ring"
-			/>
-		</div>
-		<div class="flex justify-end gap-2">
-			<button
-				onclick={() => { showDeleteNetwork = false; }}
-				disabled={deletingNetwork}
-				class="rounded-md px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
-			>
-				Cancel
-			</button>
-			<button
-				onclick={deleteNetwork}
-				disabled={deletingNetwork || deleteNetworkConfirm !== network?.name}
-				class="rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
-			>
-				{deletingNetwork ? 'Deleting...' : 'Delete Network'}
-			</button>
-		</div>
-	</Dialog>
+			<div class="space-y-2">
+				<Label for="confirm-name">
+					Type "<span class="font-mono">{network?.name}</span>" to confirm
+				</Label>
+				<Input id="confirm-name" type="text" bind:value={deleteNetworkConfirm} class="font-mono" />
+			</div>
+			<Dialog.Footer>
+				<Button variant="outline" onclick={() => { showDeleteNetwork = false; }} disabled={deletingNetwork}>Cancel</Button>
+				<Button variant="destructive" onclick={deleteNetwork} disabled={deletingNetwork || deleteNetworkConfirm !== network?.name}>
+					{deletingNetwork ? 'Deleting...' : 'Delete Network'}
+				</Button>
+			</Dialog.Footer>
+		</Dialog.Content>
+	</Dialog.Root>
 
 	<!-- Delete Node Dialog -->
-	<Dialog open={showDeleteNode} onClose={() => { showDeleteNode = false; nodeToDelete = null; }}>
-		<h2 class="mb-2 text-lg font-semibold">
-			Delete node "{nodeToDelete?.hostname || nodeToDelete?.id?.slice(0, 8)}"?
-		</h2>
-		<p class="mb-4 text-sm text-muted-foreground">
-			This will remove the node from the network and revoke its certificate.
-			{#if nodeToDelete?.status === 'online'}
-				<span class="font-medium text-destructive">This node is currently online.</span>
+	<Dialog.Root bind:open={showDeleteNode} onOpenChange={(open) => { if (!open) { showDeleteNode = false; nodeToDelete = null; } }}>
+		<Dialog.Content class="sm:max-w-sm">
+			<Dialog.Header>
+				<Dialog.Title>Delete node "{nodeToDelete?.hostname || nodeToDelete?.id?.slice(0, 8)}"?</Dialog.Title>
+				<Dialog.Description>
+					This will remove the node from the network and revoke its certificate.
+					{#if nodeToDelete?.status === 'online'}
+						This node is currently online.
+					{/if}
+				</Dialog.Description>
+			</Dialog.Header>
+			{#if deleteNodeError}
+				<Alert.Root variant="destructive">
+					<Alert.Description>{deleteNodeError}</Alert.Description>
+				</Alert.Root>
 			{/if}
-		</p>
-		{#if deleteNodeError}
-			<div class="mb-4 rounded-md bg-destructive/10 p-3 text-sm text-destructive">{deleteNodeError}</div>
-		{/if}
-		<div class="flex justify-end gap-2">
-			<button
-				onclick={() => { showDeleteNode = false; nodeToDelete = null; }}
-				disabled={deletingNode}
-				class="rounded-md px-4 py-2 text-sm hover:bg-accent disabled:opacity-50"
-			>
-				Cancel
-			</button>
-			<button
-				onclick={deleteNode}
-				disabled={deletingNode}
-				class="rounded-md bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground hover:bg-destructive/90 disabled:opacity-50"
-			>
-				{deletingNode ? 'Deleting...' : 'Delete Node'}
-			</button>
-		</div>
-	</Dialog>
+			<Dialog.Footer>
+				<Button variant="outline" onclick={() => { showDeleteNode = false; nodeToDelete = null; }} disabled={deletingNode}>Cancel</Button>
+				<Button variant="destructive" onclick={deleteNode} disabled={deletingNode}>
+					{deletingNode ? 'Deleting...' : 'Delete Node'}
+				</Button>
+			</Dialog.Footer>
+		</Dialog.Content>
+	</Dialog.Root>
 </div>

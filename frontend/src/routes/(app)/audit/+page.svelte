@@ -2,6 +2,11 @@
 	import { onMount } from 'svelte';
 	import { audit as auditApi } from '$lib/api/client';
 	import type { AuditEntryResponse } from '$lib/types/api';
+	import * as Table from '$lib/components/ui/table/index.js';
+	import * as Alert from '$lib/components/ui/alert/index.js';
+	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
+	import { Badge } from '$lib/components/ui/badge/index.js';
+	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 
 	let entries = $state<AuditEntryResponse[]>([]);
 	let loading = $state(true);
@@ -45,6 +50,12 @@
 		return labels[action] || action;
 	}
 
+	function actionVariant(action: string): 'default' | 'secondary' | 'destructive' | 'outline' {
+		if (action === 'node.delete') return 'destructive';
+		if (action.startsWith('shell') || action.startsWith('exec') || action.startsWith('port_forward')) return 'default';
+		return 'secondary';
+	}
+
 	function displayUser(entry: AuditEntryResponse): string {
 		return entry.userName || entry.userEmail || entry.userId.slice(0, 8);
 	}
@@ -66,48 +77,58 @@
 	{#if loading}
 		<div class="space-y-3">
 			{#each Array(5) as _}
-				<div class="h-12 animate-pulse rounded-lg bg-muted"></div>
+				<Skeleton class="h-12 w-full rounded-lg" />
 			{/each}
 		</div>
 	{:else if error}
-		<div class="rounded-lg border border-destructive/50 bg-destructive/10 p-4 text-sm text-destructive">
-			{error}
-		</div>
+		<Alert.Root variant="destructive">
+			<Alert.Description>{error}</Alert.Description>
+		</Alert.Root>
 	{:else if entries.length === 0}
 		<div class="rounded-lg border border-dashed p-8 text-center">
 			<p class="text-sm text-muted-foreground">No audit entries yet. Actions like logins, terminal sessions, and node changes will appear here.</p>
 		</div>
 	{:else}
 		<div class="overflow-x-auto rounded-lg border">
-			<table class="w-full text-sm">
-				<thead>
-					<tr class="border-b bg-muted/50">
-						<th class="px-4 py-3 text-left font-medium">Action</th>
-						<th class="px-4 py-3 text-left font-medium">User</th>
-						<th class="px-4 py-3 text-left font-medium">Info</th>
-						<th class="px-4 py-3 text-left font-medium">Node</th>
-						<th class="px-4 py-3 text-right font-medium">When</th>
-					</tr>
-				</thead>
-				<tbody>
+			<Table.Root>
+				<Table.Header>
+					<Table.Row>
+						<Table.Head>Action</Table.Head>
+						<Table.Head>User</Table.Head>
+						<Table.Head>Info</Table.Head>
+						<Table.Head>Node</Table.Head>
+						<Table.Head class="text-right">When</Table.Head>
+					</Table.Row>
+				</Table.Header>
+				<Table.Body>
 					{#each entries as entry}
-						<tr class="border-b last:border-0 hover:bg-accent/50">
-							<td class="px-4 py-3 font-medium">{actionLabel(entry.action)}</td>
-							<td class="px-4 py-3 text-muted-foreground">{displayUser(entry)}</td>
-							<td class="px-4 py-3 font-mono text-xs text-muted-foreground">
+						<Table.Row>
+							<Table.Cell>
+								<Badge variant={actionVariant(entry.action)}>
+									{actionLabel(entry.action)}
+								</Badge>
+							</Table.Cell>
+							<Table.Cell class="text-muted-foreground">{displayUser(entry)}</Table.Cell>
+							<Table.Cell class="max-w-[200px] truncate font-mono text-xs text-muted-foreground">
 								{entry.details || ''}
-							</td>
-							<td class="px-4 py-3 font-mono text-xs text-muted-foreground">
+							</Table.Cell>
+							<Table.Cell class="font-mono text-xs text-muted-foreground">
 								{displayNode(entry)}
-							</td>
-							<td class="px-4 py-3 text-right text-muted-foreground"
-								title={formatTimestamp(entry.createdAt)}>
-								{timeAgo(entry.createdAt)}
-							</td>
-						</tr>
+							</Table.Cell>
+							<Table.Cell class="text-right">
+								<Tooltip.Root>
+									<Tooltip.Trigger class="text-muted-foreground">
+										{timeAgo(entry.createdAt)}
+									</Tooltip.Trigger>
+									<Tooltip.Content>
+										{formatTimestamp(entry.createdAt)}
+									</Tooltip.Content>
+								</Tooltip.Root>
+							</Table.Cell>
+						</Table.Row>
 					{/each}
-				</tbody>
-			</table>
+				</Table.Body>
+			</Table.Root>
 		</div>
 	{/if}
 </div>

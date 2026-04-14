@@ -29,6 +29,16 @@
 	--color-ring: hsl(161 71% 48%);
 	--radius: 0.5rem;
 
+	/* Sidebar — maps to the main theme colors */
+	--color-sidebar: var(--hop-card);
+	--color-sidebar-foreground: var(--hop-fg);
+	--color-sidebar-primary: hsl(161 71% 48%);
+	--color-sidebar-primary-foreground: hsl(0 0% 100%);
+	--color-sidebar-accent: var(--hop-muted);
+	--color-sidebar-accent-foreground: var(--hop-fg);
+	--color-sidebar-border: var(--hop-border);
+	--color-sidebar-ring: hsl(161 71% 48%);
+
 	--font-sans: 'Inter', system-ui, -apple-system, sans-serif;
 	--font-mono: 'JetBrains Mono', ui-monospace, monospace;
 }
