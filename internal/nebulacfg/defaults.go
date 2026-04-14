@@ -14,9 +14,17 @@ const UseRelays = true
 // through to us, we punch back. Improves NAT traversal success rate.
 const PunchBack = true
 
-// PunchDelay is the initial delay before sending punch packets. Gives
-// the lighthouse time to share peer endpoint information before punching.
-const PunchDelay = "1s"
+// PunchDelay is the delay before sending punch packets after receiving a
+// HostPunchNotification from the lighthouse. A short delay (100ms) ensures
+// NAT mappings are created BEFORE the relay handshake completes (~170ms),
+// giving direct P2P a chance to win the initial connection race.
+const PunchDelay = "100ms"
+
+// RespondDelay is the delay before sending a test packet back to a peer
+// that queried the lighthouse about us. This triggers roaming detection
+// on the initiator side. Default 5s is too slow — 500ms allows the
+// initiator to detect the direct path within the first second.
+const RespondDelay = "500ms"
 
 // ListenPort is the default UDP port for the Nebula agent. A fixed port
 // (vs port 0 / random) is critical for NAT hole punching — it keeps the

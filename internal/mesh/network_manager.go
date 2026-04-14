@@ -465,6 +465,7 @@ punchy:
   respond: true
   punch_back: %t
   delay: %s
+  respond_delay: %s
   target_all_remotes: true
 firewall:
   outbound:
@@ -480,7 +481,7 @@ firewall:
 		indentPEM(string(n.ServerCert), 4),
 		indentPEM(string(n.ServerKey), 4),
 		port,
-		nebulacfg.PunchBack, nebulacfg.PunchDelay,
+		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay,
 	)
 
 	var cfg config.C

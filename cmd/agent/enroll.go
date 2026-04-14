@@ -372,6 +372,7 @@ punchy:
   respond: true
   punch_back: %t
   delay: %s
+  respond_delay: %s
   target_all_remotes: true
 
 tun:
@@ -402,7 +403,7 @@ firewall:
 		serverIP,
 		serverIP, nebulacfg.UseRelays,
 		nebulacfg.ListenPort,
-		nebulacfg.PunchBack, nebulacfg.PunchDelay,
+		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay,
 		tunConfig,
 		agentAPIPort)
 

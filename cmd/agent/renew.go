@@ -360,13 +360,22 @@ func ensureListenPort() {
 		changed = true
 	}
 
-	// target_all_remotes: punch ALL known endpoints, not just the current one.
-	// This enables relay→direct upgrade by continuously trying direct paths.
+	// Punchy settings for fast P2P establishment.
 	punchy := yamlMap(cfg, "punchy")
 	if tar, ok := punchy["target_all_remotes"]; !ok || tar != true {
 		punchy["target_all_remotes"] = true
-		cfg["punchy"] = punchy
 		changed = true
+	}
+	if punchy["delay"] != nebulacfg.PunchDelay {
+		punchy["delay"] = nebulacfg.PunchDelay
+		changed = true
+	}
+	if punchy["respond_delay"] != nebulacfg.RespondDelay {
+		punchy["respond_delay"] = nebulacfg.RespondDelay
+		changed = true
+	}
+	if changed {
+		cfg["punchy"] = punchy
 	}
 
 	// Remove local_allow_list from older versions (it broke lighthouse
