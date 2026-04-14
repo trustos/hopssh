@@ -98,6 +98,7 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 	mtu := nebulacfg.TunMTU
 	useRelays := nebulacfg.UseRelays
 	punchBack := nebulacfg.PunchBack
+	listenPort := nebulacfg.ListenPort
 
 	writeJSON(w, map[string]interface{}{
 		"nodeCert":  string(nodeCert.CertPEM),
@@ -108,6 +109,7 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 			"punchBack":  &punchBack,
 			"punchDelay": nebulacfg.PunchDelay,
 			"mtu":        &mtu,
+			"listenPort": &listenPort,
 		},
 	})
 }

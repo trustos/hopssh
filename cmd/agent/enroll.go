@@ -374,7 +374,7 @@ relay:
 
 listen:
   host: 0.0.0.0
-  port: 0
+  port: %d
 
 punchy:
   punch: true
@@ -410,6 +410,7 @@ firewall:
 		serverIP,
 		nebulacfg.LocalAllowListYAML(physicalSubnet),
 		serverIP, nebulacfg.UseRelays,
+		nebulacfg.ListenPort,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay,
 		tunConfig,
 		agentAPIPort)

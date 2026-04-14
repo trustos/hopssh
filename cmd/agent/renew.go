@@ -243,6 +243,7 @@ type nebulaConfigUpdate struct {
 	PunchBack  *bool  `json:"punchBack,omitempty"`
 	PunchDelay string `json:"punchDelay,omitempty"`
 	MTU        *int   `json:"mtu,omitempty"`
+	ListenPort *int   `json:"listenPort,omitempty"`
 }
 
 // applyNebulaConfigUpdate merges server-pushed settings into the local nebula.yaml.
@@ -296,6 +297,14 @@ func mergeNebulaConfig(data []byte, update *nebulaConfigUpdate) ([]byte, bool, e
 			changed = true
 		}
 		cfg["punchy"] = punchy
+	}
+
+	// Update listen.port — fixed port is critical for NAT hole punching.
+	if update.ListenPort != nil {
+		listen := yamlMap(cfg, "listen")
+		listen["port"] = *update.ListenPort
+		cfg["listen"] = listen
+		changed = true
 	}
 
 	// Update tun.mtu only if tun section already has mtu (kernel TUN mode).
