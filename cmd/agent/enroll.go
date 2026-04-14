@@ -375,6 +375,8 @@ listen:
   host: 0.0.0.0
   port: %d
 
+routines: %d
+
 punchy:
   punch: true
   respond: true
@@ -412,6 +414,7 @@ firewall:
 		nebulacfg.LocalAllowListYAML(physicalIface),
 		serverIP, nebulacfg.UseRelays,
 		nebulacfg.ListenPort,
+		nebulacfg.Routines,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay,
 		tunConfig,
 		agentAPIPort)

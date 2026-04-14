@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,6 +23,8 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/trustos/hopssh/internal/buildinfo"
+
+	netpprof "net/http/pprof"
 )
 
 const (
@@ -35,6 +38,8 @@ const (
 var execCommand = exec.Command
 
 func main() {
+	debug.SetGCPercent(400)
+
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "help", "--help", "-h":
@@ -129,6 +134,11 @@ func runServe(args []string) {
 	mux.HandleFunc("POST /upload", handleUpload)
 	mux.HandleFunc("GET /shell", handleShell)
 	mux.HandleFunc("/proxy/", handleProxy)
+	mux.HandleFunc("GET /debug/pprof/", netpprof.Index)
+	mux.HandleFunc("GET /debug/pprof/cmdline", netpprof.Cmdline)
+	mux.HandleFunc("GET /debug/pprof/profile", netpprof.Profile)
+	mux.HandleFunc("GET /debug/pprof/symbol", netpprof.Symbol)
+	mux.HandleFunc("GET /debug/pprof/trace", netpprof.Trace)
 	authed := authMiddleware(authToken, mux)
 
 	// Read endpoint for config management and cert renewal.

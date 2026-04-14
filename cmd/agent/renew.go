@@ -391,6 +391,12 @@ func ensureP2PConfig(endpoint string) {
 		}
 	}
 
+	// Parallel packet processing routines (effective on Linux with multiqueue TUN).
+	if r, ok := cfg["routines"]; !ok || r != nebulacfg.Routines {
+		cfg["routines"] = nebulacfg.Routines
+		changed = true
+	}
+
 	// Detect physical interface and set local_allow_list.
 	// This prevents Nebula from advertising overlay IPs (ZeroTier, etc.)
 	// while still allowing the lighthouse to learn our public IP from
