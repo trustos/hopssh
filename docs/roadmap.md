@@ -18,6 +18,8 @@ hopssh is a working encrypted mesh networking platform. Phase 1 (mesh core) is c
 - Teams with invite links, admin/member roles, network sharing
 - Audit logging, real-time WebSocket events, self-update
 - Docker, systemd, launchd, non-root agent, cross-platform releases
+- Packet coalescing (v0.6.59) — 75% syscall reduction
+- Adaptive MTU via DPLPMTUD (v0.7.3) — first mesh VPN with RFC 8899
 
 ---
 

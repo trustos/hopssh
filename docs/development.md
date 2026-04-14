@@ -154,14 +154,41 @@ make vendor    # re-vendors + re-applies Nebula patch
 make generate
 ```
 
-### The Nebula Patch
+### Vendor Patches
 
-`vendor/github.com/slackhq/nebula/interface.go` is patched to fix `os.Exit(2)` on service
-shutdown. The patch adds `io.ErrClosedPipe` to an error guard.
+hopssh applies multiple patches to vendored Nebula for performance and compatibility.
+Applied automatically by `make patch-vendor` (or `make vendor` which vendors + patches).
 
-- **Patch file**: `patches/nebula-1031-graceful-shutdown.patch`
-- **Applied by**: `make vendor` (automatic)
-- **Monitor**: `make check-patches` (checks if upstream fix has merged)
+| Patch | File | Purpose |
+|-------|------|---------|
+| Graceful shutdown | `patches/nebula-1031-graceful-shutdown.patch` | Fix os.Exit(2) on service close (upstream PR #1375) |
+| macOS TUN perf | `patches/nebula-darwin-perf.patch` | Buffer reuse in TUN Read + UDP socket buffer support |
+| Multi-reader UDP | `patches/nebula-darwin-multithread.patch` | Decouple TUN/UDP routine counts for macOS SO_REUSEPORT |
+| Packet coalescing | `patches/nebula-coalesce.patch` | Batch UDP sends with length-prefix framing |
+
+PMTUD (SetMTU, SendTestRequest, TestReply callback) patches are applied directly
+to vendor code and included in the build.
+
+#### Adding a New Vendor Patch
+
+1. Run `go mod vendor` to get clean vendor state
+2. Make changes to `vendor/github.com/slackhq/nebula/`
+3. Generate patch: `diff -u original modified > patches/nebula-name.patch`
+4. Add to `Makefile` `patch-vendor` target
+5. Test: `make vendor && make build`
+
+#### Performance Profiling
+
+```bash
+# CPU profile during load (30 seconds)
+curl -H "Authorization: Bearer <token>" \
+  "http://<mesh-ip>:41820/debug/pprof/profile?seconds=30" > cpu.prof
+go tool pprof cpu.prof
+
+# Heap snapshot
+curl -H "Authorization: Bearer <token>" \
+  "http://<mesh-ip>:41820/debug/pprof/heap" > heap.prof
+```
 
 ### sqlc
 

@@ -22,6 +22,8 @@
 | P2P with hole punching | Yes (Nebula punchy) | Yes | Yes | Yes |
 | Relay fallback | Yes (lighthouse relay, UDP) | Yes (customer-hosted relays) | Yes (DERP, TCP/443) | Yes (roots, TCP) |
 | Per-network CA / crypto isolation | Yes (separate CA per network) | Yes | No (single tailnet) | No (single network key) |
+| Adaptive MTU (DPLPMTUD) | **Yes — RFC 8899** | No | No (experimental) | No |
+| Packet coalescing | **Yes** | No | No | No |
 | | | | | |
 | **Identity & Auth** | | | | |
 | Email/password auth | Yes | No (SSO only for panel) | No (SSO only) | Yes |
@@ -288,6 +290,11 @@ This is the long game. Tailscale's moat is identity + policy + compliance:
 - SSH session recording
 - SCIM provisioning
 - Desktop and mobile apps
+
+### Performance Leadership
+
+- Adaptive MTU via DPLPMTUD (RFC 8899) — first mesh VPN to ship this, discovers optimal path MTU automatically
+- Packet coalescing — 75% reduction in UDP syscalls, competitive throughput on all platforms
 
 ### The product thesis
 

@@ -1,6 +1,6 @@
 # Performance Engineering
 
-## Current State (v0.6.58)
+## Current State (v0.7.3)
 
 ### Benchmarks
 
@@ -448,7 +448,7 @@ Nebula internals that can't be shimmed.
 | 1. Coalescing | High (59% sendto reduction) | Medium | All | ✅ Done (v0.6.59) |
 | 2. Crypto pools | Medium (parallelism) | Medium | All | Planned |
 | 3. Platform I/O | High on Linux, low on macOS | Medium | Linux, macOS, Windows | Planned |
-| 4. Adaptive MTU (DPLPMTUD) | High (auto-optimize per path) | Medium | All | Planned — first mesh VPN with this |
+| 4. Adaptive MTU (DPLPMTUD) | High (auto-optimize per path) | Medium | All | ✅ Done (v0.7.3) — first mesh VPN |
 
 ## Profiling Methodology
 

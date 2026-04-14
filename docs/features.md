@@ -135,6 +135,15 @@
 - **Event types** — `node.enrolled`, `node.status`, `node.renamed`, `node.deleted`, `node.capabilities`, `dns.changed`, `member.changed`.
 - **Dashboard integration** — Frontend receives events and updates the UI in real-time without polling.
 
+## Performance & Optimization
+
+- **Packet coalescing** — batches multiple encrypted packets into a single UDP send, reducing sendto syscalls by up to 75% on all platforms
+- **Adaptive MTU (DPLPMTUD, RFC 8899)** — binary search discovers optimal per-peer path MTU automatically; re-probes every 5 minutes for path changes (WiFi roaming); first mesh VPN to implement this
+- **Tunnel pre-warming** — agent blocks on startup until all peer Noise handshakes complete, ensuring Screen Sharing High Performance mode works on first connection
+- **Multi-reader UDP (macOS)** — 4 parallel UDP reader goroutines via SO_REUSEPORT, decoupled from single TUN writer via mutex
+- **GOGC=400** — reduces Go GC pause frequency 4x, eliminates 100ms latency spikes
+- **pprof endpoint** — built-in CPU/memory profiling at `/debug/pprof/*` behind bearer token auth
+
 ## API
 
 - **REST API** — Full CRUD for networks, nodes, DNS records, members, invites, port forwards, and audit logs.
