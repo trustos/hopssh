@@ -31,6 +31,7 @@ patch-vendor:
 	@cd vendor && patch -p1 --forward --silent < ../patches/nebula-1031-graceful-shutdown.patch 2>/dev/null || true
 	@cd vendor && patch -p1 --forward --silent < ../patches/nebula-darwin-perf.patch 2>/dev/null || true
 	@cd vendor && patch -p1 --forward --silent < ../patches/nebula-darwin-multithread.patch 2>/dev/null || true
+	@cd vendor && patch -p1 --forward --silent < ../patches/nebula-coalesce.patch 2>/dev/null || true
 	@find vendor -name '*.rej' -delete 2>/dev/null || true
 	@echo "==> Done."
 

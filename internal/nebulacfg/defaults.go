@@ -39,10 +39,13 @@ const RespondDelay = "500ms"
 const ListenPort = 4242
 
 // TunMTU is the MTU for the Nebula TUN interface in kernel mode.
-// 1440 is the true maximum for 1500-byte underlay without IP fragmentation:
-// 1500 - 60 bytes overhead (16 header + 16 AEAD + 20 IP + 8 UDP) = 1440.
-// Higher MTUs cause IP fragmentation which doubles sendto syscalls per packet.
-const TunMTU = 1440
+// 1500 matches standard Ethernet MTU. macOS Screen Sharing checks the TUN
+// interface MTU and rejects High Performance mode if it's too low.
+// Packets near max size will be IP-fragmented (1500 + 60 overhead = 1560 >
+// 1500 underlay), but most traffic is smaller and fits without fragmentation.
+// True fragmentation-free max is 1440; we trade occasional fragmentation
+// for Screen Sharing High Performance compatibility.
+const TunMTU = 1500
 
 // HandshakeTryInterval is the retry interval for Noise handshake attempts.
 // Default 100ms wastes time if the lighthouse responds faster. 20ms ensures
