@@ -307,42 +307,105 @@ limited by the same per-packet constraints.
 WinTun provides an efficient ring buffer for TUN I/O. The coalescing layer
 should integrate with this for batch reads/writes.
 
-## Phase 4: Application-Layer Fragmentation
+## Phase 4: Adaptive MTU via DPLPMTUD (RFC 8899)
 
-**Problem:** MTU 2800 would halve per-frame packet count for Screen Sharing,
-but IP fragmentation doubles sendto syscalls. ZeroTier solves this with
-app-layer fragmentation.
+**Problem:** Static MTU forces a choice: 1440 (safe for internet, slow for
+LAN) or 4400 (fast for LAN, breaks on internet). Users shouldn't have to
+know or care — the agent should discover the optimal MTU per peer.
 
-**Solution:** Fragment large TUN packets before encryption, reassemble after
-decryption. Each fragment fits in 1440 bytes (no IP fragmentation).
+**Opportunity:** No mesh VPN has working adaptive MTU. ZeroTier has had an
+open request since 2016. Tailscale's is experimental and broken. WireGuard
+refuses to implement it. This is a genuine competitive advantage for hopssh.
 
-### Wire Format
+### Algorithm (RFC 8899 — Datagram Packetization Layer Path MTU Discovery)
+
+Binary search using Nebula's existing Test message type (header type 4,
+`outside.go:152-173`). No ICMP needed, no new wire protocol, works through
+NATs and firewalls.
 
 ```
-Fragment header (4 bytes):
-  ┌──────────┬──────────┬──────────┬──────────────┐
-  │ flags(1) │ frag_id  │ frag_idx │ frag_total   │
-  │ bit 0:   │ (1 byte) │ (1 byte) │ (1 byte)     │
-  │ is_frag  │          │          │              │
-  └──────────┴──────────┴──────────┴──────────────┘
+1. Start at BASE_MTU (1440 — safe for all internet paths)
+2. Send TestRequest probe with padding = midpoint of search range
+3. If TestReply received within 2s → path supports that size → raise floor
+4. If no reply → path doesn't support that size → lower ceiling
+5. Binary search converges in 5-7 probes (~10-14 seconds)
+6. Set TUN MTU to discovered value via SIOCSIFMTU ioctl
+7. Re-probe every 5 minutes to detect path changes (WiFi roaming)
 ```
 
-- Fragment before encrypt: split TUN packet into 1380-byte chunks
-- Encrypt each fragment independently (each gets its own AEAD tag)
-- Reassemble after decrypt on receiver (keyed by frag_id + source addr)
-- Timeout stale fragments after 500ms
+### Architecture
 
-### Expected Impact
+```
+┌──────────────────────────────────────────┐
+│           internal/pmtud/                │
+│                                          │
+│  Prober (per-peer state machine)         │
+│  ├─ floor: lowest confirmed MTU          │
+│  ├─ ceiling: highest failed MTU          │
+│  ├─ SendProbe(peer, size) → TestRequest  │
+│  ├─ OnReply(peer, size) → raise floor    │
+│  └─ OnTimeout(peer) → lower ceiling      │
+│                                          │
+│  Manager (background goroutine)          │
+│  ├─ probes all active peers periodically │
+│  ├─ TUN MTU = min(all peer MTUs)         │
+│  └─ calls SetMTU on TUN device           │
+└──────────────────────────────────────────┘
+```
 
-With TUN MTU 2800 and app-layer fragmentation:
-- Each 2800-byte TUN packet → 2 fragments of ~1400 bytes each
-- Each fragment encrypted independently → 2 UDP sends of ~1440 bytes
-- Same syscall count as MTU 1440 single packet, but 2x payload per frame
-- Screen Sharing: ~50% fewer TUN reads per screen update
+### Why Nebula Test Messages Are Perfect
 
-Combined with coalescing: fragments from the same TUN packet can be
-coalesced into a single UDP datagram, reducing syscalls to 1 per original
-TUN packet regardless of size.
+Nebula already has `header.Test` with `TestRequest`/`TestReply` subtypes.
+When a TestRequest arrives, Nebula automatically sends a TestReply with
+the same payload (`outside.go:166-170`). The payload size determines the
+outer packet size. If the reply comes back, the path supports that MTU.
+
+No new message types, no protocol changes, no vendor patches to the
+packet format. The probing is pure application-layer logic.
+
+### Dynamic TUN MTU
+
+`tun_darwin.go` already uses `SIOCSIFMTU` ioctl to set MTU (line 189-193).
+Add a `SetMTU(int) error` method to the `Device` interface and implement
+per-platform (Darwin, Linux, Windows). The manager calls this when the
+discovered MTU changes.
+
+### Per-Peer vs Per-Interface
+
+TUN MTU is per-interface. Different peers may have different path MTUs.
+Strategy: TUN MTU = min(all discovered peer MTUs). This is safe — large
+packets to high-MTU peers waste some capacity but work correctly. Small
+packets to low-MTU peers aren't fragmented.
+
+### Expected Behavior
+
+```
+Agent boots → MTU 1440 (safe default)
+  ↓ PMTUD probes run in background
+Discovers LAN peer supports 4400 → MTU rises to 4400 (10-14 seconds)
+  ↓ User connects Screen Sharing → High Performance mode, fast frames
+Laptop moves to coffee shop WiFi → re-probe detects 1440 limit
+  ↓ MTU drops to 1440 automatically
+Returns home → re-probe → MTU rises to 4400 again
+```
+
+### Implementation Scope
+
+| Component | Location | Effort |
+|-----------|----------|--------|
+| Prober state machine | `internal/pmtud/pmtud.go` | ~200 lines |
+| Prober tests | `internal/pmtud/pmtud_test.go` | ~150 lines |
+| SetMTU vendor patch | `overlay/tun_darwin.go`, `tun_linux.go`, `tun_windows.go` | ~30 lines each |
+| Device interface update | `overlay/device.go` | 1 line |
+| Agent integration | `cmd/agent/main.go` | ~50 lines |
+| Total | | ~500 lines |
+
+### References
+
+- [RFC 8899 — DPLPMTUD](https://datatracker.ietf.org/doc/html/rfc8899)
+- [quic-go DPLPMTUD implementation (MIT)](https://github.com/quic-go/quic-go/pull/3520)
+- Nebula Test message handling: `vendor/github.com/slackhq/nebula/outside.go:152-173`
+- Nebula MTU ioctl: `vendor/github.com/slackhq/nebula/overlay/tun_darwin.go:189-193`
 
 ## Implementation Strategy: Shim Layer
 
@@ -380,12 +443,12 @@ Nebula internals that can't be shimmed.
 
 ## Priority Order
 
-| Phase | Impact | Effort | Platforms |
-|-------|--------|--------|-----------|
-| 1. Coalescing | High (75% syscall reduction) | Medium | All |
-| 2. Crypto pools | Medium (parallelism) | Medium | All |
-| 3. Platform I/O | High on Linux, low on macOS | Medium | Linux, macOS, Windows |
-| 4. App-layer frag | Medium (2x payload/frame) | High | All |
+| Phase | Impact | Effort | Platforms | Status |
+|-------|--------|--------|-----------|--------|
+| 1. Coalescing | High (59% sendto reduction) | Medium | All | ✅ Done (v0.6.59) |
+| 2. Crypto pools | Medium (parallelism) | Medium | All | Planned |
+| 3. Platform I/O | High on Linux, low on macOS | Medium | Linux, macOS, Windows | Planned |
+| 4. Adaptive MTU (DPLPMTUD) | High (auto-optimize per path) | Medium | All | Planned — first mesh VPN with this |
 
 ## Profiling Methodology
 
@@ -424,3 +487,12 @@ iperf3 -c <mesh-ip>     # on the other
   management, not VPN overhead. All VPNs see them equally.
 - **Screen Sharing High Performance checks connection quality at startup.**
   Cold tunnels fail the probe. Pre-warming with blocking handshakes fixes it.
+- **macOS Screen Sharing checks TUN interface MTU.** Rejects High Performance
+  mode if MTU is below a threshold (experimentally ~1500). MTU 2800+ always
+  passes. Adaptive MTU (DPLPMTUD) will solve this automatically.
+- **Coalescing buffer size is a latency/throughput tradeoff.** 8KB buffer
+  cut sendto by 59% but amplified WiFi spikes to 423ms (5-6 IP fragments).
+  3200 bytes (2 packets per batch) is the sweet spot.
+- **Higher MTU = fewer TUN reads per frame.** MTU 4400 (3 IP fragments)
+  reduces TUN reads from 35 to 12 per 50KB keyframe — 33% less encrypt+send
+  time. But static high MTU breaks internet paths.

@@ -38,13 +38,11 @@ const RespondDelay = "500ms"
 // peers. ZeroTier uses 9993 for the same reason.
 const ListenPort = 4242
 
-// TunMTU is the MTU for the Nebula TUN interface in kernel mode.
-// 4400 fills exactly 3 IP fragments (3×1500=4500, minus headers) and
-// reduces TUN reads per 50KB screen frame from 35 (at 1440) to 12.
-// Fewer reads = fewer encrypt + sendto cycles = lower frame latency.
-// IP fragmentation is handled by the kernel; on same-LAN WiFi,
-// fragment loss is negligible.
-const TunMTU = 4400
+// TunMTU is the safe default MTU for the Nebula TUN interface.
+// 1440 = 1500 (Ethernet) - 60 (Nebula overhead: 16 header + 16 AEAD + 20 IP + 8 UDP).
+// Zero IP fragmentation at this value. PMTUD (RFC 8899) automatically
+// raises the MTU at runtime when the path supports larger packets.
+const TunMTU = 1440
 
 // HandshakeTryInterval is the retry interval for Noise handshake attempts.
 // Default 100ms wastes time if the lighthouse responds faster. 20ms ensures

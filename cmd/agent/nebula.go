@@ -24,6 +24,7 @@ import (
 type meshService interface {
 	Listen(network, address string) (net.Listener, error)
 	Close()
+	NebulaControl() *nebula.Control
 }
 
 // currentNebula is the running embedded Nebula instance.
@@ -72,6 +73,8 @@ func startNebula(configPath string) (*userspaceMeshService, error) {
 func (u *userspaceMeshService) Listen(network, address string) (net.Listener, error) {
 	return u.svc.Listen(network, address)
 }
+
+func (u *userspaceMeshService) NebulaControl() *nebula.Control { return nil }
 
 // Close shuts down the Nebula instance gracefully.
 func (u *userspaceMeshService) Close() {
@@ -125,6 +128,8 @@ func (k *kernelTunMeshService) Listen(network, address string) (net.Listener, er
 	addr := net.JoinHostPort(k.meshIP, port)
 	return net.Listen(network, addr)
 }
+
+func (k *kernelTunMeshService) NebulaControl() *nebula.Control { return k.ctrl }
 
 // Close shuts down the Nebula instance and destroys the TUN interface.
 func (k *kernelTunMeshService) Close() {

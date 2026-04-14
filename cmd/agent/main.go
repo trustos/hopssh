@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -23,8 +24,10 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/slackhq/nebula"
 	"github.com/slackhq/nebula/cert"
 	"github.com/trustos/hopssh/internal/buildinfo"
+	"github.com/trustos/hopssh/internal/pmtud"
 
 	netpprof "net/http/pprof"
 )
@@ -237,6 +240,11 @@ func runServe(args []string) {
 			// the user tries to connect (e.g., Screen Sharing).
 			go warmTunnel(*nebulaConfig)
 
+			// Start adaptive MTU discovery (DPLPMTUD RFC 8899).
+			if ctrl := meshSvc.NebulaControl(); ctrl != nil {
+				go startPMTUD(renewCtx, ctrl, *nebulaConfig)
+			}
+
 			meshLn, err := meshSvc.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
 			if err != nil {
 				log.Fatalf("Nebula mesh listen: %v", err)
@@ -301,6 +309,54 @@ func runServe(args []string) {
 		currentNebula = nil
 	}
 	nebulaMu.Unlock()
+}
+
+// startPMTUD launches adaptive MTU discovery (DPLPMTUD RFC 8899).
+// Waits for warmup to complete, then probes all mesh subnet peers.
+func startPMTUD(ctx context.Context, ctrl *nebula.Control, configPath string) {
+	time.Sleep(15 * time.Second)
+
+	dir := filepath.Dir(configPath)
+	certPEM, err := os.ReadFile(filepath.Join(dir, "node.crt"))
+	if err != nil {
+		return
+	}
+	c, _, err := cert.UnmarshalCertificateFromPEM(certPEM)
+	if err != nil {
+		return
+	}
+	networks := c.Networks()
+	if len(networks) == 0 {
+		return
+	}
+
+	prefix := networks[0]
+	myAddr := prefix.Addr()
+
+	prober := pmtud.New(
+		func(peer netip.Addr, size int) {
+			payload := make([]byte, size)
+			ctrl.SendTestRequest(peer, payload)
+		},
+		func(mtu int) error {
+			return ctrl.Device().SetMTU(mtu)
+		},
+	)
+
+	ctrl.SetOnTestReply(func(peer netip.Addr, payloadLen int) {
+		prober.HandleReply(peer, payloadLen)
+	})
+
+	addr := prefix.Masked().Addr()
+	for prefix.Contains(addr) {
+		if addr != myAddr && addr != prefix.Masked().Addr() {
+			prober.AddPeer(addr)
+		}
+		addr = addr.Next()
+	}
+
+	log.Printf("[pmtud] starting adaptive MTU discovery for %d subnet peers", len(networks))
+	prober.Run(ctx)
 }
 
 // warmTunnel blocks until Noise handshakes complete to all reachable mesh
