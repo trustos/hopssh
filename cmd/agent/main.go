@@ -139,6 +139,7 @@ func runServe(args []string) {
 			ep := strings.TrimSpace(string(epData))
 			nodeID := strings.TrimSpace(string(idData))
 			if ep != "" && nodeID != "" {
+				applyLocalAllowList(ep)
 				go runCertRenewal(renewCtx, ep, nodeID, authToken)
 				go runHeartbeat(renewCtx, ep, nodeID, authToken)
 				log.Printf("[agent] cert auto-renewal + heartbeat enabled (endpoint: %s)", ep)
