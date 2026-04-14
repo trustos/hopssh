@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/sirupsen/logrus"
@@ -14,6 +15,8 @@ import (
 	"github.com/slackhq/nebula/config"
 	"github.com/slackhq/nebula/overlay"
 	"github.com/slackhq/nebula/service"
+	"github.com/trustos/hopssh/internal/nebulacfg"
+	"gopkg.in/yaml.v3"
 )
 
 // meshService abstracts the Nebula mesh connection.
@@ -155,8 +158,11 @@ func readMeshIPFromCert(nebulaConfigPath string) (string, error) {
 	return networks[0].Addr().String(), nil
 }
 
-// readTunMode reads the persisted TUN mode from the config directory.
-// If no file exists, auto-detects: root/admin → kernel, non-root → userspace.
+// readTunMode determines the TUN mode for the current run.
+// Auto-upgrades to kernel mode when running as root, even if enrollment
+// happened as non-root. Kernel TUN uses a real OS network interface (utun)
+// with near-zero per-packet overhead. Userspace mode (gvisor netstack) adds
+// ~4ms latency per packet, which degrades VNC/Screen Sharing and similar workloads.
 func readTunMode() string {
 	data, err := os.ReadFile(filepath.Join(configDir, "tun-mode"))
 	if err != nil {
@@ -165,9 +171,57 @@ func readTunMode() string {
 		}
 		return "userspace"
 	}
-	mode := string(data)
+
+	mode := strings.TrimSpace(string(data))
+
+	// Auto-upgrade: if persisted mode is userspace but we're running as root,
+	// switch to kernel mode for better performance. This handles the common case
+	// where the agent was enrolled as a regular user but later installed as a
+	// root system service.
+	if mode == "userspace" && isPrivileged() {
+		log.Printf("[agent] upgrading to kernel TUN mode (running as root)")
+		upgradeTunMode()
+		return "kernel"
+	}
+
 	if mode == "kernel" {
 		return "kernel"
 	}
 	return "userspace"
+}
+
+// upgradeTunMode switches the persisted TUN mode from userspace to kernel
+// and updates nebula.yaml accordingly.
+func upgradeTunMode() {
+	// Update the persisted tun-mode file.
+	tunModePath := filepath.Join(configDir, "tun-mode")
+	if err := os.WriteFile(tunModePath, []byte("kernel"), 0644); err != nil {
+		log.Printf("[agent] WARNING: failed to update tun-mode file: %v", err)
+	}
+
+	// Update nebula.yaml: replace tun.user=true with tun.dev+mtu.
+	configPath := filepath.Join(configDir, "nebula.yaml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return
+	}
+
+	var cfg map[string]interface{}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return
+	}
+
+	cfg["tun"] = map[string]interface{}{
+		"dev": "nebula1",
+		"mtu": nebulacfg.TunMTU,
+	}
+
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
+		return
+	}
+
+	if err := atomicWrite(configPath, out, 0644); err != nil {
+		log.Printf("[agent] WARNING: failed to update nebula.yaml for kernel TUN: %v", err)
+	}
 }
