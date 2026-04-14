@@ -104,11 +104,10 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 		"nodeKey":   string(nodeCert.KeyPEM),
 		"expiresIn": int(renewCertDuration.Seconds()),
 		"nebulaConfig": map[string]interface{}{
-			"preferredRanges": nebulacfg.PreferredRanges,
-			"useRelays":       &useRelays,
-			"punchBack":       &punchBack,
-			"punchDelay":      nebulacfg.PunchDelay,
-			"mtu":             &mtu,
+			"useRelays":  &useRelays,
+			"punchBack":  &punchBack,
+			"punchDelay": nebulacfg.PunchDelay,
+			"mtu":        &mtu,
 		},
 	})
 }

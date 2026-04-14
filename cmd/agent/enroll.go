@@ -336,6 +336,15 @@ func installCerts(er *enrollResponse, endpoint string) {
 }
 
 func writeNebulaConfig(serverIP, serverHost string, lighthousePort int, tunMode string) {
+	// Detect which local subnet routes to the lighthouse. This identifies the
+	// real physical interface and prevents Nebula from advertising overlay IPs.
+	physicalSubnet, err := nebulacfg.DetectPhysicalSubnet(serverHost)
+	if err != nil {
+		log.Printf("  Warning: could not detect physical subnet: %v (Nebula will advertise all IPs)", err)
+	} else {
+		fmt.Printf("  ✓ Detected physical network: %s\n", physicalSubnet)
+	}
+
 	if lighthousePort == 0 {
 		lighthousePort = 41820 // fallback for legacy enrollment
 	}
@@ -357,7 +366,6 @@ lighthouse:
   am_lighthouse: false
   hosts:
     - "%s"
-
 %s
 relay:
   relays:
@@ -400,7 +408,7 @@ firewall:
 `, configDir, configDir, configDir,
 		serverIP, serverHost, lighthousePort,
 		serverIP,
-		nebulacfg.PreferredRangesYAML(),
+		nebulacfg.LocalAllowListYAML(physicalSubnet),
 		serverIP, nebulacfg.UseRelays,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay,
 		tunConfig,

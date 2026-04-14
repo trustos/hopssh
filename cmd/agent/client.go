@@ -141,6 +141,11 @@ func runClientJoin(args []string) {
 }
 
 func writeClientNebulaConfig(serverIP, serverHost string, lighthousePort int) {
+	physicalSubnet, err := nebulacfg.DetectPhysicalSubnet(serverHost)
+	if err != nil {
+		log.Printf("  Warning: could not detect physical subnet: %v", err)
+	}
+
 	if lighthousePort == 0 {
 		lighthousePort = 42001
 	}
@@ -157,7 +162,6 @@ lighthouse:
   am_lighthouse: false
   hosts:
     - "%s"
-
 %s
 relay:
   relays:
@@ -189,7 +193,7 @@ firewall:
 `, clientDir, clientDir, clientDir,
 		serverIP, serverHost, lighthousePort,
 		serverIP,
-		nebulacfg.PreferredRangesYAML(),
+		nebulacfg.LocalAllowListYAML(physicalSubnet),
 		serverIP, nebulacfg.UseRelays,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay)
 

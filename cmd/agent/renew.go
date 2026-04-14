@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/slackhq/nebula/cert"
+	"github.com/trustos/hopssh/internal/nebulacfg"
 	"gopkg.in/yaml.v3"
 )
 
@@ -223,6 +224,11 @@ func renewCert(endpoint, nodeID, agentToken string) error {
 		}
 	}
 
+	// Detect and apply local_allow_list to prevent double-tunneling through
+	// overlay networks. This runs on the agent because only the agent knows
+	// which local interface routes to the lighthouse.
+	applyLocalAllowList(endpoint)
+
 	// Signal Nebula to reload certs (and pick up any config changes).
 	reloadNebula()
 
@@ -233,11 +239,10 @@ func renewCert(endpoint, nodeID, agentToken string) error {
 // nebulaConfigUpdate contains server-pushed Nebula settings.
 // Pointer fields: nil means "don't change", non-nil means "set to this value".
 type nebulaConfigUpdate struct {
-	PreferredRanges []string `json:"preferredRanges,omitempty"`
-	UseRelays       *bool    `json:"useRelays,omitempty"`
-	PunchBack       *bool    `json:"punchBack,omitempty"`
-	PunchDelay      string   `json:"punchDelay,omitempty"`
-	MTU             *int     `json:"mtu,omitempty"`
+	UseRelays  *bool  `json:"useRelays,omitempty"`
+	PunchBack  *bool  `json:"punchBack,omitempty"`
+	PunchDelay string `json:"punchDelay,omitempty"`
+	MTU        *int   `json:"mtu,omitempty"`
 }
 
 // applyNebulaConfigUpdate merges server-pushed settings into the local nebula.yaml.
@@ -272,15 +277,6 @@ func mergeNebulaConfig(data []byte, update *nebulaConfigUpdate) ([]byte, bool, e
 	}
 
 	changed := false
-
-	if len(update.PreferredRanges) > 0 {
-		ranges := make([]interface{}, len(update.PreferredRanges))
-		for i, r := range update.PreferredRanges {
-			ranges[i] = r
-		}
-		cfg["preferred_ranges"] = ranges
-		changed = true
-	}
 
 	if update.UseRelays != nil {
 		relay := yamlMap(cfg, "relay")
@@ -332,6 +328,50 @@ func yamlMap(cfg map[string]interface{}, key string) map[string]interface{} {
 	m := make(map[string]interface{})
 	cfg[key] = m
 	return m
+}
+
+// applyLocalAllowList detects the physical network interface by checking which
+// local IP routes to the control plane, then sets lighthouse.local_allow_list
+// in nebula.yaml to only advertise that subnet. This prevents Nebula from
+// advertising overlay/VPN IPs (ZeroTier, Tailscale, etc.) as endpoints.
+func applyLocalAllowList(endpoint string) {
+	host := extractHost(endpoint)
+	if host == "" {
+		return
+	}
+
+	subnet, err := nebulacfg.DetectPhysicalSubnet(host)
+	if err != nil {
+		log.Printf("[renew] could not detect physical subnet: %v", err)
+		return
+	}
+
+	configPath := filepath.Join(configDir, "nebula.yaml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return
+	}
+
+	var cfg map[string]interface{}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return
+	}
+
+	lighthouse := yamlMap(cfg, "lighthouse")
+	lal := map[string]interface{}{subnet: true}
+	lighthouse["local_allow_list"] = lal
+	cfg["lighthouse"] = lighthouse
+
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
+		return
+	}
+
+	if err := atomicWrite(configPath, out, 0644); err != nil {
+		log.Printf("[renew] failed to write local_allow_list: %v", err)
+		return
+	}
+	log.Printf("[renew] local_allow_list set to %s (physical network)", subnet)
 }
 
 // addJitter applies ±10% random jitter to a duration to spread agent load.

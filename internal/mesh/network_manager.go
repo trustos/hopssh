@@ -458,7 +458,7 @@ listen:
   port: %d
 lighthouse:
   am_lighthouse: true
-%srelay:
+relay:
   am_relay: true
 punchy:
   punch: true
@@ -479,7 +479,6 @@ firewall:
 		indentPEM(string(n.ServerCert), 4),
 		indentPEM(string(n.ServerKey), 4),
 		port,
-		nebulacfg.PreferredRangesYAML(),
 		nebulacfg.PunchBack, nebulacfg.PunchDelay,
 	)
 
