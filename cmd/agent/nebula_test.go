@@ -21,8 +21,6 @@ func TestUpgradeTunMode_UpdatesNebulaYAML(t *testing.T) {
   ca: /etc/hop-agent/ca.crt
 lighthouse:
   am_lighthouse: false
-  local_allow_list:
-    "192.168.23.0/24": true
 tun:
   user: true
 listen:
@@ -79,12 +77,8 @@ relay:
 	if !ok {
 		t.Fatal("lighthouse section should be preserved")
 	}
-	lal, ok := lighthouse["local_allow_list"].(map[string]interface{})
-	if !ok {
-		t.Fatal("local_allow_list should be preserved after TUN upgrade")
-	}
-	if lal["192.168.23.0/24"] != true {
-		t.Fatal("local_allow_list subnet should be preserved")
+	if lighthouse["am_lighthouse"] != false {
+		t.Fatal("lighthouse.am_lighthouse should be preserved")
 	}
 
 	listen, ok := cfg["listen"].(map[string]interface{})

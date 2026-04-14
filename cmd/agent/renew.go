@@ -224,11 +224,6 @@ func renewCert(endpoint, nodeID, agentToken string) error {
 		}
 	}
 
-	// Detect and apply local_allow_list to prevent double-tunneling through
-	// overlay networks. This runs on the agent because only the agent knows
-	// which local interface routes to the lighthouse.
-	applyLocalAllowList(endpoint)
-
 	// Signal Nebula to reload certs (and pick up any config changes).
 	reloadNebula()
 
@@ -339,22 +334,9 @@ func yamlMap(cfg map[string]interface{}, key string) map[string]interface{} {
 	return m
 }
 
-// applyLocalAllowList detects the physical network interface by checking which
-// local IP routes to the control plane, then sets lighthouse.local_allow_list
-// in nebula.yaml to only advertise that subnet. This prevents Nebula from
-// advertising overlay/VPN IPs (ZeroTier, Tailscale, etc.) as endpoints.
-func applyLocalAllowList(endpoint string) {
-	host := extractHost(endpoint)
-	if host == "" {
-		return
-	}
-
-	subnet, err := nebulacfg.DetectPhysicalSubnet(host)
-	if err != nil {
-		log.Printf("[renew] could not detect physical subnet: %v", err)
-		return
-	}
-
+// ensureListenPort updates nebula.yaml to use the fixed listen port if it's
+// currently set to 0 (random). A fixed port is critical for NAT hole punching.
+func ensureListenPort() {
 	configPath := filepath.Join(configDir, "nebula.yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -366,15 +348,19 @@ func applyLocalAllowList(endpoint string) {
 		return
 	}
 
-	lighthouse := yamlMap(cfg, "lighthouse")
-	lal := map[string]interface{}{subnet: true}
-	lighthouse["local_allow_list"] = lal
-	cfg["lighthouse"] = lighthouse
-
-	// Also ensure fixed listen port for reliable NAT hole punching.
 	listen := yamlMap(cfg, "listen")
+	if port, ok := listen["port"]; ok && port == nebulacfg.ListenPort {
+		return // already set
+	}
+
 	listen["port"] = nebulacfg.ListenPort
 	cfg["listen"] = listen
+
+	// Also remove local_allow_list if present (it breaks lighthouse endpoint
+	// discovery by preventing public IPs from being reported).
+	if lighthouse, ok := cfg["lighthouse"].(map[string]interface{}); ok {
+		delete(lighthouse, "local_allow_list")
+	}
 
 	out, err := yaml.Marshal(cfg)
 	if err != nil {
@@ -382,10 +368,10 @@ func applyLocalAllowList(endpoint string) {
 	}
 
 	if err := atomicWrite(configPath, out, 0644); err != nil {
-		log.Printf("[renew] failed to write local_allow_list: %v", err)
+		log.Printf("[agent] WARNING: failed to update listen port: %v", err)
 		return
 	}
-	log.Printf("[renew] local_allow_list set to %s (physical network)", subnet)
+	log.Printf("[agent] listen port set to %d", nebulacfg.ListenPort)
 }
 
 // addJitter applies ±10% random jitter to a duration to spread agent load.

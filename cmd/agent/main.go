@@ -203,11 +203,7 @@ func runServe(args []string) {
 	} else if _, err := os.Stat(*nebulaConfig); err == nil {
 		// Start Nebula mesh. Auto-detect TUN mode from persisted config.
 		tunMode := readTunMode()
-		// Detect physical network and set local_allow_list (after readTunMode
-		// which may update nebula.yaml via upgradeTunMode).
-		if agentEndpoint != "" {
-			applyLocalAllowList(agentEndpoint)
-		}
+		ensureListenPort()
 		meshSvc := startMesh(*nebulaConfig, tunMode)
 
 		if meshSvc == nil {
