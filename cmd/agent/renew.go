@@ -371,6 +371,11 @@ func applyLocalAllowList(endpoint string) {
 	lighthouse["local_allow_list"] = lal
 	cfg["lighthouse"] = lighthouse
 
+	// Also ensure fixed listen port for reliable NAT hole punching.
+	listen := yamlMap(cfg, "listen")
+	listen["port"] = nebulacfg.ListenPort
+	cfg["listen"] = listen
+
 	out, err := yaml.Marshal(cfg)
 	if err != nil {
 		return
