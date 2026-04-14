@@ -376,8 +376,6 @@ cipher: %s
 listen:
   host: 0.0.0.0
   port: %d
-  read_buffer: %d
-  write_buffer: %d
 
 routines: %d
 
@@ -418,7 +416,7 @@ firewall:
 		nebulacfg.LocalAllowListYAML(physicalIface),
 		serverIP, nebulacfg.UseRelays,
 		nebulacfg.Cipher,
-		nebulacfg.ListenPort, nebulacfg.UDPReadBuffer, nebulacfg.UDPWriteBuffer,
+		nebulacfg.ListenPort,
 		nebulacfg.Routines,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay,
 		tunConfig,

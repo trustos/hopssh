@@ -53,13 +53,6 @@ const Routines = 4
 // making it faster than ChaCha20-Poly1305 (which uses NEON/SSE vector ops).
 const Cipher = "aes"
 
-// UDPReadBuffer is the SO_RCVBUF size for the Nebula UDP socket (2MB).
-// Larger buffers absorb burst traffic (Screen Sharing, file transfer)
-// without packet drops.
-const UDPReadBuffer = 2097152
-
-// UDPWriteBuffer is the SO_SNDBUF size for the Nebula UDP socket (2MB).
-const UDPWriteBuffer = 2097152
 
 // DetectPhysicalInterface discovers the OS network interface that routes to
 // the given remote host. This identifies the real physical interface (WiFi,

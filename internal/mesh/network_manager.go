@@ -457,8 +457,6 @@ pki:
 listen:
   host: 0.0.0.0
   port: %d
-  read_buffer: %d
-  write_buffer: %d
 routines: %d
 lighthouse:
   am_lighthouse: true
@@ -485,7 +483,7 @@ firewall:
 		indentPEM(string(n.NebulaCACert), 4),
 		indentPEM(string(n.ServerCert), 4),
 		indentPEM(string(n.ServerKey), 4),
-		port, nebulacfg.UDPReadBuffer, nebulacfg.UDPWriteBuffer,
+		port,
 		nebulacfg.Routines,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay,
 	)

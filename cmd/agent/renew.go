@@ -360,17 +360,18 @@ func ensureP2PConfig(endpoint string) {
 		listen["port"] = nebulacfg.ListenPort
 		changed = true
 	}
-	if rb, ok := listen["read_buffer"]; !ok || rb != nebulacfg.UDPReadBuffer {
-		listen["read_buffer"] = nebulacfg.UDPReadBuffer
+	// Remove oversized socket buffers that cause bufferbloat.
+	if _, ok := listen["read_buffer"]; ok {
+		delete(listen, "read_buffer")
 		changed = true
 	}
-	if wb, ok := listen["write_buffer"]; !ok || wb != nebulacfg.UDPWriteBuffer {
-		listen["write_buffer"] = nebulacfg.UDPWriteBuffer
+	if _, ok := listen["write_buffer"]; ok {
+		delete(listen, "write_buffer")
 		changed = true
 	}
 	cfg["listen"] = listen
 
-	// ChaCha20-Poly1305 has ARM64 NEON assembly, faster than pure Go AES-GCM.
+	// Ensure cipher matches default (AES-GCM, hardware-accelerated on Apple Silicon).
 	if c, ok := cfg["cipher"]; !ok || c != nebulacfg.Cipher {
 		cfg["cipher"] = nebulacfg.Cipher
 		changed = true
