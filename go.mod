@@ -74,4 +74,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/slackhq/nebula => github.com/trustos/nebula v1.10.3-hopssh.3
+replace github.com/slackhq/nebula => github.com/trustos/nebula v1.10.3-hopssh.4
