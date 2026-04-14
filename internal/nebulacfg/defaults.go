@@ -4,6 +4,12 @@
 // makes it easy to tune networking behavior in one place.
 package nebulacfg
 
+import (
+	"fmt"
+	"net"
+	"regexp"
+)
+
 // UseRelays controls whether agents can relay through the lighthouse when
 // direct P2P hole punching fails. Must be true — with false, Nebula skips
 // relay entirely and connections fail behind strict firewalls or symmetric NAT.
@@ -33,6 +39,73 @@ const RespondDelay = "500ms"
 const ListenPort = 4242
 
 // TunMTU is the MTU for the Nebula TUN interface in kernel mode.
-// 1400 balances encapsulation overhead (Nebula adds ~60 bytes) with
-// good throughput. The default 1300 is too conservative for most networks.
-const TunMTU = 1400
+// 1420 is the maximum safe value for internet paths (1500 underlay MTU
+// minus ~80 bytes Nebula encapsulation overhead).
+const TunMTU = 1420
+
+// DetectPhysicalInterface discovers the OS network interface that routes to
+// the given remote host. This identifies the real physical interface (WiFi,
+// Ethernet) — not overlay/VPN interfaces — because the OS routing table
+// selects the interface that reaches the public internet.
+//
+// Returns the interface name (e.g., "en0" on macOS, "eth0" on Linux,
+// "Wi-Fi" on Windows). Used with Nebula's local_allow_list to restrict
+// endpoint advertisement to only the physical interface.
+//
+// Tries IPv4 first, falls back to IPv6 for IPv6-only underlay networks.
+func DetectPhysicalInterface(remoteHost string) (string, error) {
+	name, err := detectInterfaceForNetwork("udp4", remoteHost)
+	if err == nil {
+		return name, nil
+	}
+	name, err6 := detectInterfaceForNetwork("udp6", remoteHost)
+	if err6 == nil {
+		return name, nil
+	}
+	return "", fmt.Errorf("detect physical interface: ipv4: %w, ipv6: %v", err, err6)
+}
+
+func detectInterfaceForNetwork(network, remoteHost string) (string, error) {
+	conn, err := net.Dial(network, net.JoinHostPort(remoteHost, "1"))
+	if err != nil {
+		return "", err
+	}
+	defer conn.Close()
+
+	localIP := conn.LocalAddr().(*net.UDPAddr).IP
+
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", fmt.Errorf("list interfaces: %w", err)
+	}
+
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			ipNet, ok := addr.(*net.IPNet)
+			if !ok {
+				continue
+			}
+			if ipNet.IP.Equal(localIP) {
+				return iface.Name, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("no interface found for IP %s", localIP)
+}
+
+// LocalAllowListYAML returns the local_allow_list YAML block that restricts
+// Nebula to only advertise endpoints from the given interface. The interface
+// name is regex-escaped for safety (Windows names may contain special chars).
+// If interfaceName is empty, returns empty string (no filter).
+func LocalAllowListYAML(interfaceName string) string {
+	if interfaceName == "" {
+		return ""
+	}
+	escaped := regexp.QuoteMeta(interfaceName)
+	return fmt.Sprintf("  local_allow_list:\n    interfaces:\n      \"%s\": true\n", escaped)
+}

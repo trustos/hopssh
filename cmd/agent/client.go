@@ -141,6 +141,11 @@ func runClientJoin(args []string) {
 }
 
 func writeClientNebulaConfig(serverIP, serverHost string, lighthousePort int) {
+	physicalIface, err := nebulacfg.DetectPhysicalInterface(serverHost)
+	if err != nil {
+		log.Printf("  Warning: could not detect physical interface: %v", err)
+	}
+
 	if lighthousePort == 0 {
 		lighthousePort = 42001
 	}
@@ -157,7 +162,7 @@ lighthouse:
   am_lighthouse: false
   hosts:
     - "%s"
-
+%s
 relay:
   relays:
     - "%s"
@@ -190,6 +195,7 @@ firewall:
 `, clientDir, clientDir, clientDir,
 		serverIP, serverHost, lighthousePort,
 		serverIP,
+		nebulacfg.LocalAllowListYAML(physicalIface),
 		serverIP, nebulacfg.UseRelays,
 		nebulacfg.ListenPort,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay)

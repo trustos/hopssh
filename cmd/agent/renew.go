@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -335,10 +336,11 @@ func yamlMap(cfg map[string]interface{}, key string) map[string]interface{} {
 }
 
 // ensureP2PConfig updates nebula.yaml with settings critical for P2P:
-// fixed listen port (NAT mapping stability) and target_all_remotes
-// (continuous attempt to upgrade relay→direct). Also cleans up
-// local_allow_list from older versions (it broke lighthouse discovery).
-func ensureListenPort() {
+// - Fixed listen port (NAT mapping stability)
+// - target_all_remotes (continuous relay→direct upgrade)
+// - local_allow_list with physical interface (prevents overlay-within-overlay)
+// - Fast punch timing
+func ensureP2PConfig(endpoint string) {
 	configPath := filepath.Join(configDir, "nebula.yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -378,12 +380,25 @@ func ensureListenPort() {
 		cfg["punchy"] = punchy
 	}
 
-	// Remove local_allow_list from older versions (it broke lighthouse
-	// endpoint discovery by preventing public IPs from being reported).
-	if lighthouse, ok := cfg["lighthouse"].(map[string]interface{}); ok {
-		if _, has := lighthouse["local_allow_list"]; has {
-			delete(lighthouse, "local_allow_list")
+	// Detect physical interface and set local_allow_list.
+	// This prevents Nebula from advertising overlay IPs (ZeroTier, etc.)
+	// while still allowing the lighthouse to learn our public IP from
+	// the UDP source address.
+	host := extractHost(endpoint)
+	if host != "" {
+		if iface, err := nebulacfg.DetectPhysicalInterface(host); err == nil {
+			lighthouse := yamlMap(cfg, "lighthouse")
+			escaped := regexp.QuoteMeta(iface)
+			lighthouse["local_allow_list"] = map[string]interface{}{
+				"interfaces": map[string]interface{}{
+					escaped: true,
+				},
+			}
+			cfg["lighthouse"] = lighthouse
 			changed = true
+			log.Printf("[agent] local_allow_list set to interface %s", iface)
+		} else {
+			log.Printf("[agent] could not detect physical interface: %v", err)
 		}
 	}
 

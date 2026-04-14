@@ -336,6 +336,14 @@ func installCerts(er *enrollResponse, endpoint string) {
 }
 
 func writeNebulaConfig(serverIP, serverHost string, lighthousePort int, tunMode string) {
+	// Detect physical interface to prevent advertising overlay IPs.
+	physicalIface, err := nebulacfg.DetectPhysicalInterface(serverHost)
+	if err != nil {
+		log.Printf("  Warning: could not detect physical interface: %v", err)
+	} else {
+		fmt.Printf("  ✓ Detected physical interface: %s\n", physicalIface)
+	}
+
 	if lighthousePort == 0 {
 		lighthousePort = 41820 // fallback for legacy enrollment
 	}
@@ -357,7 +365,7 @@ lighthouse:
   am_lighthouse: false
   hosts:
     - "%s"
-
+%s
 relay:
   relays:
     - "%s"
@@ -401,6 +409,7 @@ firewall:
 `, configDir, configDir, configDir,
 		serverIP, serverHost, lighthousePort,
 		serverIP,
+		nebulacfg.LocalAllowListYAML(physicalIface),
 		serverIP, nebulacfg.UseRelays,
 		nebulacfg.ListenPort,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay,
