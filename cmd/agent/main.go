@@ -131,18 +131,22 @@ func runServe(args []string) {
 	mux.HandleFunc("/proxy/", handleProxy)
 	authed := authMiddleware(authToken, mux)
 
+	// Read endpoint for config management and cert renewal.
+	var agentEndpoint string
+	if epData, err := os.ReadFile(*endpointFile); err == nil {
+		agentEndpoint = strings.TrimSpace(string(epData))
+	}
+
 	// Start cert renewal + heartbeat if endpoint + nodeID are available.
 	renewCtx, renewCancel := context.WithCancel(context.Background())
 	defer renewCancel()
-	if epData, err := os.ReadFile(*endpointFile); err == nil {
+	if agentEndpoint != "" {
 		if idData, err := os.ReadFile(*nodeIDFile); err == nil {
-			ep := strings.TrimSpace(string(epData))
 			nodeID := strings.TrimSpace(string(idData))
-			if ep != "" && nodeID != "" {
-				applyLocalAllowList(ep)
-				go runCertRenewal(renewCtx, ep, nodeID, authToken)
-				go runHeartbeat(renewCtx, ep, nodeID, authToken)
-				log.Printf("[agent] cert auto-renewal + heartbeat enabled (endpoint: %s)", ep)
+			if nodeID != "" {
+				go runCertRenewal(renewCtx, agentEndpoint, nodeID, authToken)
+				go runHeartbeat(renewCtx, agentEndpoint, nodeID, authToken)
+				log.Printf("[agent] cert auto-renewal + heartbeat enabled (endpoint: %s)", agentEndpoint)
 			}
 		}
 	}
@@ -199,6 +203,11 @@ func runServe(args []string) {
 	} else if _, err := os.Stat(*nebulaConfig); err == nil {
 		// Start Nebula mesh. Auto-detect TUN mode from persisted config.
 		tunMode := readTunMode()
+		// Detect physical network and set local_allow_list (after readTunMode
+		// which may update nebula.yaml via upgradeTunMode).
+		if agentEndpoint != "" {
+			applyLocalAllowList(agentEndpoint)
+		}
 		meshSvc := startMesh(*nebulaConfig, tunMode)
 
 		if meshSvc == nil {

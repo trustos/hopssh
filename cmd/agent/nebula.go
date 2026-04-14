@@ -191,7 +191,8 @@ func readTunMode() string {
 }
 
 // upgradeTunMode switches the persisted TUN mode from userspace to kernel
-// and updates nebula.yaml accordingly.
+// and updates nebula.yaml accordingly. Preserves all other config (including
+// local_allow_list which may have been set by applyLocalAllowList).
 func upgradeTunMode() {
 	// Update the persisted tun-mode file.
 	tunModePath := filepath.Join(configDir, "tun-mode")
@@ -199,7 +200,7 @@ func upgradeTunMode() {
 		log.Printf("[agent] WARNING: failed to update tun-mode file: %v", err)
 	}
 
-	// Update nebula.yaml: replace tun.user=true with tun.dev+mtu.
+	// Update nebula.yaml: replace tun section only.
 	configPath := filepath.Join(configDir, "nebula.yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -211,8 +212,9 @@ func upgradeTunMode() {
 		return
 	}
 
+	// Only update the tun section — preserve everything else.
 	cfg["tun"] = map[string]interface{}{
-		"dev": "nebula1",
+		"dev": "utun",
 		"mtu": nebulacfg.TunMTU,
 	}
 
