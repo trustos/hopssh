@@ -395,6 +395,14 @@ func ensureP2PConfig(endpoint string) {
 		cfg["punchy"] = punchy
 	}
 
+	// Faster handshake retry for quick tunnel establishment.
+	handshakes := yamlMap(cfg, "handshakes")
+	if ti, ok := handshakes["try_interval"]; !ok || ti != nebulacfg.HandshakeTryInterval {
+		handshakes["try_interval"] = nebulacfg.HandshakeTryInterval
+		cfg["handshakes"] = handshakes
+		changed = true
+	}
+
 	// Update MTU if it's lower than the optimal value.
 	if tun, ok := cfg["tun"].(map[string]interface{}); ok {
 		if mtu, hasMTU := tun["mtu"]; hasMTU {

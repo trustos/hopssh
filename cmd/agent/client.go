@@ -176,6 +176,9 @@ listen:
 
 routines: %d
 
+handshakes:
+  try_interval: %s
+
 punchy:
   punch: true
   respond: true
@@ -204,6 +207,7 @@ firewall:
 		nebulacfg.Cipher,
 		nebulacfg.ListenPort,
 		nebulacfg.Routines,
+		nebulacfg.HandshakeTryInterval,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay)
 
 	writeFileSecure(filepath.Join(clientDir, "nebula.yaml"), []byte(nebulaConfig), 0644)

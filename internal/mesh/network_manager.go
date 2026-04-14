@@ -458,6 +458,8 @@ listen:
   host: 0.0.0.0
   port: %d
 routines: %d
+handshakes:
+  try_interval: %s
 lighthouse:
   am_lighthouse: true
 relay:
@@ -485,6 +487,7 @@ firewall:
 		indentPEM(string(n.ServerKey), 4),
 		port,
 		nebulacfg.Routines,
+		nebulacfg.HandshakeTryInterval,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay,
 	)
 

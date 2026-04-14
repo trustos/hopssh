@@ -379,6 +379,9 @@ listen:
 
 routines: %d
 
+handshakes:
+  try_interval: %s
+
 punchy:
   punch: true
   respond: true
@@ -418,6 +421,7 @@ firewall:
 		nebulacfg.Cipher,
 		nebulacfg.ListenPort,
 		nebulacfg.Routines,
+		nebulacfg.HandshakeTryInterval,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay,
 		tunConfig,
 		agentAPIPort)

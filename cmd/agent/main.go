@@ -23,6 +23,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/trustos/hopssh/internal/buildinfo"
+	"gopkg.in/yaml.v3"
 
 	netpprof "net/http/pprof"
 )
@@ -231,6 +232,10 @@ func runServe(args []string) {
 				configureDNS(activeDNSConfig)
 			}
 
+			// Pre-warm tunnel to lighthouse so handshake completes before
+			// the user tries to connect (e.g., Screen Sharing).
+			go warmTunnel(*nebulaConfig)
+
 			meshLn, err := meshSvc.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
 			if err != nil {
 				log.Fatalf("Nebula mesh listen: %v", err)
@@ -295,6 +300,37 @@ func runServe(args []string) {
 		currentNebula = nil
 	}
 	nebulaMu.Unlock()
+}
+
+// warmTunnel triggers handshakes to all peers in static_host_map by dialing
+// their mesh IPs. This pre-warms Noise tunnels so they're ready before the
+// user connects (e.g., Screen Sharing checks latency on first packet).
+func warmTunnel(configPath string) {
+	time.Sleep(2 * time.Second)
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return
+	}
+	var cfg map[string]interface{}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return
+	}
+
+	hostMap, ok := cfg["static_host_map"].(map[string]interface{})
+	if !ok {
+		return
+	}
+
+	for meshIP := range hostMap {
+		go func(ip string) {
+			conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, "41820"), 5*time.Second)
+			if err == nil {
+				conn.Close()
+			}
+			log.Printf("[agent] tunnel warm-up to %s (handshake triggered)", ip)
+		}(meshIP)
+	}
 }
 
 // startMesh starts Nebula in the requested TUN mode with graceful fallback.
