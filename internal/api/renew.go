@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/trustos/hopssh/internal/db"
+	"github.com/trustos/hopssh/internal/nebulacfg"
 	"github.com/trustos/hopssh/internal/pki"
 )
 
@@ -94,10 +95,21 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	mtu := nebulacfg.TunMTU
+	useRelays := nebulacfg.UseRelays
+	punchBack := nebulacfg.PunchBack
+
 	writeJSON(w, map[string]interface{}{
 		"nodeCert":  string(nodeCert.CertPEM),
 		"nodeKey":   string(nodeCert.KeyPEM),
 		"expiresIn": int(renewCertDuration.Seconds()),
+		"nebulaConfig": map[string]interface{}{
+			"preferredRanges": nebulacfg.PreferredRanges,
+			"useRelays":       &useRelays,
+			"punchBack":       &punchBack,
+			"punchDelay":      nebulacfg.PunchDelay,
+			"mtu":             &mtu,
+		},
 	})
 }
 

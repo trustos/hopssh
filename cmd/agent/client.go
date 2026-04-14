@@ -14,6 +14,8 @@ import (
 	"runtime"
 	"strings"
 	"syscall"
+
+	"github.com/trustos/hopssh/internal/nebulacfg"
 )
 
 const clientDir = "/etc/hop-client"
@@ -156,10 +158,11 @@ lighthouse:
   hosts:
     - "%s"
 
+%s
 relay:
   relays:
     - "%s"
-  use_relays: true
+  use_relays: %t
 
 listen:
   host: 0.0.0.0
@@ -168,6 +171,8 @@ listen:
 punchy:
   punch: true
   respond: true
+  punch_back: %t
+  delay: %s
 
 tun:
   user: true
@@ -184,7 +189,9 @@ firewall:
 `, clientDir, clientDir, clientDir,
 		serverIP, serverHost, lighthousePort,
 		serverIP,
-		serverIP)
+		nebulacfg.PreferredRangesYAML(),
+		serverIP, nebulacfg.UseRelays,
+		nebulacfg.PunchBack, nebulacfg.PunchDelay)
 
 	writeFileSecure(filepath.Join(clientDir, "nebula.yaml"), []byte(nebulaConfig), 0644)
 }

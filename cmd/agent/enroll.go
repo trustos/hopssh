@@ -15,6 +15,8 @@ import (
 	"runtime"
 	"strings"
 	"time"
+
+	"github.com/trustos/hopssh/internal/nebulacfg"
 )
 
 const (
@@ -340,7 +342,7 @@ func writeNebulaConfig(serverIP, serverHost string, lighthousePort int, tunMode 
 
 	tunConfig := "  user: true"
 	if tunMode == "kernel" {
-		tunConfig = "  dev: nebula1\n  mtu: 1300"
+		tunConfig = fmt.Sprintf("  dev: nebula1\n  mtu: %d", nebulacfg.TunMTU)
 	}
 
 	nebulaConfig := fmt.Sprintf(`pki:
@@ -356,10 +358,11 @@ lighthouse:
   hosts:
     - "%s"
 
+%s
 relay:
   relays:
     - "%s"
-  use_relays: true
+  use_relays: %t
 
 listen:
   host: 0.0.0.0
@@ -368,6 +371,8 @@ listen:
 punchy:
   punch: true
   respond: true
+  punch_back: %t
+  delay: %s
 
 tun:
 %s
@@ -395,7 +400,9 @@ firewall:
 `, configDir, configDir, configDir,
 		serverIP, serverHost, lighthousePort,
 		serverIP,
-		serverIP,
+		nebulacfg.PreferredRangesYAML(),
+		serverIP, nebulacfg.UseRelays,
+		nebulacfg.PunchBack, nebulacfg.PunchDelay,
 		tunConfig,
 		agentAPIPort)
 

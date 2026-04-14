@@ -16,6 +16,7 @@ import (
 	"github.com/slackhq/nebula/overlay"
 	"github.com/slackhq/nebula/service"
 	"github.com/trustos/hopssh/internal/db"
+	"github.com/trustos/hopssh/internal/nebulacfg"
 )
 
 const (
@@ -457,11 +458,13 @@ listen:
   port: %d
 lighthouse:
   am_lighthouse: true
-relay:
+%srelay:
   am_relay: true
 punchy:
   punch: true
   respond: true
+  punch_back: %t
+  delay: %s
 firewall:
   outbound:
     - port: any
@@ -476,6 +479,8 @@ firewall:
 		indentPEM(string(n.ServerCert), 4),
 		indentPEM(string(n.ServerKey), 4),
 		port,
+		nebulacfg.PreferredRangesYAML(),
+		nebulacfg.PunchBack, nebulacfg.PunchDelay,
 	)
 
 	var cfg config.C

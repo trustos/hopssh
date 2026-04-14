@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/slackhq/nebula/cert"
+	"gopkg.in/yaml.v3"
 )
 
 // runHeartbeat sends periodic heartbeats to the control plane so the
@@ -192,8 +193,9 @@ func renewCert(endpoint, nodeID, agentToken string) error {
 	}
 
 	var renewResp struct {
-		NodeCert string `json:"nodeCert"`
-		NodeKey  string `json:"nodeKey"`
+		NodeCert     string              `json:"nodeCert"`
+		NodeKey      string              `json:"nodeKey"`
+		NebulaConfig *nebulaConfigUpdate `json:"nebulaConfig,omitempty"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&renewResp); err != nil {
 		return fmt.Errorf("parse response: %w", err)
@@ -214,11 +216,122 @@ func renewCert(endpoint, nodeID, agentToken string) error {
 		return fmt.Errorf("write key: %w", err)
 	}
 
-	// Signal Nebula to reload certs.
+	// Apply server-pushed Nebula config if present.
+	if renewResp.NebulaConfig != nil {
+		if err := applyNebulaConfigUpdate(renewResp.NebulaConfig); err != nil {
+			log.Printf("[renew] failed to apply config update: %v (continuing with old config)", err)
+		}
+	}
+
+	// Signal Nebula to reload certs (and pick up any config changes).
 	reloadNebula()
 
 	log.Printf("[renew] certificate renewed successfully")
 	return nil
+}
+
+// nebulaConfigUpdate contains server-pushed Nebula settings.
+// Pointer fields: nil means "don't change", non-nil means "set to this value".
+type nebulaConfigUpdate struct {
+	PreferredRanges []string `json:"preferredRanges,omitempty"`
+	UseRelays       *bool    `json:"useRelays,omitempty"`
+	PunchBack       *bool    `json:"punchBack,omitempty"`
+	PunchDelay      string   `json:"punchDelay,omitempty"`
+	MTU             *int     `json:"mtu,omitempty"`
+}
+
+// applyNebulaConfigUpdate merges server-pushed settings into the local nebula.yaml.
+func applyNebulaConfigUpdate(update *nebulaConfigUpdate) error {
+	configPath := filepath.Join(configDir, "nebula.yaml")
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+
+	out, changed, err := mergeNebulaConfig(data, update)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return nil
+	}
+
+	if err := atomicWrite(configPath, out, 0644); err != nil {
+		return fmt.Errorf("write config: %w", err)
+	}
+	log.Printf("[renew] nebula config updated from server")
+	return nil
+}
+
+// mergeNebulaConfig applies a config update to raw YAML bytes and returns the
+// result. Pure function — no side effects, easy to test. Returns (output, changed, error).
+func mergeNebulaConfig(data []byte, update *nebulaConfigUpdate) ([]byte, bool, error) {
+	var cfg map[string]interface{}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, false, fmt.Errorf("parse config: %w", err)
+	}
+
+	changed := false
+
+	if len(update.PreferredRanges) > 0 {
+		ranges := make([]interface{}, len(update.PreferredRanges))
+		for i, r := range update.PreferredRanges {
+			ranges[i] = r
+		}
+		cfg["preferred_ranges"] = ranges
+		changed = true
+	}
+
+	if update.UseRelays != nil {
+		relay := yamlMap(cfg, "relay")
+		relay["use_relays"] = *update.UseRelays
+		cfg["relay"] = relay
+		changed = true
+	}
+
+	if update.PunchBack != nil || update.PunchDelay != "" {
+		punchy := yamlMap(cfg, "punchy")
+		if update.PunchBack != nil {
+			punchy["punch_back"] = *update.PunchBack
+			changed = true
+		}
+		if update.PunchDelay != "" {
+			punchy["delay"] = update.PunchDelay
+			changed = true
+		}
+		cfg["punchy"] = punchy
+	}
+
+	// Update tun.mtu only if tun section already has mtu (kernel TUN mode).
+	if update.MTU != nil {
+		if tun, ok := cfg["tun"].(map[string]interface{}); ok {
+			if _, hasMTU := tun["mtu"]; hasMTU {
+				tun["mtu"] = *update.MTU
+				cfg["tun"] = tun
+				changed = true
+			}
+		}
+	}
+
+	if !changed {
+		return data, false, nil
+	}
+
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
+		return nil, false, fmt.Errorf("marshal config: %w", err)
+	}
+	return out, true, nil
+}
+
+// yamlMap returns a nested map from a config, creating it if absent.
+func yamlMap(cfg map[string]interface{}, key string) map[string]interface{} {
+	if m, ok := cfg[key].(map[string]interface{}); ok {
+		return m
+	}
+	m := make(map[string]interface{})
+	cfg[key] = m
+	return m
 }
 
 // addJitter applies ±10% random jitter to a duration to spread agent load.
