@@ -380,6 +380,17 @@ func ensureP2PConfig(endpoint string) {
 		cfg["punchy"] = punchy
 	}
 
+	// Update MTU if it's lower than the optimal value.
+	if tun, ok := cfg["tun"].(map[string]interface{}); ok {
+		if mtu, hasMTU := tun["mtu"]; hasMTU {
+			if mtuInt, ok := mtu.(int); ok && mtuInt < nebulacfg.TunMTU {
+				tun["mtu"] = nebulacfg.TunMTU
+				cfg["tun"] = tun
+				changed = true
+			}
+		}
+	}
+
 	// Detect physical interface and set local_allow_list.
 	// This prevents Nebula from advertising overlay IPs (ZeroTier, etc.)
 	// while still allowing the lighthouse to learn our public IP from
