@@ -4,9 +4,7 @@
 
 - Go 1.24+ (`go version`)
 - Node.js 20+ (`node --version`) — for frontend
-- `patch` command (pre-installed on macOS/Linux)
 - `make` (pre-installed on macOS/Linux)
-- Optional: `gh` CLI (for `make check-patches`)
 - Optional: Docker (for containerized builds)
 - Optional: `sqlc` (for regenerating query code: `go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest`)
 
@@ -15,7 +13,7 @@
 ```bash
 git clone git@github.com:trustos/hopssh.git
 cd hopssh
-make setup    # vendors Go deps + applies Nebula patch
+make setup    # downloads Go dependencies
 ```
 
 ## Building
@@ -143,39 +141,60 @@ frontend/               Svelte 5 SPA
 
 ## Dependency Management
 
-We use **vendored dependencies** with a Nebula patch.
+Dependencies are managed via Go modules (no vendoring).
 
 ```bash
 # Add/update a dependency:
 go get github.com/some/package@v1.2.3
-make vendor    # re-vendors + re-applies Nebula patch
+go mod tidy
 
 # Regenerate sqlc code after modifying .sql files:
 make generate
 ```
 
-### Vendor Patches
+### Nebula Fork
 
-hopssh applies multiple patches to vendored Nebula for performance and compatibility.
-Applied automatically by `make patch-vendor` (or `make vendor` which vendors + patches).
+hopssh uses a fork of Nebula at [github.com/trustos/nebula](https://github.com/trustos/nebula)
+(branch: `hopssh`) for performance enhancements and feature additions. The fork
+is consumed via a `replace` directive in `go.mod` — no import rewrites needed:
 
-| Patch | File | Purpose |
-|-------|------|---------|
-| Graceful shutdown | `patches/nebula-1031-graceful-shutdown.patch` | Fix os.Exit(2) on service close (upstream PR #1375) |
-| macOS TUN perf | `patches/nebula-darwin-perf.patch` | Buffer reuse in TUN Read + UDP socket buffer support |
-| Multi-reader UDP | `patches/nebula-darwin-multithread.patch` | Decouple TUN/UDP routine counts for macOS SO_REUSEPORT |
-| Packet coalescing | `patches/nebula-coalesce.patch` | Batch UDP sends with length-prefix framing |
+```go
+replace github.com/slackhq/nebula => github.com/trustos/nebula v1.10.3-hopssh.1
+```
 
-PMTUD (SetMTU, SendTestRequest, TestReply callback) patches are applied directly
-to vendor code and included in the build.
+**Changes in the fork** (6 commits on the `hopssh` branch):
 
-#### Adding a New Vendor Patch
+| Change | Description |
+|--------|-------------|
+| Graceful shutdown | Fix `os.Exit(2)` on service close (upstream PR #1375) |
+| TUN buffer reuse | Eliminate per-packet allocation + write mutex (macOS) |
+| UDP multi-reader | Socket buffer support + `SupportsMultipleReaders()` (macOS) |
+| Decoupled routines | Separate TUN/UDP routine counts for macOS SO_REUSEPORT |
+| Packet coalescing | Batch UDP sends with length-prefix framing + Linux panic fix |
+| PMTUD support | `SetMTU` interface, `SendTestRequest`, `TestReply` callback |
 
-1. Run `go mod vendor` to get clean vendor state
-2. Make changes to `vendor/github.com/slackhq/nebula/`
-3. Generate patch: `diff -u original modified > patches/nebula-name.patch`
-4. Add to `Makefile` `patch-vendor` target
-5. Test: `make vendor && make build`
+See the fork's [HOPSSH.md](https://github.com/trustos/nebula/blob/hopssh/HOPSSH.md) for
+the full maintenance guide, including how to add changes and upgrade upstream.
+
+#### Modifying the Fork
+
+```bash
+git clone git@github.com:trustos/nebula.git
+cd nebula && git checkout hopssh
+# Make changes, commit, tag v1.10.3-hopssh.N, push
+# Then in hopssh: update go.mod replace version, go mod tidy
+```
+
+#### Upgrading Upstream Nebula
+
+```bash
+cd nebula-fork
+git fetch upstream
+git rebase upstream/v1.11.0
+git tag v1.11.0-hopssh.1
+git push origin hopssh --tags --force-with-lease
+# In hopssh: update replace directive, go mod tidy
+```
 
 #### Performance Profiling
 
@@ -209,18 +228,17 @@ docker run -p 9473:9473 -p 42001-42100:42001-42100/udp -v hopssh-data:/data hops
 
 The Dockerfile has three stages:
 1. **Node.js** — builds the Svelte frontend
-2. **Go** — vendors, patches, copies frontend, builds static binaries
+2. **Go** — downloads deps via module cache, copies frontend, builds static binaries
 3. **Debian slim** — minimal runtime with ca-certificates
 
 ## CI
 
 GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR:
-- `make setup` (vendor + patch)
+- `go mod download` (fetch dependencies)
 - `make build` (compile)
 - `make vet` (static analysis)
 - `make test` (unit tests)
 - Cross-compile for linux/amd64 + linux/arm64 with artifact upload
-- Weekly patch check on main branch
 
 ## Code Quality Rules
 
