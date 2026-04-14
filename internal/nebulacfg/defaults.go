@@ -51,9 +51,10 @@ const TunMTU = 1440
 const HandshakeTryInterval = "20ms"
 
 // Routines is the number of parallel TUN/UDP processing goroutines.
-// Multiple routines reduce per-packet queue buildup under load.
-// Only effective on Linux (multiqueue TUN); macOS/Windows fall back to 1.
-const Routines = 4
+// MUST be 1 on macOS/Windows — SO_REUSEPORT creates multiple sockets
+// but Nebula's activate() falls back to 1 reader, leaving extra sockets
+// unread and causing packet loss. On Linux, set higher via config.
+const Routines = 1
 
 // Cipher selects the Noise Protocol cipher. AES-GCM is the default because
 // Apple Silicon and modern x86 have dedicated hardware AES instructions,
