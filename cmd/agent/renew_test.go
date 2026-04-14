@@ -3,7 +3,6 @@ package main
 import (
 	"testing"
 
-	"github.com/trustos/hopssh/internal/nebulacfg"
 	"gopkg.in/yaml.v3"
 )
 
@@ -320,14 +319,103 @@ func TestMergeNebulaConfig_OutputIsValidYAML(t *testing.T) {
 	}
 }
 
-func TestDetectPhysicalSubnet_LoopbackFallback(t *testing.T) {
-	// Dialing localhost should detect the loopback subnet.
-	subnet, err := nebulacfg.DetectPhysicalSubnet("127.0.0.1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestMergeNebulaConfig_UpdateListenPort(t *testing.T) {
+	update := &nebulaConfigUpdate{
+		ListenPort: intPtr(4242),
 	}
-	// Should return 127.0.0.0/8 or similar loopback range.
-	if subnet == "" {
-		t.Fatal("expected non-empty subnet")
+
+	out, changed, err := mergeNebulaConfig([]byte(oldAgentConfig), update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true")
+	}
+
+	cfg := parseCfg(t, out)
+	listen, ok := cfg["listen"].(map[string]interface{})
+	if !ok {
+		t.Fatal("listen section missing")
+	}
+	if listen["port"] != 4242 {
+		t.Fatalf("expected port=4242, got %v", listen["port"])
+	}
+	// Verify host preserved.
+	if listen["host"] != "0.0.0.0" {
+		t.Fatalf("listen.host should be preserved, got %v", listen["host"])
+	}
+}
+
+func TestMergeNebulaConfig_UpdateListenPortFromZero(t *testing.T) {
+	// Simulate config with port: 0 (the old default we're replacing).
+	configWithPort0 := `listen:
+  host: 0.0.0.0
+  port: 0
+punchy:
+  punch: true
+`
+	update := &nebulaConfigUpdate{
+		ListenPort: intPtr(4242),
+	}
+
+	out, changed, err := mergeNebulaConfig([]byte(configWithPort0), update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true")
+	}
+
+	cfg := parseCfg(t, out)
+	listen := cfg["listen"].(map[string]interface{})
+	if listen["port"] != 4242 {
+		t.Fatalf("expected port=4242, got %v", listen["port"])
+	}
+}
+
+func TestMergeNebulaConfig_FullUpdateWithListenPort(t *testing.T) {
+	update := &nebulaConfigUpdate{
+		UseRelays:  boolPtr(true),
+		PunchBack:  boolPtr(true),
+		PunchDelay: "1s",
+		MTU:        intPtr(1400),
+		ListenPort: intPtr(4242),
+	}
+
+	out, changed, err := mergeNebulaConfig([]byte(oldAgentConfig), update)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected changed=true")
+	}
+
+	cfg := parseCfg(t, out)
+
+	// Verify all fields updated.
+	relay := cfg["relay"].(map[string]interface{})
+	if relay["use_relays"] != true {
+		t.Fatal("use_relays should be true")
+	}
+	punchy := cfg["punchy"].(map[string]interface{})
+	if punchy["punch_back"] != true {
+		t.Fatal("punch_back should be true")
+	}
+	if punchy["delay"] != "1s" {
+		t.Fatal("delay should be 1s")
+	}
+	tun := cfg["tun"].(map[string]interface{})
+	if tun["mtu"] != 1400 {
+		t.Fatal("mtu should be 1400")
+	}
+	listen := cfg["listen"].(map[string]interface{})
+	if listen["port"] != 4242 {
+		t.Fatal("port should be 4242")
+	}
+
+	// Verify unrelated fields preserved.
+	pki := cfg["pki"].(map[string]interface{})
+	if pki["ca"] != "/etc/hop-agent/ca.crt" {
+		t.Fatal("pki.ca should be preserved")
 	}
 }
