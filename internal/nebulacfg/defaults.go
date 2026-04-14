@@ -39,13 +39,12 @@ const RespondDelay = "500ms"
 const ListenPort = 4242
 
 // TunMTU is the MTU for the Nebula TUN interface in kernel mode.
-// 1500 matches standard Ethernet MTU. macOS Screen Sharing checks the TUN
-// interface MTU and rejects High Performance mode if it's too low.
-// Packets near max size will be IP-fragmented (1500 + 60 overhead = 1560 >
-// 1500 underlay), but most traffic is smaller and fits without fragmentation.
-// True fragmentation-free max is 1440; we trade occasional fragmentation
-// for Screen Sharing High Performance compatibility.
-const TunMTU = 1500
+// 4400 fills exactly 3 IP fragments (3×1500=4500, minus headers) and
+// reduces TUN reads per 50KB screen frame from 35 (at 1440) to 12.
+// Fewer reads = fewer encrypt + sendto cycles = lower frame latency.
+// IP fragmentation is handled by the kernel; on same-LAN WiFi,
+// fragment loss is negligible.
+const TunMTU = 4400
 
 // HandshakeTryInterval is the retry interval for Noise handshake attempts.
 // Default 100ms wastes time if the lighthouse responds faster. 20ms ensures

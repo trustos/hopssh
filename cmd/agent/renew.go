@@ -403,10 +403,10 @@ func ensureP2PConfig(endpoint string) {
 		changed = true
 	}
 
-	// Update MTU if it's lower than the optimal value.
+	// Update MTU to match the configured optimal value.
 	if tun, ok := cfg["tun"].(map[string]interface{}); ok {
 		if mtu, hasMTU := tun["mtu"]; hasMTU {
-			if mtuInt, ok := mtu.(int); ok && mtuInt < nebulacfg.TunMTU {
+			if mtuInt, ok := mtu.(int); ok && mtuInt != nebulacfg.TunMTU {
 				tun["mtu"] = nebulacfg.TunMTU
 				cfg["tun"] = tun
 				changed = true
