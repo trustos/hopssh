@@ -2,8 +2,8 @@
 -include .env
 export
 
-.PHONY: all setup vendor patch-vendor build build-all build-linux vet test \
-       generate check-patches clean clean-vendor frontend frontend-embed \
+.PHONY: all setup build build-all build-linux vet test \
+       generate clean frontend frontend-embed \
        run dev release
 
 # Version injection via ldflags.
@@ -14,34 +14,16 @@ LDFLAGS  = -s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=$(VERSI
 # Default: build Go binaries only (assumes frontend already built or not needed).
 all: build
 
-# First-time setup: vendor dependencies and apply patches.
-setup: vendor
+# First-time setup: download dependencies.
+setup:
+	go mod download
 	@echo ""
 	@echo "==> Setup complete. Run 'make build' to compile."
 
-# Vendor dependencies and apply patches.
-vendor:
-	go mod tidy
-	go mod vendor
-	$(MAKE) patch-vendor
-
-# Apply patches to vendored dependencies.
-# Uses a combination of patch files (for the 1-line graceful shutdown fix)
-# and full file replacements (for multi-file changes that are fragile to patch).
-patch-vendor:
-	@echo "==> Applying vendor patches..."
-	@cd vendor && patch -p1 --forward --silent < ../patches/nebula-1031-graceful-shutdown.patch 2>/dev/null || true
-	@cp patches/overlay/*.go vendor/github.com/slackhq/nebula/overlay/
-	@cp patches/udp/*.go vendor/github.com/slackhq/nebula/udp/
-	@cp patches/nebula-core/*.go vendor/github.com/slackhq/nebula/
-	@find vendor -name '*.rej' -delete 2>/dev/null || true
-	@echo "==> Done."
-
 # Build Go binaries.
 build:
-	@test -d vendor || (echo "Run 'make setup' first." && exit 1)
-	go build -mod=vendor -ldflags='$(LDFLAGS)' -o hop-agent ./cmd/agent
-	go build -mod=vendor -ldflags='$(LDFLAGS)' -o hop-server ./cmd/server
+	go build -ldflags='$(LDFLAGS)' -o hop-agent ./cmd/agent
+	go build -ldflags='$(LDFLAGS)' -o hop-server ./cmd/server
 
 # Build frontend (SvelteKit SPA).
 frontend:
@@ -58,13 +40,12 @@ build-all: frontend-embed build
 
 # Build for a specific Linux platform.
 build-linux:
-	@test -d vendor || (echo "Run 'make setup' first." && exit 1)
-	GOOS=linux GOARCH=$(or $(GOARCH),amd64) go build -mod=vendor -trimpath -ldflags='$(LDFLAGS)' -o hop-agent-linux-$(or $(GOARCH),amd64) ./cmd/agent
-	GOOS=linux GOARCH=$(or $(GOARCH),amd64) go build -mod=vendor -trimpath -ldflags='$(LDFLAGS)' -o hop-server-linux-$(or $(GOARCH),amd64) ./cmd/server
+	GOOS=linux GOARCH=$(or $(GOARCH),amd64) go build -trimpath -ldflags='$(LDFLAGS)' -o hop-agent-linux-$(or $(GOARCH),amd64) ./cmd/agent
+	GOOS=linux GOARCH=$(or $(GOARCH),amd64) go build -trimpath -ldflags='$(LDFLAGS)' -o hop-server-linux-$(or $(GOARCH),amd64) ./cmd/server
 
 # Run go vet.
 vet:
-	go vet -mod=vendor ./...
+	go vet ./...
 
 # Regenerate sqlc code from .sql query files.
 generate:
@@ -72,11 +53,7 @@ generate:
 
 # Run tests.
 test:
-	go test -mod=vendor ./...
-
-# Check if vendor patches are still needed (requires gh CLI).
-check-patches:
-	@./scripts/check-nebula-patch.sh
+	go test ./...
 
 # Build everything and run the server (frontend embedded in binary).
 run: build-all
@@ -135,7 +112,3 @@ release:
 clean:
 	rm -f hop-agent hop-server
 	rm -f hop-agent-linux-* hop-server-linux-*
-
-# Remove vendor directory (re-run `make setup` to restore).
-clean-vendor:
-	rm -rf vendor/

@@ -57,8 +57,8 @@ jobs:
           go-version: '1.25'
           cache: true
 
-      - name: Vendor + patch
-        run: make setup
+      - name: Download dependencies
+        run: go mod download
 
       - name: Download frontend dist
         uses: actions/download-artifact@v4
@@ -74,7 +74,7 @@ jobs:
           EXT=""
           if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
           LDFLAGS="-s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=${{ github.ref_name }} -X github.com/trustos/hopssh/internal/buildinfo.Commit=${{ github.sha }}"
-          CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="$LDFLAGS" \
+          CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" \
             -o hop-agent-${GOOS}-${GOARCH}${EXT} ./cmd/agent
 
       - name: Build server
@@ -85,7 +85,7 @@ jobs:
           EXT=""
           if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
           LDFLAGS="-s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=${{ github.ref_name }} -X github.com/trustos/hopssh/internal/buildinfo.Commit=${{ github.sha }}"
-          CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="$LDFLAGS" \
+          CGO_ENABLED=0 go build -trimpath -ldflags="$LDFLAGS" \
             -o hop-server-${GOOS}-${GOARCH}${EXT} ./cmd/server
 
       - name: Upload artifacts
