@@ -39,9 +39,11 @@ const RespondDelay = "500ms"
 const ListenPort = 4242
 
 // TunMTU is the MTU for the Nebula TUN interface in kernel mode.
-// 1420 is the maximum safe value for internet paths (1500 underlay MTU
-// minus ~80 bytes Nebula encapsulation overhead).
-const TunMTU = 1420
+// 2800 matches ZeroTier, reducing packets-per-frame by ~2x vs 1420.
+// Nebula overhead is 60 bytes (16 header + 16 AEAD + 20 IP + 8 UDP).
+// Packets exceeding the 1500-byte underlay MTU are IP-fragmented by
+// the OS. Read buffers are 9001 bytes; no DF flag is set.
+const TunMTU = 2800
 
 // HandshakeTryInterval is the retry interval for Noise handshake attempts.
 // Default 100ms wastes time if the lighthouse responds faster. 20ms ensures

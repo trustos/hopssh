@@ -18,6 +18,7 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -302,9 +303,10 @@ func runServe(args []string) {
 	nebulaMu.Unlock()
 }
 
-// warmTunnel triggers handshakes to all peers in the mesh subnet by dialing
-// each IP. This pre-warms Noise tunnels so they're ready before the user
-// connects (e.g., Screen Sharing checks latency on first packet).
+// warmTunnel blocks until Noise handshakes complete to all reachable mesh
+// peers. The TCP dials go through the TUN device, triggering Nebula handshakes.
+// DialTimeout blocks until the handshake + TCP round-trip succeeds, so when
+// this function returns, all peer tunnels are warm.
 func warmTunnel(configPath string) {
 	time.Sleep(2 * time.Second)
 
@@ -324,22 +326,43 @@ func warmTunnel(configPath string) {
 
 	prefix := networks[0]
 	myAddr := prefix.Addr()
-	responded := 0
+
+	var wg sync.WaitGroup
+	var responded atomic.Int32
+	start := time.Now()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 
 	addr := prefix.Masked().Addr()
 	for prefix.Contains(addr) {
 		if addr != myAddr && addr != prefix.Masked().Addr() {
+			wg.Add(1)
 			go func(ip string) {
-				conn, err := net.DialTimeout("tcp", net.JoinHostPort(ip, "41820"), 3*time.Second)
+				defer wg.Done()
+				d := net.Dialer{Timeout: 10 * time.Second}
+				conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, "41820"))
 				if err == nil {
 					conn.Close()
+					responded.Add(1)
 				}
 			}(addr.String())
-			responded++
 		}
 		addr = addr.Next()
 	}
-	log.Printf("[agent] tunnel warm-up: triggered handshakes to %d subnet peers", responded)
+
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-ctx.Done():
+	}
+
+	log.Printf("[agent] tunnel warm-up: %d peers responded in %s", responded.Load(), time.Since(start).Truncate(time.Millisecond))
 }
 
 // startMesh starts Nebula in the requested TUN mode with graceful fallback.
