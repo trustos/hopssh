@@ -14,18 +14,16 @@ RUN npm run build
 
 # --- Go build stage (native — cross-compile for target arch) ---
 FROM --platform=$BUILDPLATFORM golang:1.25.8-bookworm AS builder
-RUN apt-get update && apt-get install -y --no-install-recommends patch && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN go mod vendor && make patch-vendor
 COPY --from=frontend /frontend/build ./internal/frontend/dist/
 
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG TARGETARCH
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -mod=vendor -trimpath \
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=${TARGETARCH} go build -trimpath \
     -ldflags="-s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=${VERSION} -X github.com/trustos/hopssh/internal/buildinfo.Commit=${COMMIT}" \
     -o /out/hop-server ./cmd/server
 
