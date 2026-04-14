@@ -26,12 +26,14 @@ vendor:
 	$(MAKE) patch-vendor
 
 # Apply patches to vendored dependencies.
+# Uses a combination of patch files (for the 1-line graceful shutdown fix)
+# and full file replacements (for multi-file changes that are fragile to patch).
 patch-vendor:
 	@echo "==> Applying vendor patches..."
 	@cd vendor && patch -p1 --forward --silent < ../patches/nebula-1031-graceful-shutdown.patch 2>/dev/null || true
-	@cd vendor && patch -p1 --forward --silent < ../patches/nebula-darwin-perf.patch 2>/dev/null || true
-	@cd vendor && patch -p1 --forward --silent < ../patches/nebula-darwin-multithread.patch 2>/dev/null || true
-	@cd vendor && patch -p1 --forward --silent < ../patches/nebula-coalesce.patch 2>/dev/null || true
+	@cp patches/overlay/*.go vendor/github.com/slackhq/nebula/overlay/
+	@cp patches/udp/*.go vendor/github.com/slackhq/nebula/udp/
+	@cp patches/nebula-core/*.go vendor/github.com/slackhq/nebula/
 	@find vendor -name '*.rej' -delete 2>/dev/null || true
 	@echo "==> Done."
 
