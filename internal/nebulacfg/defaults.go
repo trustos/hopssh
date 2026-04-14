@@ -48,10 +48,10 @@ const TunMTU = 1420
 // Only effective on Linux (multiqueue TUN); macOS/Windows fall back to 1.
 const Routines = 4
 
-// Cipher selects the Noise Protocol cipher. ChaCha20-Poly1305 has optimized
-// ARM64 NEON assembly in Go's standard library, making it faster than pure Go
-// AES-GCM on Apple Silicon (and competitive on amd64).
-const Cipher = "chachapoly"
+// Cipher selects the Noise Protocol cipher. AES-GCM is the default because
+// Apple Silicon and modern x86 have dedicated hardware AES instructions,
+// making it faster than ChaCha20-Poly1305 (which uses NEON/SSE vector ops).
+const Cipher = "aes"
 
 // UDPReadBuffer is the SO_RCVBUF size for the Nebula UDP socket (2MB).
 // Larger buffers absorb burst traffic (Screen Sharing, file transfer)

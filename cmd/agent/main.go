@@ -39,7 +39,6 @@ var execCommand = exec.Command
 
 func main() {
 	debug.SetGCPercent(400)
-	debug.SetMemoryLimit(128 << 20)
 
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
