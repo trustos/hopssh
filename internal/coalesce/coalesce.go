@@ -8,9 +8,10 @@ import (
 
 const (
 	// MaxDatagramSize is the maximum coalesced UDP datagram size.
-	// 8KB allows batching ~5 full-size encrypted packets (1532 bytes each)
-	// into one sendto call. OS handles IP fragmentation in kernel space.
-	MaxDatagramSize = 8192
+	// 3200 bytes batches 2 full-size encrypted packets (1532 bytes each)
+	// per sendto call — 50% syscall reduction with only 2-3 IP fragments
+	// per datagram, minimizing fragment loss amplification on WiFi.
+	MaxDatagramSize = 3200
 
 	// LenPrefixSize is the byte size of the length prefix per inner packet.
 	LenPrefixSize = 2
