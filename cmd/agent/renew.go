@@ -334,8 +334,10 @@ func yamlMap(cfg map[string]interface{}, key string) map[string]interface{} {
 	return m
 }
 
-// ensureListenPort updates nebula.yaml to use the fixed listen port if it's
-// currently set to 0 (random). A fixed port is critical for NAT hole punching.
+// ensureP2PConfig updates nebula.yaml with settings critical for P2P:
+// fixed listen port (NAT mapping stability) and target_all_remotes
+// (continuous attempt to upgrade relay→direct). Also cleans up
+// local_allow_list from older versions (it broke lighthouse discovery).
 func ensureListenPort() {
 	configPath := filepath.Join(configDir, "nebula.yaml")
 	data, err := os.ReadFile(configPath)
@@ -348,18 +350,36 @@ func ensureListenPort() {
 		return
 	}
 
+	changed := false
+
+	// Fixed listen port for stable NAT mappings.
 	listen := yamlMap(cfg, "listen")
-	if port, ok := listen["port"]; ok && port == nebulacfg.ListenPort {
-		return // already set
+	if port, ok := listen["port"]; !ok || port != nebulacfg.ListenPort {
+		listen["port"] = nebulacfg.ListenPort
+		cfg["listen"] = listen
+		changed = true
 	}
 
-	listen["port"] = nebulacfg.ListenPort
-	cfg["listen"] = listen
+	// target_all_remotes: punch ALL known endpoints, not just the current one.
+	// This enables relay→direct upgrade by continuously trying direct paths.
+	punchy := yamlMap(cfg, "punchy")
+	if tar, ok := punchy["target_all_remotes"]; !ok || tar != true {
+		punchy["target_all_remotes"] = true
+		cfg["punchy"] = punchy
+		changed = true
+	}
 
-	// Also remove local_allow_list if present (it breaks lighthouse endpoint
-	// discovery by preventing public IPs from being reported).
+	// Remove local_allow_list from older versions (it broke lighthouse
+	// endpoint discovery by preventing public IPs from being reported).
 	if lighthouse, ok := cfg["lighthouse"].(map[string]interface{}); ok {
-		delete(lighthouse, "local_allow_list")
+		if _, has := lighthouse["local_allow_list"]; has {
+			delete(lighthouse, "local_allow_list")
+			changed = true
+		}
+	}
+
+	if !changed {
+		return
 	}
 
 	out, err := yaml.Marshal(cfg)
@@ -368,10 +388,10 @@ func ensureListenPort() {
 	}
 
 	if err := atomicWrite(configPath, out, 0644); err != nil {
-		log.Printf("[agent] WARNING: failed to update listen port: %v", err)
+		log.Printf("[agent] WARNING: failed to update P2P config: %v", err)
 		return
 	}
-	log.Printf("[agent] listen port set to %d", nebulacfg.ListenPort)
+	log.Printf("[agent] P2P config updated (port: %d, target_all_remotes: true)", nebulacfg.ListenPort)
 }
 
 // addJitter applies ±10% random jitter to a duration to spread agent load.

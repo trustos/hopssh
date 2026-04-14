@@ -465,6 +465,7 @@ punchy:
   respond: true
   punch_back: %t
   delay: %s
+  target_all_remotes: true
 firewall:
   outbound:
     - port: any
