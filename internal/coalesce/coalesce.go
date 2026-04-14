@@ -15,8 +15,9 @@ const (
 	LenPrefixSize = 2
 
 	// DefaultFlushInterval is the maximum time packets sit in the buffer
-	// before being flushed. 1ms balances latency vs syscall reduction.
-	DefaultFlushInterval = time.Millisecond
+	// before being flushed. 100µs is aggressive enough to coalesce burst
+	// packets while adding negligible latency.
+	DefaultFlushInterval = 100 * time.Microsecond
 
 	// magicVersion is Nebula's header version nibble (upper 4 bits of byte 0).
 	// Used to distinguish single Nebula packets from coalesced datagrams.
