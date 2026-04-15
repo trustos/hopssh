@@ -288,10 +288,34 @@ docker build -t hopssh .
 docker run -p 9473:9473 -p 42001-42100:42001-42100/udp -p 15300-15400:15300-15400/udp \
   -v hopssh-data:/data -e HOPSSH_ENDPOINT=http://YOUR_IP:9473 hopssh
 
-# Release:
+# Release (production):
 make release              # patch bump (v0.1.0 → v0.1.1)
 make release BUMP=minor   # minor bump (v0.1.1 → v0.2.0)
+# Tags the version, pushes to GitHub → CI builds binaries + Docker image →
+# ghcr.io/trustos/hopssh:<tag>. Then update the Nomad job in oci_nomad_cluster
+# repo to use the new tag — GH runner on the server picks it up and deploys.
+# Nomad job: /Users/tenevi/Projects/Github.Trustos/oci_nomad_cluster/jobs/hopssh.nomad.hcl
 ```
+
+### Deployment
+
+**Production release** (control plane + agents):
+1. `make release` — tags + pushes → CI builds Docker image + binaries
+2. Update `oci_nomad_cluster/jobs/hopssh.nomad.hcl` with new tag → commit + push
+3. GH runner deploys the new image via Nomad on Oracle Cloud (arm64)
+4. Agents self-update from the control plane
+
+**Dev deploy** (local testing only):
+```bash
+make dev-deploy            # Build + deploy agent to both local Macs (~12s)
+make dev-deploy-server     # Build Docker image → push ghcr.io → update Nomad job
+```
+
+- `dev-deploy` deploys to Mac mini (local) + laptop (192.168.23.18) via SCP
+- `dev-deploy-server` builds `linux/arm64` Docker image, pushes with `dev-<commit>` tag,
+  updates Nomad job in `oci_nomad_cluster` repo, commits + pushes
+- Server runs on Oracle Cloud behind Traefik (hopssh.com), no SSH access (NSG blocked)
+- Server architecture: arm64, Nomad + Docker, distroless container
 
 ---
 
