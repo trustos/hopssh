@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
@@ -40,6 +41,8 @@ import (
 // @name Authorization
 // @description Session token from login/register. Format: "Bearer {token}"
 func main() {
+	debug.SetGCPercent(400)
+
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "version":
