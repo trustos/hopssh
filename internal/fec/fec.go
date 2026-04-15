@@ -128,13 +128,17 @@ func (c *Conn) encodeAndSendLocked(g *sendGroup, addr netip.AddrPort) {
 		return
 	}
 
-	// Pad all shards to same length
+	// Prepend 2-byte length to each shard so receiver can strip padding.
+	// Reed-Solomon requires equal-length shards, but Nebula packets vary in size.
+	shardSize := g.maxLen + 2 // 2-byte length prefix + max payload
 	for i := 0; i < k; i++ {
-		if len(g.shards[i]) < g.maxLen {
-			padded := make([]byte, g.maxLen)
-			copy(padded, g.shards[i])
-			g.shards[i] = padded
-		}
+		orig := g.shards[i]
+		shard := make([]byte, shardSize)
+		shard[0] = byte(len(orig) >> 8)
+		shard[1] = byte(len(orig))
+		copy(shard[2:], orig)
+		// Rest is zero-padded
+		g.shards[i] = shard
 	}
 
 	// Create full shard array: k data + m parity
@@ -144,7 +148,7 @@ func (c *Conn) encodeAndSendLocked(g *sendGroup, addr netip.AddrPort) {
 		allShards[i] = g.shards[i]
 	}
 	for i := k; i < total; i++ {
-		allShards[i] = make([]byte, g.maxLen)
+		allShards[i] = make([]byte, shardSize)
 	}
 
 	// Use a temporary encoder if k differs from configured (partial group)
@@ -278,11 +282,10 @@ func (c *Conn) tryDecode(rg *recvGroup) [][]byte {
 
 	enc, err := reedsolomon.New(k, m)
 	if err != nil {
-		// Return what we have
 		var result [][]byte
 		for i := 0; i < k; i++ {
 			if rg.present[i] {
-				result = append(result, rg.shards[i])
+				result = append(result, stripLenPrefix(rg.shards[i]))
 			}
 		}
 		return result
@@ -298,10 +301,31 @@ func (c *Conn) tryDecode(rg *recvGroup) [][]byte {
 		return result
 	}
 
-	// Return all k data shards (now reconstructed)
-	result := make([][]byte, k)
-	copy(result, rg.shards[:k])
+	// Return all k data shards, stripping the 2-byte length prefix and padding.
+	result := make([][]byte, 0, k)
+	for i := 0; i < k; i++ {
+		shard := rg.shards[i]
+		if len(shard) < 2 {
+			continue
+		}
+		origLen := int(shard[0])<<8 | int(shard[1])
+		if origLen > len(shard)-2 {
+			origLen = len(shard) - 2
+		}
+		result = append(result, shard[2:2+origLen])
+	}
 	return result
+}
+
+func stripLenPrefix(shard []byte) []byte {
+	if len(shard) < 2 {
+		return shard
+	}
+	origLen := int(shard[0])<<8 | int(shard[1])
+	if origLen > len(shard)-2 {
+		origLen = len(shard) - 2
+	}
+	return shard[2 : 2+origLen]
 }
 
 func (c *Conn) cleanupLoop() {

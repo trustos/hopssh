@@ -59,6 +59,10 @@ build-linux:
 	GOOS=linux GOARCH=$(or $(GOARCH),amd64) go build -mod=vendor -trimpath -ldflags='$(LDFLAGS)' -o hop-agent-linux-$(or $(GOARCH),amd64) ./cmd/agent
 	GOOS=linux GOARCH=$(or $(GOARCH),amd64) go build -mod=vendor -trimpath -ldflags='$(LDFLAGS)' -o hop-server-linux-$(or $(GOARCH),amd64) ./cmd/server
 
+# Deploy agent to both local Macs (build + copy + restart).
+dev-deploy:
+	@./scripts/dev-deploy.sh
+
 # Run go vet.
 vet:
 	go vet -mod=vendor ./...
