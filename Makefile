@@ -63,6 +63,11 @@ build-linux:
 dev-deploy:
 	@./scripts/dev-deploy.sh
 
+# Deploy control plane to remote server (cross-compile + scp + restart).
+# Requires DEPLOY_HOST, DEPLOY_USER, DEPLOY_KEY in .env
+dev-deploy-server:
+	@./scripts/dev-deploy-server.sh
+
 # Run go vet.
 vet:
 	go vet -mod=vendor ./...
