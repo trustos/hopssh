@@ -151,5 +151,23 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		h.EventHub.Publish(node.NetworkID, Event{Type: "node.status", Data: map[string]string{"nodeId": node.ID, "status": "online"}})
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	// Return online peer mesh IPs so the agent can pre-warm tunnels.
+	peers, _ := h.Nodes.ListForNetwork(node.NetworkID)
+	var peerIPs []string
+	now := time.Now().Unix()
+	for _, p := range peers {
+		if p.ID == node.ID || p.NebulaIP == "" {
+			continue
+		}
+		if p.LastSeenAt != nil && now-*p.LastSeenAt < 600 {
+			ip := strings.TrimSuffix(p.NebulaIP, "/24")
+			peerIPs = append(peerIPs, ip)
+		}
+	}
+
+	if len(peerIPs) > 0 {
+		writeJSON(w, map[string]interface{}{"peers": peerIPs})
+	} else {
+		w.WriteHeader(http.StatusNoContent)
+	}
 }

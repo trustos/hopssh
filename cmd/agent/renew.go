@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"math/rand"
 	"net/http"
 	"os"
@@ -90,14 +91,34 @@ func sendHeartbeat(endpoint, nodeID, agentToken string) error {
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
 	}
-	resp.Body.Close()
+	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
 		log.Fatal("[heartbeat] node has been deleted or token revoked — shutting down")
+	}
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
+
+	// Warm peer tunnels from heartbeat response.
+	var body struct {
+		Peers []string `json:"peers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil && len(body.Peers) > 0 {
+		go warmPeers(body.Peers)
+	}
 	return nil
+}
+
+func warmPeers(peers []string) {
+	for _, ip := range peers {
+		d := net.Dialer{Timeout: time.Second}
+		if conn, err := d.Dial("tcp", net.JoinHostPort(ip, "41820")); err == nil {
+			conn.Close()
+		}
+	}
 }
 
 // runCertRenewal runs a background loop that renews the Nebula certificate
