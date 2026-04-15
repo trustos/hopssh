@@ -59,6 +59,15 @@ const Routines = 1
 // making it faster than ChaCha20-Poly1305 (which uses NEON/SSE vector ops).
 const Cipher = "aes"
 
+// PreferredRangesYAML is the lighthouse preferred_ranges config block.
+// Tells the lighthouse to prefer advertising local/private IPs when peers
+// share the same public IP (same NAT). Without this, same-NAT peers spend
+// 30-60s relaying through the lighthouse before P2P establishes via hairpin NAT.
+const PreferredRangesYAML = `  preferred_ranges:
+    - 192.168.0.0/16
+    - 172.16.0.0/12
+    - 10.0.0.0/8`
+
 
 // DetectPhysicalInterface discovers the OS network interface that routes to
 // the given remote host. This identifies the real physical interface (WiFi,

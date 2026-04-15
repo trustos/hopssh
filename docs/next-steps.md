@@ -1,12 +1,13 @@
 # Next Steps — Performance & Architecture
 
-## Current State (v0.9.0)
+## Current State (v0.9.1)
 
 ### What's Shipping
 - 3 vendor patches to Nebula v1.10.3 (~15 lines total):
   1. **Graceful shutdown** — `io.ErrClosedPipe` + `io.EOF` checks in `listenIn`
   2. **TestReply panic fix** — copy buffer before encrypt (Go 1.25+ FIPS)
-  3. **WrapWriters** — generic hook for wrapping UDP connections
+  3. **utun read buffer cache** — eliminates per-packet `make([]byte, 9005)` allocation on macOS
+- **preferred_ranges** — RFC 1918 ranges for same-NAT P2P discovery
 - **MTU 2800** — optimally fills 2 IP fragments, halves packet count vs 1440
 - **routines=1** — safe single-reader (macOS SO_REUSEPORT causes packet loss with >1)
 - **GOGC=400** — reduces GC pause frequency 4x
@@ -14,132 +15,127 @@
 - **Tunnel warmup** — blocks until peer handshakes complete on startup
 - **pprof endpoint** — built-in profiling at `/debug/pprof/*`
 
-### Performance
-- **16.1ms avg** latency during Screen Sharing (0% packet loss)
-- **ZeroTier comparison**: 17.0ms avg (we're slightly faster)
-- **WiFi spikes**: ~60-90ms every ~11 seconds (WiFi power management, affects all VPNs equally)
+### Performance (2026-04-15)
+| Scenario | Nebula | ZeroTier | Winner |
+|----------|--------|----------|--------|
+| LAN (WiFi) | 14ms avg, 0% loss | 17ms avg | **Nebula** |
+| WAN P2P (mobile hotspot) | 106ms avg, 0% loss | 222ms avg | **Nebula** |
+| WAN relay (symmetric NAT) | 105ms, poor Screen Sharing | ~200ms, usable | ZeroTier |
+| P2P success on carrier NAT | Fails (symmetric NAT) | Usually succeeds | ZeroTier |
+
+### Key Finding
+Nebula is **faster when P2P works** but **fails to establish P2P on carrier-grade NAT** (symmetric NAT). When P2P fails, traffic relays through the lighthouse — adding latency and making the lighthouse a throughput bottleneck for Screen Sharing.
 
 ### Dev Workflow
 - `make dev-deploy` — builds + deploys to both Macs in ~12 seconds
 - SSH access: Mac mini (tenevi@192.168.23.3), laptop (yavortenev@192.168.23.18)
+- Can also deploy over mesh: `scp hop-agent yavortenev@10.42.1.6:/tmp/`
 - Both have NOPASSWD sudo for hop-agent operations
 
 ---
 
-## Priority 1: FEC Redesign (Async Parity)
+## Priority 1: P2P on Symmetric NAT
 
 ### Problem
-The current FEC implementation (`internal/fec/`) buffers K data packets before generating parity. This adds latency to every packet — 1-50ms depending on timeout. Real-time streams (Screen Sharing) freeze because data is held waiting for a group to fill.
+Symmetric NAT (most mobile carriers, CGNAT) assigns a different external port per destination. Nebula learns port X (from lighthouse traffic) but the peer needs port Y (assigned for peer-to-peer). Hole punching fails → relay fallback → poor Screen Sharing.
 
-### Solution: Async Parity
-Send each data packet **immediately** (zero added latency). Generate parity packets asynchronously from a sliding window of recent packets. Send parity after the data.
+Nebula has no STUN, no port prediction, no NAT type detection.
 
-```
-CURRENT (broken for real-time):
-  packet1 → buffer
-  packet2 → buffer
-  ...
-  packetK → buffer full → encode parity → send K+M packets
-  (K packets delayed by up to GroupTimeout)
+### Approach: Birthday Paradox Port Prediction
+Send punch packets to a range of ports around the learned port. With sequential/near-sequential port assignment (common in CGNAT), punching ±50 ports gives a high hit probability.
 
-PROPOSED (async parity):
-  packet1 → send immediately
-  packet2 → send immediately
-  ...
-  packetK → send immediately
-  → async: compute parity from packets 1..K → send M parity packets
-  (zero delay on data, parity arrives right after)
-```
+- Vendor patch to `lighthouse.go` punch handler
+- When punching, send N packets to port range instead of 1
+- Only activate when initial punch fails (don't waste bandwidth on easy NATs)
+- ~100 lines, medium effort
 
-### How Receiver Works
-- Data packets arrive immediately → pass to Nebula → processed normally
-- Parity packets arrive shortly after → stored in recovery buffer
-- If a data packet is missing → use parity to reconstruct → pass to Nebula
-- If no packets are missing → parity is discarded (no overhead)
+### Alternative: NAT Type Detection (STUN)
+Lightweight probe: agent sends to lighthouse from two source ports, compares external ports. If different → symmetric NAT → skip P2P, go straight to relay (skip 30-60s failed punch phase).
 
-### Key Insight
-FEC should be a **safety net**, not a **pipeline stage**. Data always flows at full speed. Parity is an optional backup that only matters when loss occurs.
-
-### Implementation Notes
-- Sender maintains a circular buffer of last K sent packets per peer
-- After every K packets, compute M parity shards from the buffer
-- Each parity shard has a FEC header identifying the data range it covers
-- Receiver tracks received packets by sequence number
-- When a gap is detected, check if parity covers the gap → reconstruct
-- 2-byte length prefix per shard (already implemented) handles variable packet sizes
-
-### Files
-- `internal/fec/fec.go` — redesign sender to immediate-send + async parity
-- `internal/fec/fec_test.go` — update tests for async model
-- Tests should simulate: no loss (parity unused), single loss (recovered), burst loss
+Could combine: detect symmetric NAT → try port prediction → fall back to relay.
 
 ---
 
-## Priority 2: P2P Reliability (Same-NAT)
+## Priority 2: TCP/443 Relay Fallback
 
 ### Problem
-When both Macs are behind the same NAT, P2P sometimes takes 30-60 seconds to establish. During this time, traffic goes through the lighthouse relay at ~110ms. Screen Sharing fails to connect or shows High Performance warning.
+Some networks block UDP entirely (corporate firewalls, hotel WiFi). Both P2P and UDP relay fail. Tailscale solves this with DERP (TCP/443 relay).
 
-### Root Cause
-Nebula's hole punching sends packets to the peer's public IP. When both peers share the same public IP (same NAT), the router may drop these hairpin NAT packets. The `preferred_ranges` config tells Nebula to prefer local IPs, but the discovery takes time.
+### Approach
+WebSocket relay through the control plane's HTTPS port (9473, already open). Agent detects UDP relay failure → connects via WebSocket. No firewall changes needed.
 
-### Potential Fix
-- Detect same-NAT peers (same public IP) and immediately try local IPs
-- Skip the relay phase entirely for same-subnet peers
-- Could be done in the warmup function — if peer's public IP matches ours, connect via LAN directly
+- Large effort (~500-1000 lines)
+- Product differentiator — universal connectivity through any network
 
 ---
 
-## Priority 3: Control Plane Docker Image
+## Priority 3: Relay Throughput Optimization
 
 ### Problem
-The Nomad-deployed control plane container needs to be updated when vendor patches change. Currently requires CI to build and push to ghcr.io.
+Lighthouse relays every packet through Nebula's full packet handler (decrypt relay header → re-encrypt to forward). For Screen Sharing (~5-15 Mbps), this limits throughput.
 
-### Solution
-Add Docker image building to `make dev-deploy` or a separate `make dev-deploy-server` target:
-```bash
-# Build linux/arm64 server
-GOOS=linux GOARCH=arm64 make build-linux
-# Build + push Docker image
-docker buildx build --platform linux/arm64 -t ghcr.io/trustos/hopssh:dev --push .
-# Update Nomad job
-ssh server "nomad job run ..."
-```
+### Approach
+Zero-copy relay: parse only the relay header, forward inner payload without touching it. Inner payload is already E2E encrypted.
 
 ---
 
-## Priority 4: Screen Sharing High Performance Mode
+## Priority 4: Adaptive Connection Quality
 
-### Problem
-macOS Screen Sharing sometimes rejects High Performance mode over Nebula. We confirmed this is partly MTU-related (UTun interface with MTU < ~1500 gets rejected) and partly tunnel warmth (first connection after restart fails).
+Detect P2P vs relay, measure RTT, expose to dashboard. Auto-tune keepalive intervals based on measured path quality.
 
-### Current Mitigations
-- MTU 2800 (above threshold)
-- Tunnel warmup (handshakes complete before user connects)
-- Still inconsistent — sometimes works, sometimes doesn't
+---
 
-### Investigation Needed
-- Binary search for exact MTU threshold on macOS Sequoia
-- Check if there's a timing window where the quality probe runs before warmup completes
-- Test if the `preferred_ranges` detection speeds up HP mode acceptance
+## Priority 5: sendmmsg Egress Batching (Linux)
+
+Add `sendmmsg()` to `udp_linux.go` for outgoing packets (Nebula already has `recvmmsg` for reads). Benefits the lighthouse/relay server most — 10-64x fewer send syscalls.
+
+---
+
+## Transport Layer Analysis (2026-04-15)
+
+### Nebula's Hot Path
+The data path is clean — **no goroutine handoffs, no channels, zero per-packet allocations** (after our utun fix):
+- Outbound: TUN read → firewall → encrypt → UDP `sendto()` (all in one goroutine)
+- Inbound: UDP `recvfrom()` → header parse → decrypt → firewall → TUN write (all in one goroutine)
+
+### Per-Packet Overhead
+| Component | macOS | Linux |
+|-----------|-------|-------|
+| TUN read syscall | 1 | 1 |
+| TUN write syscall | 1 | 1 |
+| UDP send syscall | 1 (`sendto`) | 1 (`sendto`, no batch) |
+| UDP recv syscall | 1 | 1/N (`recvmmsg` batch) |
+| Memory copies | 1 (utun header) | 0 |
+| Encrypt mutex | Conditional (GoBoring only) | Same |
+
+### What's NOT the Bottleneck
+- Crypto (AES-GCM hardware accelerated, nanoseconds)
+- Memory allocation (buffers pre-allocated per routine)
+- Goroutine scheduling (no handoffs on hot path)
+- Channel contention (no channels in data path)
 
 ---
 
 ## What We Tried and Removed
 
-These were implemented, tested, and removed because they didn't measurably improve performance:
-
 | Feature | Why Removed |
 |---------|-------------|
+| **FEC (async parity)** | Zero-latency design worked on LAN (13.5ms vs 14.2ms baseline). But on cellular, 20% extra parity packets caused congestion: 300ms vs 191ms without. FEC helps random loss but hurts congestion-induced loss. |
+| **FEC (original buffered)** | Buffered K packets → 10-second Screen Sharing freezes. Redesigned to async, then removed entirely. |
+| **WrapWriters vendor patch** | Added for FEC. Discovered: must wrap `f.outside` + `f.handshakeManager.outside` + `f.writers[]` for full coverage. Removed with FEC. |
 | Multi-reader UDP (SO_REUSEPORT) | Created orphaned sockets → 35% packet loss |
-| Packet coalescing (CoalescingConn) | No benefit at MTU 1440 (packets too large for buffer) |
+| Packet coalescing | No benefit at MTU 1440 |
 | TUN Read buffer reuse | Caused crypto/cipher buffer overlap panic |
-| TUN Write mutex | Only needed for multi-reader (removed) |
-| PMTUD (adaptive MTU) | Correctly discovers 1440 but can't improve beyond fragmentation-free limit |
-| ChaCha20-Poly1305 cipher | Slower than AES-GCM on Apple Silicon |
+| PMTUD | Correctly discovers 1440, can't improve beyond it |
+| ChaCha20-Poly1305 | Slower than AES-GCM on Apple Silicon |
 | GOMEMLIMIT | Too tight, caused excessive GC |
 | 2MB UDP socket buffers | Caused bufferbloat (50-293ms spikes) |
-| Nebula fork | 3 vendor patches are simpler than maintaining a fork |
+| Nebula fork | Vendor patches are simpler |
+
+### FEC Lessons (2026-04-15)
+1. FEC only helps **random** loss. On bandwidth-constrained paths, extra parity causes **congestion-induced** loss — the opposite of what it fixes.
+2. The async-parity design (send data immediately, compute parity in background) achieves zero added latency. The architecture is sound if FEC is ever needed.
+3. WrapWriters at the UDP layer intercepts ALL traffic. Need lighthouse exclusion (by IP) to avoid breaking handshakes.
 
 ## Architecture Notes
 
@@ -148,11 +144,3 @@ These were implemented, tested, and removed because they didn't measurably impro
 - Applied via `make patch-vendor` (called by `make setup`)
 - Each patch is a standard unified diff
 - When Nebula updates: re-vendor, re-apply patches, fix conflicts
-
-### FEC Library
-- `internal/fec/` — Reed-Solomon implementation using klauspost/reedsolomon
-- FEC header: `[0xFE][group_id 2B][index 1B][k 1B][m 1B]` (6 bytes)
-- Backward compatible: raw Nebula packets (0x1X) pass through unchanged
-- Tests pass for no-loss, single-loss, double-loss recovery
-- Benchmark: 824ns/packet encode on Apple M1
-- NOT wired into agent (disabled pending async parity redesign)

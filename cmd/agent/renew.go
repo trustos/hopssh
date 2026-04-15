@@ -420,6 +420,18 @@ func ensureP2PConfig(endpoint string) {
 		changed = true
 	}
 
+	// Prefer local/private IPs for same-NAT peer discovery.
+	lighthouse := yamlMap(cfg, "lighthouse")
+	if _, ok := lighthouse["preferred_ranges"]; !ok {
+		lighthouse["preferred_ranges"] = []string{
+			"192.168.0.0/16",
+			"172.16.0.0/12",
+			"10.0.0.0/8",
+		}
+		cfg["lighthouse"] = lighthouse
+		changed = true
+	}
+
 	// Detect physical interface and set local_allow_list.
 	// This prevents Nebula from advertising overlay IPs (ZeroTier, etc.)
 	// while still allowing the lighthouse to learn our public IP from

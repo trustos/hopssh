@@ -163,6 +163,7 @@ lighthouse:
   hosts:
     - "%s"
 %s
+%s
 relay:
   relays:
     - "%s"
@@ -203,6 +204,7 @@ firewall:
 		serverIP, serverHost, lighthousePort,
 		serverIP,
 		nebulacfg.LocalAllowListYAML(physicalIface),
+		nebulacfg.PreferredRangesYAML,
 		serverIP, nebulacfg.UseRelays,
 		nebulacfg.Cipher,
 		nebulacfg.ListenPort,

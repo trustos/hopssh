@@ -1,0 +1,28 @@
+--- a/github.com/slackhq/nebula/overlay/tun_darwin.go
++++ b/github.com/slackhq/nebula/overlay/tun_darwin.go
+@@ -33,6 +33,8 @@
+
+ 	// cache out buffer since we need to prepend 4 bytes for tun metadata
+ 	out []byte
++	// cache in buffer since we need to strip 4 bytes of tun metadata on read
++	in []byte
+ }
+
+ type ifReq struct {
+@@ -504,10 +506,15 @@
+ }
+
+ func (t *tun) Read(to []byte) (int, error) {
+-	buf := make([]byte, len(to)+4)
++	buf := t.in
++	if cap(buf) < len(to)+4 {
++		buf = make([]byte, len(to)+4)
++		t.in = buf
++	}
++	buf = buf[:len(to)+4]
+
+ 	n, err := t.ReadWriteCloser.Read(buf)
+
+ 	copy(to, buf[4:])
+ 	return n - 4, err
+ }
