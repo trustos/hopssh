@@ -51,9 +51,8 @@ const TunMTU = 1440
 const HandshakeTryInterval = "20ms"
 
 // Routines is the number of parallel TUN/UDP processing goroutines.
-// On macOS: 4 UDP readers via SO_REUSEPORT, 1 TUN reader (decoupled).
-// On Linux: 4 parallel readers for both UDP and TUN (multiqueue).
-const Routines = 4
+// Set to 1 for A/B test (minimal fork without multi-reader).
+const Routines = 1
 
 // Cipher selects the Noise Protocol cipher. AES-GCM is the default because
 // Apple Silicon and modern x86 have dedicated hardware AES instructions,
