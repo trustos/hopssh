@@ -2,7 +2,7 @@
 
 *hopssh vs Defined Networking vs Tailscale vs ZeroTier*
 
-*Last updated: 2026-04-14*
+*Last updated: 2026-04-15*
 
 ---
 
@@ -256,6 +256,62 @@
 ---
 
 ## Strategic Priorities
+
+---
+
+## User Pain Points by Competitor (Research: 2026-04-15)
+
+Real complaints sourced from Reddit (r/selfhosted, r/homelab, r/Tailscale, r/zerotier), GitHub issues, Hacker News, LowEndTalk, blog posts, and app store reviews.
+
+### ZeroTier — Top Pain Points
+
+1. **Connections fall back to relay and stay there** — the #1 complaint by volume. No UI indicator for P2P vs relayed. `zerotier-cli peers` output is cryptic. Restarting sometimes fixes it, sometimes doesn't.
+2. **Self-hosting the controller is painful** — no built-in web UI, third-party UIs are abandoned, Moon setup is undocumented, backup/restore is poorly documented.
+3. **Mobile clients are unreliable** — iOS/Android disconnect in background, battery drain, apps lag behind desktop.
+4. **DNS is manual and fragile** — no built-in DNS, must run separate Pi-hole/CoreDNS, manually configure /etc/hosts.
+5. **Web UI is limited** — no bulk operations, no real-time status, no audit log, must authorize nodes one-by-one.
+6. **Performance ceiling** — 50-100 Mbps cap, no hardware crypto acceleration, degrades at 50+ nodes.
+7. **Pricing backlash** — free tier reduced from 100 to 25 nodes, seen as bait-and-switch.
+8. **Security/trust concerns** — traffic through ZeroTier roots by default, custom protocol harder to audit.
+
+### Tailscale — Top Pain Points
+
+1. **Pricing** — per-user model ($6-18/user/month) seen as expensive. Free tier reduced from 100 to 3 users. #1 reason cited in "alternatives" threads.
+2. **SaaS dependency** — closed-source coordination server, Tailscale knows your network graph, if Tailscale goes down your network breaks.
+3. **Headscale is painful** — perpetually behind, breaking changes, no web UI, DERP self-hosting undocumented, Apple client compatibility breaks.
+4. **No web terminal** — must install client on every device. No browser-based access from untrusted machines.
+5. **MagicDNS reliability** — hijacks /etc/resolv.conf, breaks Pi-hole/AdGuard, stale records, Docker containers can't resolve.
+6. **Subnet router flakiness** — connections drop, failover is slow, MTU issues, route conflicts.
+7. **Key expiry headaches** — 180-day default, headless servers go offline, no good notification before expiry.
+8. **ACL complexity** — HuJSON is confusing, no visual editor, error messages cryptic, can't test without pushing to production.
+9. **Vendor lock-in anxiety** — pricing changes have happened, feature removal from free tier has happened.
+
+### Defined Networking / Nebula — Top Pain Points
+
+1. **Certificate management nightmare** — manual CA creation, cert distribution, rotation. The #1 reason people switch to Tailscale.
+2. **Per-node configuration** — no central control plane pushing config. Adding a lighthouse means updating every node.
+3. **SaaS-only (DN)** — no self-hosted option for managed Nebula. Raw Nebula is the alternative but with all the manual pain.
+4. **Primitive DNS** — only resolves node hostnames, can't override OS resolver, no split-horizon, no custom domains.
+5. **Performance gap vs WireGuard** — roughly half the throughput of kernel WireGuard.
+6. **Mobile apps unstable** — "clunky and janky and crashy" (App Store reviews), no always-on reconnect.
+7. **Customer-hosted infrastructure required** — even with Managed Nebula, you host your own lighthouses and relays.
+8. **Small ecosystem** — no Terraform provider, no webhooks, limited community, few integrations.
+
+### Cross-Competitor Universal Pains
+
+These appear across ALL three competitors:
+
+| Pain | ZT | TS | DN | hopssh Status |
+|------|----|----|-----|--------------|
+| No connection type visibility (P2P/relay) | #1 | Notable | Notable | **Gap — adding to Phase 2A** |
+| Self-hosting is hard or impossible | #2 | #2,#3 | #3 | **Solved** |
+| DNS is broken/missing | #4 | #5 | #4 | **Solved** |
+| No browser-based terminal | #5 | #4 | Notable | **Solved** |
+| Poor debugging/diagnostics | Notable | Notable | Notable | **Gap — adding to Phase 2A** |
+| Mobile apps are unreliable | #3 | #9 | #6 | Not yet (Phase 3B) |
+| Pricing/lock-in anxiety | #7 | #1,#9 | — | **Solved** (self-hosted free forever) |
+
+---
 
 ### Tier 1: Beat Defined Networking (nearest competitor, easiest to surpass)
 

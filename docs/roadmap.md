@@ -1,6 +1,6 @@
 # hopssh — Product Roadmap
 
-*Last updated: 2026-04-14*
+*Last updated: 2026-04-15*
 
 ---
 
@@ -36,14 +36,15 @@ See [competitive-analysis.md](competitive-analysis.md) for the full matrix.
 - Single-binary self-hosted deployment (vs DN's SaaS + customer-hosted lighthouses; Tailscale and ZeroTier users get zero-infra but it's SaaS-dependent)
 
 **Where we lose today:**
-- No SSO/OIDC (DN, Tailscale, ZeroTier all have it)
+- No connection visibility — P2P vs relay status not shown (the #1 cross-competitor pain point, and we don't have it either)
+- No SSO/OIDC (DN, Tailscale, ZeroTier all have it — table stakes for teams)
 - No scoped API keys (DN and Tailscale have them)
 - No granular firewall rules (DN has roles+tags, Tailscale has ACLs+grants, ZeroTier has flow rules)
-- No mobile or desktop apps (all three competitors have them)
-- No webhooks, log streaming, or Terraform provider (Tailscale leads here)
-- No subnet routing or exit nodes (Tailscale and ZeroTier have them)
-- No session recording (Tailscale has it)
-- Smaller free tier (10 nodes vs DN's 100, ZeroTier's 25)
+- No mobile or desktop apps (all three competitors have them — mobile is a top-3 complaint for ZT and DN)
+- No webhooks, log streaming, or Terraform provider (Tailscale leads here; DN lacks Terraform — opportunity)
+- No subnet routing or exit nodes (Tailscale and ZeroTier have them — big homelab use case)
+- No session recording (Tailscale has it — enterprise gate)
+- No connection diagnostics ("why is this relayed?" — no competitor answers this well either)
 
 ---
 
@@ -51,39 +52,54 @@ See [competitive-analysis.md](competitive-analysis.md) for the full matrix.
 
 Every feature is numbered and ordered by impact — highest value to the product first. Each entry has a complexity estimate (S = days, M = 1-2 weeks, L = 2-4 weeks), a viability assessment based on codebase review, and a "why" tied to competitive analysis or market need.
 
-### Phase 2A: Quick Wins & Foundation
+**Go-to-market strategy: selfhosters first, corporate second.** Infrastructure tools win bottom-up: developer tries at home → loves it → brings to work → company pays. Docker, Tailscale, Cloudflare all followed this path. Phase 2A and 2B focus on making selfhosters so happy they become our sales team. Enterprise features (Phase 2C+) are the monetization layer on top of organic adoption.
 
-High-impact features with low effort. Ship these first to accelerate adoption and unblock later features.
+### Phase 2A: Delight Selfhosters
 
-| # | Feature | Description | Why | Size | Viability | Depends on |
-|---|---------|-------------|-----|------|-----------|------------|
-| 1 | **Expand free tier to 25 nodes** | Increase from 10 to 25 nodes on the free tier. | Our 10-node free tier is the smallest in market. DN offers 100, ZeroTier offers 25. 25 is enough for serious evaluation without killing conversion. Immediate adoption impact. | S | Trivial — config change only | — |
-| 2 | **Webhooks** | Send HTTP webhooks on events (node online/offline, enrollment, member changes, audit events). Configurable per network with retry and HMAC signing. | Tailscale and ZeroTier both have webhooks. Required for any integration story (Slack alerts, PagerDuty, custom automation). The internal `EventHub` pub/sub system is already built and publishing 8+ event types — webhooks just add an HTTP delivery layer on top. | M | Very high — event system is 90% done. Add `network_webhooks` table, subscribe to EventHub, POST with retry. ~400-600 LOC. | — |
-| 3 | **GitHub OAuth** | Add GitHub as a login provider. OAuth redirect + callback handler, user lookup/creation by `github_id`. | Table stakes for developer-facing product. Tailscale and ZeroTier have it. Lowest friction auth for devs. | S | High — `github_id` column already exists in `users` table, session creation path is reusable. ~200-300 LOC. | — |
-| 4 | **Scoped API keys** | Implement API key creation, listing, deletion, and scoped permissions. Add `scopes` column to existing `api_keys` table. Auth middleware to validate keys alongside sessions. | DN has scoped API keys with OpenAPI spec. Needed for any automation story. Unblocks Terraform provider (#10). | M | Moderate — `api_keys` table exists but needs `scopes` column. Need new middleware alongside existing `RequireAuth`. ~500-800 LOC. | — |
-
-### Phase 2B: Beat Defined Networking
-
-Close the gaps that make DN look more complete. After this phase, hopssh is decisively better than DN on every dimension except mobile apps and architecture breadth.
+Ship the features selfhosters are actively asking for across competitor communities. These directly address the top pain points from cross-competitor research (2026-04-15) — connection visibility, networking, and UX. Every item here has a direct mapping to a real user complaint about ZeroTier, Tailscale, or Defined Networking.
 
 | # | Feature | Description | Why | Size | Viability | Depends on |
 |---|---------|-------------|-----|------|-----------|------------|
-| 5 | **SSO/OIDC** | Add OIDC login (Google, Microsoft, Okta, custom). Standard OpenID Connect discovery + token exchange. | DN, Tailscale, and ZeroTier all have SSO. Single biggest gap keeping us from enterprise conversations. Opens the door to all identity-aware features. | L | Moderate — no OIDC code exists today. Session system is simple enough to extend (create user from ID token claims, reuse session creation). Needs `golang.org/x/oauth2` dependency. ~800-1200 LOC. | — |
-| 6 | **Granular firewall rules** | Tag-based firewall: assign tags (key:value) to nodes, define rules between tag groups on specific ports/protocols. Compile to Nebula cert groups + firewall config. UI for rule management with preview. | DN has roles + tags + firewall builder. Current Nebula config is wide-open allow-all. This is the foundation for all access control. | L | Moderate — Nebula supports group-based firewall natively. Currently certs are issued with hardcoded `groups: ["node"]`. Need: tags table, rule generation, cert re-issuance. Caveat: tag changes require cert renewal (24h cycle, or add immediate renewal endpoint). ~400-600 LOC. | — |
-| 7 | **Subnet routing** | Allow designated nodes to route traffic to non-overlay subnets (LAN, cloud VPCs). Dashboard UI to configure routes per node. | DN has 2 routes (free) / 100 routes (pro). Tailscale and ZeroTier both have it. Required for accessing existing LAN resources through the mesh. | M | High — Nebula supports `unsafe_routes` natively, just not exposed. Add `routes` column to networks, generate route config in agent Nebula template. Note: routing node must run as root. ~300-500 LOC. | — |
-| 8 | **Exit nodes** | Designate a node as an exit node to route all traffic (or specific domains) through the mesh. | Tailscale has exit nodes. ZeroTier has default route. Essential for remote workers routing through corporate network. | S | High — straightforward Nebula `unsafe_routes` with `0.0.0.0/0`. Just config generation + UI toggle. 3-5 days. | #7 |
+| 1 | **Expand free tier to 25 nodes** | Increase from 10 to 25 nodes on the free tier. | Our 10-node free tier is the smallest in market. DN offers 100, ZeroTier offers 25. ZT's reduction from 100→25 caused massive backlash — shows free tier matters to selfhosters. 25 is enough for serious evaluation without killing conversion. | S | Trivial — config change only | — |
+| 2 | **P2P/relay status per node** | Show connection type (P2P, relayed, offline) per node in the dashboard. Agent reports connection type + latency in heartbeat. | **#1 ZeroTier complaint by volume.** Users can't tell if connections are P2P or relayed. No competitor shows this in the dashboard — Tailscale requires CLI, ZeroTier requires `zerotier-cli peers` (cryptic output). Selfhosters obsess over their network health. | S | High — agent heartbeat already exists. Add peer state from Nebula's host map (`GetHostMap()` or similar). Dashboard shows icon per node. ~200-400 LOC. | — |
+| 3 | **GitHub OAuth** | Add GitHub as a login provider. OAuth redirect + callback handler, user lookup/creation by `github_id`. | Selfhosters are developers. GitHub login removes all friction from the first experience. Tailscale and ZeroTier have it. | S | High — `github_id` column already exists in `users` table, session creation path is reusable. ~200-300 LOC. | — |
+| 4 | **Connection diagnostics** | "Diagnose" action per node in dashboard: connection type, latency, NAT type, handshake age, packet loss. Agent exposes a `/stats` endpoint queried on-demand. | "Why is my connection relayed?" is the most common support question across ZT, TS, and DN. No competitor answers it well. Selfhosters want to understand their network, not just use it. One-click dashboard action beats CLI-only investigation. | M | Moderate — Nebula's host map has peer state. Need vendor inspection for `GetHostMap()` or equivalent. Agent stats endpoint + dashboard UI. ~400-600 LOC. | #2 |
+| 5 | **Subnet routing** | Allow designated nodes to route traffic to non-overlay subnets (LAN, cloud VPCs). Dashboard UI to configure routes per node. | **THE homelab gateway feature.** "Access my LAN through the mesh" is the #1 reason selfhosters adopt a mesh VPN. TS has it but it's flaky (their #6 complaint — failover, MTU issues). ZT has managed routes. DN has it. Opportunity to do it right. | M | High — Nebula supports `unsafe_routes` natively, just not exposed. Add `routes` column to networks, generate route config in agent Nebula template. Note: routing node must run as root. ~300-500 LOC. | — |
+| 6 | **Exit nodes** | Designate a node as an exit node to route all traffic (or specific domains) through the mesh. | "Route all my traffic through my home server" — the second most common homelab use case after LAN access. Tailscale has it, ZeroTier has default route. Essential for selfhosters traveling or on untrusted WiFi. | S | High — straightforward Nebula `unsafe_routes` with `0.0.0.0/0`. Just config generation + UI toggle. 3-5 days. | #5 |
+| 7 | **Bulk node operations** | Select multiple nodes → authorize, delete, change capabilities, move to group. Batch API endpoints. | ZeroTier users complain about authorizing nodes one-by-one. Tailscale admin console lacks bulk operations. Any selfhoster with 10+ nodes (Pi, NAS, VPS, etc.) needs this. | S | High — existing API handlers process single nodes. Add batch wrappers + multi-select UI. ~200-400 LOC. | — |
 
-### Phase 2C: Operator Infrastructure
+### Phase 2B: Expand Networking & Access Control
 
-Features that make hopssh enterprise-credible. Neither DN nor ZeroTier is strong here.
+Deepen the networking capabilities and add the access control that power selfhosters and small teams need. These features move hopssh from "mesh VPN" to "network platform."
 
 | # | Feature | Description | Why | Size | Viability | Depends on |
 |---|---------|-------------|-----|------|-----------|------------|
-| 9 | **Log streaming / export** | Export audit logs to S3-compatible storage, or stream to a syslog endpoint. | Tailscale streams to S3, GCS, Datadog, Splunk. Major enterprise purchase driver. Even basic S3 + syslog export is a big step up from competitors. | M | High — audit log data already exists and is batched. Add export worker that reads from audit_log table and ships to configured destination. | #2 |
-| 10 | **Terraform provider** | Publish a Terraform provider for networks, nodes, DNS records, and enrollment. | Tailscale and ZeroTier both have official providers. Required for IaC-heavy teams. DN notably lacks this — opportunity to leapfrog. | L | High — API has solid CRUD coverage for networks, nodes, DNS. Minor gap: need PATCH for network updates. Standard Terraform provider SDK work. | #4 |
-| 11 | **Session recording** | Record terminal sessions (encrypted, stored locally or in S3). Playback in dashboard. | Tailscale has recorder nodes. Major compliance requirement (SOC 2, PCI). High revenue potential — enterprise gate feature. | M | High — PTY data flows through `ptmx.Read()` → `conn.WriteMessage()`. Intercept with `io.MultiWriter` to tee to storage. Clean interception points in both agent and proxy. ~1-2 weeks. | #9 |
-| 12 | **Device approval** | New devices require admin approval before joining the mesh. Configurable per network. | Tailscale has device approval. Prevents unauthorized devices from joining. Required for compliance. Simpler than full OIDC. | M | High — enrollment flow already has pending/authorized states (device_codes table). Extend to hold all enrollments in "pending" until admin approves. | — |
-| 13 | **GitOps config export** | Export network config (firewall rules, DNS records, routes) as declarative YAML/JSON. Import to apply. | Tailscale supports gitops for ACLs. Enables version-controlled infrastructure. Pairs with Terraform provider. | M | High — all data is in SQLite, just needs serialization endpoints. | #6 |
+| 8 | **Granular firewall rules** | Tag-based firewall: assign tags (key:value) to nodes, define rules between tag groups on specific ports/protocols. Compile to Nebula cert groups + firewall config. UI for rule management with preview. | DN has roles + tags + firewall builder. TS has ACLs (HuJSON — users complain it's complex). ZT has flow rules. Current Nebula config is wide-open allow-all. A visual rule builder beats TS's JSON editing (a common TS complaint). Selfhosters with mixed-trust networks (media server vs NAS vs public-facing) need this. | L | Moderate — Nebula supports group-based firewall natively. Currently certs are issued with hardcoded `groups: ["node"]`. Need: tags table, rule generation, cert re-issuance. Caveat: tag changes require cert renewal (24h cycle, or add immediate renewal endpoint). ~400-600 LOC. | — |
+| 9 | **Webhooks** | Send HTTP webhooks on events (node online/offline, enrollment, member changes, audit events). Configurable per network with retry and HMAC signing. | Tailscale and ZeroTier both have webhooks. Selfhosters love automation — Slack alerts when a node goes down, Home Assistant integration. The internal `EventHub` pub/sub system is already built and publishing 8+ event types — webhooks just add an HTTP delivery layer on top. | M | Very high — event system is 90% done. Add `network_webhooks` table, subscribe to EventHub, POST with retry. ~400-600 LOC. | — |
+| 10 | **Scoped API keys** | Implement API key creation, listing, deletion, and scoped permissions. Add `scopes` column to existing `api_keys` table. Auth middleware to validate keys alongside sessions. | DN has scoped API keys with OpenAPI spec. Selfhosters who automate everything need API access. Unblocks Terraform provider (#14). | M | Moderate — `api_keys` table exists but needs `scopes` column. Need new middleware alongside existing `RequireAuth`. ~500-800 LOC. | — |
+| 11 | **Device approval** | New devices require admin approval before joining the mesh. Configurable per network. | Tailscale has device approval. Selfhosters sharing networks with family/friends want to control who joins. Required for compliance in team settings. Simpler than full OIDC. | M | High — enrollment flow already has pending/authorized states (device_codes table). Extend to hold all enrollments in "pending" until admin approves. | — |
+
+### Phase 2C: Enterprise Gates
+
+Features that make hopssh enterprise-credible. These are the monetization layer — ship them when selfhoster adoption creates inbound enterprise interest. The signal to start: "We're already using hopssh for our homelab, can we get SSO for the team?"
+
+| # | Feature | Description | Why | Size | Viability | Depends on |
+|---|---------|-------------|-----|------|-----------|------------|
+| 12 | **SSO/OIDC** | Add OIDC login (Google, Microsoft, Okta, custom). Standard OpenID Connect discovery + token exchange. | DN, Tailscale, and ZeroTier all have SSO. The gatekeeper for enterprise conversations. Opens the door to all identity-aware features. Research confirms: DN users cite missing SSO as a top complaint; TS users consider it table stakes. | L | Moderate — no OIDC code exists today. Session system is simple enough to extend (create user from ID token claims, reuse session creation). Needs `golang.org/x/oauth2` dependency. ~800-1200 LOC. | — |
+| 13 | **Log streaming / export** | Export audit logs to S3-compatible storage, or stream to a syslog endpoint. | Tailscale streams to S3, GCS, Datadog, Splunk. Major enterprise purchase driver. Even basic S3 + syslog export is a big step up from competitors. | M | High — audit log data already exists and is batched. Add export worker that reads from audit_log table and ships to configured destination. | #9 |
+| 14 | **Terraform provider** | Publish a Terraform provider for networks, nodes, DNS records, and enrollment. | Tailscale and ZeroTier both have official providers. Required for IaC-heavy teams. DN notably lacks this — opportunity to leapfrog. Research: DN's lack of Terraform is cited as a gap; small Nebula ecosystem is a common complaint. | L | High — API has solid CRUD coverage for networks, nodes, DNS. Minor gap: need PATCH for network updates. Standard Terraform provider SDK work. | #10 |
+| 15 | **Session recording** | Record terminal sessions (encrypted, stored locally or in S3). Playback in dashboard. | Tailscale has recorder nodes. Major compliance requirement (SOC 2, PCI). High revenue potential — enterprise gate feature. | M | High — PTY data flows through `ptmx.Read()` → `conn.WriteMessage()`. Intercept with `io.MultiWriter` to tee to storage. Clean interception points in both agent and proxy. ~1-2 weeks. | #13 |
+| 16 | **GitOps config export** | Export network config (firewall rules, DNS records, routes) as declarative YAML/JSON. Import to apply. | Tailscale supports gitops for ACLs. Enables version-controlled infrastructure. Pairs with Terraform provider. | M | High — all data is in SQLite, just needs serialization endpoints. | #8 |
+
+### Networking Priorities (Cross-Phase)
+
+These don't fit neatly into the feature phases — they're transport-level improvements that affect all users.
+
+| # | Feature | Description | Why | Size | Status |
+|---|---------|-------------|-----|------|--------|
+| N1 | **TCP/443 relay fallback** | WebSocket relay through the control plane's HTTPS port (9473, already open). Agent detects UDP relay failure → connects via WebSocket. | Some networks block UDP entirely (corporate firewalls, hotel WiFi). Tailscale solves this with DERP (TCP/443). Universal connectivity through any network. | L (~500-1000 LOC) | Planned |
+| N2 | **Adaptive connection quality** | Detect P2P vs relay, measure RTT, expose to dashboard. Auto-tune keepalive intervals based on measured path quality. | Operators need to see mesh health. No competitor has a good version of this. | M | Planned |
+| N3 | **P2P on symmetric NAT** | Port prediction or alternative hole-punching for carrier-grade NAT with random port assignment. | Symmetric NAT (most mobile carriers) fails P2P → relay fallback. | — | **Not viable.** Port prediction tried and reverted — carriers use random ports. This is unsolved industry-wide for random-port symmetric NAT. Relay works (125ms avg, only 9ms overhead). |
 
 ### Phase 3A: Network Depth
 
@@ -91,9 +107,10 @@ Features that add network fabric depth. Positions hopssh against ZeroTier's netw
 
 | # | Feature | Description | Why | Size | Viability | Depends on |
 |---|---------|-------------|-----|------|-----------|------------|
-| 14 | **Regional relay nodes** | Add standalone relay nodes in different regions via the dashboard. Configure, deploy, and monitor relay health. | ZeroTier has private roots/moons. DN requires customer-hosted relays with no management UI. Dashboard-managed relays are a UX win and needed for scale past ~10K nodes. | L | Moderate — lighthouses are currently tightly coupled to the control plane binary. Need to decouple relay into separate enrollment type and modify Nebula config to reference remote relay addresses. New enrollment flow needed. | — |
-| 15 | **Peer connectivity map** | Visual network topology showing P2P vs relayed connections, handshake status, latency. | No competitor has a good version of this. Operators need to see mesh health during incidents. | M | Uncertain — depends on whether Nebula vendor library exposes peer stats API. Agent currently has no stats endpoint. Need to inspect `vendor/slackhq/nebula` for `GetHostMap()` or similar. May require vendor patch. | #14 |
-| 16 | **IPv6 overlay** | Support IPv6 addresses in the mesh overlay using Nebula v2 certificates. | ZeroTier and Tailscale both support IPv6. Nebula v2 certs add this natively. Needed for modern infrastructure. | M | High — Nebula v2 certs support IPv6. Requires updating PKI code to use v2 cert format and extending subnet allocation. | — |
+| 17 | **Regional relay nodes** | Add standalone relay nodes in different regions via the dashboard. Configure, deploy, and monitor relay health. | ZeroTier has private roots/moons. DN requires customer-hosted relays with no management UI. TS DERP servers are concentrated in US/EU — users in Asia/Africa/South America report high relay latency. Dashboard-managed relays are a UX win and needed for scale past ~10K nodes. | L | Moderate — lighthouses are currently tightly coupled to the control plane binary. Need to decouple relay into separate enrollment type and modify Nebula config to reference remote relay addresses. New enrollment flow needed. | — |
+| 18 | **Peer connectivity map** | Visual network topology showing P2P vs relayed connections, handshake status, latency per peer. Full mesh visualization. | Builds on #2 (per-node status) to show the complete network graph. No competitor has this. Operators need to see mesh health during incidents. | M | High — #2 and #4 establish the agent stats foundation. This is the dashboard visualization layer on top. | #2, #4 |
+| 19 | **IPv6 overlay** | Support IPv6 addresses in the mesh overlay using Nebula v2 certificates. | ZeroTier and Tailscale both support IPv6. Nebula v2 certs add this natively. Needed for modern infrastructure. | M | High — Nebula v2 certs support IPv6. Requires updating PKI code to use v2 cert format and extending subnet allocation. | — |
+| N4 | **macOS batch UDP via `sendmsg_x`/`recvmsg_x`** | Wrap macOS private batch syscalls (syscall #481/#480) in CGO. Batch up to 100 recv / 1024 send per syscall. Vendor patch Nebula's UDP layer to use them. | **No VPN uses these.** WireGuard-Go, Tailscale, ZeroTier all fall back to 1-packet-at-a-time on macOS. Would push throughput from 217→600-800 Mbps. First mesh VPN with batch UDP on macOS = marketing goldmine ("fastest mesh VPN on macOS" blog post). | M | High — syscalls are stable since macOS 10.11 (2015), used by Apple internally. Requires CGO (breaks pure-Go for macOS build). Must `connect()` UDP socket for send fast path. See `docs/performance.md` for full research. | — |
 
 ### Phase 3B: Identity & Access Platform
 
@@ -101,10 +118,10 @@ Build the identity-aware features that make Tailscale the market leader. Each is
 
 | # | Feature | Description | Why | Size | Viability | Depends on |
 |---|---------|-------------|-----|------|-----------|------------|
-| 17 | **Policy model (grants-like)** | Unified policy language: "users in group X can reach services tagged Y on ports Z." Compiles to Nebula groups + firewall rules. Policy simulator ("why is this allowed/denied?"). | Tailscale's grants combine network and app-layer permissions. Single most important feature for enterprise sales. | L | Moderate — builds on #6 (firewall rules) + #5 (OIDC). Requires a policy compiler that maps identity claims to Nebula cert groups and generates firewall rules. Design-heavy. | #5, #6 |
-| 18 | **App connectors / domain routing** | Route traffic to specific domains (SaaS apps, internal services) through designated mesh nodes. DNS-based routing. | Tailscale app connectors let teams access SaaS apps through the mesh. Moves hopssh from "connectivity" to "access platform." | L | Moderate — extends DNS system + subnet routing. Need DNS interception and per-domain routing rules. | #7, #17 |
-| 19 | **Desktop tray app** | Native tray app for macOS and Windows. Connection status, network switching, quick-connect terminal. | All three competitors have desktop apps. Required for non-technical users. | L | Viable but separate project — agent is purely CLI/headless. Recommend Tauri for lightweight cross-platform. Wraps agent CLI + control plane API. 4-8 weeks. | — |
-| 20 | **Mobile apps (iOS/Android)** | Native mobile apps to join the mesh. | All three competitors have mobile apps. DN's `mobile_nebula` is MIT-licensed Flutter — consider forking. | L | Viable but separate project — 4-8 weeks per platform. DN's Flutter codebase is a potential starting point. | — |
+| 20 | **Policy model (grants-like)** | Unified policy language: "users in group X can reach services tagged Y on ports Z." Compiles to Nebula groups + firewall rules. Policy simulator ("why is this allowed/denied?"). | Tailscale's grants combine network and app-layer permissions. Research: TS ACL complexity is a top complaint — a visual policy builder is a clear win. Single most important feature for enterprise sales. | L | Moderate — builds on #8 (firewall rules) + #12 (OIDC). Requires a policy compiler that maps identity claims to Nebula cert groups and generates firewall rules. Design-heavy. | #8, #12 |
+| 21 | **App connectors / domain routing** | Route traffic to specific domains (SaaS apps, internal services) through designated mesh nodes. DNS-based routing. | Tailscale app connectors let teams access SaaS apps through the mesh. Moves hopssh from "connectivity" to "access platform." | L | Moderate — extends DNS system + subnet routing. Need DNS interception and per-domain routing rules. | #5, #20 |
+| 22 | **Desktop tray app** | Native tray app for macOS and Windows. Connection status, network switching, quick-connect terminal. | All three competitors have desktop apps. Required for non-technical users. Research: Linux users complain about no GUI on TS; macOS TS app has quirks. | L | Viable but separate project — agent is purely CLI/headless. Recommend Tauri for lightweight cross-platform. Wraps agent CLI + control plane API. 4-8 weeks. | — |
+| 23 | **Mobile apps (iOS/Android)** | Native mobile apps to join the mesh. | All three competitors have mobile apps. Research: mobile is a top-3 complaint for ZT (unreliable) and DN (unstable Flutter). DN's `mobile_nebula` is MIT-licensed Flutter — consider forking but build native for reliability. | L | Viable but separate project — 4-8 weeks per platform. Avoid Flutter (DN's choice, cited as "clunky and crashy"). | — |
 
 ### Phase 4: Enterprise & Scale
 
@@ -112,14 +129,14 @@ Build when there is customer demand and revenue to justify the investment.
 
 | # | Feature | Description | Why | Size | Viability | Depends on |
 |---|---------|-------------|-----|------|-----------|------------|
-| 21 | **SAML** | SAML SSO for enterprises that require it (Azure AD, Okta SAML). | Tailscale has SAML. Many enterprises mandate it. OIDC covers most cases. | M | High — standard SAML library integration. | #5 |
-| 22 | **SCIM provisioning** | Sync users and groups from IdP (Okta, Azure AD). Auto-create/remove users on group changes. | Tailscale has SCIM. Eliminates manual user management for larger teams. | M | High — standard SCIM endpoint implementation. | #5 |
-| 23 | **Workload identity** | Ephemeral nodes authenticate via cloud OIDC tokens (AWS, GCP, GitHub Actions) instead of long-lived keys. | Tailscale has workload identity federation. Essential for CI/CD and Kubernetes. | L | High — extends OIDC to accept platform tokens. | #5 |
-| 24 | **RBAC** | Granular permissions beyond admin/member. Custom roles with specific permission sets. | Current admin/member is too coarse for large teams. | L | Moderate — requires permission model redesign. | #17 |
-| 25 | **Device posture checks** | Require device health attributes (OS version, disk encryption, antivirus) before granting access. | Tailscale has device posture. Compliance requirement for regulated industries. | L | Moderate — agent needs to report posture attributes; control plane needs to evaluate them against policy. | #12 |
-| 26 | **Multi-network per agent** | A single agent joins multiple networks simultaneously. | ZeroTier supports this natively. DN supports via multiple DNClient instances. | L | Low — agent architecture is singleton per enrollment (one config dir, one Nebula instance, one bearer token). Fundamental refactor of agent config, service management, and Nebula instance lifecycle. 4-6 weeks minimum. Consider supporting multiple agent instances as a simpler alternative. | — |
-| 27 | **Bandwidth monitoring** | Per-network and per-node traffic metrics. Dashboard graphs. | Useful for capacity planning. No competitor does this well. | M | Moderate — depends on Nebula stats exposure (#15). | #15 |
-| 28 | **SOC 2 documentation** | Publish compliance documentation and controls mapping. | Enterprise buyers need this. Not code — a business requirement. | M | N/A — documentation effort, not engineering. | #11 |
+| 24 | **SAML** | SAML SSO for enterprises that require it (Azure AD, Okta SAML). | Tailscale has SAML. Many enterprises mandate it. OIDC covers most cases. | M | High — standard SAML library integration. | #12 |
+| 25 | **SCIM provisioning** | Sync users and groups from IdP (Okta, Azure AD). Auto-create/remove users on group changes. | Tailscale has SCIM. Eliminates manual user management for larger teams. | M | High — standard SCIM endpoint implementation. | #12 |
+| 26 | **Workload identity** | Ephemeral nodes authenticate via cloud OIDC tokens (AWS, GCP, GitHub Actions) instead of long-lived keys. | Tailscale has workload identity federation. Essential for CI/CD and Kubernetes. | L | High — extends OIDC to accept platform tokens. | #12 |
+| 27 | **RBAC** | Granular permissions beyond admin/member. Custom roles with specific permission sets. | Current admin/member is too coarse for large teams. | L | Moderate — requires permission model redesign. | #20 |
+| 28 | **Device posture checks** | Require device health attributes (OS version, disk encryption, antivirus) before granting access. | Tailscale has device posture. Compliance requirement for regulated industries. | L | Moderate — agent needs to report posture attributes; control plane needs to evaluate them against policy. | #11 |
+| 29 | **Multi-network per agent** | A single agent joins multiple networks simultaneously. | ZeroTier supports this natively. DN supports via multiple DNClient instances. Research: TS users complain about no multi-account support. | L | Low — agent architecture is singleton per enrollment (one config dir, one Nebula instance, one bearer token). Fundamental refactor of agent config, service management, and Nebula instance lifecycle. 4-6 weeks minimum. Consider supporting multiple agent instances as a simpler alternative. | — |
+| 30 | **Bandwidth monitoring** | Per-network and per-node traffic metrics. Dashboard graphs. | Useful for capacity planning. No competitor does this well. Research: no competitor offers this — genuine whitespace. | M | Moderate — depends on Nebula stats exposure (#18). | #18 |
+| 31 | **SOC 2 documentation** | Publish compliance documentation and controls mapping. | Enterprise buyers need this. Not code — a business requirement. | M | N/A — documentation effort, not engineering. | #15 |
 
 ---
 
@@ -164,21 +181,25 @@ Build when there is customer demand and revenue to justify the investment.
 | Compliance-bound teams | SOC 2 pain, audit needs | Session recording, SSO, log streaming | High ($500-5,000/mo) |
 | DevOps with hybrid/multi-cloud | Terraform provider, IaC | Unified access across environments | High ($500-5,000/mo) |
 
-### Adoption funnel
+### Adoption funnel (selfhosters → corporate)
 
 ```
-Blog post / HN / tweet / "60 seconds from install to Jellyfin"
+Blog post / HN / r/selfhosted / "60 seconds from install to Jellyfin"
         |
-Solo dev tries on VPS                              <- FREE (25 nodes)
+Solo selfhoster tries on VPS + homelab             <- FREE (25 nodes)
         |
-Uses daily, tells coworkers
+Loves it: DNS works, sees P2P vs relay, subnet routes to LAN
         |
-Team of 5 uses for staging                         <- FREE (under 25 nodes)
+Writes blog post / Reddit comment / tells coworkers
+        |
+Coworker's team tries for staging                  <- FREE (under 25 nodes)
         |
 Team grows, adds production (30+ nodes)            <- PRO ($150/mo)
         |
-Company needs audit, SSO, compliance               <- ENTERPRISE
+Company needs SSO, session recording, compliance   <- ENTERPRISE
 ```
+
+The key insight: Phase 2A features (connection visibility, subnet routing, exit nodes) are what turn a "it works" experience into a "this is amazing, you should try it" recommendation. Enterprise features (Phase 2C) monetize the adoption that selfhoster delight creates.
 
 ---
 
@@ -251,7 +272,7 @@ Regional lighthouses. Dedicated relay fleet. At this scale, revenue justifies th
 - [ ] Demo video: "60 seconds from install to Jellyfin"
 - [ ] Blog post: "Why we built hopssh"
 - [ ] Documentation site
-- [ ] Phase 2A features (#1-#6) — beat Defined Networking
+- [ ] Phase 2A features (#1-#7) — quick wins + foundation
 
 ---
 

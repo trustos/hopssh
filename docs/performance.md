@@ -1,10 +1,10 @@
 # Performance Engineering
 
-## Current State (v0.7.3)
+## Current State (v0.9.3)
 
 ### Benchmarks
 
-Nebula P2P between two Apple Silicon Macs on same LAN (WiFi + Gigabit Ethernet).
+**LAN (WiFi, Apple Silicon):**
 
 | Metric | Raw LAN | ZeroTier | Nebula | Gap |
 |--------|---------|----------|--------|-----|
@@ -14,6 +14,30 @@ Nebula P2P between two Apple Silicon Macs on same LAN (WiFi + Gigabit Ethernet).
 
 Periodic 60-90ms spikes are WiFi power management — identical across all three paths.
 Nebula's actual overhead above raw LAN is ~3ms per packet.
+
+**WAN (2026-04-15):**
+
+| Scenario | Nebula | ZeroTier | Winner |
+|----------|--------|----------|--------|
+| LAN P2P (WiFi) | 14ms avg, 0% loss | 17ms avg | **Nebula** |
+| WAN P2P (mobile hotspot) | 106ms avg, 0% loss | 222ms avg | **Nebula** |
+| WAN relay (symmetric NAT) | 125ms avg | ~200ms | **Nebula** |
+| P2P on carrier NAT | Fails (symmetric NAT) | Usually succeeds | ZeroTier |
+| Network roam (WiFi↔cellular) | Auto, <5 seconds | Auto | Tie |
+
+Nebula is faster when P2P works but fails to establish P2P on carrier-grade NAT (symmetric NAT). Relay overhead is only 9ms (125ms relay vs 106ms P2P) — the bottleneck is network path, not processing.
+
+**Throughput (2026-04-15, iperf3, Mac mini ↔ MacBook, WiFi LAN, Apple Silicon):**
+
+| Test | Throughput | Latency (avg) | Latency (max) | Packet loss |
+|------|-----------|---------------|----------------|-------------|
+| Raw LAN (no tunnel) | 735 Mbits/sec | 14.5ms | 93ms | 0% |
+| Nebula tunnel (single stream) | 217 Mbits/sec | 20.1ms | 202ms | 0% |
+| Nebula tunnel (4 streams) | 148 Mbits/sec | — | — | 0% |
+
+Tunnel overhead: 70% throughput reduction, +5.6ms latency. The throughput gap is entirely syscall overhead (71.6% CPU in sendto/recvfrom — see profile below). The 202ms max latency is a WiFi power management spike (raw LAN also has 93ms spikes). Multi-stream is lower than single-stream due to TUN fd contention and Nebula's single-writer architecture on macOS.
+
+**Competitive position:** 217 Mbps is 2-4x what ZeroTier users typically report (50-100 Mbps). Sufficient for all selfhoster use cases (SSH, web UIs, Jellyfin, NAS, Screen Sharing). The remaining gap to raw LAN is a macOS kernel limitation (no sendmmsg/recvmmsg) — not fixable in userspace.
 
 ### CPU Profile Under Screen Sharing Load (30s, pprof)
 
@@ -71,15 +95,59 @@ go tool pprof cpu.prof
 | GOMEMLIMIT 128MB | Excessive GC under burst traffic | Too tight for sustained packet load |
 | 2MB UDP socket buffers | 50-293ms bufferbloat spikes | macOS reads one packet at a time; large buffers queue stale packets |
 | MTU 2800 | 39ms avg (2.4x worse) | IP fragmentation doubled sendto syscalls per packet |
+| FEC (async parity) | +57% latency on cellular (300ms vs 191ms) | Extra parity causes congestion on bandwidth-constrained paths |
+| FEC (original buffered) | 10-second Screen Sharing freezes | Buffered K packets before sending |
+| Port prediction (±50 ports) | EAGAIN socket errors | Carrier uses random port assignment; 100 punch packets flood socket |
+| sendmmsg egress batching | 408ms vs 125ms relay | Batch-flush holds packets; needs per-packet flush to be useful |
+| Full /24 subnet warmup | EAGAIN socket flood, dead tunnels | 254 simultaneous handshakes overwhelm the handshake manager |
+| Multi-reader UDP (SO_REUSEPORT) | 35% packet loss | Created orphaned sockets |
+| TUN Read buffer reuse | crypto/cipher buffer overlap panic | Unsafe buffer sharing |
 
 ## Platform Constraints
 
 ### macOS
-- No `sendmmsg`/`recvmmsg` (Linux-only batch syscalls)
+- No public `sendmmsg`/`recvmmsg` — BUT see **`sendmsg_x`/`recvmsg_x` discovery** below
 - No UDP GSO/GRO (Linux 4.18+)
 - No TUN multiqueue (`IFF_MULTI_QUEUE` is Linux-only; utun is single-fd)
 - No `SIOCSIFTXQLEN` for TUN transmit queue
-- Single-packet-at-a-time I/O for both TUN and UDP
+- utun hard cap: 4096 bytes per packet (`UTUN_IF_MAX_SLOT_SIZE` in XNU, max MTU = 4064)
+- Single-packet-at-a-time I/O for TUN (UDP can be batched — see below)
+
+### macOS `sendmsg_x` / `recvmsg_x` — Undiscovered Batch UDP (Research: 2026-04-15)
+
+macOS has **private batch UDP syscalls** that no VPN project uses. Found in XNU kernel
+source (`/bsd/sys/socket.h`, behind `#ifdef PRIVATE`):
+
+```c
+ssize_t sendmsg_x(int s, const struct msghdr_x *msgp, u_int cnt, int flags);  // syscall #481
+ssize_t recvmsg_x(int s, const struct msghdr_x *msgp, u_int cnt, int flags);  // syscall #480
+```
+
+**Key facts:**
+- Batch up to **1024 sends** and **100 receives** per syscall
+- Available since macOS 10.11 (2015) — stable for 11 years
+- Used internally by Apple for Network.framework and MPTCP
+- Connected-socket fast path: `connect()` the UDP socket → `sendmsg_x` uses `sosend_list()`
+  which builds one mbuf chain for all messages (single kernel traversal)
+- `msg_name`/`msg_control` must be zero — must use `connect()` for the send fast path
+- Not in Go stdlib, `x/sys/unix`, or `x/net` — requires CGO or raw syscall wrappers
+
+**No VPN project uses these:**
+- WireGuard-Go: `BatchSize=1` on macOS (`conn/bind_std.go`)
+- Go `x/net/ipv4.PacketConn.ReadBatch/WriteBatch`: falls back to batch size 1 on non-Linux
+- Tailscale: all throughput work is Linux-only, no macOS optimizations
+- ZeroTier: uses C++ with feth interfaces — different approach
+
+**Projected impact:** Our 71.6% CPU in syscalls could drop to single digits. Theoretical
+throughput on macOS: 217 Mbps → 600-800+ Mbps. Would make hopssh the first VPN on macOS
+to use batch UDP syscalls.
+
+**Risk:** Private API (`#ifdef PRIVATE`). But these are syscalls (kernel ABI is stable),
+not library calls. They've been unchanged since 2015 and Apple uses them for their own
+networking stack.
+
+**Status:** Researched, deferred to Phase 3A. Features come first per selfhoster-first strategy.
+When ready, implementation is ~1-2 weeks: CGO wrappers + vendor patch to Nebula UDP layer.
 
 ### Linux
 - Full `sendmmsg`/`recvmmsg` support (batch 64 packets per syscall)

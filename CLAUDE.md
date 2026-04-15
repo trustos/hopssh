@@ -162,49 +162,13 @@ mode returns `io.ErrClosedPipe`. Our patch adds the missing error check.
 
 ---
 
-## Core Features
+## Features & Roadmap
 
-### Phase 1 — Mesh Networking (complete)
-- [x] Agent enrollment (4 modes: device flow, token, bundle, IaC)
-- [x] Networks (isolated mesh per network, auto PKI, per-network CA)
-- [x] Web terminal (browser shell via WebSocket PTY through mesh)
-- [x] Port forwarding (TCP tunnel, any port)
-- [x] Node health dashboard (connected, OS, uptime, heartbeat)
-- [x] Audit logging (login, shell, exec, port-forward)
-- [x] Short-lived certificates (24h) with auto-renewal + jitter
-- [x] Persistent lighthouse + relay per network
-- [x] Built-in DNS with user-defined domains (`.hop`, `.prod`, `.lab`)
-- [x] Per-node capabilities (terminal, health, forward) — toggleable from dashboard
-- [x] Unified node model (no server/client distinction — all nodes equal)
-- [x] Non-root agent support (user-level config + launchd/systemd)
-- [x] Self-update (`hop-agent update`, `hop-server update`)
-- [x] Install script served by control plane (`/install.sh`)
-- [x] Container support (distroless Dockerfile, env vars, healthz, Nomad)
-- [x] WebSocket real-time dashboard events (replace polling)
-- [x] Idle network reaper (stops unused Nebula instances)
-- [x] Node rename with DNS auto-update
-- [ ] P2P direct connections via Nebula hole punching
-- [ ] Relay fallback through lighthouse when P2P fails
-- [ ] Service exposure config (which ports are mesh-accessible)
+**Phase 1 — Mesh Networking** — complete. Enrollment, web terminal, port forwarding, DNS, teams, audit, real-time events, self-update, Docker. See [docs/features.md](docs/features.md) for the full shipping inventory.
 
-### Phase 2 — Teams + Management (in progress)
-- [x] Team invitations (invite link with expiry + max uses + role selector)
-- [x] Network sharing (admin/member roles, role-gated UI)
-- [x] Accept invite page with auth redirect
-- [ ] ACL rules (fine-grained access control beyond capabilities)
-- [ ] Regional relay nodes (add relays via dashboard)
-- [ ] Peer connectivity map (P2P vs relayed status)
-- [ ] API keys for automation
-- [ ] GitHub OAuth login
-- [ ] Terraform/Pulumi provider
+**Phase 2 — Product & Adoption** — in progress. Webhooks, GitHub OAuth, API keys, SSO/OIDC, firewall rules, subnet routing. See [docs/roadmap.md](docs/roadmap.md) for the numbered implementation plan with priorities, complexity estimates, and dependencies.
 
-### Phase 3 — Enterprise + Scale
-- [ ] SSO / SAML
-- [ ] RBAC (granular permissions beyond admin/member)
-- [ ] Session recording
-- [ ] Desktop tray app (macOS, Windows, Linux)
-- [ ] Mobile clients (iOS, Android)
-- [ ] Bandwidth monitoring per network
+**Phase 3+ — Enterprise & Scale** — planned. Session recording, RBAC, desktop/mobile apps, regional relays, policy model. See [docs/roadmap.md](docs/roadmap.md).
 
 ---
 
@@ -213,12 +177,14 @@ mode returns `io.ErrClosedPipe`. Our patch adds the missing error check.
 ### Hosted (hopssh.com)
 | Tier | Price | Limits |
 |---|---|---|
-| Free | $0 | 10 nodes, 1 network, P2P + relay |
-| Pro | $5/node/month | Unlimited networks, DNS, web terminal, audit, API |
-| Enterprise | Contact | SSO, RBAC, session recording, regional relays, SLA |
+| Free | $0 | 25 nodes, 1 network, P2P + relay |
+| Pro | $5/node/month | Unlimited networks, DNS, web terminal, audit, API keys |
+| Enterprise | Contact | SSO, RBAC, session recording, log streaming, SLA |
 
 ### Self-hosted
 Free forever. Run the single binary on your own server. All features included.
+
+See [docs/roadmap.md](docs/roadmap.md) for pricing rationale and competitive context.
 
 ---
 
@@ -337,7 +303,8 @@ repeating the same investigations.
 ### macOS Platform
 - **Screen Sharing HP mode requires BROADCAST interface** — macOS `NWPathEvaluator` marks `utun` (POINTOPOINT) as "unsatisfied". ZeroTier works because it uses `feth` (fake ethernet, BROADCAST flag). Fixing this requires replacing utun with feth + userspace relay — can't inject packets into Nebula's utun FD (one control socket per utun on macOS).
 - **utun read allocates per-packet** — upstream Nebula's `tun_darwin.go` does `make([]byte, len+4)` on every Read. Our vendor patch caches this buffer. (~9KB allocation eliminated per inbound packet.)
-- **macOS has no `recvmmsg`/`sendmmsg`** — stuck with 1 syscall per packet. Linux has both but `sendmmsg` with batch-flush HURTS single-stream performance (408ms vs 125ms) by holding packets.
+- **macOS has private `sendmsg_x`/`recvmsg_x` batch syscalls** — XNU kernel has batch UDP send/recv (syscalls #481/#480, `#ifdef PRIVATE` in `sys/socket.h`). Batch up to 1024 sends / 100 receives per syscall. Available since macOS 10.11. No VPN uses them (WireGuard-Go, Tailscale, ZeroTier all fall back to 1-at-a-time). Requires CGO + `connect()` for the send fast path. Could push macOS throughput from 217→600-800 Mbps. Deferred to Phase 3A.
+- **Linux `sendmmsg` with batch-flush HURTS single-stream performance** — 408ms vs 125ms relay by holding packets. Needs per-packet flush architecture.
 - **`scutil` SC registration makes utun visible** to macOS network info (`scutil --nwi`) but doesn't fix the POINTOPOINT → HP mode issue. Requires `Router` field to show as "Reachable".
 
 ### Performance
