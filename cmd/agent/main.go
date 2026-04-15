@@ -232,11 +232,11 @@ func runServe(args []string) {
 				configureDNS(activeDNSConfig)
 			}
 
-			// Warm tunnel synchronously so peer handshakes complete before
-			// the mesh listener accepts connections. Without this, Screen
-			// Sharing's quality probe runs during the handshake and rejects
-			// High Performance mode.
+			// Warm tunnels synchronously: lighthouse first, then peers from
+			// heartbeat. Both must complete before the mesh listener starts,
+			// otherwise Screen Sharing's quality probe fails on first connect.
 			warmTunnel(*nebulaConfig)
+			warmPeersFromHeartbeat(agentEndpoint)
 
 			// Watch for network changes (WiFi↔cellular) and rebind Nebula.
 			if ctrl := meshSvc.NebulaControl(); ctrl != nil {
@@ -341,6 +341,50 @@ func warmTunnel(configPath string) {
 		conn.Close()
 	}
 	log.Printf("[agent] warm-up: lighthouse ready in %s", time.Since(start).Truncate(time.Millisecond))
+}
+
+// warmPeersFromHeartbeat sends a heartbeat to get online peer IPs, then
+// dials each one to establish Nebula tunnels before accepting connections.
+func warmPeersFromHeartbeat(endpoint string) {
+	nodeID, _ := os.ReadFile(filepath.Join(configDir, "node-id"))
+	token, _ := os.ReadFile(filepath.Join(configDir, "token"))
+	if len(nodeID) == 0 || len(token) == 0 {
+		return
+	}
+
+	reqBody := fmt.Sprintf(`{"nodeId":%q}`, strings.TrimSpace(string(nodeID)))
+	req, err := http.NewRequest("POST", endpoint+"/api/heartbeat", strings.NewReader(reqBody))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		if resp != nil {
+			resp.Body.Close()
+		}
+		return
+	}
+	defer resp.Body.Close()
+
+	var body struct {
+		Peers []string `json:"peers"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || len(body.Peers) == 0 {
+		return
+	}
+
+	start := time.Now()
+	for _, ip := range body.Peers {
+		d := net.Dialer{Timeout: 2 * time.Second}
+		if conn, err := d.Dial("tcp", net.JoinHostPort(ip, "41820")); err == nil {
+			conn.Close()
+		}
+	}
+	log.Printf("[agent] warm-up: %d peers ready in %s", len(body.Peers), time.Since(start).Truncate(time.Millisecond))
 }
 
 // startMesh starts Nebula in the requested TUN mode with graceful fallback.
