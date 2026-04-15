@@ -319,6 +319,35 @@ make dev-deploy-server     # Build Docker image → push ghcr.io → update Noma
 
 ---
 
+## Discovery Log
+
+When a major discovery is made during development — something non-obvious about how
+the system works, a platform limitation, a performance finding, or a technique that
+did/didn't work — write it down here immediately. These save future sessions from
+repeating the same investigations.
+
+### Nebula Internals
+- **Nebula's hot path is clean** — no goroutine handoffs, no channels, zero per-packet allocations. Buffers pre-allocated per routine. Crypto inline. Don't try to "optimize" the packet processing loop — it's already optimal.
+- **`f.outside` is the primary UDP conn** — `f.writers[]` are only used for `routines > 1`. When wrapping UDP connections (e.g., for FEC), must wrap `f.outside` + `f.handshakeManager.outside` + `f.writers[]` for full coverage.
+- **Relay overhead is only 9ms** — 2 AEAD operations (verify + re-authenticate) + 2 syscalls. The bottleneck for relay performance is network path, not lighthouse processing.
+- **`RebindUDPServer()` exists** but doesn't auto-detect network changes. The agent must poll for changes and call it. Also must `CloseAllTunnels(true)` to force re-handshake on the new network — rebind alone only re-advertises.
+- **Tunnels go dead after ~15s of inactivity** — Nebula's connection manager sends test packets and marks tunnels dead if no response. Subnet scanning (254 IPs) to keep tunnels warm floods the handshake manager causing EAGAIN. Use heartbeat-driven peer warmup instead.
+- **`preferred_ranges` is essential** — without it, Nebula sorts public IPs before private ones, causing same-NAT peers to try hairpin NAT (fails on most routers) before trying LAN addresses.
+
+### macOS Platform
+- **Screen Sharing HP mode requires BROADCAST interface** — macOS `NWPathEvaluator` marks `utun` (POINTOPOINT) as "unsatisfied". ZeroTier works because it uses `feth` (fake ethernet, BROADCAST flag). Fixing this requires replacing utun with feth + userspace relay — can't inject packets into Nebula's utun FD (one control socket per utun on macOS).
+- **utun read allocates per-packet** — upstream Nebula's `tun_darwin.go` does `make([]byte, len+4)` on every Read. Our vendor patch caches this buffer. (~9KB allocation eliminated per inbound packet.)
+- **macOS has no `recvmmsg`/`sendmmsg`** — stuck with 1 syscall per packet. Linux has both but `sendmmsg` with batch-flush HURTS single-stream performance (408ms vs 125ms) by holding packets.
+- **`scutil` SC registration makes utun visible** to macOS network info (`scutil --nwi`) but doesn't fix the POINTOPOINT → HP mode issue. Requires `Router` field to show as "Reachable".
+
+### Performance
+- **FEC hurts on bandwidth-constrained paths** — 20% extra parity packets cause congestion-induced loss on cellular (+57% latency). FEC only helps random loss on high-bandwidth paths.
+- **Symmetric NAT with random ports is unsolvable** — port prediction (±50) doesn't work when the carrier assigns random ports. This affects most mobile carriers (CGNAT). No VPN can establish P2P through truly random symmetric NAT.
+- **AES-GCM is faster than ChaCha20 on Apple Silicon** — dedicated hardware AES instructions (single-cycle) vs NEON vector ops. Keep `cipher: "aes"`.
+- **Large UDP socket buffers cause bufferbloat** — 2MB buffers caused 50-293ms spikes on macOS because it reads one packet at a time (no recvmmsg). OS defaults (~128KB) are correct.
+
+---
+
 ## Coding Principles
 
 These rules are derived from 4 rounds of security review. Follow them for all new code.
