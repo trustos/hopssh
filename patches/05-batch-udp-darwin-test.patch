@@ -1,0 +1,228 @@
+--- a/github.com/slackhq/nebula/udp/udp_darwin_batch_test.go	2026-04-16 01:54:04
++++ b/github.com/slackhq/nebula/udp/udp_darwin_batch_test.go	2026-04-16 01:50:10
+@@ -0,0 +1,225 @@
++//go:build darwin && !e2e_testing
++// +build darwin,!e2e_testing
++
++package udp
++
++import (
++	"encoding/binary"
++	"net"
++	"net/netip"
++	"testing"
++	"unsafe"
++
++	"golang.org/x/sys/unix"
++)
++
++func TestMsghdrXLayout(t *testing.T) {
++	var m msghdrX
++	if got := unsafe.Sizeof(m); got != 56 {
++		t.Fatalf("sizeof(msghdrX) = %d, want 56", got)
++	}
++
++	if got := unsafe.Offsetof(m.Name); got != 0 {
++		t.Fatalf("offsetof(Name) = %d, want 0", got)
++	}
++	if got := unsafe.Offsetof(m.Namelen); got != 8 {
++		t.Fatalf("offsetof(Namelen) = %d, want 8", got)
++	}
++	if got := unsafe.Offsetof(m.Iov); got != 16 {
++		t.Fatalf("offsetof(Iov) = %d, want 16", got)
++	}
++	if got := unsafe.Offsetof(m.Iovlen); got != 24 {
++		t.Fatalf("offsetof(Iovlen) = %d, want 24", got)
++	}
++	if got := unsafe.Offsetof(m.Control); got != 32 {
++		t.Fatalf("offsetof(Control) = %d, want 32", got)
++	}
++	if got := unsafe.Offsetof(m.Controllen); got != 40 {
++		t.Fatalf("offsetof(Controllen) = %d, want 40", got)
++	}
++	if got := unsafe.Offsetof(m.Flags); got != 44 {
++		t.Fatalf("offsetof(Flags) = %d, want 44", got)
++	}
++	if got := unsafe.Offsetof(m.Datalen); got != 48 {
++		t.Fatalf("offsetof(Datalen) = %d, want 48", got)
++	}
++}
++
++func TestIovecLayout(t *testing.T) {
++	var v iovec
++	if got := unsafe.Sizeof(v); got != 16 {
++		t.Fatalf("sizeof(iovec) = %d, want 16", got)
++	}
++}
++
++func TestSyscallNumbers(t *testing.T) {
++	if unix.SYS_RECVMSG_X != 480 {
++		t.Fatalf("SYS_RECVMSG_X = %d, want 480", unix.SYS_RECVMSG_X)
++	}
++	if unix.SYS_SENDMSG_X != 481 {
++		t.Fatalf("SYS_SENDMSG_X = %d, want 481", unix.SYS_SENDMSG_X)
++	}
++}
++
++func TestSendmsgXRecvmsgXRoundTrip(t *testing.T) {
++	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_UDP)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer unix.Close(fd)
++
++	sa := &unix.SockaddrInet4{Port: 0}
++	sa.Addr = [4]byte{127, 0, 0, 1}
++	if err := unix.Bind(fd, sa); err != nil {
++		t.Fatal(err)
++	}
++
++	got, err := unix.Getsockname(fd)
++	if err != nil {
++		t.Fatal(err)
++	}
++	boundPort := got.(*unix.SockaddrInet4).Port
++
++	payloads := []string{"hello", "batch", "udp"}
++	sendMsgs := make([]msghdrX, len(payloads))
++	sendIovs := make([]iovec, len(payloads))
++	sendBufs := make([][]byte, len(payloads))
++	sendNames := make([]unix.RawSockaddrInet4, len(payloads))
++
++	for i, p := range payloads {
++		sendBufs[i] = []byte(p)
++		sendIovs[i] = iovec{Base: &sendBufs[i][0], Len: uint64(len(sendBufs[i]))}
++
++		sendNames[i].Len = unix.SizeofSockaddrInet4
++		sendNames[i].Family = unix.AF_INET
++		sendNames[i].Addr = [4]byte{127, 0, 0, 1}
++		binary.BigEndian.PutUint16((*[2]byte)(unsafe.Pointer(&sendNames[i].Port))[:], uint16(boundPort))
++
++		sendMsgs[i] = msghdrX{
++			Name:    (*byte)(unsafe.Pointer(&sendNames[i])),
++			Namelen: unix.SizeofSockaddrInet4,
++			Iov:     &sendIovs[i],
++			Iovlen:  1,
++		}
++	}
++
++	sent, _, errno := unix.Syscall6(
++		unix.SYS_SENDMSG_X,
++		uintptr(fd),
++		uintptr(unsafe.Pointer(&sendMsgs[0])),
++		uintptr(len(sendMsgs)),
++		0, 0, 0,
++	)
++	if errno != 0 {
++		t.Fatalf("sendmsg_x failed: %v", errno)
++	}
++	if int(sent) != len(payloads) {
++		t.Fatalf("sendmsg_x sent %d, want %d", sent, len(payloads))
++	}
++
++	// Receive via recvmsg_x
++	recvMsgs := make([]msghdrX, 8)
++	recvBufs := make([][]byte, 8)
++	recvNames := make([][]byte, 8)
++	for i := range recvMsgs {
++		recvBufs[i] = make([]byte, 1024)
++		recvNames[i] = make([]byte, unix.SizeofSockaddrInet6)
++		recvMsgs[i] = msghdrX{
++			Name:    &recvNames[i][0],
++			Namelen: uint32(unix.SizeofSockaddrInet6),
++			Iov:     &iovec{Base: &recvBufs[i][0], Len: uint64(len(recvBufs[i]))},
++			Iovlen:  1,
++		}
++	}
++
++	totalRecvd := 0
++	for totalRecvd < len(payloads) {
++		recvd, _, errno := unix.Syscall6(
++			unix.SYS_RECVMSG_X,
++			uintptr(fd),
++			uintptr(unsafe.Pointer(&recvMsgs[totalRecvd])),
++			uintptr(len(recvMsgs)-totalRecvd),
++			0, 0, 0,
++		)
++		if errno != 0 {
++			t.Fatalf("recvmsg_x failed: %v", errno)
++		}
++		totalRecvd += int(recvd)
++	}
++
++	for i := 0; i < totalRecvd; i++ {
++		data := string(recvBufs[i][:recvMsgs[i].Datalen])
++		if data != payloads[i] {
++			t.Errorf("packet %d = %q, want %q", i, data, payloads[i])
++		}
++
++		ip, _ := netip.AddrFromSlice(recvNames[i][4:8])
++		port := binary.BigEndian.Uint16(recvNames[i][2:4])
++		if !ip.IsLoopback() {
++			t.Errorf("packet %d source IP = %v, want loopback", i, ip)
++		}
++		if port != uint16(boundPort) {
++			t.Errorf("packet %d source port = %d, want %d", i, port, boundPort)
++		}
++	}
++}
++
++func TestBatchListenOutRoundTrip(t *testing.T) {
++	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_UDP)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer unix.Close(fd)
++
++	sa := &unix.SockaddrInet4{Port: 0}
++	sa.Addr = [4]byte{127, 0, 0, 1}
++	if err := unix.Bind(fd, sa); err != nil {
++		t.Fatal(err)
++	}
++
++	got, err := unix.Getsockname(fd)
++	if err != nil {
++		t.Fatal(err)
++	}
++	boundAddr := got.(*unix.SockaddrInet4)
++
++	sender, err := net.DialUDP("udp4", nil, &net.UDPAddr{
++		IP:   net.IP(boundAddr.Addr[:]),
++		Port: boundAddr.Port,
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer sender.Close()
++
++	for i := 0; i < 5; i++ {
++		if _, err := sender.Write([]byte{byte(i), byte(i + 10)}); err != nil {
++			t.Fatal(err)
++		}
++	}
++
++	c := &StdConn{sysFd: fd, isV4: true, batch: 16}
++	msgs, buffers, names := c.PrepareRawMessages(16)
++
++	// recvmsg_x returns whatever is available, so loop until we get all 5
++	total := 0
++	for total < 5 {
++		n, err := c.ReadMulti(msgs[total:])
++		if err != nil {
++			t.Fatal(err)
++		}
++		total += n
++	}
++
++	for i := 0; i < total; i++ {
++		data := buffers[i][:msgs[i].Datalen]
++		if len(data) != 2 || data[0] != byte(i) || data[1] != byte(i+10) {
++			t.Errorf("packet %d = %v, want [%d %d]", i, data, i, i+10)
++		}
++
++		ip, _ := netip.AddrFromSlice(names[i][4:8])
++		if !ip.IsLoopback() {
++			t.Errorf("packet %d source IP = %v, want loopback", i, ip)
++		}
++	}
++}

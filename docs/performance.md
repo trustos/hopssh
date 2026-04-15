@@ -146,8 +146,17 @@ to use batch UDP syscalls.
 not library calls. They've been unchanged since 2015 and Apple uses them for their own
 networking stack.
 
-**Status:** Researched, deferred to Phase 3A. Features come first per selfhoster-first strategy.
-When ready, implementation is ~1-2 weeks: CGO wrappers + vendor patch to Nebula UDP layer.
+**Spike results (2026-04-16):**
+- Pure Go implementation (no CGO) — struct layouts match XNU, verified with `unsafe.Sizeof`/`Offsetof`
+- `recvmsg_x` batch receive: working, 64 packets per syscall, integrated into ListenOut
+- `sendmsg_x` batch send with 500μs timer: **hurts TCP** — adds jitter that congestion control
+  interprets as loss. 63 Mbps (batch=64) vs 154 Mbps (batch=1). Timer-based send batching
+  is fundamentally incompatible with the serial TUN read → encrypt → send architecture.
+- **Shipped: receive-only batching** (recvmsg_x). Send path uses direct sendto.
+- Next: send batching needs architectural change — non-blocking TUN reads or connected sockets
+
+**Status:** Receive batching shipped in `patches/04-batch-udp-darwin.patch`. Send batching
+requires deeper integration (non-blocking TUN read loop or per-peer connected sockets).
 
 ### Linux
 - Full `sendmmsg`/`recvmmsg` support (batch 64 packets per syscall)
