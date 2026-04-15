@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/sirupsen/logrus"
 	"github.com/slackhq/nebula"
@@ -135,6 +136,63 @@ func (k *kernelTunMeshService) NebulaControl() *nebula.Control { return k.ctrl }
 func (k *kernelTunMeshService) Close() {
 	log.Printf("[agent] stopping Nebula mesh connection (kernel TUN)")
 	k.ctrl.Stop()
+}
+
+// --- Network Change Detection ---
+
+// watchNetworkChanges polls local network interfaces and triggers a Nebula
+// rebind when the active interface or IP changes. This handles WiFi↔cellular
+// switches — without it, Nebula stays on a stale relay tunnel until the
+// connection times out (minutes).
+func watchNetworkChanges(ctrl *nebula.Control, endpoint string) {
+	host := extractHost(endpoint)
+	if host == "" {
+		return
+	}
+
+	lastIface, _ := nebulacfg.DetectPhysicalInterface(host)
+	lastAddrs := getLocalAddrs()
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		currentIface, _ := nebulacfg.DetectPhysicalInterface(host)
+		currentAddrs := getLocalAddrs()
+
+		if currentIface != lastIface || currentAddrs != lastAddrs {
+			log.Printf("[agent] network change detected (iface: %s→%s), rebinding Nebula", lastIface, currentIface)
+			ctrl.RebindUDPServer()
+			closed := ctrl.CloseAllTunnels(true)
+			if closed > 0 {
+				log.Printf("[agent] closed %d tunnels to force re-handshake on new network", closed)
+			}
+			lastIface = currentIface
+			lastAddrs = currentAddrs
+		}
+	}
+}
+
+// getLocalAddrs returns a string fingerprint of current local IPv4 addresses.
+func getLocalAddrs() string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	var s string
+	for _, iface := range ifaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			s += addr.String() + ","
+		}
+	}
+	return s
 }
 
 // --- Helpers ---

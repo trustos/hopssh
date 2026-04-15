@@ -237,10 +237,10 @@ func runServe(args []string) {
 			// the user tries to connect (e.g., Screen Sharing).
 			go warmTunnel(*nebulaConfig)
 
-			// FEC disabled — needs more work on the decode path.
-			// The length-prefixed shards + partial group flushing causes
-			// 10-second freezes in Screen Sharing data streams.
-			// TODO: debug FEC decode timing before re-enabling.
+			// Watch for network changes (WiFi↔cellular) and rebind Nebula.
+			if ctrl := meshSvc.NebulaControl(); ctrl != nil {
+				go watchNetworkChanges(ctrl, agentEndpoint)
+			}
 
 			meshLn, err := meshSvc.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
 			if err != nil {
