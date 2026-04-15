@@ -7,6 +7,7 @@ require (
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/klauspost/reedsolomon v1.13.3
 	github.com/miekg/dns v1.1.70
 	github.com/sirupsen/logrus v1.9.4
 	github.com/slackhq/nebula v1.10.3
@@ -38,6 +39,7 @@ require (
 	github.com/google/btree v1.1.2 // indirect
 	github.com/google/gopacket v1.1.19 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
+	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/mailru/easyjson v0.7.7 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/miekg/pkcs11 v1.1.2-0.20231115102856-9078ad6b9d4b // indirect
@@ -74,4 +76,4 @@ require (
 	modernc.org/memory v1.11.0 // indirect
 )
 
-replace github.com/slackhq/nebula => github.com/trustos/nebula v1.10.3-minimal.1
+replace github.com/slackhq/nebula => github.com/trustos/nebula v1.10.3-hopssh.9
