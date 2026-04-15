@@ -1,0 +1,23 @@
+--- a/github.com/slackhq/nebula/control.go
++++ b/github.com/slackhq/nebula/control.go
+@@ -10,6 +10,7 @@
+ 	"github.com/slackhq/nebula/cert"
+ 	"github.com/slackhq/nebula/header"
+ 	"github.com/slackhq/nebula/overlay"
++	"github.com/slackhq/nebula/udp"
+ )
+
+ // Every interaction here needs to take extra care to copy memory and not return or use arguments "as is" when touching
+@@ -274,6 +275,13 @@
+ 	return c.f.inside
+ }
+
++// WrapWriters allows external code to wrap each UDP writer connection.
++func (c *Control) WrapWriters(wrap func(udp.Conn) udp.Conn) {
++	for i := range c.f.writers {
++		c.f.writers[i] = wrap(c.f.writers[i])
++	}
++}
++
+ func copyHostInfo(h *HostInfo, preferredRanges []netip.Prefix) ControlHostInfo {
+

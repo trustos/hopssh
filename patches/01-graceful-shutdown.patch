@@ -1,0 +1,11 @@
+--- a/github.com/slackhq/nebula/interface.go
++++ b/github.com/slackhq/nebula/interface.go
+@@ -297,7 +297,7 @@
+ 	for {
+ 		n, err := reader.Read(packet)
+ 		if err != nil {
+-			if errors.Is(err, os.ErrClosed) && f.closed.Load() {
++			if (errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, io.EOF)) && f.closed.Load() {
+ 				return
+ 			}
+

@@ -2,8 +2,8 @@
 -include .env
 export
 
-.PHONY: all setup build build-all build-linux vet test \
-       generate clean frontend frontend-embed \
+.PHONY: all setup vendor patch-vendor build build-all build-linux vet test \
+       generate clean clean-vendor frontend frontend-embed \
        run dev release
 
 # Version injection via ldflags.
@@ -14,16 +14,31 @@ LDFLAGS  = -s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=$(VERSI
 # Default: build Go binaries only (assumes frontend already built or not needed).
 all: build
 
-# First-time setup: download dependencies.
-setup:
-	go mod download
+# First-time setup: vendor dependencies and apply patches.
+setup: vendor
 	@echo ""
 	@echo "==> Setup complete. Run 'make build' to compile."
 
+# Vendor dependencies and apply patches.
+vendor:
+	go mod tidy
+	go mod vendor
+	$(MAKE) patch-vendor
+
+# Apply patches to vendored dependencies.
+patch-vendor:
+	@echo "==> Applying vendor patches..."
+	@for p in patches/*.patch; do \
+		cd vendor && patch -p1 --forward --silent < "../$$p" 2>/dev/null || true; cd ..; \
+	done
+	@find vendor -name '*.rej' -delete 2>/dev/null || true
+	@echo "==> Done."
+
 # Build Go binaries.
 build:
-	go build -ldflags='$(LDFLAGS)' -o hop-agent ./cmd/agent
-	go build -ldflags='$(LDFLAGS)' -o hop-server ./cmd/server
+	@test -d vendor || (echo "Run 'make setup' first." && exit 1)
+	go build -mod=vendor -ldflags='$(LDFLAGS)' -o hop-agent ./cmd/agent
+	go build -mod=vendor -ldflags='$(LDFLAGS)' -o hop-server ./cmd/server
 
 # Build frontend (SvelteKit SPA).
 frontend:
@@ -40,12 +55,13 @@ build-all: frontend-embed build
 
 # Build for a specific Linux platform.
 build-linux:
-	GOOS=linux GOARCH=$(or $(GOARCH),amd64) go build -trimpath -ldflags='$(LDFLAGS)' -o hop-agent-linux-$(or $(GOARCH),amd64) ./cmd/agent
-	GOOS=linux GOARCH=$(or $(GOARCH),amd64) go build -trimpath -ldflags='$(LDFLAGS)' -o hop-server-linux-$(or $(GOARCH),amd64) ./cmd/server
+	@test -d vendor || (echo "Run 'make setup' first." && exit 1)
+	GOOS=linux GOARCH=$(or $(GOARCH),amd64) go build -mod=vendor -trimpath -ldflags='$(LDFLAGS)' -o hop-agent-linux-$(or $(GOARCH),amd64) ./cmd/agent
+	GOOS=linux GOARCH=$(or $(GOARCH),amd64) go build -mod=vendor -trimpath -ldflags='$(LDFLAGS)' -o hop-server-linux-$(or $(GOARCH),amd64) ./cmd/server
 
 # Run go vet.
 vet:
-	go vet ./...
+	go vet -mod=vendor ./...
 
 # Regenerate sqlc code from .sql query files.
 generate:
@@ -53,15 +69,13 @@ generate:
 
 # Run tests.
 test:
-	go test ./...
+	go test -mod=vendor ./...
 
 # Build everything and run the server (frontend embedded in binary).
 run: build-all
 	./hop-server
 
 # Development mode: run Go backend + SvelteKit dev server with hot reload.
-# Backend on :9473, frontend on :5173 (proxies /api to backend).
-# Ctrl+C cleanly kills both processes.
 dev:
 	@./scripts/dev.sh
 
@@ -78,16 +92,11 @@ deploy:
 	cat deploy/install.sh | $(SSH_CMD) 'sudo bash -s'
 
 # Run a command on the remote server.
-# Usage: make remote-exec CMD="sudo ufw status"
 remote-exec:
 	@test -n "$(DEPLOY_HOST)" || (echo "Set DEPLOY_HOST in .env" && exit 1)
 	$(SSH_CMD) '$(CMD)'
 
-# Create a new release: bumps patch version, tags, and pushes.
-# Usage:
-#   make release          → v0.1.0 → v0.1.1
-#   make release BUMP=minor → v0.1.1 → v0.2.0
-#   make release BUMP=major → v0.2.0 → v1.0.0
+# Create a new release.
 BUMP ?= patch
 release:
 	@LATEST=$$(git tag --sort=-v:refname | grep '^v' | head -1); \
@@ -112,3 +121,7 @@ release:
 clean:
 	rm -f hop-agent hop-server
 	rm -f hop-agent-linux-* hop-server-linux-*
+
+# Remove vendor directory (re-run `make setup` to restore).
+clean-vendor:
+	rm -rf vendor/

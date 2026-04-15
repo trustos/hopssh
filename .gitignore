@@ -3,8 +3,8 @@ hop-agent
 hop-server
 *.exe
 
-# Module cache (dependencies managed via go.mod, not vendored)
-# Nebula fork: github.com/trustos/nebula (replace directive in go.mod)
+# Vendor (generated via `make vendor` — includes patched dependencies)
+vendor/
 
 # Frontend (generated)
 frontend/node_modules/

@@ -24,7 +24,9 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/slackhq/nebula/cert"
+	"github.com/slackhq/nebula/udp"
 	"github.com/trustos/hopssh/internal/buildinfo"
+	"github.com/trustos/hopssh/internal/fec"
 
 	netpprof "net/http/pprof"
 )
@@ -237,10 +239,17 @@ func runServe(args []string) {
 			// the user tries to connect (e.g., Screen Sharing).
 			go warmTunnel(*nebulaConfig)
 
-			// PMTUD disabled for A/B test.
-			// if ctrl := meshSvc.NebulaControl(); ctrl != nil {
-			// 	go startPMTUD(renewCtx, ctrl, *nebulaConfig)
-			// }
+			// Enable Forward Error Correction (Reed-Solomon) on UDP writers.
+			if ctrl := meshSvc.NebulaControl(); ctrl != nil {
+				ctrl.WrapWriters(func(c udp.Conn) udp.Conn {
+					return fec.NewConn(c, fec.Config{
+						DataShards:   10,
+						ParityShards: 2,
+						GroupTimeout: 50 * time.Millisecond,
+					})
+				})
+				log.Printf("[agent] FEC enabled (10+2 Reed-Solomon)")
+			}
 
 			meshLn, err := meshSvc.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
 			if err != nil {
