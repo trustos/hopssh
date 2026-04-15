@@ -245,7 +245,7 @@ func runServe(args []string) {
 					return fec.NewConn(c, fec.Config{
 						DataShards:   10,
 						ParityShards: 2,
-						GroupTimeout: 50 * time.Millisecond,
+						GroupTimeout: 1 * time.Millisecond,
 					})
 				})
 				log.Printf("[agent] FEC enabled (10+2 Reed-Solomon)")
