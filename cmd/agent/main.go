@@ -18,7 +18,6 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -233,9 +232,11 @@ func runServe(args []string) {
 				configureDNS(activeDNSConfig)
 			}
 
-			// Pre-warm tunnel to lighthouse so handshake completes before
-			// the user tries to connect (e.g., Screen Sharing).
-			go warmTunnel(*nebulaConfig)
+			// Warm tunnel synchronously so peer handshakes complete before
+			// the mesh listener accepts connections. Without this, Screen
+			// Sharing's quality probe runs during the handshake and rejects
+			// High Performance mode.
+			warmTunnel(*nebulaConfig)
 
 			// Watch for network changes (WiFi↔cellular) and rebind Nebula.
 			if ctrl := meshSvc.NebulaControl(); ctrl != nil {
@@ -316,7 +317,7 @@ func runServe(args []string) {
 // DialTimeout blocks until the handshake + TCP round-trip succeeds, so when
 // this function returns, all peer tunnels are warm.
 func warmTunnel(configPath string) {
-	time.Sleep(2 * time.Second)
+	time.Sleep(500 * time.Millisecond)
 
 	dir := filepath.Dir(configPath)
 	certPEM, err := os.ReadFile(filepath.Join(dir, "node.crt"))
@@ -332,45 +333,14 @@ func warmTunnel(configPath string) {
 		return
 	}
 
-	prefix := networks[0]
-	myAddr := prefix.Addr()
-
-	var wg sync.WaitGroup
-	var responded atomic.Int32
+	lighthouseAddr := networks[0].Masked().Addr().Next()
 	start := time.Now()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	addr := prefix.Masked().Addr()
-	for prefix.Contains(addr) {
-		if addr != myAddr && addr != prefix.Masked().Addr() {
-			wg.Add(1)
-			go func(ip string) {
-				defer wg.Done()
-				d := net.Dialer{Timeout: 10 * time.Second}
-				conn, err := d.DialContext(ctx, "tcp", net.JoinHostPort(ip, "41820"))
-				if err == nil {
-					conn.Close()
-					responded.Add(1)
-				}
-			}(addr.String())
-		}
-		addr = addr.Next()
+	d := net.Dialer{Timeout: 5 * time.Second}
+	if conn, err := d.DialContext(context.Background(), "tcp", net.JoinHostPort(lighthouseAddr.String(), "41820")); err == nil {
+		conn.Close()
 	}
-
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-	}
-
-	log.Printf("[agent] tunnel warm-up: %d peers responded in %s", responded.Load(), time.Since(start).Truncate(time.Millisecond))
+	log.Printf("[agent] warm-up: lighthouse ready in %s", time.Since(start).Truncate(time.Millisecond))
 }
 
 // startMesh starts Nebula in the requested TUN mode with graceful fallback.
