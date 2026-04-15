@@ -121,6 +121,13 @@ func (c *Conn) encodeAndSendLocked(g *sendGroup, addr netip.AddrPort) {
 	k := g.count
 	m := c.config.ParityShards
 
+	// Single packet — send raw without FEC header for backward compatibility.
+	// FEC parity only helps with 2+ packets, so no loss of protection.
+	if k == 1 {
+		c.inner.WriteTo(g.shards[0], addr)
+		return
+	}
+
 	// Pad all shards to same length
 	for i := 0; i < k; i++ {
 		if len(g.shards[i]) < g.maxLen {
