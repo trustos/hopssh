@@ -12,6 +12,11 @@
 // Per-tab proxy session tracking: clientId → proxyBase string.
 var proxyClients = new Map();
 
+// Eagerly load persisted mappings on every SW startup, not just activation.
+// activate only fires once per SW version; the browser can terminate and
+// restart the SW without re-firing activate, leaving the in-memory map empty.
+var _mappingsReady = loadMappings();
+
 // Pattern: /api/networks/{id}/nodes/{id}/proxy/{port}
 var PROXY_PATTERN = /^(\/api\/networks\/[^/]+\/nodes\/[^/]+\/proxy\/\d+)/;
 
@@ -101,11 +106,13 @@ self.addEventListener('fetch', function (event) {
       url.pathname === '/logo.svg' ||
       url.pathname.startsWith('/proxy/')) return;
 
-  // Only intercept if we have a potential clientId to resolve.
-  // Non-proxy tabs will have no mapping, so resolveProxyBase returns null
-  // and the request passes through untouched.
+  // Only intercept if this client has a proxy mapping. The check is
+  // synchronous — if the map has no entry, the request passes through
+  // natively without respondWith. This avoids a Chrome bug where
+  // respondWith(fetch(event.request)) fails to commit navigations,
+  // leaving the tab stuck on a loading spinner.
   var cid = event.clientId || event.resultingClientId;
-  if (!cid) return;
+  if (!cid || !proxyClients.has(cid)) return;
 
   event.respondWith(handleFetch(event));
 });
