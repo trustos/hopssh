@@ -38,7 +38,8 @@ VOLUME /data
 
 # API + dashboard
 EXPOSE 9473/tcp
-# Nebula lighthouse (one per network, starting at 42001)
+# Nebula lighthouse (one per network, starting at 42001).
+# QUIC migration-probe endpoint reuses 42100 (top of the same OCI-allowed range).
 EXPOSE 42001-42100/udp
 # DNS server (one per network, starting at 15300)
 EXPOSE 15300-15400/udp

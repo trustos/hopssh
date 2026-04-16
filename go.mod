@@ -9,6 +9,7 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/klauspost/reedsolomon v1.13.3
 	github.com/miekg/dns v1.1.70
+	github.com/quic-go/quic-go v0.59.0
 	github.com/sirupsen/logrus v1.9.4
 	github.com/slackhq/nebula v1.10.3
 	github.com/swaggo/http-swagger/v2 v2.0.2

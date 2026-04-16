@@ -79,6 +79,9 @@ func main() {
 		case "client":
 			runClient(os.Args[2:])
 			return
+		case "migration":
+			runMigration(os.Args[2:])
+			return
 		default:
 			fmt.Fprintf(os.Stderr, "Unknown command: %s\nRun 'hop-agent help' for usage.\n", os.Args[1])
 			os.Exit(1)

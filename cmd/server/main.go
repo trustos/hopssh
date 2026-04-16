@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/trustos/hopssh/internal/crypto"
 	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/mesh"
+	"github.com/trustos/hopssh/internal/quictransport"
 
 	_ "github.com/trustos/hopssh/swagger" // swagger generated docs
 )
@@ -74,6 +76,7 @@ func main() {
 	lighthouseHost := flag.String("lighthouse-host", envOrDefault("HOPSSH_LIGHTHOUSE_HOST", ""), "Public IP/host for Nebula lighthouse UDP (env: HOPSSH_LIGHTHOUSE_HOST)")
 	trustedProxy := flag.Bool("trusted-proxy", os.Getenv("HOPSSH_TRUSTED_PROXY") == "true", "Trust X-Forwarded-Proto header (env: HOPSSH_TRUSTED_PROXY)")
 	allowedOrigins := flag.String("allowed-origins", envOrDefault("HOPSSH_ALLOWED_ORIGINS", ""), "Comma-separated CORS origins (env: HOPSSH_ALLOWED_ORIGINS)")
+	quicPort := flag.String("quic-port", envOrDefault("HOPSSH_QUIC_PORT", ""), "UDP port for the QUIC datagram migration probe endpoint, empty=disabled (env: HOPSSH_QUIC_PORT)")
 	flag.Parse()
 
 	if *endpoint == "" {
@@ -237,6 +240,30 @@ func main() {
 		}
 	}()
 
+	// Optional QUIC-datagram migration-probe endpoint. Foundation for the Phase 1
+	// QUIC transport (see plan/purring-chasing-babbage). When HOPSSH_QUIC_PORT is
+	// set, the server listens on that UDP port for incoming QUIC connections.
+	// Used today by `hop-agent migration` to validate connection migration across
+	// network changes (WiFi → cellular). Real mesh traffic over QUIC comes later.
+	var quicSrv *quictransport.Server
+	quicCtx, quicCancel := context.WithCancel(context.Background())
+	if *quicPort != "" {
+		port, err := strconv.Atoi(*quicPort)
+		if err != nil || port <= 0 || port > 65535 {
+			log.Fatalf("invalid --quic-port %q: must be 1-65535", *quicPort)
+		}
+		quicSrv, err = quictransport.NewServer(port, nil)
+		if err != nil {
+			log.Fatalf("start QUIC transport on UDP %d: %v", port, err)
+		}
+		go func() {
+			log.Printf("QUIC datagram endpoint listening on UDP :%d", port)
+			if err := quicSrv.Run(quicCtx); err != nil {
+				log.Printf("QUIC server exited: %v", err)
+			}
+		}()
+	}
+
 	log.Printf("hopssh control plane listening on %s", *addr)
 	srv := &http.Server{
 		Addr:              *addr,
@@ -260,6 +287,10 @@ func main() {
 	<-stop
 	log.Println("Shutting down control plane...")
 	close(stopCleanup)
+	if quicSrv != nil {
+		quicCancel()
+		_ = quicSrv.Close()
+	}
 	audit.Flush()
 	nodes.FlushHeartbeats()
 	fwdMgr.StopAll()
