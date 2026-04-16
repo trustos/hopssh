@@ -1,0 +1,225 @@
+PING 10.42.1.7 (10.42.1.7): 56 data bytes
+Request timeout for icmp_seq 0
+64 bytes from 10.42.1.7: icmp_seq=0 ttl=64 time=1239.755 ms
+64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=233.422 ms
+64 bytes from 10.42.1.7: icmp_seq=2 ttl=64 time=163.246 ms
+64 bytes from 10.42.1.7: icmp_seq=3 ttl=64 time=116.546 ms
+64 bytes from 10.42.1.7: icmp_seq=4 ttl=64 time=104.495 ms
+64 bytes from 10.42.1.7: icmp_seq=5 ttl=64 time=99.159 ms
+64 bytes from 10.42.1.7: icmp_seq=6 ttl=64 time=88.167 ms
+64 bytes from 10.42.1.7: icmp_seq=7 ttl=64 time=86.296 ms
+64 bytes from 10.42.1.7: icmp_seq=8 ttl=64 time=94.502 ms
+64 bytes from 10.42.1.7: icmp_seq=9 ttl=64 time=86.242 ms
+64 bytes from 10.42.1.7: icmp_seq=10 ttl=64 time=88.719 ms
+64 bytes from 10.42.1.7: icmp_seq=11 ttl=64 time=90.187 ms
+64 bytes from 10.42.1.7: icmp_seq=12 ttl=64 time=99.192 ms
+64 bytes from 10.42.1.7: icmp_seq=13 ttl=64 time=108.473 ms
+64 bytes from 10.42.1.7: icmp_seq=14 ttl=64 time=108.978 ms
+Request timeout for icmp_seq 16
+Request timeout for icmp_seq 17
+Request timeout for icmp_seq 18
+Request timeout for icmp_seq 19
+Request timeout for icmp_seq 20
+Request timeout for icmp_seq 21
+Request timeout for icmp_seq 22
+Request timeout for icmp_seq 23
+Request timeout for icmp_seq 24
+Request timeout for icmp_seq 25
+Request timeout for icmp_seq 26
+Request timeout for icmp_seq 27
+Request timeout for icmp_seq 28
+Request timeout for icmp_seq 29
+Request timeout for icmp_seq 30
+Request timeout for icmp_seq 31
+Request timeout for icmp_seq 32
+Request timeout for icmp_seq 33
+Request timeout for icmp_seq 34
+Request timeout for icmp_seq 35
+Request timeout for icmp_seq 36
+Request timeout for icmp_seq 37
+Request timeout for icmp_seq 38
+Request timeout for icmp_seq 39
+Request timeout for icmp_seq 40
+Request timeout for icmp_seq 41
+Request timeout for icmp_seq 42
+Request timeout for icmp_seq 43
+Request timeout for icmp_seq 44
+Request timeout for icmp_seq 45
+Request timeout for icmp_seq 46
+Request timeout for icmp_seq 47
+64 bytes from 10.42.1.7: icmp_seq=48 ttl=64 time=640.150 ms
+64 bytes from 10.42.1.7: icmp_seq=49 ttl=64 time=5.723 ms
+64 bytes from 10.42.1.7: icmp_seq=50 ttl=64 time=25.349 ms
+64 bytes from 10.42.1.7: icmp_seq=51 ttl=64 time=74.086 ms
+64 bytes from 10.42.1.7: icmp_seq=52 ttl=64 time=13.010 ms
+64 bytes from 10.42.1.7: icmp_seq=53 ttl=64 time=8.116 ms
+64 bytes from 10.42.1.7: icmp_seq=54 ttl=64 time=40.070 ms
+64 bytes from 10.42.1.7: icmp_seq=55 ttl=64 time=89.641 ms
+64 bytes from 10.42.1.7: icmp_seq=56 ttl=64 time=6.611 ms
+64 bytes from 10.42.1.7: icmp_seq=57 ttl=64 time=19.299 ms
+64 bytes from 10.42.1.7: icmp_seq=58 ttl=64 time=27.931 ms
+64 bytes from 10.42.1.7: icmp_seq=59 ttl=64 time=77.469 ms
+64 bytes from 10.42.1.7: icmp_seq=60 ttl=64 time=8.310 ms
+64 bytes from 10.42.1.7: icmp_seq=61 ttl=64 time=5.471 ms
+64 bytes from 10.42.1.7: icmp_seq=62 ttl=64 time=399.244 ms
+64 bytes from 10.42.1.7: icmp_seq=63 ttl=64 time=6.486 ms
+64 bytes from 10.42.1.7: icmp_seq=64 ttl=64 time=4.477 ms
+64 bytes from 10.42.1.7: icmp_seq=65 ttl=64 time=25.988 ms
+64 bytes from 10.42.1.7: icmp_seq=66 ttl=64 time=93.349 ms
+64 bytes from 10.42.1.7: icmp_seq=67 ttl=64 time=133.276 ms
+64 bytes from 10.42.1.7: icmp_seq=68 ttl=64 time=158.097 ms
+64 bytes from 10.42.1.7: icmp_seq=69 ttl=64 time=6.397 ms
+64 bytes from 10.42.1.7: icmp_seq=70 ttl=64 time=40.794 ms
+64 bytes from 10.42.1.7: icmp_seq=71 ttl=64 time=82.833 ms
+64 bytes from 10.42.1.7: icmp_seq=72 ttl=64 time=139.107 ms
+64 bytes from 10.42.1.7: icmp_seq=73 ttl=64 time=17.954 ms
+64 bytes from 10.42.1.7: icmp_seq=74 ttl=64 time=5.088 ms
+64 bytes from 10.42.1.7: icmp_seq=75 ttl=64 time=5.118 ms
+64 bytes from 10.42.1.7: icmp_seq=76 ttl=64 time=4.279 ms
+64 bytes from 10.42.1.7: icmp_seq=77 ttl=64 time=6.345 ms
+64 bytes from 10.42.1.7: icmp_seq=78 ttl=64 time=5.466 ms
+64 bytes from 10.42.1.7: icmp_seq=79 ttl=64 time=11.454 ms
+64 bytes from 10.42.1.7: icmp_seq=80 ttl=64 time=4.672 ms
+64 bytes from 10.42.1.7: icmp_seq=81 ttl=64 time=11.306 ms
+64 bytes from 10.42.1.7: icmp_seq=82 ttl=64 time=55.360 ms
+64 bytes from 10.42.1.7: icmp_seq=83 ttl=64 time=5.175 ms
+64 bytes from 10.42.1.7: icmp_seq=84 ttl=64 time=4.526 ms
+64 bytes from 10.42.1.7: icmp_seq=85 ttl=64 time=5.837 ms
+64 bytes from 10.42.1.7: icmp_seq=86 ttl=64 time=5.618 ms
+64 bytes from 10.42.1.7: icmp_seq=87 ttl=64 time=5.040 ms
+64 bytes from 10.42.1.7: icmp_seq=88 ttl=64 time=8.075 ms
+64 bytes from 10.42.1.7: icmp_seq=89 ttl=64 time=9.141 ms
+64 bytes from 10.42.1.7: icmp_seq=90 ttl=64 time=5.139 ms
+64 bytes from 10.42.1.7: icmp_seq=91 ttl=64 time=6.099 ms
+64 bytes from 10.42.1.7: icmp_seq=92 ttl=64 time=5.482 ms
+64 bytes from 10.42.1.7: icmp_seq=93 ttl=64 time=29.171 ms
+64 bytes from 10.42.1.7: icmp_seq=94 ttl=64 time=76.203 ms
+64 bytes from 10.42.1.7: icmp_seq=95 ttl=64 time=6.199 ms
+64 bytes from 10.42.1.7: icmp_seq=96 ttl=64 time=4.633 ms
+64 bytes from 10.42.1.7: icmp_seq=97 ttl=64 time=5.891 ms
+64 bytes from 10.42.1.7: icmp_seq=98 ttl=64 time=8.690 ms
+64 bytes from 10.42.1.7: icmp_seq=99 ttl=64 time=6.871 ms
+64 bytes from 10.42.1.7: icmp_seq=100 ttl=64 time=5.438 ms
+64 bytes from 10.42.1.7: icmp_seq=101 ttl=64 time=8.572 ms
+64 bytes from 10.42.1.7: icmp_seq=102 ttl=64 time=5.602 ms
+64 bytes from 10.42.1.7: icmp_seq=103 ttl=64 time=7.734 ms
+64 bytes from 10.42.1.7: icmp_seq=104 ttl=64 time=11.054 ms
+64 bytes from 10.42.1.7: icmp_seq=105 ttl=64 time=46.131 ms
+64 bytes from 10.42.1.7: icmp_seq=106 ttl=64 time=92.543 ms
+64 bytes from 10.42.1.7: icmp_seq=107 ttl=64 time=5.456 ms
+64 bytes from 10.42.1.7: icmp_seq=108 ttl=64 time=5.490 ms
+64 bytes from 10.42.1.7: icmp_seq=109 ttl=64 time=5.677 ms
+64 bytes from 10.42.1.7: icmp_seq=110 ttl=64 time=8.415 ms
+64 bytes from 10.42.1.7: icmp_seq=111 ttl=64 time=10.239 ms
+64 bytes from 10.42.1.7: icmp_seq=112 ttl=64 time=9.328 ms
+64 bytes from 10.42.1.7: icmp_seq=113 ttl=64 time=6.407 ms
+64 bytes from 10.42.1.7: icmp_seq=114 ttl=64 time=7.547 ms
+64 bytes from 10.42.1.7: icmp_seq=115 ttl=64 time=6.820 ms
+64 bytes from 10.42.1.7: icmp_seq=116 ttl=64 time=17.057 ms
+64 bytes from 10.42.1.7: icmp_seq=117 ttl=64 time=61.781 ms
+64 bytes from 10.42.1.7: icmp_seq=118 ttl=64 time=4.190 ms
+64 bytes from 10.42.1.7: icmp_seq=119 ttl=64 time=4.650 ms
+64 bytes from 10.42.1.7: icmp_seq=120 ttl=64 time=15.101 ms
+64 bytes from 10.42.1.7: icmp_seq=121 ttl=64 time=5.201 ms
+64 bytes from 10.42.1.7: icmp_seq=122 ttl=64 time=5.573 ms
+64 bytes from 10.42.1.7: icmp_seq=123 ttl=64 time=12.469 ms
+64 bytes from 10.42.1.7: icmp_seq=124 ttl=64 time=53.574 ms
+64 bytes from 10.42.1.7: icmp_seq=125 ttl=64 time=7.154 ms
+64 bytes from 10.42.1.7: icmp_seq=126 ttl=64 time=6.299 ms
+64 bytes from 10.42.1.7: icmp_seq=127 ttl=64 time=9.081 ms
+64 bytes from 10.42.1.7: icmp_seq=128 ttl=64 time=38.560 ms
+64 bytes from 10.42.1.7: icmp_seq=129 ttl=64 time=81.352 ms
+64 bytes from 10.42.1.7: icmp_seq=130 ttl=64 time=8.402 ms
+64 bytes from 10.42.1.7: icmp_seq=131 ttl=64 time=5.267 ms
+64 bytes from 10.42.1.7: icmp_seq=132 ttl=64 time=6.222 ms
+64 bytes from 10.42.1.7: icmp_seq=133 ttl=64 time=6.909 ms
+64 bytes from 10.42.1.7: icmp_seq=134 ttl=64 time=5.991 ms
+64 bytes from 10.42.1.7: icmp_seq=135 ttl=64 time=10.068 ms
+64 bytes from 10.42.1.7: icmp_seq=136 ttl=64 time=5.616 ms
+64 bytes from 10.42.1.7: icmp_seq=137 ttl=64 time=6.771 ms
+64 bytes from 10.42.1.7: icmp_seq=138 ttl=64 time=7.905 ms
+64 bytes from 10.42.1.7: icmp_seq=139 ttl=64 time=16.369 ms
+64 bytes from 10.42.1.7: icmp_seq=140 ttl=64 time=59.082 ms
+64 bytes from 10.42.1.7: icmp_seq=141 ttl=64 time=5.270 ms
+64 bytes from 10.42.1.7: icmp_seq=142 ttl=64 time=6.105 ms
+64 bytes from 10.42.1.7: icmp_seq=143 ttl=64 time=8.070 ms
+64 bytes from 10.42.1.7: icmp_seq=144 ttl=64 time=7.982 ms
+64 bytes from 10.42.1.7: icmp_seq=145 ttl=64 time=8.126 ms
+64 bytes from 10.42.1.7: icmp_seq=146 ttl=64 time=7.116 ms
+64 bytes from 10.42.1.7: icmp_seq=147 ttl=64 time=7.200 ms
+64 bytes from 10.42.1.7: icmp_seq=148 ttl=64 time=19.978 ms
+64 bytes from 10.42.1.7: icmp_seq=149 ttl=64 time=6.775 ms
+64 bytes from 10.42.1.7: icmp_seq=150 ttl=64 time=9.450 ms
+64 bytes from 10.42.1.7: icmp_seq=151 ttl=64 time=26.960 ms
+64 bytes from 10.42.1.7: icmp_seq=152 ttl=64 time=70.953 ms
+64 bytes from 10.42.1.7: icmp_seq=153 ttl=64 time=137.912 ms
+64 bytes from 10.42.1.7: icmp_seq=154 ttl=64 time=160.058 ms
+64 bytes from 10.42.1.7: icmp_seq=155 ttl=64 time=203.556 ms
+64 bytes from 10.42.1.7: icmp_seq=156 ttl=64 time=5.606 ms
+64 bytes from 10.42.1.7: icmp_seq=157 ttl=64 time=5.829 ms
+64 bytes from 10.42.1.7: icmp_seq=158 ttl=64 time=8.791 ms
+64 bytes from 10.42.1.7: icmp_seq=159 ttl=64 time=5.842 ms
+64 bytes from 10.42.1.7: icmp_seq=160 ttl=64 time=6.045 ms
+64 bytes from 10.42.1.7: icmp_seq=161 ttl=64 time=6.091 ms
+64 bytes from 10.42.1.7: icmp_seq=162 ttl=64 time=6.011 ms
+64 bytes from 10.42.1.7: icmp_seq=163 ttl=64 time=30.356 ms
+64 bytes from 10.42.1.7: icmp_seq=164 ttl=64 time=80.180 ms
+64 bytes from 10.42.1.7: icmp_seq=165 ttl=64 time=127.989 ms
+64 bytes from 10.42.1.7: icmp_seq=166 ttl=64 time=4.877 ms
+64 bytes from 10.42.1.7: icmp_seq=167 ttl=64 time=5.197 ms
+64 bytes from 10.42.1.7: icmp_seq=168 ttl=64 time=11.273 ms
+64 bytes from 10.42.1.7: icmp_seq=169 ttl=64 time=4.705 ms
+64 bytes from 10.42.1.7: icmp_seq=170 ttl=64 time=5.401 ms
+64 bytes from 10.42.1.7: icmp_seq=171 ttl=64 time=5.546 ms
+64 bytes from 10.42.1.7: icmp_seq=172 ttl=64 time=5.825 ms
+64 bytes from 10.42.1.7: icmp_seq=173 ttl=64 time=5.412 ms
+64 bytes from 10.42.1.7: icmp_seq=174 ttl=64 time=8.308 ms
+64 bytes from 10.42.1.7: icmp_seq=175 ttl=64 time=55.613 ms
+64 bytes from 10.42.1.7: icmp_seq=176 ttl=64 time=6.008 ms
+64 bytes from 10.42.1.7: icmp_seq=177 ttl=64 time=5.338 ms
+64 bytes from 10.42.1.7: icmp_seq=178 ttl=64 time=6.774 ms
+64 bytes from 10.42.1.7: icmp_seq=179 ttl=64 time=5.150 ms
+64 bytes from 10.42.1.7: icmp_seq=180 ttl=64 time=6.474 ms
+64 bytes from 10.42.1.7: icmp_seq=181 ttl=64 time=7.444 ms
+64 bytes from 10.42.1.7: icmp_seq=182 ttl=64 time=5.731 ms
+64 bytes from 10.42.1.7: icmp_seq=183 ttl=64 time=5.247 ms
+Request timeout for icmp_seq 184
+64 bytes from 10.42.1.7: icmp_seq=185 ttl=64 time=9.506 ms
+64 bytes from 10.42.1.7: icmp_seq=186 ttl=64 time=24.624 ms
+64 bytes from 10.42.1.7: icmp_seq=187 ttl=64 time=70.888 ms
+64 bytes from 10.42.1.7: icmp_seq=188 ttl=64 time=7.136 ms
+64 bytes from 10.42.1.7: icmp_seq=189 ttl=64 time=4.818 ms
+64 bytes from 10.42.1.7: icmp_seq=190 ttl=64 time=8.459 ms
+64 bytes from 10.42.1.7: icmp_seq=191 ttl=64 time=8.865 ms
+64 bytes from 10.42.1.7: icmp_seq=192 ttl=64 time=4.695 ms
+64 bytes from 10.42.1.7: icmp_seq=193 ttl=64 time=5.541 ms
+64 bytes from 10.42.1.7: icmp_seq=194 ttl=64 time=6.980 ms
+64 bytes from 10.42.1.7: icmp_seq=195 ttl=64 time=6.106 ms
+64 bytes from 10.42.1.7: icmp_seq=196 ttl=64 time=5.101 ms
+64 bytes from 10.42.1.7: icmp_seq=197 ttl=64 time=8.410 ms
+64 bytes from 10.42.1.7: icmp_seq=198 ttl=64 time=36.200 ms
+64 bytes from 10.42.1.7: icmp_seq=199 ttl=64 time=84.012 ms
+64 bytes from 10.42.1.7: icmp_seq=200 ttl=64 time=5.700 ms
+64 bytes from 10.42.1.7: icmp_seq=201 ttl=64 time=6.616 ms
+64 bytes from 10.42.1.7: icmp_seq=202 ttl=64 time=7.409 ms
+64 bytes from 10.42.1.7: icmp_seq=203 ttl=64 time=5.406 ms
+64 bytes from 10.42.1.7: icmp_seq=204 ttl=64 time=6.179 ms
+64 bytes from 10.42.1.7: icmp_seq=205 ttl=64 time=8.971 ms
+64 bytes from 10.42.1.7: icmp_seq=206 ttl=64 time=5.838 ms
+64 bytes from 10.42.1.7: icmp_seq=207 ttl=64 time=4.800 ms
+64 bytes from 10.42.1.7: icmp_seq=208 ttl=64 time=5.593 ms
+64 bytes from 10.42.1.7: icmp_seq=209 ttl=64 time=12.147 ms
+64 bytes from 10.42.1.7: icmp_seq=210 ttl=64 time=55.923 ms
+64 bytes from 10.42.1.7: icmp_seq=211 ttl=64 time=7.750 ms
+64 bytes from 10.42.1.7: icmp_seq=212 ttl=64 time=4.634 ms
+64 bytes from 10.42.1.7: icmp_seq=213 ttl=64 time=8.828 ms
+64 bytes from 10.42.1.7: icmp_seq=214 ttl=64 time=4.977 ms
+64 bytes from 10.42.1.7: icmp_seq=215 ttl=64 time=5.129 ms
+64 bytes from 10.42.1.7: icmp_seq=216 ttl=64 time=5.485 ms
+64 bytes from 10.42.1.7: icmp_seq=217 ttl=64 time=5.653 ms
+64 bytes from 10.42.1.7: icmp_seq=218 ttl=64 time=5.964 ms
+64 bytes from 10.42.1.7: icmp_seq=219 ttl=64 time=5.518 ms
+
+--- 10.42.1.7 ping statistics ---
+220 packets transmitted, 186 packets received, 15.5% packet loss
+round-trip min/avg/max/stddev = 4.190/40.672/1239.755/110.718 ms
