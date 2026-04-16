@@ -22,10 +22,12 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/qlog"
 	"github.com/sirupsen/logrus"
 )
 
@@ -50,7 +52,9 @@ type Server struct {
 func NewServer(port int, log *logrus.Logger) (*Server, error) {
 	if log == nil {
 		log = logrus.New()
-		log.SetLevel(logrus.WarnLevel)
+		// InfoLevel so loggingPacketConn's NEW src/dst messages are visible
+		// in `docker logs` / `nomad alloc logs`. Migration debug needs them.
+		log.SetLevel(logrus.InfoLevel)
 	}
 	tlsConf, err := generateSelfSignedTLSConfig()
 	if err != nil {
@@ -63,12 +67,20 @@ func NewServer(port int, log *logrus.Logger) (*Server, error) {
 		return nil, fmt.Errorf("listen UDP %d: %w", port, err)
 	}
 
-	tr := &quic.Transport{Conn: conn}
+	// Wrap UDP conn with a packet logger so we can see, in `nomad alloc logs`,
+	// every new (src_ip, src_port) pair the server sees and every dst it sends
+	// to. During migration debug this directly answers: did PATH_CHALLENGE
+	// from the cellular IP actually reach the server?
+	wrapped := &loggingPacketConn{UDPConn: conn, log: log, seen: map[string]struct{}{}}
+	tr := &quic.Transport{Conn: wrapped}
 	ln, err := tr.Listen(tlsConf, &quic.Config{
 		EnableDatagrams:      true,
 		MaxIdleTimeout:       60 * time.Second,
 		KeepAlivePeriod:      15 * time.Second,
 		HandshakeIdleTimeout: 10 * time.Second,
+		// qlog: enabled when QLOGDIR env var is set; nil otherwise. Used to
+		// capture PATH_CHALLENGE/PATH_RESPONSE frames during migration debug.
+		Tracer: qlog.DefaultConnectionTracer,
 	})
 	if err != nil {
 		conn.Close()
@@ -180,4 +192,83 @@ func generateSelfSignedTLSConfig() (*tls.Config, error) {
 		NextProtos:   []string{ALPN},
 		MinVersion:   tls.VersionTLS13,
 	}, nil
+}
+
+// loggingPacketConn wraps a *net.UDPConn and emits a logrus line the first
+// time it sees a new (src_ip, src_port). It logs ALL outbound destinations
+// during migration windows by tracking distinct dest tuples too.
+//
+// Used purely for debugging WiFi → cellular migration: we need to know
+// whether the server ever receives a packet from the cellular IP and whether
+// it sends anything back to it.
+type loggingPacketConn struct {
+	*net.UDPConn
+	log  *logrus.Logger
+	mu   sync.Mutex
+	seen map[string]struct{}
+}
+
+func (c *loggingPacketConn) noteRX(addr net.Addr, n int) {
+	if addr == nil {
+		return
+	}
+	key := "rx:" + addr.String()
+	c.mu.Lock()
+	_, ok := c.seen[key]
+	if !ok {
+		c.seen[key] = struct{}{}
+	}
+	c.mu.Unlock()
+	if !ok {
+		c.log.WithField("src", addr.String()).WithField("first_bytes", n).
+			Info("quictransport: NEW src addr received packet")
+	}
+}
+
+func (c *loggingPacketConn) noteTX(addr net.Addr, n int, err error) {
+	if addr == nil {
+		return
+	}
+	key := "tx:" + addr.String()
+	c.mu.Lock()
+	_, ok := c.seen[key]
+	if !ok {
+		c.seen[key] = struct{}{}
+	}
+	c.mu.Unlock()
+	if !ok {
+		c.log.WithField("dst", addr.String()).WithField("bytes", n).
+			WithField("err", err).Info("quictransport: NEW dst addr sent packet")
+	}
+}
+
+func (c *loggingPacketConn) ReadFrom(b []byte) (int, net.Addr, error) {
+	n, addr, err := c.UDPConn.ReadFrom(b)
+	if err == nil {
+		c.noteRX(addr, n)
+	}
+	return n, addr, err
+}
+
+func (c *loggingPacketConn) WriteTo(b []byte, addr net.Addr) (int, error) {
+	n, err := c.UDPConn.WriteTo(b, addr)
+	c.noteTX(addr, n, err)
+	return n, err
+}
+
+// ReadMsgUDP / WriteMsgUDP are the hot path quic-go uses on OOBCapablePacketConn.
+// We must override them; otherwise quic-go's promoted-method call bypasses our
+// logging entirely.
+func (c *loggingPacketConn) ReadMsgUDP(b, oob []byte) (n, oobn, flags int, addr *net.UDPAddr, err error) {
+	n, oobn, flags, addr, err = c.UDPConn.ReadMsgUDP(b, oob)
+	if err == nil {
+		c.noteRX(addr, n)
+	}
+	return
+}
+
+func (c *loggingPacketConn) WriteMsgUDP(b, oob []byte, addr *net.UDPAddr) (n, oobn int, err error) {
+	n, oobn, err = c.UDPConn.WriteMsgUDP(b, oob, addr)
+	c.noteTX(addr, n, err)
+	return
 }

@@ -31,6 +31,7 @@ func runMigration(args []string) {
 	addr := fs.String("addr", "", "QUIC endpoint (host:port). Required.")
 	duration := fs.Duration("duration", 5*time.Minute, "How long to run the probe.")
 	interval := fs.Duration("interval", time.Second, "Delay between probe datagrams.")
+	forceMigrate := fs.Duration("force-migrate-after", 0, "Force a QUIC migration attempt after this delay (for diagnostic / LAN testing). 0=disabled.")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: hop-agent migration --addr <host:port> [--duration 5m] [--interval 1s]\n\n")
 		fmt.Fprintln(os.Stderr, "Long-lived QUIC connection that sends one datagram per interval and expects an echo.")
@@ -58,10 +59,11 @@ func runMigration(args []string) {
 	}()
 
 	cfg := quictransport.ProbeConfig{
-		Addr:     *addr,
-		Duration: *duration,
-		Interval: *interval,
-		Out:      os.Stderr,
+		Addr:               *addr,
+		Duration:           *duration,
+		Interval:           *interval,
+		Out:                os.Stderr,
+		ForceMigrateAfter:  *forceMigrate,
 	}
 	if err := quictransport.RunProbe(ctx, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "probe error: %v\n", err)
