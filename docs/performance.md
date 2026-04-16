@@ -63,12 +63,7 @@ Reduces GC frequency 4x. Eliminated 100ms GC pause spikes.
 
 ### TUN Read Buffer Reuse (v0.6.51)
 Vendor patch eliminates per-packet heap allocation in `tun_darwin.go:Read()`.
-**Patch:** `patches/nebula-darwin-perf.patch`
-
-### Decoupled Multi-Reader UDP (v0.6.56)
-Vendor patch to `interface.go` separates `tunRoutines` from `routines`. macOS gets
-4 parallel UDP reader goroutines (SO_REUSEPORT) sharing a mutex-protected TUN writer.
-**Patch:** `patches/nebula-darwin-multithread.patch`
+**Patch:** `patches/03-tun-darwin-read-buffer.patch`
 
 ### Faster Handshake + Blocking Tunnel Warmup (v0.6.54-v0.6.58)
 `handshakes.try_interval: 20ms` (down from 100ms). Agent pre-warms all mesh
@@ -662,9 +657,9 @@ iperf3 -c <mesh-ip>     # on the other
 - **macOS Screen Sharing checks TUN interface MTU.** Rejects High Performance
   mode if MTU is below a threshold (experimentally ~1500). MTU 2800+ always
   passes. Adaptive MTU (DPLPMTUD) will solve this automatically.
-- **Coalescing buffer size is a latency/throughput tradeoff.** 8KB buffer
+- **Coalescing buffer size is a latency/throughput tradeoff (measured in aborted coalescing spike, never shipped).** 8KB buffer
   cut sendto by 59% but amplified WiFi spikes to 423ms (5-6 IP fragments).
-  3200 bytes (2 packets per batch) is the sweet spot.
+  3200 bytes (2 packets per batch) was the sweet spot in that experiment.
 - **Higher MTU = fewer TUN reads per frame.** MTU 4400 (3 IP fragments)
   reduces TUN reads from 35 to 12 per 50KB keyframe — 33% less encrypt+send
   time. But static high MTU breaks internet paths.

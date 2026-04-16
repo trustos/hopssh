@@ -152,48 +152,36 @@ go mod tidy
 make generate
 ```
 
-### Nebula Fork
+### Nebula Vendor Patches
 
-hopssh uses a fork of Nebula at [github.com/trustos/nebula](https://github.com/trustos/nebula)
-(branch: `hopssh`) for performance enhancements and feature additions. The fork
-is consumed via a `replace` directive in `go.mod` — no import rewrites needed:
-
-```go
-replace github.com/slackhq/nebula => github.com/trustos/nebula v1.10.3-hopssh.1
-```
-
-**Changes in the fork** (6 commits on the `hopssh` branch):
-
-| Change | Description |
-|--------|-------------|
-| Graceful shutdown | Fix `os.Exit(2)` on service close (upstream PR #1375) |
-| TUN buffer reuse | Eliminate per-packet allocation + write mutex (macOS) |
-| UDP multi-reader | Socket buffer support + `SupportsMultipleReaders()` (macOS) |
-| Decoupled routines | Separate TUN/UDP routine counts for macOS SO_REUSEPORT |
-| Packet coalescing | Batch UDP sends with length-prefix framing + Linux panic fix |
-| PMTUD support | `SetMTU` interface, `SendTestRequest`, `TestReply` callback |
-
-See the fork's [HOPSSH.md](https://github.com/trustos/nebula/blob/hopssh/HOPSSH.md) for
-the full maintenance guide, including how to add changes and upgrade upstream.
-
-#### Modifying the Fork
+hopssh vendors `slackhq/nebula` and applies patches from `patches/` on top.
+No fork — patches are applied in sequence via `make patch-vendor`.
 
 ```bash
-git clone git@github.com:trustos/nebula.git
-cd nebula && git checkout hopssh
-# Make changes, commit, tag v1.10.3-hopssh.N, push
-# Then in hopssh: update go.mod replace version, go mod tidy
+make setup          # vendors + applies patches
+make patch-vendor   # re-apply patches after manual vendor changes
 ```
+
+**Current patches (10):**
+
+| # | Patch | Category |
+|---|---|---|
+| 01 | `graceful-shutdown.patch` — fix `os.Exit(2)` on service close (upstream PR #1375) | Bug fix |
+| 02 | `testreply-panic-fix.patch` — nil-pointer panic in handshake test-reply | Bug fix |
+| 03 | `tun-darwin-read-buffer.patch` — eliminate per-packet heap allocation | Perf (alloc) |
+| 04-08 | `batch-udp-darwin` / `batch-tun-darwin` / `batch-listenin` / `conn-flush-interface` — `sendmsg_x`/`recvmsg_x` batch syscalls on macOS, pure Go, no CGO | Perf (Darwin) |
+| 09-10 | `priority-queue-darwin` — 2-lane control/data priority queue in send path | Perf (Darwin) |
+
+See [`patches/README.md`](../patches/README.md) for the full inventory,
+upstream plan, and retention rationale for each patch.
 
 #### Upgrading Upstream Nebula
 
 ```bash
-cd nebula-fork
-git fetch upstream
-git rebase upstream/v1.11.0
-git tag v1.11.0-hopssh.1
-git push origin hopssh --tags --force-with-lease
-# In hopssh: update replace directive, go mod tidy
+# Update the version in go.mod, re-vendor, re-apply patches:
+go get github.com/slackhq/nebula@v1.X.Y
+make vendor          # vendors + patches
+go build ./...       # verify patches still apply cleanly
 ```
 
 #### Performance Profiling
