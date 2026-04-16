@@ -617,10 +617,10 @@ Nebula internals that can't be shimmed.
 
 | Phase | Impact | Effort | Platforms | Status |
 |-------|--------|--------|-----------|--------|
-| 1. Coalescing | High (59% sendto reduction) | Medium | All | ✅ Done (v0.6.59) |
-| 2. Crypto pools | Medium (parallelism) | Medium | All | Planned |
-| 3. Platform I/O | High on Linux, low on macOS | Medium | Linux, macOS, Windows | Planned |
-| 4. Adaptive MTU (DPLPMTUD) | High (auto-optimize per path) | Medium | All | ✅ Done (v0.7.3) — first mesh VPN |
+| 1. Coalescing | High (59% sendto reduction) | Medium | All | ⏳ Planned — design in Phase 1 below, `internal/coalesce/` not yet built |
+| 2. Crypto pools | Medium (parallelism) | Medium | All | ⏳ Planned |
+| 3. Platform I/O | High on Linux, low on macOS | Medium | Linux, macOS, Windows | ⏳ Planned (Linux); ✅ macOS shipped (patches 04-10) |
+| 4. Adaptive MTU (DPLPMTUD) | High (auto-optimize per path) | Medium | All | ⏳ Planned — design in Phase 4 below, `internal/pmtud/` not yet built. No mesh VPN ships this today. |
 
 ## Profiling Methodology
 

@@ -18,8 +18,8 @@ hopssh is a working encrypted mesh networking platform. Phase 1 (mesh core) is c
 - Teams with invite links, admin/member roles, network sharing
 - Audit logging, real-time WebSocket events, self-update
 - Docker, systemd, launchd, non-root agent, cross-platform releases
-- Packet coalescing (v0.6.59) — 75% syscall reduction
-- Adaptive MTU via DPLPMTUD (v0.7.3) — first mesh VPN with RFC 8899
+- macOS batch syscalls (`sendmsg_x`/`recvmsg_x`) — 17% → 35-53% tunnel efficiency
+- macOS TUN batch reads, control-lane priority queue, TUN buffer caching, AES-GCM default
 
 ---
 
@@ -110,7 +110,7 @@ Features that add network fabric depth. Positions hopssh against ZeroTier's netw
 | 17 | **Regional relay nodes** | Add standalone relay nodes in different regions via the dashboard. Configure, deploy, and monitor relay health. | ZeroTier has private roots/moons. DN requires customer-hosted relays with no management UI. TS DERP servers are concentrated in US/EU — users in Asia/Africa/South America report high relay latency. Dashboard-managed relays are a UX win and needed for scale past ~10K nodes. | L | Moderate — lighthouses are currently tightly coupled to the control plane binary. Need to decouple relay into separate enrollment type and modify Nebula config to reference remote relay addresses. New enrollment flow needed. | — |
 | 18 | **Peer connectivity map** | Visual network topology showing P2P vs relayed connections, handshake status, latency per peer. Full mesh visualization. | Builds on #2 (per-node status) to show the complete network graph. No competitor has this. Operators need to see mesh health during incidents. | M | High — #2 and #4 establish the agent stats foundation. This is the dashboard visualization layer on top. | #2, #4 |
 | 19 | **IPv6 overlay** | Support IPv6 addresses in the mesh overlay using Nebula v2 certificates. | ZeroTier and Tailscale both support IPv6. Nebula v2 certs add this natively. Needed for modern infrastructure. | M | High — Nebula v2 certs support IPv6. Requires updating PKI code to use v2 cert format and extending subnet allocation. | — |
-| N4 | **macOS batch UDP via `sendmsg_x`/`recvmsg_x`** | Wrap macOS private batch syscalls (syscall #481/#480) in CGO. Batch up to 100 recv / 1024 send per syscall. Vendor patch Nebula's UDP layer to use them. | **No VPN uses these.** WireGuard-Go, Tailscale, ZeroTier all fall back to 1-packet-at-a-time on macOS. Would push throughput from 217→600-800 Mbps. First mesh VPN with batch UDP on macOS = marketing goldmine ("fastest mesh VPN on macOS" blog post). | M | High — syscalls are stable since macOS 10.11 (2015), used by Apple internally. Requires CGO (breaks pure-Go for macOS build). Must `connect()` UDP socket for send fast path. See `docs/performance.md` for full research. | — |
+| N4 | **macOS batch UDP via `sendmsg_x`/`recvmsg_x`** | Pure Go (no CGO) implementation of XNU private batch syscalls (#481/#480). Vendor patches 04-08 in `patches/`. | **No other VPN uses these.** Tunnel efficiency 17% → 35-53% of raw WiFi. First mesh VPN with batch UDP on macOS. | M | — | ✅ Done (patches 04-08). Pure Go, not CGO. |
 
 ### Phase 3B: Identity & Access Platform
 
@@ -146,7 +146,7 @@ Build when there is customer demand and revenue to justify the investment.
 
 | Tier | Price | Limits |
 |---|---|---|
-| Free | $0 | 25 nodes, 1 network |
+| Free | $0 | No limit enforced today — target: 25 nodes, 1 network |
 | Pro | $5/node/month | Unlimited networks, DNS, terminal, audit, API keys |
 | Enterprise | Contact | SSO, RBAC, session recording, log streaming, SLA |
 
@@ -266,8 +266,8 @@ Regional lighthouses. Dedicated relay fleet. At this scale, revenue justifies th
 - [x] Docker support (distroless, multi-arch, compose)
 - [x] Install script served by control plane
 - [x] Self-update for agent and server
-- [ ] Deployed on a VPS with public IP and TLS
-- [ ] Domain: hopssh.com with HTTPS
+- [x] Deployed on a VPS with public IP and TLS (OCI arm64, Nomad + Traefik, v0.9.5)
+- [x] Domain: hopssh.com with HTTPS (Let's Encrypt via Traefik)
 - [ ] Landing page with sign-up and self-hosted download
 - [ ] Demo video: "60 seconds from install to Jellyfin"
 - [ ] Blog post: "Why we built hopssh"

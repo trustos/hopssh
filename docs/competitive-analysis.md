@@ -22,8 +22,8 @@
 | P2P with hole punching | Yes (Nebula punchy) | Yes | Yes | Yes |
 | Relay fallback | Yes (lighthouse relay, UDP) | Yes (customer-hosted relays) | Yes (DERP, TCP/443) | Yes (roots, TCP) |
 | Per-network CA / crypto isolation | Yes (separate CA per network) | Yes | No (single tailnet) | No (single network key) |
-| Adaptive MTU (DPLPMTUD) | **Yes — RFC 8899** | No | No (experimental) | No |
-| Packet coalescing | **Yes** | No | No | No |
+| Adaptive MTU (DPLPMTUD) | No (planned) | No | No (experimental) | No |
+| macOS batch syscalls (sendmsg_x) | **Yes — unique** | No | No | No |
 | | | | | |
 | **Identity & Auth** | | | | |
 | Email/password auth | Yes | No (SSO only for panel) | No (SSO only) | Yes |
@@ -349,8 +349,9 @@ This is the long game. Tailscale's moat is identity + policy + compliance:
 
 ### Performance Leadership
 
-- Adaptive MTU via DPLPMTUD (RFC 8899) — first mesh VPN to ship this, discovers optimal path MTU automatically
-- Packet coalescing — 75% reduction in UDP syscalls, competitive throughput on all platforms
+- macOS `sendmsg_x`/`recvmsg_x` batch syscalls — only VPN using private XNU batch-send; 17% → 35-53% tunnel efficiency
+- macOS control-lane priority queue — handshakes/lighthouse ahead of bulk data
+- TUN buffer caching + AES-GCM hardware acceleration on Apple Silicon
 
 ### The product thesis
 

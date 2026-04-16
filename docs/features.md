@@ -137,12 +137,14 @@
 
 ## Performance & Optimization
 
-- **Packet coalescing** — batches multiple encrypted packets into a single UDP send, reducing sendto syscalls by up to 75% on all platforms
-- **Adaptive MTU (DPLPMTUD, RFC 8899)** — binary search discovers optimal per-peer path MTU automatically; re-probes every 5 minutes for path changes (WiFi roaming); first mesh VPN to implement this
-- **Tunnel pre-warming** — agent blocks on startup until all peer Noise handshakes complete, ensuring Screen Sharing High Performance mode works on first connection
-- **Multi-reader UDP (macOS)** — 4 parallel UDP reader goroutines via SO_REUSEPORT, decoupled from single TUN writer via mutex
-- **GOGC=400** — reduces Go GC pause frequency 4x, eliminates 100ms latency spikes
-- **pprof endpoint** — built-in CPU/memory profiling at `/debug/pprof/*` behind bearer token auth
+- **macOS batch UDP syscalls (`sendmsg_x`/`recvmsg_x`)** — pure Go, no CGO. Batches 32-128 packets per syscall on macOS via private XNU syscalls. Tunnel efficiency 17% → 35-53% of raw WiFi. No other VPN uses these. (Vendor patches 04-08.)
+- **macOS TUN batch reads** — `recvmsg_x` on the `utun` device for inbound batching. Companion to batch UDP. (Vendor patch 06.)
+- **macOS control-lane priority queue** — 2-lane send queue: Nebula control packets (handshake, lighthouse, test, close) ahead of data. Preserves within-flow ordering for data. (Vendor patches 09-10.)
+- **TUN read buffer caching (macOS)** — eliminates per-packet `make([]byte, len+4)` allocation (~9KB/packet). (Vendor patch 03.)
+- **AES-GCM cipher default** — exploits Apple Silicon / x86 AES-NI hardware instructions (single-cycle). Faster than ChaCha20-Poly1305 on modern hardware.
+- **Tunnel pre-warming** — agent blocks on startup until all peer Noise handshakes complete, ensuring tunnels are ready on first connection.
+- **GOGC=400** — reduces Go GC pause frequency 4×, eliminates 100ms latency spikes from garbage collection.
+- **pprof endpoint** — built-in CPU/memory profiling at `/debug/pprof/*` behind bearer token auth.
 
 ## API
 
