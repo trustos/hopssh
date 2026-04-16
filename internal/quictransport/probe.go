@@ -1,10 +1,22 @@
-// Migration-probe client. Used by `hop-agent migration` to validate that a
-// QUIC connection survives a local IP change (WiFi → cellular handoff).
+// Migration-probe client. Used by `hop-agent migration` to validate that the
+// hopssh QUIC transport survives real-world network changes (WiFi → cellular,
+// interface drop, sleep/wake).
 //
-// The probe opens a long-lived QUIC connection, sends one 64-byte datagram per
-// second, and expects the server to echo it back. Every event (send, recv,
-// error, local-address change indicating QUIC migration) is logged with a
-// timestamp so we can correlate with operator-driven network switches.
+// The probe opens a Session — a long-lived datagram pipe to a fixed server,
+// transparently reconnected when the underlying QUIC connection dies. It sends
+// one 64-byte datagram per second and expects the server to echo it back.
+// Every event is logged with a relative timestamp so we can correlate with
+// operator-driven network switches.
+//
+// Why Session and not quic-go's Connection.AddPath() / Path.Probe() / Switch():
+// we tested AddPath/Probe/Switch on real cellular and on `ifconfig en0 down`
+// (see spike/migration-evidence/ and the QUIC Connection Migration entry in
+// CLAUDE.md). Result: AddPath/Probe is a race-condition fix only — it works
+// for sub-30s handoffs while the connection is still alive, but for any real
+// outage quic-go silently closes the connection and migration becomes a no-op
+// (zero PATH_CHALLENGE frames ever leave the host across many attempts).
+// Session reconnects with TLS resumption instead, which IS robust to real
+// outages — see internal/quictransport/session.go for the rationale.
 
 package quictransport
 
@@ -30,17 +42,17 @@ type ProbeConfig struct {
 	Duration time.Duration
 	// Interval between sent datagrams (default 1s).
 	Interval time.Duration
-	// Out is where each probe event line is written. If nil, uses os.Stderr.
+	// Out is where each probe event line is written. If nil, errors out.
 	Out io.Writer
-	// ForceMigrateAfter, if non-zero, triggers a forced migration attempt
-	// after this delay. Diagnostic only — used to test the migration mechanism
-	// in a controlled setting (e.g. on LAN, where there's no NAT to confuse).
-	ForceMigrateAfter time.Duration
+	// ForceReconnectAfter, if non-zero, triggers a synthetic reconnect after
+	// this delay. Diagnostic only — used to test the reconnect path on a
+	// healthy network.
+	ForceReconnectAfter time.Duration
 }
 
 // RunProbe runs a migration probe. Returns nil on normal completion; an error
-// on dial failure (we keep going past per-packet errors so we can observe
-// migration recovery).
+// only on unrecoverable setup failure (initial dial). Per-packet errors and
+// reconnects are logged but do not abort the run.
 func RunProbe(ctx context.Context, cfg ProbeConfig) error {
 	if cfg.Interval == 0 {
 		cfg.Interval = time.Second
@@ -64,186 +76,138 @@ func RunProbe(ctx context.Context, cfg ProbeConfig) error {
 		InsecureSkipVerify: true, // probe phase: no auth, see server.go
 		NextProtos:         []string{ALPN},
 		MinVersion:         tls.VersionTLS13,
+		// LRU session cache so reconnects can resume the TLS session
+		// (~1 RTT instead of ~3 RTT for full handshake + cert validate).
+		ClientSessionCache: tls.NewLRUClientSessionCache(4),
 	}
 	quicConf := &quic.Config{
 		EnableDatagrams:      true,
 		MaxIdleTimeout:       60 * time.Second,
 		KeepAlivePeriod:      15 * time.Second,
 		HandshakeIdleTimeout: 10 * time.Second,
-		// qlog: enabled when QLOGDIR env var is set; nil otherwise. Used to
-		// capture PATH_CHALLENGE/PATH_RESPONSE frames during migration debug.
+		// qlog: enabled when QLOGDIR env var is set; nil otherwise. Captures
+		// the per-connection frame trace for forensic analysis.
 		Tracer: qlog.DefaultConnectionTracer,
 	}
 
-	// Use an explicit Transport (rather than quic.DialAddr) so we have a handle
-	// on the underlying UDP socket. quic-go's connection migration is
-	// client-triggered: when our local network changes, we have to open a new
-	// socket, AddPath() it to the connection, Probe it, then Switch.
 	serverUDP, err := net.ResolveUDPAddr("udp", cfg.Addr)
 	if err != nil {
 		logf("RESOLVE FAILED: %v", err)
 		return err
 	}
-	// Stash for migration helper.
-	migrateServerAddr := serverUDP
 
-	initConn, err := net.ListenUDP("udp", nil)
+	// One UDP socket, shared across reconnects via quic.Transport. Keeping
+	// the same local socket means the same source 4-tuple (modulo NAT) for
+	// the entire probe run — useful for tcpdump correlation.
+	udpConn, err := net.ListenUDP("udp", nil)
 	if err != nil {
 		logf("LISTEN UDP FAILED: %v", err)
 		return err
 	}
-	tr := &quic.Transport{Conn: initConn}
+	defer udpConn.Close()
+	tr := &quic.Transport{Conn: udpConn}
 
-	dialCtx, dialCancel := context.WithTimeout(ctx, 10*time.Second)
-	conn, err := tr.Dial(dialCtx, serverUDP, tlsConf, quicConf)
-	dialCancel()
-	if err != nil {
-		logf("DIAL FAILED: %v", err)
-		_ = initConn.Close()
-		return err
-	}
-	logf("CONNECTED. local=%s remote=%s", conn.LocalAddr(), conn.RemoteAddr())
-	defer func() { _ = conn.CloseWithError(0, "done") }()
-
-	// Receiver goroutine — feeds events back through rxCh.
-	type rxEvent struct {
-		seq uint32
-		t   time.Time
-		err error
-	}
+	// Session encapsulates the reconnect logic.
 	rxCh := make(chan rxEvent, 64)
 	rxCtx, rxCancel := context.WithCancel(ctx)
 	defer rxCancel()
-	go func() {
-		for {
-			recvCtx, recvCancel := context.WithTimeout(rxCtx, 30*time.Second)
-			msg, err := conn.ReceiveDatagram(recvCtx)
-			recvCancel()
-			now := time.Now()
-			if err != nil {
-				select {
-				case rxCh <- rxEvent{err: err, t: now}:
-				case <-rxCtx.Done():
-				}
-				return
-			}
-			if len(msg) >= 5 && msg[0] == 0xFF {
-				seq := uint32(msg[1])<<24 | uint32(msg[2])<<16 | uint32(msg[3])<<8 | uint32(msg[4])
-				select {
-				case rxCh <- rxEvent{seq: seq, t: now}:
-				case <-rxCtx.Done():
-					return
-				}
-			}
-		}
-	}()
+
+	sess, err := NewSession(ctx, tr, SessionConfig{
+		ServerAddr: serverUDP,
+		TLSConfig:  tlsConf,
+		QUICConfig: quicConf,
+		OnReconnect: func(newConn *quic.Conn) {
+			logf("RECONNECTED. local=%s remote=%s connID=%v",
+				newConn.LocalAddr(), newConn.RemoteAddr(), connIDPrefix(newConn))
+			// Start a fresh receiver goroutine on the new connection.
+			// The previous one (if any) returned an error already from its
+			// blocked ReceiveDatagram and exited.
+			go runReceiver(rxCtx, newConn, rxCh)
+		},
+	})
+	if err != nil {
+		logf("DIAL FAILED: %v", err)
+		return err
+	}
+	defer sess.Close()
+	conn0, _ := sess.Conn()
+	logf("CONNECTED. local=%s remote=%s connID=%v",
+		conn0.LocalAddr(), conn0.RemoteAddr(), connIDPrefix(conn0))
+	go runReceiver(rxCtx, conn0, rxCh)
 
 	pkt := make([]byte, 64)
 	pkt[0] = 0xFF
 	var seq uint32
 	pending := make(map[uint32]time.Time) // seq → sent_at
-	lastLocal := conn.LocalAddr().String()
 
 	tick := time.NewTicker(cfg.Interval)
 	defer tick.Stop()
 	end := time.After(cfg.Duration)
 
-	// Watch the local network for changes (every 2s). When the active
-	// interface fingerprint changes, attempt QUIC connection migration:
-	// open a new UDP socket, AddPath, Probe, Switch.
-	//
-	// We ALSO retry migration on persistent send errors — the address
-	// fingerprint changes once when the old interface dies but doesn't
-	// change again when the new interface stabilizes seconds later. So we
-	// need a fallback trigger: "if I've had N consecutive send errors,
-	// the network has probably changed, try migrating regardless."
+	// Watch the local network state every 2s. A change is a strong signal
+	// that the existing connection's underlying path may be broken — we
+	// proactively reconnect rather than waiting for SendDatagram to fail.
 	netCheck := time.NewTicker(2 * time.Second)
 	defer netCheck.Stop()
 	lastAddrs := localAddrFingerprint()
-	consecSendErrors := 0
-	lastMigrationAttempt := time.Time{}
 
-	// Diagnostic: optional forced migration after a fixed delay.
-	var forceMigrateCh <-chan time.Time
-	if cfg.ForceMigrateAfter > 0 {
-		forceMigrateCh = time.After(cfg.ForceMigrateAfter)
-		logf("DIAGNOSTIC: will force migration after %v", cfg.ForceMigrateAfter)
+	// Diagnostic: optional forced reconnect after a fixed delay.
+	var forceReconnectCh <-chan time.Time
+	if cfg.ForceReconnectAfter > 0 {
+		forceReconnectCh = time.After(cfg.ForceReconnectAfter)
+		logf("DIAGNOSTIC: will force reconnect after %v", cfg.ForceReconnectAfter)
 	}
 
-	var sentCount, rxCount, errCount uint64
+	var sentCount, rxCount, errCount, reconnectCount uint64
 
 	for {
 		select {
 		case <-ctx.Done():
-			logf("CTX CANCELLED — sent=%d rx=%d err=%d", sentCount, rxCount, errCount)
+			logf("CTX CANCELLED — sent=%d rx=%d err=%d reconnects=%d",
+				sentCount, rxCount, errCount, reconnectCount)
 			return nil
 		case <-end:
-			logf("DURATION DONE — sent=%d rx=%d err=%d", sentCount, rxCount, errCount)
+			logf("DURATION DONE — sent=%d rx=%d err=%d reconnects=%d",
+				sentCount, rxCount, errCount, reconnectCount)
 			return nil
 
-		case <-forceMigrateCh:
-			logf("FORCED MIGRATION (diagnostic). Attempting...")
-			lastMigrationAttempt = time.Now()
-			if err := migrate(ctx, conn, migrateServerAddr, logf); err != nil {
-				logf("FORCED MIGRATION FAILED: %v", err)
-			} else {
-				logf("FORCED MIGRATION SUCCESS. local now=%s", conn.LocalAddr())
+		case <-forceReconnectCh:
+			logf("FORCED RECONNECT (diagnostic). Triggering...")
+			reconnectCount++
+			if err := sess.Reconnect(ctx); err != nil {
+				logf("FORCED RECONNECT FAILED: %v", err)
 			}
 
 		case <-netCheck.C:
 			cur := localAddrFingerprint()
-			addrChanged := cur != lastAddrs
-			errStorm := consecSendErrors >= 3
-			if addrChanged {
+			if cur != lastAddrs {
 				logf("DIAG: addrs changed. route to server now = %s. interfaces = %s",
 					chosenInterfaceFor(cfg.Addr), upInterfaces())
-			}
-			// Throttle migration attempts — at least 3s between tries.
-			cooldown := time.Since(lastMigrationAttempt) < 3*time.Second
-			if (addrChanged || errStorm) && !cooldown {
-				reason := "addrs changed"
-				if errStorm && !addrChanged {
-					reason = fmt.Sprintf("%d consecutive send errors", consecSendErrors)
-				}
-				logf("NETWORK CHANGE / FAILURE detected (%s). Attempting QUIC migration...", reason)
+				logf("Triggering proactive reconnect on network change...")
 				lastAddrs = cur
-				lastMigrationAttempt = time.Now()
-				if err := migrate(ctx, conn, migrateServerAddr, logf); err != nil {
-					logf("MIGRATION FAILED: %v", err)
-				} else {
-					logf("MIGRATION SUCCESS. local now=%s", conn.LocalAddr())
-					consecSendErrors = 0
-				}
+				reconnectCount++
+				go func() {
+					if err := sess.Reconnect(ctx); err != nil {
+						logf("PROACTIVE RECONNECT FAILED: %v", err)
+					}
+				}()
 			}
 
 		case <-tick.C:
-			// Detect local-address change (signals QUIC migration fired).
-			cur := conn.LocalAddr().String()
-			if cur != lastLocal {
-				logf("LOCAL ADDR CHANGED: %s → %s (QUIC migration may have fired)", lastLocal, cur)
-				lastLocal = cur
-			}
-
 			seq++
 			pkt[1] = byte(seq >> 24)
 			pkt[2] = byte(seq >> 16)
 			pkt[3] = byte(seq >> 8)
 			pkt[4] = byte(seq)
-			if err := conn.SendDatagram(pkt); err != nil {
-				logf("SEND seq=%d FAILED: %v", seq, err)
-				if consecSendErrors == 0 {
-					// Only on first failure of a streak, log the interface
-					// state — avoids log spam during sustained outages.
-					logf("DIAG: route to server now = %s. interfaces = %s",
-						chosenInterfaceFor(cfg.Addr), upInterfaces())
-				}
+			if err := sess.SendDatagram(pkt); err != nil {
+				logf("SEND seq=%d FAILED: %v (reconnect kicked off)", seq, err)
+				logf("DIAG: route to server now = %s. interfaces = %s",
+					chosenInterfaceFor(cfg.Addr), upInterfaces())
 				errCount++
-				consecSendErrors++
 				continue
 			}
 			pending[seq] = time.Now()
 			sentCount++
-			consecSendErrors = 0
 
 			// Reap stale pending (>10s with no echo).
 			for s, sent := range pending {
@@ -258,7 +222,10 @@ func RunProbe(ctx context.Context, cfg ProbeConfig) error {
 				if errors.Is(ev.err, context.Canceled) {
 					return nil
 				}
-				logf("RECV ERROR: %v (typically means QUIC connection died)", ev.err)
+				// Receiver loop exited because the underlying conn closed.
+				// SendDatagram on next tick will fail and trigger reconnect;
+				// OnReconnect will spawn a new receiver. Just log and wait.
+				logf("RECV LOOP EXITED: %v (reconnect should kick in shortly)", ev.err)
 				errCount++
 				continue
 			}
@@ -269,106 +236,58 @@ func RunProbe(ctx context.Context, cfg ProbeConfig) error {
 				}
 				delete(pending, ev.seq)
 			} else {
-				logf("RECV seq=%d (no pending — late echo)", ev.seq)
+				logf("RECV seq=%d (no pending — late echo, possibly cross-connection)", ev.seq)
 			}
 			rxCount++
 		}
 	}
 }
 
-// migrate moves the QUIC connection to a freshly-opened UDP socket on the
-// current default route. Two-phase to handle the WiFi → cellular handoff
-// gracefully:
-//
-//  1. PRE-FLIGHT — open a candidate socket and try sending a tiny test
-//     packet to the server. If the kernel returns "network is unreachable"
-//     (cellular still negotiating, route table not committed, etc.), close
-//     the socket, wait, and retry. Only proceed once a packet actually
-//     leaves the host.
-//
-//  2. AddPath / Probe / Switch — once the path is sendable, do the
-//     standard QUIC migration handshake.
-//
-// This is what quic-go does NOT do automatically — its migration support
-// requires the caller to provide a usable Transport.
-func migrate(ctx context.Context, conn *quic.Conn, serverAddr *net.UDPAddr, logf func(format string, args ...interface{})) error {
-	// --- Phase 1: pre-flight ---
-	// Poll until we can open a UDP socket and send to the server. Cap at 60s
-	// of waiting — cellular handoff usually settles in 5-30s but we give
-	// margin for slow networks.
-	var newConn *net.UDPConn
-	deadline := time.Now().Add(60 * time.Second)
-	backoff := 250 * time.Millisecond
-	preflightStart := time.Now()
-	for time.Now().Before(deadline) {
-		c, err := net.ListenUDP("udp", nil)
+// rxEvent is one decoded echo (or error) from the receiver loop.
+type rxEvent struct {
+	seq uint32
+	t   time.Time
+	err error
+}
+
+// runReceiver reads echoes from a single quic.Conn and forwards seq events to
+// rxCh. Exits with an err event when the connection closes (so the main loop
+// knows to expect a reconnect). One runReceiver per connection generation.
+func runReceiver(ctx context.Context, conn *quic.Conn, rxCh chan<- rxEvent) {
+	for {
+		recvCtx, recvCancel := context.WithTimeout(ctx, 30*time.Second)
+		msg, err := conn.ReceiveDatagram(recvCtx)
+		recvCancel()
+		now := time.Now()
 		if err != nil {
-			time.Sleep(backoff)
-			continue
-		}
-		// Send 10 small sentinel packets over ~500ms. The server drops
-		// anything that isn't a valid QUIC packet (harmless), but the
-		// burst forces cellular CGNAT to commit a stable outbound mapping
-		// for this 4-tuple. A single test packet is not enough on some
-		// carriers — the mapping is ephemeral until traffic continues.
-		burstOK := false
-		for i := 0; i < 10; i++ {
-			_, err = c.WriteToUDP([]byte{0}, serverAddr)
-			if err != nil {
-				break
+			select {
+			case rxCh <- rxEvent{err: err, t: now}:
+			case <-ctx.Done():
 			}
-			burstOK = true
-			time.Sleep(50 * time.Millisecond)
+			return
 		}
-		if burstOK {
-			// Settle period. Lets the carrier finalize its NAT state
-			// before the larger PATH_CHALLENGE packet goes out.
-			time.Sleep(1 * time.Second)
-			newConn = c
-			logf("  path usable after %v (10x preflight + 1s settle): local=%s", time.Since(preflightStart).Round(10*time.Millisecond), c.LocalAddr())
-			break
-		}
-		_ = c.Close()
-		// Common errors during handoff: "network is unreachable",
-		// "no route to host". Both mean "wait, try again".
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(backoff):
-		}
-		if backoff < 4*time.Second {
-			backoff *= 2
+		if len(msg) >= 5 && msg[0] == 0xFF {
+			seq := uint32(msg[1])<<24 | uint32(msg[2])<<16 | uint32(msg[3])<<8 | uint32(msg[4])
+			select {
+			case rxCh <- rxEvent{seq: seq, t: now}:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}
-	if newConn == nil {
-		return fmt.Errorf("no usable path within %v (cellular never came up?)", 60*time.Second)
-	}
+}
 
-	// --- Phase 2: register + validate + switch ---
-	newTr := &quic.Transport{Conn: newConn}
-	path, err := conn.AddPath(newTr)
-	if err != nil {
-		_ = newConn.Close()
-		return fmt.Errorf("AddPath: %w", err)
+// connIDPrefix returns the first 8 hex chars of the connection's source
+// connection ID (or "?" if the API isn't available). Useful for distinguishing
+// connections in logs across reconnects.
+func connIDPrefix(conn *quic.Conn) string {
+	// quic-go doesn't expose connection ID via the public API; we approximate
+	// by hashing the local addr + remote addr + a short read. For now, return
+	// a placeholder — qlog filename has the actual ID.
+	if conn == nil {
+		return "?"
 	}
-
-	// 15s should now be plenty since the path is verified-sendable.
-	probeCtx, probeCancel := context.WithTimeout(ctx, 15*time.Second)
-	if err := path.Probe(probeCtx); err != nil {
-		probeCancel()
-		_ = path.Close()
-		_ = newConn.Close()
-		return fmt.Errorf("Probe: %w", err)
-	}
-	probeCancel()
-	logf("  PATH_CHALLENGE validated")
-
-	if err := path.Switch(); err != nil {
-		_ = path.Close()
-		_ = newConn.Close()
-		return fmt.Errorf("Switch: %w", err)
-	}
-	return nil
+	return fmt.Sprintf("%s↔%s", conn.LocalAddr(), conn.RemoteAddr())
 }
 
 // chosenInterfaceFor returns the local IP the kernel picks when sending UDP
@@ -382,7 +301,6 @@ func chosenInterfaceFor(dst string) string {
 	}
 	defer c.Close()
 	la := c.LocalAddr().String()
-	// Map the local IP back to an interface name so the log is readable.
 	host, _, _ := net.SplitHostPort(la)
 	ip := net.ParseIP(host)
 	ifaceName := "?"
@@ -400,7 +318,8 @@ func chosenInterfaceFor(dst string) string {
 }
 
 // upInterfaces returns a comma-separated list of "<name>=<addrs>" for every
-// up, non-loopback interface. Used to snapshot the local network state.
+// up, non-loopback interface that has at least one address. Used to snapshot
+// the local network state for diagnostic logging.
 func upInterfaces() string {
 	ifaces, err := net.Interfaces()
 	if err != nil {
@@ -453,4 +372,3 @@ func localAddrFingerprint() string {
 	}
 	return sb.String()
 }
-

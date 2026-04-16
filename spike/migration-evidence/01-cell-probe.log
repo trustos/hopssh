@@ -1,0 +1,58 @@
+[  0.00s] MIGRATION PROBE → 132.145.232.64:42100 for 3m0s (interval=1s)
+[  0.04s] CONNECTED. local=[::]:54689 remote=132.145.232.64:42100
+[ 21.04s] RECV ERROR: write udp [::]:54689->132.145.232.64:42100: sendmsg: network is unreachable (typically means QUIC connection died)
+[ 22.04s] NETWORK CHANGE / FAILURE detected (addrs changed). Attempting QUIC migration...
+[ 23.55s]   path usable after 1.51s (10x preflight + 1s settle): local=[::]:65206
+[ 38.55s] MIGRATION FAILED: Probe: context deadline exceeded
+[ 38.55s] LOST seq=21 (no echo after 17.5s)
+[ 38.55s] LOST seq=22 (no echo after 16.5s)
+[ 49.04s] LOST seq=23 (no echo after 10.5s)
+[ 50.04s] LOST seq=24 (no echo after 11.0s)
+[ 51.04s] LOST seq=26 (no echo after 10.0s)
+[ 51.04s] LOST seq=25 (no echo after 11.0s)
+[ 52.04s] LOST seq=27 (no echo after 10.0s)
+[ 54.04s] LOST seq=28 (no echo after 11.0s)
+[ 54.04s] LOST seq=29 (no echo after 10.0s)
+[ 56.04s] LOST seq=30 (no echo after 11.0s)
+[ 56.04s] LOST seq=31 (no echo after 10.0s)
+[ 58.04s] LOST seq=32 (no echo after 11.0s)
+[ 58.04s] LOST seq=33 (no echo after 10.0s)
+[ 59.04s] LOST seq=34 (no echo after 10.0s)
+[ 60.04s] LOST seq=35 (no echo after 10.0s)
+[ 62.04s] LOST seq=36 (no echo after 11.0s)
+[ 63.04s] LOST seq=37 (no echo after 11.0s)
+[ 63.04s] LOST seq=38 (no echo after 10.0s)
+[ 64.04s] LOST seq=39 (no echo after 10.0s)
+[ 65.04s] LOST seq=40 (no echo after 10.0s)
+[ 67.04s] LOST seq=41 (no echo after 11.0s)
+[ 68.04s] LOST seq=43 (no echo after 10.0s)
+[ 68.04s] LOST seq=42 (no echo after 11.0s)
+[ 69.04s] SEND seq=54 FAILED: write udp [::]:54689->132.145.232.64:42100: sendmsg: network is unreachable
+[ 70.04s] SEND seq=55 FAILED: write udp [::]:54689->132.145.232.64:42100: sendmsg: network is unreachable
+[ 71.04s] SEND seq=56 FAILED: write udp [::]:54689->132.145.232.64:42100: sendmsg: network is unreachable
+[ 72.04s] SEND seq=57 FAILED: write udp [::]:54689->132.145.232.64:42100: sendmsg: network is unreachable
+[ 72.04s] NETWORK CHANGE / FAILURE detected (4 consecutive send errors). Attempting QUIC migration...
+[ 73.55s]   path usable after 1.51s (10x preflight + 1s settle): local=[::]:56821
+[ 88.55s] MIGRATION FAILED: Probe: context deadline exceeded
+[ 88.55s] SEND seq=58 FAILED: write udp [::]:54689->132.145.232.64:42100: sendmsg: network is unreachable
+[ 88.55s] NETWORK CHANGE / FAILURE detected (5 consecutive send errors). Attempting QUIC migration...
+[ 90.07s]   path usable after 1.51s (10x preflight + 1s settle): local=[::]:63734
+[105.07s] MIGRATION FAILED: Probe: context deadline exceeded
+[105.07s] SEND seq=59 FAILED: write udp [::]:54689->132.145.232.64:42100: sendmsg: network is unreachable
+[105.07s] NETWORK CHANGE / FAILURE detected (6 consecutive send errors). Attempting QUIC migration...
+[106.58s]   path usable after 1.51s (10x preflight + 1s settle): local=[::]:55556
+[121.59s] MIGRATION FAILED: Probe: context deadline exceeded
+[121.59s] NETWORK CHANGE / FAILURE detected (6 consecutive send errors). Attempting QUIC migration...
+[123.10s]   path usable after 1.51s (10x preflight + 1s settle): local=[::]:58462
+[138.10s] MIGRATION FAILED: Probe: context deadline exceeded
+[138.10s] SEND seq=60 FAILED: write udp [::]:54689->132.145.232.64:42100: sendmsg: network is unreachable
+[138.10s] NETWORK CHANGE / FAILURE detected (7 consecutive send errors). Attempting QUIC migration...
+[139.62s]   path usable after 1.51s (10x preflight + 1s settle): local=[::]:52638
+[154.62s] MIGRATION FAILED: Probe: context deadline exceeded
+[154.62s] NETWORK CHANGE / FAILURE detected (7 consecutive send errors). Attempting QUIC migration...
+[156.14s]   path usable after 1.52s (10x preflight + 1s settle): local=[::]:63598
+[171.14s] MIGRATION FAILED: Probe: context deadline exceeded
+[171.14s] NETWORK CHANGE / FAILURE detected (7 consecutive send errors). Attempting QUIC migration...
+[172.66s]   path usable after 1.51s (10x preflight + 1s settle): local=[::]:54748
+[187.66s] MIGRATION FAILED: Probe: context deadline exceeded
+[187.66s] DURATION DONE — sent=53 rx=20 err=8

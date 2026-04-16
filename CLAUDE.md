@@ -327,6 +327,22 @@ These are rules learned from real failures. Apply them to any new perf/networkin
 - **Process-of-elimination methodology for diagnosing latency tails.** When a user reports "feels laggy" but synthetic benchmarks look fine: A/B test EACH layer you control (VPN queue, kernel buffer, etc.) using a continuous probe (TCP-RTT every 50ms for 3 min) during the real workload. If both A and B produce identical distributions, the lag is in a layer you DON'T control (WiFi MAC, OS protocol stack, application protocol). Stop adding code at that point.
 - **Screen sharing latency floor is the wireless medium, not the VPN.** With Mac mini on Ethernet → WiFi router → laptop on WiFi, ~12-13% of TCP-RTT samples land in the 40-160ms band regardless of any VPN tuning. That tail is WiFi MAC contention + Apple's RFB protocol bunching. Fixable only by: wired ethernet on both ends, a different remote desktop protocol, or WiFi 6E low-latency profile. Not fixable in the VPN layer.
 
+### QUIC Connection Migration (quic-go)
+
+Verified end-to-end with `hop-agent migration` against a deployed QUIC echo server (`internal/quictransport/`), with three vantage points: client probe log, client qlog, server-side tcpdump + packet logger. Evidence preserved at `spike/migration-evidence/`.
+
+- **`quic.Connection.AddPath()` / `Path.Probe()` is a race-condition fix, not an outage fix.** Verified on real cellular (Yettel BG) and via `ifconfig en0 down` on macOS: when the underlying socket fails (ENETUNREACH), quic-go's send loop accumulates errors silently for ~50 seconds, then closes the connection with `connection_closed initiator=local` and ZERO error code. After that, `AddPath` still returns a path object but `Probe()` never emits a PATH_CHALLENGE frame on the wire — it just blocks until the caller's context times out. Even with the network fully restored on a different interface, migration cannot recover.
+- **Pre-flight test packets are not enough to keep migration alive.** Sending 10× 1-byte UDP packets through a fresh socket establishes the route + CGNAT mapping (we verified this — server received them) but doesn't matter if the parent QUIC connection is already closed.
+- **Network-state polling at 2s is too slow.** `localAddrFingerprint` only changed ~50s after `en0` went down on macOS (the kernel didn't surface the interface drop into `net.Interfaces()` immediately). By the time the change was visible, the QUIC connection was already in the closing state. To beat quic-go's silent close, network-change detection has to be sub-second (kqueue route monitor on Darwin, netlink on Linux).
+- **Architecture for real-world reliability needs three layers, not just migration:**
+  1. **Connection migration** — handles WiFi → WiFi handoff in <30s while connection is alive.
+  2. **Transparent reconnect** — when quic-go closes, reopen a new QUIC connection with the same identity (TLS session resumption + 0-RTT), buffer outgoing during the reconnect window, replay on completion.
+  3. **Multipath / parallel paths** — when bandwidth or reliability requires it, IETF MPQUIC (still draft, quic-go has experimental support).
+  Layer 1 alone is what we built and tested; layers 2-3 are still pending. Real apps using QUIC for long-lived sessions (Cloudflare WARP, Apple Private Relay) implement all three.
+- **Datagrams ARE NOT acknowledged by quic-go's loss detection.** This is RFC 9221 unreliable-datagram semantics. The `LOST seq=N` log lines in our probe are app-level timeouts (no echo received in 10s) — they don't tell us whether the underlying datagram was sent on the wire or not. The qlog `packet_sent` event is the only reliable indication of "left this host."
+- **`docker logs` defaults to InfoLevel for quic-go internal logger.** When wrapping `net.PacketConn` for visibility (e.g., logging new src/dst addrs), the wrapper's logrus must default to InfoLevel — `nil` log defaults to WarnLevel and silently drops Info messages, which silently broke our packet logger on the first deploy.
+- **Don't trust Docker tag pulls in dev-deploy unless the tag changes.** With `image_pull_policy = "missing"` (the Nomad default), Nomad re-pulls only when the cached tag is absent. If you push a new image with the same tag, Nomad keeps the cached old image. Bumping the commit hash (so the tag becomes `dev-NEWHASH`) forces a real pull. Check via `docker inspect <container> | jq '.[0].Created'` — should be after your push.
+
 ---
 
 ## Coding Principles
