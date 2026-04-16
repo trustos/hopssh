@@ -1,35 +1,25 @@
---- a/github.com/slackhq/nebula/udp/udp_darwin.go	2026-04-16 10:28:59
-+++ b/github.com/slackhq/nebula/udp/udp_darwin.go	2026-04-16 10:28:56
-@@ -38,6 +38,28 @@
+--- a/github.com/slackhq/nebula/udp/udp_darwin.go	2026-04-16 11:11:26
++++ b/github.com/slackhq/nebula/udp/udp_darwin.go	2026-04-16 11:11:24
+@@ -38,6 +38,18 @@
  	Datalen    uint64
  }
  
-+// Per-lane send queue capacities. Tuned for ~1ms flush window at 100 Mbps:
-+// interactive lane is sparse (a few packets), bulk dominates volume.
++// Per-lane send queue capacities. Control lane is small/sparse (handshakes,
++// lighthouse, keepalives are infrequent); data lane carries everything else.
 +const (
-+	laneCapInteractive = 32
-+	laneCapRealtime    = 32
-+	laneCapBulk        = 64
-+	laneCapTotal       = laneCapInteractive + laneCapRealtime + laneCapBulk
++	laneCapControl = 32
++	laneCapData    = 96
++	laneCapTotal   = laneCapControl + laneCapData
 +)
 +
 +// Nebula MessageType for the data plane (header.Message). Other types are
-+// control/handshake/lighthouse/test — always interactive.
++// control/handshake/lighthouse/test/closetunnel — always priority.
 +const nebulaMessageType = 1
-+
-+// Size threshold for size-based classification of data packets.
-+// Below this → interactive (DNS replies, ACKs, input events).
-+// Between → realtime (VoIP, screen frame deltas).
-+// At/above → bulk (TCP segments, file transfers).
-+const (
-+	sizeInteractiveMax = 200
-+	sizeRealtimeMax    = 1200
-+)
 +
  type StdConn struct {
  	sysFd int
  	isV4  bool
-@@ -46,13 +68,18 @@
+@@ -46,13 +58,18 @@
  
  	// Send batching state. Multiple goroutines call WriteTo concurrently
  	// (listenIn, listenOut callbacks, handshake manager, lighthouse, cert
@@ -42,62 +32,55 @@
 -	sendIovs  []iovec
 +	// renewer), so sendMu guards the queues. Flush drives cadence — no timer.
 +	//
-+	// Three lanes for strict-priority send: interactive packets always go to
-+	// the front of the sendmsg_x batch, then realtime, then bulk. The kernel
-+	// processes the msghdrX array in order, so this gives us syscall-level
-+	// priority without any extra mechanism.
-+	sendMu       sync.Mutex
-+	laneInteract []sendEntry // small / control packets
-+	laneRealtime []sendEntry // mid-size data
-+	laneBulk     []sendEntry // large bulk transfers
-+	sendMsgs     []msghdrX   // pre-allocated, sized for total queue cap
-+	sendIovs     []iovec     // pre-allocated, one per slot
++	// Two lanes: control packets (handshake, lighthouse, test, closetunnel,
++	// control) jump to the front of the sendmsg_x batch; data packets all go
++	// in one queue to preserve within-flow TCP ordering. Reordering data
++	// packets by size breaks TCP (causes 2x retransmits, ~70% throughput
++	// drop) — see commit history for the size-based variant we replaced.
++	sendMu      sync.Mutex
++	laneControl []sendEntry // Nebula control packets (type != Message)
++	laneData    []sendEntry // all data packets (type == Message), order preserved
++	sendMsgs    []msghdrX   // pre-allocated, sized for total queue cap
++	sendIovs    []iovec     // pre-allocated, one per slot
  }
  
  type sendEntry struct {
-@@ -62,6 +89,26 @@
+@@ -60,6 +77,20 @@
+ 	dataLen int
+ 	name    [unix.SizeofSockaddrInet6]byte
  	nameLen uint32
- }
- 
-+// classify returns the lane for a given outgoing packet. Two reads, no crypto:
-+// b[0] holds the Nebula MessageType (low 4 bits, plaintext header), and len(b)
-+// gives total wire size.
++}
++
++// classify returns the lane for a given outgoing packet (0=control, 1=data).
++// One read, no crypto cost: b[0]&0x0f is the Nebula MessageType (plaintext
++// header byte). All Message-type packets go to the data lane regardless of
++// size — splitting by size reorders TCP segments and breaks throughput.
 +func classify(b []byte) int {
-+	// 0=interactive, 1=realtime, 2=bulk
 +	if len(b) == 0 {
 +		return 0
 +	}
-+	if b[0]&0x0f != nebulaMessageType {
-+		return 0 // control / handshake / lighthouse / test / closetunnel
++	if b[0]&0x0f == nebulaMessageType {
++		return 1 // data — preserve order
 +	}
-+	if len(b) < sizeInteractiveMax {
-+		return 0
-+	}
-+	if len(b) < sizeRealtimeMax {
-+		return 1
-+	}
-+	return 2
-+}
-+
- var _ Conn = &StdConn{}
++	return 0 // control — prioritize
+ }
  
- func NewListener(l *logrus.Logger, ip netip.Addr, port int, multi bool, batch int) (Conn, error) {
-@@ -115,9 +162,11 @@
+ var _ Conn = &StdConn{}
+@@ -115,9 +146,10 @@
  	}
  
  	if batch > 1 {
 -		c.sendQueue = make([]sendEntry, 0, batch)
 -		c.sendMsgs = make([]msghdrX, batch)
 -		c.sendIovs = make([]iovec, batch)
-+		c.laneInteract = make([]sendEntry, 0, laneCapInteractive)
-+		c.laneRealtime = make([]sendEntry, 0, laneCapRealtime)
-+		c.laneBulk = make([]sendEntry, 0, laneCapBulk)
++		c.laneControl = make([]sendEntry, 0, laneCapControl)
++		c.laneData = make([]sendEntry, 0, laneCapData)
 +		c.sendMsgs = make([]msghdrX, laneCapTotal)
 +		c.sendIovs = make([]iovec, laneCapTotal)
  	}
  
  	return c, nil
-@@ -256,20 +305,26 @@
+@@ -256,20 +288,26 @@
  		return ErrInvalidIPv6RemoteForSocket
  	}
  
@@ -130,42 +113,38 @@
  	entry.dataLen = copy(entry.data[:], b)
  
  	if u.isV4 {
-@@ -292,6 +347,19 @@
+@@ -292,6 +330,15 @@
  	return nil
  }
  
 +// laneFor returns a pointer to the lane slice for the given priority index.
 +// Caller must hold u.sendMu.
 +func (u *StdConn) laneFor(idx int) *[]sendEntry {
-+	switch idx {
-+	case 0:
-+		return &u.laneInteract
-+	case 1:
-+		return &u.laneRealtime
-+	default:
-+		return &u.laneBulk
++	if idx == 0 {
++		return &u.laneControl
 +	}
++	return &u.laneData
 +}
 +
  // Flush sends all queued packets in one sendmsg_x syscall. Safe to call from
  // any goroutine — internally takes the send mutex. Called by listenIn after
  // processing a TUN batch and by ListenOut after processing a UDP batch.
-@@ -305,32 +373,20 @@
+@@ -305,32 +352,20 @@
  	return u.flushLocked()
  }
  
 -// flushLocked sends queued packets via sendmsg_x. Caller must hold u.sendMu.
 +// flushLocked sends queued packets via sendmsg_x in strict priority order:
-+// interactive lane first, then realtime, then bulk. The kernel processes the
-+// msghdrX array in array order, so a single sendmsg_x call gives us strict
-+// syscall-level priority.
++// control lane first, then data. The kernel processes the msghdrX array in
++// order, so control packets always reach the wire ahead of data packets in
++// the same batch. Within the data lane, ordering is preserved (FIFO) to keep
++// TCP segments in order — reordering data by size triggers TCP retransmits.
 +// Caller must hold u.sendMu.
  func (u *StdConn) flushLocked() error {
 -	n := len(u.sendQueue)
 +	n := 0
-+	n = u.appendLane(n, &u.laneInteract)
-+	n = u.appendLane(n, &u.laneRealtime)
-+	n = u.appendLane(n, &u.laneBulk)
++	n = u.appendLane(n, &u.laneControl)
++	n = u.appendLane(n, &u.laneData)
  	if n == 0 {
  		return nil
  	}
@@ -192,7 +171,7 @@
  	for {
  		sent, _, err := unix.Syscall6(
  			unix.SYS_SENDMSG_X,
-@@ -361,6 +417,32 @@
+@@ -361,6 +396,32 @@
  	}
  }
  

@@ -1,6 +1,6 @@
---- a/github.com/slackhq/nebula/udp/udp_darwin_batch_test.go	2026-04-16 10:28:59
-+++ b/github.com/slackhq/nebula/udp/udp_darwin_batch_test.go	2026-04-16 10:28:56
-@@ -261,50 +261,236 @@
+--- a/github.com/slackhq/nebula/udp/udp_darwin_batch_test.go	2026-04-16 11:11:26
++++ b/github.com/slackhq/nebula/udp/udp_darwin_batch_test.go	2026-04-16 11:11:24
+@@ -261,50 +261,226 @@
  	recvAddr := recvBound.(*unix.SockaddrInet4)
  	recvPort := uint16(recvAddr.Port)
  
@@ -31,8 +31,9 @@
 +	if got := c.totalQueued(); got != 5 {
 +		t.Fatalf("expected 5 queued packets before Flush, got %d", got)
  	}
-+	if got := len(c.laneInteract); got != 5 {
-+		t.Fatalf("expected 5 in interactive lane, got %d", got)
++	// Type 0x01 (Message) → data lane
++	if got := len(c.laneData); got != 5 {
++		t.Fatalf("expected 5 in data lane, got %d", got)
 +	}
  
  	// Flush — should send all 5 in one sendmsg_x
@@ -69,43 +70,40 @@
 +// newTestStdConn builds a StdConn for use in tests (skips NewListener's bind).
 +func newTestStdConn(fd int) *StdConn {
 +	return &StdConn{
-+		sysFd:        fd,
-+		isV4:         true,
-+		batch:        8,
-+		laneInteract: make([]sendEntry, 0, laneCapInteractive),
-+		laneRealtime: make([]sendEntry, 0, laneCapRealtime),
-+		laneBulk:     make([]sendEntry, 0, laneCapBulk),
-+		sendMsgs:     make([]msghdrX, laneCapTotal),
-+		sendIovs:     make([]iovec, laneCapTotal),
++		sysFd:       fd,
++		isV4:        true,
++		batch:       8,
++		laneControl: make([]sendEntry, 0, laneCapControl),
++		laneData:    make([]sendEntry, 0, laneCapData),
++		sendMsgs:    make([]msghdrX, laneCapTotal),
++		sendIovs:    make([]iovec, laneCapTotal),
 +	}
 +}
 +
 +// totalQueued returns the sum of all lane lengths. Test helper.
 +func (u *StdConn) totalQueued() int {
-+	return len(u.laneInteract) + len(u.laneRealtime) + len(u.laneBulk)
++	return len(u.laneControl) + len(u.laneData)
 +}
 +
-+// TestClassify verifies packet classification by Nebula MessageType + size.
++// TestClassify verifies packet classification by Nebula MessageType.
++// Data packets (type=Message) all share one lane to preserve TCP ordering;
++// only control packets jump the queue.
 +func TestClassify(t *testing.T) {
 +	cases := []struct {
 +		name string
 +		pkt  []byte
-+		want int // 0=interactive, 1=realtime, 2=bulk
++		want int // 0=control, 1=data
 +	}{
 +		{"empty", []byte{}, 0},
-+		{"handshake", []byte{0x10}, 0},                                          // type 0
-+		{"message-tiny", make1byteN(0x11, 50), 0},                               // type 1, 50B
-+		{"message-small", make1byteN(0x11, 199), 0},                             // type 1, just under 200
-+		{"message-mid-low", make1byteN(0x11, 200), 1},                           // type 1, 200B = realtime
-+		{"message-mid-high", make1byteN(0x11, 1199), 1},                         // type 1, just under 1200
-+		{"message-bulk-low", make1byteN(0x11, 1200), 2},                         // type 1, 1200B = bulk
-+		{"message-bulk-mtu", make1byteN(0x11, 1400), 2},                         // typical MTU
-+		{"recverror", []byte{0x12}, 0},                                          // type 2
-+		{"lighthouse-large", make1byteN(0x13, 1500), 0},                         // type 3 always interactive
-+		{"test", []byte{0x14}, 0},                                               // type 4
-+		{"closetunnel", []byte{0x15}, 0},                                        // type 5
-+		{"control-large", make1byteN(0x16, 2000), 0},                            // type 6 always interactive
-+		{"high-version-bits-ignored", []byte{0xf1}, 0},                          // version=0xf masked, type=1, len<200
++		{"handshake", []byte{0x10}, 0},
++		{"message-tiny", make1byteN(0x11, 50), 1},
++		{"message-mtu", make1byteN(0x11, 1400), 1},
++		{"recverror", []byte{0x12}, 0},
++		{"lighthouse", make1byteN(0x13, 1500), 0},
++		{"test", []byte{0x14}, 0},
++		{"closetunnel", []byte{0x15}, 0},
++		{"control-msg", make1byteN(0x16, 2000), 0},
++		{"version-bits-ignored", []byte{0xf1}, 1},
 +	}
 +	for _, tc := range cases {
 +		t.Run(tc.name, func(t *testing.T) {
@@ -122,8 +120,8 @@
 +	return b
 +}
 +
-+// TestPriorityOrder verifies that flushed packets land in interactive→realtime→bulk
-+// order regardless of WriteTo order.
++// TestPriorityOrder verifies control packets land before data packets in the
++// sendmsg_x batch, and data packets within the data lane preserve FIFO order.
 +func TestPriorityOrder(t *testing.T) {
 +	sendFd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_UDP)
 +	if err != nil {
@@ -141,52 +139,46 @@
 +	defer unix.Close(recvFd)
 +	if err := unix.Bind(recvFd, &unix.SockaddrInet4{Port: 0, Addr: [4]byte{127, 0, 0, 1}}); err != nil {
 +		t.Fatal(err)
-+	}
+ 	}
 +	got, err := unix.Getsockname(recvFd)
 +	if err != nil {
 +		t.Fatal(err)
- 	}
++	}
 +	recvPort := uint16(got.(*unix.SockaddrInet4).Port)
 +
 +	c := newTestStdConn(sendFd)
 +	dest := netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), recvPort)
 +
-+	// Send packets in REVERSE priority: bulk first, then realtime, then interactive.
-+	// After Flush they should arrive in priority order: interactive, realtime, bulk.
-+	bulkPkt := make1byteN(0x11, 1300)    // type 1, 1300B → bulk
-+	bulkPkt[1] = 0xB0                    // marker: bulk
-+	realtimePkt := make1byteN(0x11, 500) // type 1, 500B → realtime
-+	realtimePkt[1] = 0xC0                // marker: realtime
-+	interactPkt := []byte{0x10, 0xA0}    // type 0 (handshake) → interactive
++	// Order: data1, data2, control. After Flush, expect: control, data1, data2.
++	data1 := make1byteN(0x11, 1300)
++	data1[1] = 0xD1
++	data2 := make1byteN(0x11, 1300)
++	data2[1] = 0xD2
++	controlPkt := []byte{0x10, 0xC0}
 +
-+	if err := c.WriteTo(bulkPkt, dest); err != nil {
++	if err := c.WriteTo(data1, dest); err != nil {
 +		t.Fatal(err)
 +	}
-+	if err := c.WriteTo(realtimePkt, dest); err != nil {
++	if err := c.WriteTo(data2, dest); err != nil {
 +		t.Fatal(err)
 +	}
-+	if err := c.WriteTo(interactPkt, dest); err != nil {
++	if err := c.WriteTo(controlPkt, dest); err != nil {
 +		t.Fatal(err)
 +	}
 +
-+	// Verify lane assignments
-+	if len(c.laneInteract) != 1 {
-+		t.Errorf("interact lane: got %d, want 1", len(c.laneInteract))
++	if len(c.laneControl) != 1 {
++		t.Errorf("control lane: got %d, want 1", len(c.laneControl))
 +	}
-+	if len(c.laneRealtime) != 1 {
-+		t.Errorf("realtime lane: got %d, want 1", len(c.laneRealtime))
-+	}
-+	if len(c.laneBulk) != 1 {
-+		t.Errorf("bulk lane: got %d, want 1", len(c.laneBulk))
++	if len(c.laneData) != 2 {
++		t.Errorf("data lane: got %d, want 2", len(c.laneData))
 +	}
 +
 +	if err := c.Flush(); err != nil {
 +		t.Fatal(err)
 +	}
 +
-+	// Receive in arrival order — kernel processes msghdrX[] in order, so we
-+	// should see interactive (marker 0xA0), realtime (marker 0xC0), bulk (0xB0).
-+	wantOrder := []byte{0xA0, 0xC0, 0xB0}
++	// Expect: control (0xC0), then data1 (0xD1), then data2 (0xD2)
++	wantOrder := []byte{0xC0, 0xD1, 0xD2}
 +	buf := make([]byte, 2048)
 +	for i, want := range wantOrder {
 +		n, _, err := unix.Recvfrom(recvFd, buf, 0)
@@ -199,9 +191,8 @@
 +	}
  }
 +
-+// TestLaneOverflowIndependence verifies that overflowing one lane doesn't
-+// affect another lane. With strict-priority drop policy, bulk overflow
-+// triggers a flush but doesn't drop interactive packets.
++// TestLaneOverflowIndependence verifies that filling the data lane to capacity
++// triggers flush-and-retry without losing packets.
 +func TestLaneOverflowIndependence(t *testing.T) {
 +	sendFd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_UDP)
 +	if err != nil {
@@ -229,25 +220,24 @@
 +	c := newTestStdConn(sendFd)
 +	dest := netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), recvPort)
 +
-+	// Fill bulk lane to capacity
-+	bulkPkt := make1byteN(0x11, 1300)
-+	for i := 0; i < laneCapBulk; i++ {
-+		if err := c.WriteTo(bulkPkt, dest); err != nil {
-+			t.Fatalf("bulk WriteTo #%d: %v", i, err)
++	// Fill data lane to capacity
++	dataPkt := make1byteN(0x11, 1300)
++	for i := 0; i < laneCapData; i++ {
++		if err := c.WriteTo(dataPkt, dest); err != nil {
++			t.Fatalf("data WriteTo #%d: %v", i, err)
 +		}
 +	}
-+	if len(c.laneBulk) != laneCapBulk {
-+		t.Fatalf("bulk lane: got %d, want %d", len(c.laneBulk), laneCapBulk)
++	if len(c.laneData) != laneCapData {
++		t.Fatalf("data lane: got %d, want %d", len(c.laneData), laneCapData)
 +	}
 +
-+	// One more bulk packet should trigger flush-and-retry (doesn't drop interactive)
-+	if err := c.WriteTo(bulkPkt, dest); err != nil {
++	// One more should trigger flush-and-retry
++	if err := c.WriteTo(dataPkt, dest); err != nil {
 +		t.Fatalf("overflow WriteTo: %v", err)
 +	}
 +
-+	// After overflow flush, bulk should have just the new packet
-+	if len(c.laneBulk) != 1 {
-+		t.Errorf("after overflow: bulk lane got %d, want 1", len(c.laneBulk))
++	if len(c.laneData) != 1 {
++		t.Errorf("after overflow: data lane got %d, want 1", len(c.laneData))
 +	}
 +
 +	// Drain any pending packets

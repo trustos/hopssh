@@ -167,36 +167,50 @@ networking stack.
 **Status:** Both shipped. Patches 04-08 in `patches/`. Adds `Flush() error` to Nebula's
 `Conn` interface (no-op stubs on non-Darwin platforms).
 
-**Spike 3: Inline packet prioritization (3-lane priority queue)**
+**Spike 3: Inline packet prioritization (final: 2-lane control-only)**
 
-Bufferbloat under load was visible after Spike 2: idle 17ms RTT → 33ms RTT under 100 Mbps load.
-Research showed no mainstream VPN does inline packet classification (WireGuard's strict-FIFO
-crypto step makes fq_codel hard to apply; Tailscale/ZeroTier/OpenVPN don't try). Opportunity
-to differentiate: classify packets at the send path and emit them in priority order via
-`sendmsg_x` array ordering — kernel-level strict priority for free.
+Initial design was a 3-lane queue splitting data packets by size (interactive <200B,
+realtime 200-1200B, bulk ≥1200B). Synthetic latency benchmarks looked good (~25% RTT
+reduction under load). But user reported screen sharing felt LAGGIER, not better.
 
-Implementation: 3-lane queue replacing the single send queue. Classification by Nebula
-MessageType (b[0] & 0x0f, plaintext header) + packet size:
-- **Interactive** (cap 32): all control/handshake/lighthouse/test, OR data <200B
-- **Realtime** (cap 32): data 200-1200B (VoIP, screen frame deltas)
-- **Bulk** (cap 64): data ≥1200B (TCP segments, file transfers)
+Investigation with proper TCP metrics confirmed the user's instinct:
 
-Within each `sendmsg_x` flush, lanes drain interactive→realtime→bulk. Kernel processes
-the msghdrX array in order, so interactive packets always reach the wire first within a batch.
+| Metric | No PQ | 3-Lane size-split |
+|--------|-------|-------------------|
+| TCP retransmits (avg of 3 runs) | 168 | **383 (+128%)** |
+| Bulk throughput under mixed load | 320 Mbps | **96 Mbps (-70%)** |
+| TCP-RTT p99 under load | 100ms | 155ms |
 
-Results (5-run average, WiFi 300+ Mbps raw):
-- Latency under 100 Mbps load: **24-29ms avg** (was 33ms) — ~25% reduction
-- Latency under load: max 100-130ms (was 140ms+)
-- Idle latency: 16-17ms (unchanged)
-- Throughput: unchanged or higher (improved WiFi conditions)
-- CPU overhead: negligible (~3 instructions per packet for classification)
+**Root cause:** splitting data packets by size reorders TCP segments within a single flow.
+TCP receivers see out-of-order arrivals, trigger SACK, mark as congestion, and back off.
+A naive priority queue inside a VPN is actively harmful for TCP throughput.
 
-The remaining latency floor is dominated by WiFi MAC layer queueing — can't be fixed at
-the VPN layer. To improve further: per-flow fairness within the interactive lane (separate
-TCP-ACK from real interactive traffic), or pacing on bulk to reduce WiFi contention.
+**Fix: 2-lane control-only.** Only Nebula control packets (Handshake, LightHouse, Test,
+CloseTunnel, Control — type != Message) get priority. ALL data packets (type == Message)
+share one lane in FIFO order, preserving within-flow TCP ordering.
 
-**Status:** Shipped in patches 09 (logic) and 10 (tests). hopssh is the first VPN with
-inline packet prioritization.
+| Metric | No PQ | 3-Lane | 2-Lane (shipped) |
+|--------|-------|--------|------------------|
+| Bulk under load | 170 Mbps | 96 Mbps | **307 Mbps** ✓ |
+| Throughput regression | — | -43% | **none** |
+| Control packet latency (handshake, lighthouse) | n/a | best | best |
+
+Classification is one read (`b[0]&0x0f`), zero crypto cost. Lane caps: 32 control / 96 data.
+Within `sendmsg_x` flush: control lane drains first (kernel processes msghdrX array in order),
+then data lane in FIFO.
+
+**Honest assessment of latency win:** Synthetic ping-under-load showed inconsistent
+improvement vs baseline once we held WiFi conditions equal. The control-only PQ does NOT
+materially reduce p50/p95 RTT for typical TCP flows under load — that latency is dominated
+by WiFi MAC contention, not VPN queueing. What we DO get: tunnel handshakes, lighthouse
+queries, and keepalives never wait behind bulk transfers, which keeps the mesh responsive.
+
+To meaningfully reduce TCP latency under load further, we'd need per-flow fair queueing
+(fq_codel-style), pacing on bulk to reduce WiFi airtime contention, or smaller OS UDP send
+buffers. None of these are quick wins.
+
+**Status:** Shipped in patches 09 (control-only logic) and 10 (tests). The size-based 3-lane
+variant lives in commit history as a documented dead-end.
 
 ### Linux
 - Full `sendmmsg`/`recvmmsg` support (batch 64 packets per syscall)
