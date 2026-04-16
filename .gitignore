@@ -1,6 +1,9 @@
 # Binaries
 hop-agent
 hop-server
+agent
+spike/quic/quic-spike
+spike/quic/quic-spike-arm64
 *.exe
 
 # Vendor (generated via `make vendor` — includes patched dependencies)
