@@ -1,0 +1,227 @@
+--- a/github.com/slackhq/nebula/udp/udp_darwin.go	2026-04-16 10:28:59
++++ b/github.com/slackhq/nebula/udp/udp_darwin.go	2026-04-16 10:28:56
+@@ -38,6 +38,28 @@
+ 	Datalen    uint64
+ }
+ 
++// Per-lane send queue capacities. Tuned for ~1ms flush window at 100 Mbps:
++// interactive lane is sparse (a few packets), bulk dominates volume.
++const (
++	laneCapInteractive = 32
++	laneCapRealtime    = 32
++	laneCapBulk        = 64
++	laneCapTotal       = laneCapInteractive + laneCapRealtime + laneCapBulk
++)
++
++// Nebula MessageType for the data plane (header.Message). Other types are
++// control/handshake/lighthouse/test — always interactive.
++const nebulaMessageType = 1
++
++// Size threshold for size-based classification of data packets.
++// Below this → interactive (DNS replies, ACKs, input events).
++// Between → realtime (VoIP, screen frame deltas).
++// At/above → bulk (TCP segments, file transfers).
++const (
++	sizeInteractiveMax = 200
++	sizeRealtimeMax    = 1200
++)
++
+ type StdConn struct {
+ 	sysFd int
+ 	isV4  bool
+@@ -46,13 +68,18 @@
+ 
+ 	// Send batching state. Multiple goroutines call WriteTo concurrently
+ 	// (listenIn, listenOut callbacks, handshake manager, lighthouse, cert
+-	// renewer), so sendMu guards the queue. Flush drives cadence — no timer.
+-	// The lock is held across the sendmsg_x syscall so the syscall runs to
+-	// completion without racing another producer rewriting the same msgs.
+-	sendMu    sync.Mutex
+-	sendQueue []sendEntry
+-	sendMsgs  []msghdrX
+-	sendIovs  []iovec
++	// renewer), so sendMu guards the queues. Flush drives cadence — no timer.
++	//
++	// Three lanes for strict-priority send: interactive packets always go to
++	// the front of the sendmsg_x batch, then realtime, then bulk. The kernel
++	// processes the msghdrX array in order, so this gives us syscall-level
++	// priority without any extra mechanism.
++	sendMu       sync.Mutex
++	laneInteract []sendEntry // small / control packets
++	laneRealtime []sendEntry // mid-size data
++	laneBulk     []sendEntry // large bulk transfers
++	sendMsgs     []msghdrX   // pre-allocated, sized for total queue cap
++	sendIovs     []iovec     // pre-allocated, one per slot
+ }
+ 
+ type sendEntry struct {
+@@ -62,6 +89,26 @@
+ 	nameLen uint32
+ }
+ 
++// classify returns the lane for a given outgoing packet. Two reads, no crypto:
++// b[0] holds the Nebula MessageType (low 4 bits, plaintext header), and len(b)
++// gives total wire size.
++func classify(b []byte) int {
++	// 0=interactive, 1=realtime, 2=bulk
++	if len(b) == 0 {
++		return 0
++	}
++	if b[0]&0x0f != nebulaMessageType {
++		return 0 // control / handshake / lighthouse / test / closetunnel
++	}
++	if len(b) < sizeInteractiveMax {
++		return 0
++	}
++	if len(b) < sizeRealtimeMax {
++		return 1
++	}
++	return 2
++}
++
+ var _ Conn = &StdConn{}
+ 
+ func NewListener(l *logrus.Logger, ip netip.Addr, port int, multi bool, batch int) (Conn, error) {
+@@ -115,9 +162,11 @@
+ 	}
+ 
+ 	if batch > 1 {
+-		c.sendQueue = make([]sendEntry, 0, batch)
+-		c.sendMsgs = make([]msghdrX, batch)
+-		c.sendIovs = make([]iovec, batch)
++		c.laneInteract = make([]sendEntry, 0, laneCapInteractive)
++		c.laneRealtime = make([]sendEntry, 0, laneCapRealtime)
++		c.laneBulk = make([]sendEntry, 0, laneCapBulk)
++		c.sendMsgs = make([]msghdrX, laneCapTotal)
++		c.sendIovs = make([]iovec, laneCapTotal)
+ 	}
+ 
+ 	return c, nil
+@@ -256,20 +305,26 @@
+ 		return ErrInvalidIPv6RemoteForSocket
+ 	}
+ 
++	// Classify by Nebula message type (plaintext header byte) and wire size.
++	// Two reads, no crypto cost.
++	laneIdx := classify(b)
++
+ 	u.sendMu.Lock()
+ 
+-	// If queue is full, flush-and-retry (synchronous, holds lock) so we don't
+-	// drop packets from non-batched callers (handshake, lighthouse, etc.).
+-	if len(u.sendQueue) >= cap(u.sendQueue) {
++	lane := u.laneFor(laneIdx)
++	// If THIS lane is full, flush everything and retry. We don't shed across
++	// lanes — bulk overflow doesn't drop interactive packets, and vice versa.
++	if len(*lane) >= cap(*lane) {
+ 		if err := u.flushLocked(); err != nil {
+ 			u.sendMu.Unlock()
+ 			return err
+ 		}
++		lane = u.laneFor(laneIdx) // re-fetch after slice header reset
+ 	}
+ 
+-	idx := len(u.sendQueue)
+-	u.sendQueue = u.sendQueue[:idx+1]
+-	entry := &u.sendQueue[idx]
++	idx := len(*lane)
++	*lane = (*lane)[:idx+1]
++	entry := &(*lane)[idx]
+ 	entry.dataLen = copy(entry.data[:], b)
+ 
+ 	if u.isV4 {
+@@ -292,6 +347,19 @@
+ 	return nil
+ }
+ 
++// laneFor returns a pointer to the lane slice for the given priority index.
++// Caller must hold u.sendMu.
++func (u *StdConn) laneFor(idx int) *[]sendEntry {
++	switch idx {
++	case 0:
++		return &u.laneInteract
++	case 1:
++		return &u.laneRealtime
++	default:
++		return &u.laneBulk
++	}
++}
++
+ // Flush sends all queued packets in one sendmsg_x syscall. Safe to call from
+ // any goroutine — internally takes the send mutex. Called by listenIn after
+ // processing a TUN batch and by ListenOut after processing a UDP batch.
+@@ -305,32 +373,20 @@
+ 	return u.flushLocked()
+ }
+ 
+-// flushLocked sends queued packets via sendmsg_x. Caller must hold u.sendMu.
++// flushLocked sends queued packets via sendmsg_x in strict priority order:
++// interactive lane first, then realtime, then bulk. The kernel processes the
++// msghdrX array in array order, so a single sendmsg_x call gives us strict
++// syscall-level priority.
++// Caller must hold u.sendMu.
+ func (u *StdConn) flushLocked() error {
+-	n := len(u.sendQueue)
++	n := 0
++	n = u.appendLane(n, &u.laneInteract)
++	n = u.appendLane(n, &u.laneRealtime)
++	n = u.appendLane(n, &u.laneBulk)
+ 	if n == 0 {
+ 		return nil
+ 	}
+ 
+-	for i := 0; i < n; i++ {
+-		entry := &u.sendQueue[i]
+-		u.sendIovs[i] = iovec{
+-			Base: &entry.data[0],
+-			Len:  uint64(entry.dataLen),
+-		}
+-		msg := &u.sendMsgs[i]
+-		msg.Name = &entry.name[0]
+-		msg.Namelen = entry.nameLen
+-		msg.Iov = &u.sendIovs[i]
+-		msg.Iovlen = 1
+-		msg.Control = nil
+-		msg.Controllen = 0
+-		msg.Flags = 0
+-		msg.Datalen = 0
+-	}
+-
+-	u.sendQueue = u.sendQueue[:0]
+-
+ 	for {
+ 		sent, _, err := unix.Syscall6(
+ 			unix.SYS_SENDMSG_X,
+@@ -361,6 +417,32 @@
+ 	}
+ }
+ 
++// appendLane copies queued entries from a lane into u.sendMsgs/u.sendIovs
++// starting at index `start`, then resets the lane. Returns the new write index.
++// Caller must hold u.sendMu.
++func (u *StdConn) appendLane(start int, lane *[]sendEntry) int {
++	n := len(*lane)
++	for i := 0; i < n; i++ {
++		entry := &(*lane)[i]
++		dst := start + i
++		u.sendIovs[dst] = iovec{
++			Base: &entry.data[0],
++			Len:  uint64(entry.dataLen),
++		}
++		msg := &u.sendMsgs[dst]
++		msg.Name = &entry.name[0]
++		msg.Namelen = entry.nameLen
++		msg.Iov = &u.sendIovs[dst]
++		msg.Iovlen = 1
++		msg.Control = nil
++		msg.Controllen = 0
++		msg.Flags = 0
++		msg.Datalen = 0
++	}
++	*lane = (*lane)[:0]
++	return start + n
++}
++
+ func (u *StdConn) writeToSingle(b []byte, ap netip.AddrPort) error {
+ 	var rsa unsafe.Pointer
+ 	var addrLen uintptr

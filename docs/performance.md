@@ -167,6 +167,37 @@ networking stack.
 **Status:** Both shipped. Patches 04-08 in `patches/`. Adds `Flush() error` to Nebula's
 `Conn` interface (no-op stubs on non-Darwin platforms).
 
+**Spike 3: Inline packet prioritization (3-lane priority queue)**
+
+Bufferbloat under load was visible after Spike 2: idle 17ms RTT → 33ms RTT under 100 Mbps load.
+Research showed no mainstream VPN does inline packet classification (WireGuard's strict-FIFO
+crypto step makes fq_codel hard to apply; Tailscale/ZeroTier/OpenVPN don't try). Opportunity
+to differentiate: classify packets at the send path and emit them in priority order via
+`sendmsg_x` array ordering — kernel-level strict priority for free.
+
+Implementation: 3-lane queue replacing the single send queue. Classification by Nebula
+MessageType (b[0] & 0x0f, plaintext header) + packet size:
+- **Interactive** (cap 32): all control/handshake/lighthouse/test, OR data <200B
+- **Realtime** (cap 32): data 200-1200B (VoIP, screen frame deltas)
+- **Bulk** (cap 64): data ≥1200B (TCP segments, file transfers)
+
+Within each `sendmsg_x` flush, lanes drain interactive→realtime→bulk. Kernel processes
+the msghdrX array in order, so interactive packets always reach the wire first within a batch.
+
+Results (5-run average, WiFi 300+ Mbps raw):
+- Latency under 100 Mbps load: **24-29ms avg** (was 33ms) — ~25% reduction
+- Latency under load: max 100-130ms (was 140ms+)
+- Idle latency: 16-17ms (unchanged)
+- Throughput: unchanged or higher (improved WiFi conditions)
+- CPU overhead: negligible (~3 instructions per packet for classification)
+
+The remaining latency floor is dominated by WiFi MAC layer queueing — can't be fixed at
+the VPN layer. To improve further: per-flow fairness within the interactive lane (separate
+TCP-ACK from real interactive traffic), or pacing on bulk to reduce WiFi contention.
+
+**Status:** Shipped in patches 09 (logic) and 10 (tests). hopssh is the first VPN with
+inline packet prioritization.
+
 ### Linux
 - Full `sendmmsg`/`recvmmsg` support (batch 64 packets per syscall)
 - TUN multiqueue with `IFF_MULTI_QUEUE`
