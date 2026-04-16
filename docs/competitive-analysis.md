@@ -185,6 +185,69 @@
 
 **Key takeaway:** Tailscale is not beatable on breadth in the near term. Their moat is the identity-aware access platform (grants, posture, SCIM, session recording, log streaming) — not just the mesh. The path to competing is: self-hosted trust + open source + Nebula's stronger crypto isolation, combined with progressively closing the identity/policy/observability gap. Beat them where sovereignty matters.
 
+Their [March 2026 product update](https://tailscale.com/blog/march-26-product-update)
+shows they are moving *upward* into enterprise AI governance (Aperture AI gateway),
+workload identity federation, peer relays, and services. That leaves the "simple
+self-hosted mesh for small teams and home-labbers" market lane partly vacated —
+which is precisely where NetBird and hopssh can run.
+
+---
+
+### NetBird
+
+**What they are:** The emerging #1 competitor in the self-hosted mesh VPN space
+(~24k GitHub stars — second to Headscale (~35k) in the self-hosted VPN space, ~3× Firezone). Built on WireGuard.
+Founded as a fully open-source answer to Tailscale's SaaS-coordinated model.
+Positioned by most 2026 comparison reviews
+([XDA](https://www.xda-developers.com/switched-from-tailscale-to-fully-self-hosted-alternative-netbird/),
+[Pinggy](https://pinggy.io/blog/top_open_source_tailscale_alternatives/),
+[birdhost](https://birdhost.io/blog/netbird-vs-tailscale)) as the "best self-hosted
+Tailscale alternative." Moving fast: v0.63 (January 2026) shipped Custom DNS Zones,
+v0.65 (February 2026) shipped a built-in reverse proxy with custom domains and a
+unified server binary. This is the competitor to watch.
+
+**What they have that we don't:**
+- SSO + MFA with major IdPs in the *free* plan (Authentik, Keycloak, Okta, Azure AD, Google)
+- SCIM provisioning (shipped late 2025)
+- Custom DNS zones with per-peer-group distribution (v0.63, Jan 2026)
+- Built-in reverse proxy with custom domains + authentication (v0.65, Feb 2026)
+- iOS and Android mobile apps
+- Desktop tray apps (macOS, Windows, Linux)
+- Granular access policies (groups, tags, rules) with a dashboard editor
+- Multiple identity providers per network
+- Subnet routing and egress/exit-node-like features
+- Self-hosted everything (control, signal, relay, TURN — every component open-source)
+
+**What we have that they don't:**
+- **Per-network cryptographic isolation** — Nebula's separate-CA-per-network model
+  is structurally stronger than NetBird's single-WireGuard-tenant architecture.
+  NetBird can't easily add this without a significant re-architecture.
+- **Single-binary deployment with embedded SPA.** NetBird's "Unified Server Binary"
+  (v0.65) combines management + signal + relay into one container, but the default
+  deployment still uses Traefik + a separate dashboard container. hopssh's single
+  binary (API + UI + lighthouse + relay + DNS + DB) is tighter.
+- **Full browser PTY terminal** with real xterm-256color. NetBird's reverse proxy
+  exposes services to a browser; it is not a remote-shell product.
+- **Per-node capability toggles** (enable/disable terminal, health, forward per node).
+- **Device flow enrollment (RFC 8628)** and bundle enrollment for air-gapped environments.
+
+**What we both have (parity, not differentiator):**
+- User-defined DNS domains (NetBird shipped this Jan 2026 — no longer hopssh-unique)
+- Self-hosted control plane with web UI
+- WireGuard or Nebula data plane with hardware AEAD
+
+**How they make money:** Open-core. Self-hosted is free and full-featured. Cloud
+tiers (Team, Business) for managed hosting, advanced IdP integrations, and SLAs.
+Pricing is per-user, roughly half of Tailscale's per-user equivalent.
+
+**Key takeaway:** NetBird — not Defined Networking — is the competitor whose
+lunch hopssh most directly overlaps. They are moving faster than Tailscale on
+self-hosted mesh features, with a 2-3 year head start on SSO, mobile, and desktop
+clients. We will not out-feature them on identity/policy in 2026; we beat them
+on (a) Nebula-based crypto isolation, (b) single-binary elegance, (c) browser
+terminal as a native primitive, and (d) the universal resilience gaps nobody has
+closed (see "Universal Unsolved Gaps" section below).
+
 ---
 
 ### ZeroTier
@@ -297,68 +360,122 @@ Real complaints sourced from Reddit (r/selfhosted, r/homelab, r/Tailscale, r/zer
 7. **Customer-hosted infrastructure required** — even with Managed Nebula, you host your own lighthouses and relays.
 8. **Small ecosystem** — no Terraform provider, no webhooks, limited community, few integrations.
 
-### Cross-Competitor Universal Pains
+### Cross-Competitor Universal Pains (user-reported)
 
-These appear across ALL three competitors:
+These appear across ALL competitors, sourced from Reddit/HN/GitHub/app-store reviews:
 
-| Pain | ZT | TS | DN | hopssh Status |
-|------|----|----|-----|--------------|
-| No connection type visibility (P2P/relay) | #1 | Notable | Notable | **Gap — adding to Phase 2A** |
-| Self-hosting is hard or impossible | #2 | #2,#3 | #3 | **Solved** |
-| DNS is broken/missing | #4 | #5 | #4 | **Solved** |
-| No browser-based terminal | #5 | #4 | Notable | **Solved** |
-| Poor debugging/diagnostics | Notable | Notable | Notable | **Gap — adding to Phase 2A** |
-| Mobile apps are unreliable | #3 | #9 | #6 | Not yet (Phase 3B) |
-| Pricing/lock-in anxiety | #7 | #1,#9 | — | **Solved** (self-hosted free forever) |
+| Pain | ZT | TS | DN | NetBird | hopssh Status |
+|------|----|----|-----|---------|---------------|
+| No connection type visibility (P2P/relay) | #1 | Notable | Notable | Notable | **Gap — adding to Phase 2A** |
+| Self-hosting is hard or impossible | #2 | #2,#3 | #3 | ✅ they solved | **Solved** |
+| DNS is broken/missing | #4 | #5 | #4 | ✅ they solved (Jan 2026) | **Solved** |
+| No browser-based terminal | #5 | #4 | Notable | Notable | **Solved** (unique to hopssh) |
+| Poor debugging/diagnostics | Notable | Notable | Notable | Notable | **Gap — adding to Phase 2A** |
+| Mobile apps are unreliable | #3 | #9 | #6 | ⚠️ unverified | Not yet (Phase 3B) |
+| Sleep/wake reconnection flaky | Notable (1-2 min) | Multi-year history of reports ([#1134](https://github.com/tailscale/tailscale/issues/1134), [#10688](https://github.com/tailscale/tailscale/issues/10688) still open) | Unverified | Unverified | Untested |
+| Pricing/lock-in anxiety | #7 | #1,#9 | — | — | **Solved** (self-hosted free forever) |
+
+### Universal Unsolved Gaps (what NO competitor ships — research 2026-04-17)
+
+These are the greenfield opportunities — features users need but no mesh VPN
+currently delivers in production. These are the dimensions where hopssh can
+claim a *first*, not a catch-up.
+
+| Gap | Evidence | hopssh feasibility |
+|-----|----------|--------------------|
+| **Sleep/wake bulletproofness across all OS** | Tailscale: multi-year history of reports ([#1134](https://github.com/tailscale/tailscale/issues/1134) closed, [#10688](https://github.com/tailscale/tailscale/issues/10688) open, [#2173](https://github.com/tailscale/tailscale/issues/2173) closed, [#17736](https://github.com/tailscale/tailscale/issues/17736) closed) on macOS/Linux/Windows; ZeroTier "1-2 minutes to restore" (often worse — some users report 10-20 min or needing restart); NetBird unverified. No competitor claims this as solved. | **High** — measure hopssh first (30 min test); fix is 1-2 weeks if broken. `internal/quictransport/session.go` reconnect pattern is a foundation. |
+| **DPI evasion / port-443 fallback for mesh VPN** | [NetBird #4879](https://github.com/netbirdio/netbird/issues/4879) documents users building wstunnel+nftables workarounds. [Mullvad shipped QUIC obfuscation](https://mullvad.net/en/blog/introducing-quic-obfuscation-for-wireguard) for WireGuard but that's for VPN-provider traffic, not mesh. | **High** — we have the building blocks in `internal/quictransport/` (unused by mesh today). Unique product angle for "works on hostile networks." |
+| **Connection-type visibility + diagnostic topology view** | #1 ZeroTier complaint; noted for TS, DN, NetBird. | **Medium** — product UX work. Real-time P2P/relay badges, per-peer RTT, route history. Dashboard-side mostly, not protocol changes. |
+| **Adaptive MTU (DPLPMTUD / RFC 8899)** | Tailscale experimental, ZeroTier open request since 2016, WireGuard refuses. Nobody in production. | **Medium** — design done (`performance.md` §Phase 4), 2-3 weeks to build. All platforms. |
+
+These four are the strategic frontier. Building any of them produces a
+defensible "first" claim. Together they form a coherent "reliability + works
+anywhere + you can see what's happening + it auto-optimizes" product story.
 
 ---
 
-### Tier 1: Beat Defined Networking (nearest competitor, easiest to surpass)
+## Strategic Priorities (revised 2026-04-17)
 
-We already win on self-hosting, terminal, DNS, bundled infrastructure, and setup simplicity. To decisively beat DN:
-- Add SSO/OIDC (they have it, we don't)
-- Add scoped API keys (they have them, we have schema but no implementation)
-- Add granular firewall with roles + tags (they have it, we only have capabilities)
-- Expand free tier to 25 nodes (closer to competitive)
+The prior Tier 1-4 framework (beat DN → ops infra → pressure ZT → challenge
+TS) is obsolete. Two shifts:
 
-### Tier 2: Build operator infrastructure (makes us enterprise-credible)
+1. **NetBird, not Defined Networking, is the nearest structural competitor.**
+   They're moving fast on self-hosted + SSO + DNS + reverse proxy — the same
+   terrain we occupy. DN remains relevant but less central.
+2. **Tailscale is vacating the "simple mesh for small teams" lane** in favor
+   of enterprise AI + workload identity (see their March 2026 shipments).
+   We should not chase them upward; we should own the space they're leaving.
 
-Neither DN nor ZeroTier is strong here. Tailscale is the benchmark. Close the gap:
-- Webhooks for events (Tailscale and ZeroTier have them)
-- Log streaming / SIEM export (Tailscale has it, nobody else does well)
-- Terraform provider (Tailscale and ZeroTier have them)
-- GitOps config export/import
+### Tier 1: Own the universal unsolved gaps (first-in-class wins)
 
-### Tier 3: Pressure ZeroTier (steal the "self-hosted networking" market)
+Where nobody is playing. Highest strategic leverage.
 
-ZeroTier owns "self-hosted overlay network." Take it with better UX:
-- Regional relay nodes via dashboard (they have private roots)
-- Peer connectivity map (neither has a good one)
-- Subnet routing / exit nodes (they have managed routes)
-- Better multi-network ergonomics
+- **Sleep/wake resilience pass** (all OS) — measure first, fix if broken
+- **DPLPMTUD (actually build it)** — design done, 2-3 weeks, genuine first
+- **DPI evasion / port-443 MASQUE fallback** — reuses existing `quictransport/` code
+- **Connection-type visibility + topology dashboard** — product UX win on #1 universal complaint
 
-### Tier 4: Challenge Tailscale (identity-aware access platform)
+### Tier 2: Match NetBird on identity/policy (necessary parity)
 
-This is the long game. Tailscale's moat is identity + policy + compliance:
-- Grants-like unified policy model
-- Device posture / approval
-- App connectors (domain-based routing)
-- SSH session recording
+Not losing to them on self-hosted SSO/firewall/API deals. Matches their 2026
+feature set.
+
+- SSO/OIDC/SAML (they have it in free tier)
 - SCIM provisioning
-- Desktop and mobile apps
+- Scoped API keys
+- Granular firewall: groups + tags + rules editor
+- Subnet routing / exit nodes
+- Expand free tier to 25 nodes
 
-### Performance Leadership
+### Tier 3: Performance leadership across all OS
 
-- macOS `sendmsg_x`/`recvmsg_x` batch syscalls — only VPN using private XNU batch-send; 17% → 35-53% tunnel efficiency
-- macOS control-lane priority queue — handshakes/lighthouse ahead of bulk data
-- TUN buffer caching + AES-GCM hardware acceleration on Apple Silicon
+- macOS: preserve lead (`sendmsg_x`/`recvmsg_x` batch, patches 04-10 shipped)
+- Linux: GSO/GRO + checksum + crypto vector (parity + catch-up to Tailscale)
+  — see [linux-throughput-plan.md](linux-throughput-plan.md)
+- Windows: RIO (Registered I/O) — real win for userspace VPNs, narrower than
+  first claimed (kernel WireGuardNT went WSK instead)
+- Cross-platform: vectorized crypto pipeline amplifies the platform I/O work
 
-### The product thesis
+### Tier 4: Long tail
 
-> Self-hosted private access built on Nebula, with better trust than Defined, better policy ergonomics than ZeroTier, and enough identity/app access depth to challenge Tailscale where sovereignty matters.
+- Mobile clients (iOS, Android) built on the resilience foundation from Tier 1
+- Desktop tray apps (macOS, Windows)
+- Webhooks, log streaming, Terraform provider (enterprise ops)
+- Session recording, policy grants-style framework (TS-parity long game)
+
+### Explicitly NOT chasing
+
+- **Smart pacing / BBR for WiFi airtime** — research confirms MAC-layer
+  problem, not solvable from userspace ([arxiv.org/html/2512.18259v1](https://arxiv.org/html/2512.18259v1)).
+- **Multipath bonding as a novel differentiator** — [Speedify](https://speedify.com/)
+  has shipped real WiFi+cellular bonding since 2014; ZeroTier has protocol-level
+  multipath. If we pursue it, frame as "catching up," not first-in-class. 3-6
+  months minimum effort, not 6-8 weeks.
+- **Tailscale's enterprise feature stack** (Aperture AI gateway, workload
+  identity federation, session recording) — they have a 4+ year head start;
+  chasing them means arriving late with the same features.
+
+### Performance leadership (verified shipped)
+
+- macOS `sendmsg_x`/`recvmsg_x` batch syscalls (patches 04-10) — **only VPN
+  using private XNU batch syscalls**; 17% → 35-53% tunnel efficiency
+- macOS control-lane priority queue (patches 09-10)
+- TUN buffer caching (patch 03) + AES-GCM hardware acceleration on Apple Silicon
+
+### The product thesis (revised)
+
+> Self-hosted mesh VPN built on Nebula, with stronger crypto isolation than any
+> competitor, verified performance leadership on macOS, and the first mesh VPN
+> to solve the universal resilience gaps (sleep/wake, DPI, diagnostics, adaptive
+> MTU) that every other vendor has left on the table.
 
 This works because:
-- **Defined** is cloud-managed with no self-hosted option and no bundled infrastructure
-- **Tailscale** has the best identity/access UX but is fundamentally SaaS-coordinated
-- **ZeroTier** has strong self-hosted networking but rough identity/policy/naming
-- **hopssh** can combine self-hosted sovereignty + bundled infrastructure + identity-aware access in one product
+- **NetBird** is beating everyone on self-hosted identity but built on single-tenant
+  WireGuard — no per-network crypto isolation, no browser terminal, no bundled relay
+- **Tailscale** is leaving the "simple self-hosted mesh" lane for enterprise AI
+- **ZeroTier** controller moved to source-available in July 2025; users are
+  actively migrating away
+- **Defined Networking** is SaaS-only and doesn't host your infrastructure
+- **hopssh** can own the universal resilience gaps + Nebula isolation + single-binary
+  elegance + browser terminal, while closing identity parity with NetBird on a
+  predictable schedule

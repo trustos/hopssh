@@ -200,9 +200,15 @@ materially reduce p50/p95 RTT for typical TCP flows under load — that latency 
 by WiFi MAC contention, not VPN queueing. What we DO get: tunnel handshakes, lighthouse
 queries, and keepalives never wait behind bulk transfers, which keeps the mesh responsive.
 
-To meaningfully reduce TCP latency under load further, we'd need per-flow fair queueing
-(fq_codel-style), pacing on bulk to reduce WiFi airtime contention, or smaller OS UDP send
-buffers. None of these are quick wins.
+To meaningfully reduce TCP latency under load further, the candidates are: per-flow fair
+queueing (fq_codel-style) inside the VPN, or smaller OS UDP send buffers. **NOT included:
+"pacing on bulk to reduce WiFi airtime contention"** — research
+([arxiv.org/html/2512.18259v1](https://arxiv.org/html/2512.18259v1)) confirms WiFi airtime
+contention happens at the MAC layer, below IP, and is unaffected by anything the VPN does
+at the userspace socket boundary. BBR-style pacing parameters are documented as
+"suboptimal for WiFi's variable OFDMA scheduling." This matches our own discovery-log
+entry: "Screen sharing latency floor is the wireless medium, not the VPN." Userspace
+pacing is a dead end; leave it off the roadmap.
 
 **Status:** Shipped in patches 09 (control-only logic) and 10 (tests). The size-based 3-lane
 variant lives in commit history as a documented dead-end.
@@ -610,12 +616,35 @@ Nebula internals that can't be shimmed.
 
 ## Priority Order
 
-| Phase | Impact | Effort | Platforms | Status |
-|-------|--------|--------|-----------|--------|
-| 1. Coalescing | High (59% sendto reduction) | Medium | All | ⏳ Planned — design in Phase 1 below, `internal/coalesce/` not yet built |
-| 2. Crypto pools | Medium (parallelism) | Medium | All | ⏳ Planned |
-| 3. Platform I/O | High on Linux, low on macOS | Medium | Linux, macOS, Windows | ⏳ Planned (Linux); ✅ macOS shipped (patches 04-10) |
-| 4. Adaptive MTU (DPLPMTUD) | High (auto-optimize per path) | Medium | All | ⏳ Planned — design in Phase 4 below, `internal/pmtud/` not yet built. No mesh VPN ships this today. |
+The original Phase 1-4 structure (design docs below) organizes work by technique. For
+strategic priority across all platforms, use this tier list instead. It incorporates the
+2026-04-17 competitive audit that corrected several previously-overstated claims.
+
+| Tier | Item | Truly novel? | Effort | Notes |
+|------|------|--------------|--------|-------|
+| 1 | **DPLPMTUD (build it)** | **✅ Would be first for mesh VPN** — no competitor ships this in production. Design already drafted (Phase 4 below). | 2-3 weeks | All platforms. Biggest "first-in-class" win we have realistic access to. |
+| 1 | **Linux GSO/GRO + checksum unwind + crypto vector** | ❌ Catch-up to Tailscale, not novel. But necessary. | 3-4 weeks | Gap is multi-Gbps on modern hardware (not 900 Mbps — that figure is specific to DN's c6i-class bench). See `linux-throughput-plan.md` for the full MVP + ship-gated Step 4 plan. |
+| 2 | **Windows RIO (Registered I/O)** | ⚠️ First for *userspace* VPNs only — kernel VPNs (WireGuardNT) went WSK instead, so RIO is irrelevant to the kernel class. Narrower positioning than "unique across all VPNs." | 6-8 weeks incl. Windows CI/CD setup | Requires CGO or syscall wrappers. Real win but scope-heavier than initial "3 weeks" claim. |
+| 2 | **Sleep/wake resilience** | ⚠️ Possibly novel — every competitor has open complaints. Needs measurement before code. | 30 min to test + 1-2 weeks to fix if broken | macOS + Windows primary; Linux secondary. User-visible win. |
+| 3 | **Cross-platform vectorized crypto pipeline (batch)** | ⚠️ Incremental. wireguard-go's per-core pool is already cross-platform; the *batch* optimization that needs PR #75's vector channels is Linux-gated because it consumes the GSO/GRO packet vectors. On macOS/Windows, crypto parallelism from per-core pools is available but batching requires equivalent platform I/O. | 3-4 weeks | Most meaningful *after* Linux GSO/GRO lands (to produce the vectors). |
+| 4 | macOS Network.framework eval | Research only — may not help given `sendmsg_x` lead | 1 week | Phase 3 below |
+| Drop | **Smart pacing / BBR for WiFi airtime** | ❌ Dead end. Research ([arxiv.org/html/2512.18259v1](https://arxiv.org/html/2512.18259v1)) + our own Discovery Log confirm: WiFi airtime contention is MAC-layer, below IP. Userspace pacing cannot help. | — | Not pursued. |
+| Drop | **Multipath bonding as "novel differentiator"** | ❌ Not novel. [Speedify](https://speedify.com/) ships real WiFi+cellular bonding since 2014 across all platforms. ZeroTier has protocol-level multipath (active-backup, flow-based LB). If we ever want multipath, frame it as "catching up to Speedify," not first-in-class. | 3-6 months if pursued | Not on near-term roadmap. |
+
+**Legacy phase reference** (original design docs, below this table): Phase 1 Coalescing
+is **not yet built** (`internal/coalesce/` doesn't exist — the confusion with the
+shipped `sendmsg_x` batching has been corrected). Phase 2 Crypto pools is a
+cross-platform pattern borrowed from wireguard-go — valuable but the *batching* that
+amplifies it is platform-I/O-gated, per Tier 3 above. Phase 3 Platform I/O has shipped
+the macOS half (patches 04-10); Linux half is Tier 1 above. Phase 4 Adaptive MTU is
+Tier 1 above.
+
+| Phase | Status |
+|-------|--------|
+| 1. Coalescing | ⏳ Planned (not yet built; `internal/coalesce/` does not exist) |
+| 2. Crypto pools | ⏳ Planned — per-core pool is cross-platform; batching benefit gated on platform I/O (Tier 3) |
+| 3. Platform I/O | ✅ macOS shipped (patches 04-10); ⏳ Linux Tier 1, Windows RIO Tier 2 |
+| 4. Adaptive MTU (DPLPMTUD) | ⏳ Planned (Tier 1). No mesh VPN ships this today. |
 
 ## Profiling Methodology
 

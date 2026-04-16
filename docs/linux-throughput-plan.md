@@ -4,25 +4,36 @@
 
 hopssh is already the fastest mesh VPN on macOS (unique `sendmsg_x`/`recvmsg_x` batch
 syscalls). The one front where we are demonstrably behind
-is **Linux throughput**: Defined Networking's own 10 Gbps benchmark
-([blog](https://www.defined.net/blog/nebula-is-not-the-fastest-mesh-vpn/)) shows Nebula
-at ~9 Gbps transmit / **7.8 Gbps receive**, vs Tailscale at **8.8 Gbps receive** — a
-~900 Mbps gap that exists purely because Tailscale implemented UDP GSO/GRO and a
-vectorized crypto pipeline in userspace wireguard-go, and Nebula has not.
+is **Linux throughput**. Two data points set the stage:
 
-Tailscale's own engineering writeups ([throughput improvements](https://tailscale.com/blog/throughput-improvements),
-[10 Gb/s](https://tailscale.com/blog/more-throughput)) document the techniques:
-**UDP Generic Segmentation Offload (GSO), UDP Generic Receive Offload (GRO),
-checksum loop unwinding, and packet-vector channels.** All are public, all are
-standard Linux kernel interfaces (no custom drivers), and the reference
-implementation in [wireguard-go PR #75](https://github.com/WireGuard/wireguard-go/pull/75)
-is MIT-licensed and readable.
+- Defined Networking's 10 Gbps benchmark
+  ([blog](https://www.defined.net/blog/nebula-is-not-the-fastest-mesh-vpn/))
+  shows Nebula at ~9 Gbps transmit / ~7.8 Gbps receive vs Tailscale at ~8.8 Gbps
+  receive on the same hardware — a receive-side deficit.
+- Tailscale's own published numbers
+  ([throughput improvements](https://tailscale.com/blog/throughput-improvements))
+  show **multi-Gbps gains** from their optimizations: **5.4 → 7.3 Gbps** on
+  c6i.8xlarge, up to **~13 Gbps** on i5-12400 class hardware. The DN-measured
+  ~900 Mbps gap was on a specific hardware class; on higher-end Linux
+  hardware the gap between an unoptimized userspace pipeline (like today's
+  hopssh/Nebula) and an optimized one (Tailscale) is **several Gbps**, not
+  hundreds of Mbps.
 
-This plan adapts those four techniques to hopssh's Nebula fork. The target outcome
-is that a Linux-to-Linux iperf3 benchmark shows hopssh **at parity with Tailscale
-on receive and transmit, and within 10%** of the kernel WireGuard module on the
+The gap is also NOT "purely UDP GSO/GRO." Tailscale's published work is the
+combination of **UDP GSO + UDP GRO + checksum loop unwinding + vectorized
+crypto packet pipeline** ([wireguard-go PR #75](https://github.com/WireGuard/wireguard-go/pull/75)).
+Any one of those on its own produces a modest win; the multi-Gbps gain requires
+the full stack. We need all four steps to close the full gap, not just
+patches 12–14 (GSO/GRO).
+
+All four techniques are public, use standard Linux kernel interfaces (no
+custom drivers), and the reference implementation is MIT-licensed and readable.
+
+This plan adapts them to hopssh's Nebula fork. The target outcome is that a
+Linux-to-Linux iperf3 benchmark shows hopssh **at parity with Tailscale on
+receive and transmit, and within 10%** of the kernel WireGuard module on the
 same hardware. The existing macOS lead (batch `sendmsg_x`/`recvmsg_x`, patches
-04–11) stays intact; none of the Linux work touches Darwin code paths.
+04–10) stays intact; none of the Linux work touches Darwin code paths.
 
 ---
 
@@ -366,9 +377,10 @@ setup; zero ongoing cost.
 
 On the receive side, roughly mirrors GSO's send-side win — fewer
 `recvmsg`/`recvmmsg` syscalls per Gbps. This is the patch that closes the
-900 Mbps "Nebula receive deficit" vs Tailscale that DN measured. **Estimated
-+40-60% TCP-1 receive-side throughput**, which shows up as higher iperf3 with
-the Linux box as the *server*.
+Nebula receive deficit vs Tailscale that DN measured on their c6i-class
+hardware (~900 Mbps on that specific setup; on faster hardware the deficit
+scales upward). **Estimated +40-60% TCP-1 receive-side throughput**, which
+shows up as higher iperf3 with the Linux box as the *server*.
 
 ### Verification
 
@@ -410,8 +422,14 @@ GOMAXPROCS-sized encrypt/decrypt worker pool.
 ### Ship gate
 
 **Measure MVP (patches 12+13+14+16) first.** If TCP-1 and TCP-4 are within 10%
-of wireguard-go on the same hardware, **skip Step 4**. The 900 Mbps gap DN
-measured was attributable primarily to GRO absence, and MVP ships that.
+of wireguard-go on the same hardware, **skip Step 4**.
+
+**Honest expectation:** Tailscale's multi-Gbps gain came from the full stack
+(GSO + GRO + checksum + vectorization). Patches 12+13+14 deliver the kernel-
+interface half. If Linux-to-Linux iperf3 on our bench shows we're closing most
+of the gap with just those three, the vectorized-pipeline patch is defensible
+to skip. If we're still several Gbps behind Tailscale after MVP, the
+vector-pipeline work is the piece that closes it and Step 4 is justified.
 
 If MVP lands us more than 15% below wireguard-go or more than 25% below kernel
 WireGuard on TCP-1, Step 4 is justified. Otherwise it's a vendor-patch tax for
@@ -558,7 +576,7 @@ delivers them at the socket boundary.
 - [Tailscale — Improving Tailscale Performance: Enhancing Userspace with Kernel Interfaces](https://tailscale.com/blog/throughput-improvements)
 - [Tailscale — Surpassing 10Gb/s with Tailscale: Performance Gains on Linux](https://tailscale.com/blog/more-throughput)
 - [Tailscale — Enhance UDP Throughput for QUIC and HTTP/3 on Linux](https://tailscale.com/blog/quic-udp-throughput)
-- [Defined Networking — Nebula is not the fastest mesh VPN](https://www.defined.net/blog/nebula-is-not-the-fastest-mesh-vpn/) — the benchmark that quantifies the 900 Mbps Nebula receive gap we're closing
+- [Defined Networking — Nebula is not the fastest mesh VPN](https://www.defined.net/blog/nebula-is-not-the-fastest-mesh-vpn/) — the benchmark that measured Nebula's receive-side deficit on c6i-class hardware (~900 Mbps at that setup; scales upward on faster hosts)
 - [WireGuard/wireguard-go PR #75 — UDP GSO/GRO, checksum optimizations, vectorized crypto](https://github.com/WireGuard/wireguard-go/pull/75) — MIT-licensed reference implementation
 - [Linux `UDP_SEGMENT` kernel patch (v4.18)](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=bec1f6f697362) — original GSO merge commit for kernel version context
 - [Linux `UDP_GRO` kernel patch (v5.0)](https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git/commit/?id=e20cf8d3f1f7) — original GRO merge commit
