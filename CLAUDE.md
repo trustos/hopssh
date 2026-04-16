@@ -306,7 +306,6 @@ repeating the same investigations.
 - **macOS `sendmsg_x`/`recvmsg_x` batch syscalls — both sides shipped** — Pure Go (no CGO). `recvmsg_x` works on the utun fd directly (it's `SOCK_DGRAM`/`AF_SYSTEM`), letting us batch TUN reads via the same syscall as UDP receives. Architecture: opportunistic batching — listenIn does blocking first read via Go netpoller, then non-blocking drain via recvmsg_x; UDP send queue flushed via single sendmsg_x after each batch. **No timer** (timer-based flush hurts TCP). Caller-driven flush (listenIn after TUN batch, ListenOut after UDP batch). Mutex protects the send queue (handshake mgr + lighthouse + listenIn + listenOut all produce). Tunnel efficiency went from 17% to 35-53% of raw WiFi.
 - **Inline packet prioritization — control-only, NOT size-based** — `sendmsg_x` processes the msghdrX array in order, giving us strict priority at the syscall level for free. We tried a 3-lane size-based split (interactive/realtime/bulk by packet size) — it tanked TCP throughput by 70% (320→96 Mbps) and doubled retransmits because splitting data packets by size reorders TCP segments within a single flow. Replaced with a 2-lane control-only design: only Nebula control packets (type != Message) jump the queue; ALL data packets share one FIFO lane to preserve within-flow ordering. This gives priority to handshakes/lighthouse/keepalives without harming TCP. Classification is one read (`b[0]&0x0f` of plaintext Nebula header). Honest result: throughput preserved (no regression), but ping-under-load improvement is within WiFi noise — most of that latency is WiFi MAC contention, not the VPN queue. Lesson: priority queues inside VPNs MUST preserve within-flow ordering. Tested with TCP retransmit count + mixed-workload throughput, not just ICMP ping.
 - **Linux `sendmmsg` with batch-flush HURTS single-stream performance** — 408ms vs 125ms relay by holding packets. Needs per-packet flush architecture.
-- **Linux `sendmmsg` with batch-flush HURTS single-stream performance** — 408ms vs 125ms relay by holding packets. Needs per-packet flush architecture.
 - **`scutil` SC registration makes utun visible** to macOS network info (`scutil --nwi`) but doesn't fix the POINTOPOINT → HP mode issue. Requires `Router` field to show as "Reachable".
 
 ### Performance
@@ -314,6 +313,16 @@ repeating the same investigations.
 - **Symmetric NAT with random ports is unsolvable** — port prediction (±50) doesn't work when the carrier assigns random ports. This affects most mobile carriers (CGNAT). No VPN can establish P2P through truly random symmetric NAT.
 - **AES-GCM is faster than ChaCha20 on Apple Silicon** — dedicated hardware AES instructions (single-cycle) vs NEON vector ops. Keep `cipher: "aes"`.
 - **Large UDP socket buffers cause bufferbloat** — 2MB buffers caused 50-293ms spikes on macOS because it reads one packet at a time (no recvmmsg). OS defaults (~128KB) are correct.
+
+### Engineering Lessons (rules for future work)
+
+These are rules learned from real failures. Apply them to any new perf/networking work.
+
+- **Priority queues inside a VPN MUST preserve within-flow ordering.** Splitting packets by size, content, or any flow-internal property reorders TCP segments → SACK fires → TCP treats it as congestion → throughput collapses. We measured: a size-based 3-lane PQ dropped bulk throughput from 320→96 Mbps (-70%) and doubled retransmits (168→383). Only safe to prioritize across orthogonal categories (e.g. control vs data) where reordering can't happen within a single flow.
+- **ICMP ping is the wrong benchmark for "real-world latency".** It's UDP, single-packet, no congestion control. Optimizations that improve ping can simultaneously HURT TCP (the user's actual workload). Always measure with: TCP retransmit count, mixed-workload bulk throughput, and TCP-RTT under load (TCP connect time to a closed port works as a probe).
+- **Timer-based send batching breaks TCP.** Any flush mechanism that holds packets for a fixed time (we tried 500μs) adds jitter that TCP congestion control reads as congestion. Caller-driven flush (after a TUN-read batch or UDP-recv batch) is fine; timer-driven is not. We measured: 500μs timer dropped throughput from 154→63 Mbps.
+- **Trust the user's instinct over synthetic benchmarks.** Twice in this codebase: user reported "feels worse," synthetic ping showed "improved," and the user was right both times — proper TCP measurements confirmed regressions hidden by the synthetic test. If the user says it's worse, find the metric that captures it before defending the change.
+- **Don't fork Nebula.** Considered, then rejected. Differentiation lives in product features (web terminal, DNS, dashboard, browser proxy, control plane), not in the protocol layer. Patches 04-10 add ~700 lines on top of upstream Nebula; that's the right scope. A fork would be 6-12 months to feature parity + permanent maintenance of crypto code.
 
 ---
 
