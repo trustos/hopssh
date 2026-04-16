@@ -1,0 +1,76 @@
+--- a/github.com/slackhq/nebula/interface.go	2026-04-16 09:47:10
++++ b/github.com/slackhq/nebula/interface.go	2026-04-16 09:47:07
+@@ -9,6 +9,7 @@
+ 	"os"
+ 	"runtime"
+ 	"sync/atomic"
++	"syscall"
+ 	"time"
+ 
+ 	"github.com/gaissmai/bart"
+@@ -282,8 +283,18 @@
+ 	li.ListenOut(func(fromUdpAddr netip.AddrPort, payload []byte) {
+ 		f.readOutsidePackets(ViaSender{UdpAddr: fromUdpAddr}, plaintext[:0], payload, h, fwPacket, lhh, nb, i, ctCache.Get(f.l))
+ 	})
++}
++
++// batchReader is implemented by TUN devices that support reading multiple
++// packets per syscall (currently: Darwin via recvmsg_x on the utun fd).
++// When the reader implements this, listenIn drains a batch and flushes the
++// UDP writer once per batch, amortizing send syscalls under load.
++type batchReader interface {
++	ReadBatch(out [][]byte) (int, error)
+ }
+ 
++const listenInBatchSize = 32
++
+ func (f *Interface) listenIn(reader io.ReadWriteCloser, i int) {
+ 	runtime.LockOSThread()
+ 
+@@ -293,8 +304,46 @@
+ 	nb := make([]byte, 12, 12)
+ 
+ 	conntrackCache := firewall.NewConntrackCacheTicker(f.conntrackCacheTimeout)
++
++	br, useBatch := reader.(batchReader)
++	var packets [][]byte
++	if useBatch {
++		packets = make([][]byte, listenInBatchSize)
++		for j := range packets {
++			packets[j] = make([]byte, mtu)
++		}
++	}
+ 
+ 	for {
++		if useBatch {
++			// Reset slices to full capacity so ReadBatch can resize them.
++			for j := range packets {
++				packets[j] = packets[j][:cap(packets[j])]
++			}
++
++			n, err := br.ReadBatch(packets)
++			if err != nil {
++				if (errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, io.EOF)) && f.closed.Load() {
++					return
++				}
++				// EAGAIN from raw recvmsg_x (shouldn't happen since first read is
++				// blocking via os.File, but guard anyway): just retry.
++				if errors.Is(err, syscall.EAGAIN) {
++					continue
++				}
++				f.l.WithError(err).Error("Error while reading outbound packet batch")
++				os.Exit(2)
++			}
++			for j := 0; j < n; j++ {
++				f.consumeInsidePacket(packets[j], fwPacket, nb, out, i, conntrackCache.Get(f.l))
++			}
++			// Flush queued UDP sends from this batch in one sendmsg_x syscall.
++			if err := f.writers[i].Flush(); err != nil {
++				f.l.WithError(err).Debug("Flush failed")
++			}
++			continue
++		}
++
+ 		n, err := reader.Read(packet)
+ 		if err != nil {
+ 			if (errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, io.EOF)) && f.closed.Load() {

@@ -36,6 +36,35 @@ type tun struct {
 	out []byte
 	// cache in buffer since we need to strip 4 bytes of tun metadata on read
 	in []byte
+
+	// sysFd is the raw utun fd used by ReadBatch (recvmsg_x) for batch reads.
+	// ReadWriteCloser wraps this same fd for single-packet Read()/Write().
+	sysFd int
+
+	// Pre-allocated batch read state (nil until ReadBatch is first called).
+	batchMsgs []tunMsghdrX
+	batchIovs []tunIovec // 2 per message: [0]=4-byte AF header, [1]=payload
+	batchHdrs [][4]byte
+	batchBufs [][]byte
+}
+
+// Batch read types for recvmsg_x on the utun fd.
+// Layout matches XNU's struct msghdr_x (see udp/udp_darwin.go).
+
+type tunIovec struct {
+	Base *byte
+	Len  uint64
+}
+
+type tunMsghdrX struct {
+	Name       *byte
+	Namelen    uint32
+	Iov        *tunIovec
+	Iovlen     int32
+	Control    *byte
+	Controllen uint32
+	Flags      int32
+	Datalen    uint64
 }
 
 type ifReq struct {
@@ -131,6 +160,7 @@ func newTun(c *config.C, l *logrus.Logger, vpnNetworks []netip.Prefix, _ bool) (
 		vpnNetworks:     vpnNetworks,
 		DefaultMTU:      c.GetInt("tun.mtu", DefaultMTU),
 		l:               l,
+		sysFd:           fd,
 	}
 
 	err = t.reload(c, true)
@@ -517,6 +547,99 @@ func (t *tun) Read(to []byte) (int, error) {
 
 	copy(to, buf[4:])
 	return n - 4, err
+}
+
+// ReadBatch reads up to len(out) packets from the utun device.
+//
+// First slot: blocking read via os.File (Go netpoller) to wait for at least
+// one packet. Subsequent slots: non-blocking drain via recvmsg_x — picks up
+// any packets already queued in the kernel, returns on EAGAIN.
+//
+// This gives "opportunistic batching": under load, many packets accumulate
+// between listenIn iterations and are drained in one syscall. When idle,
+// we return 1 packet after the blocking wait — no wasted syscalls.
+func (t *tun) ReadBatch(out [][]byte) (int, error) {
+	n := len(out)
+	if n == 0 {
+		return 0, nil
+	}
+
+	// First packet: blocking read via Go's netpoller-aware os.File.
+	// This waits until at least one packet is available.
+	got, err := t.Read(out[0])
+	if err != nil {
+		return 0, err
+	}
+	out[0] = out[0][:got]
+
+	if n == 1 {
+		return 1, nil
+	}
+
+	// Drain additional packets non-blocking via recvmsg_x.
+	drained := t.drainBatch(out[1:])
+	return 1 + drained, nil
+}
+
+// drainBatch calls recvmsg_x non-blocking to pick up any packets already
+// queued in the kernel. Returns the count successfully read; on EAGAIN or
+// any other error, returns what it got and the caller continues with that.
+func (t *tun) drainBatch(out [][]byte) int {
+	n := len(out)
+	if n == 0 {
+		return 0
+	}
+
+	// Lazy-init per-tun batch buffers. Sized to the largest request seen.
+	if len(t.batchMsgs) < n {
+		t.batchMsgs = make([]tunMsghdrX, n)
+		t.batchIovs = make([]tunIovec, 2*n)
+		t.batchHdrs = make([][4]byte, n)
+		t.batchBufs = make([][]byte, n)
+	}
+
+	// Wire each msg's iovec: [0]=4-byte AF header, [1]=caller's payload buffer.
+	for i := 0; i < n; i++ {
+		t.batchBufs[i] = out[i]
+		t.batchIovs[2*i] = tunIovec{
+			Base: &t.batchHdrs[i][0],
+			Len:  4,
+		}
+		t.batchIovs[2*i+1] = tunIovec{
+			Base: &out[i][0],
+			Len:  uint64(cap(out[i])),
+		}
+		t.batchMsgs[i] = tunMsghdrX{
+			Iov:    &t.batchIovs[2*i],
+			Iovlen: 2,
+		}
+	}
+
+	got, _, errno := unix.Syscall6(
+		unix.SYS_RECVMSG_X,
+		uintptr(t.sysFd),
+		uintptr(unsafe.Pointer(&t.batchMsgs[0])),
+		uintptr(n),
+		0,
+		0,
+		0,
+	)
+	if errno != 0 {
+		// EAGAIN is expected when no more packets ready. Any other errno we
+		// swallow too — the first packet is already in out[0], so the caller
+		// still makes progress.
+		return 0
+	}
+
+	for i := 0; i < int(got); i++ {
+		dlen := int(t.batchMsgs[i].Datalen)
+		if dlen < 4 {
+			out[i] = out[i][:0]
+			continue
+		}
+		out[i] = out[i][:dlen-4]
+	}
+	return int(got)
 }
 
 // Write is only valid for single threaded use

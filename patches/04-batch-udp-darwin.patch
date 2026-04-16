@@ -1,6 +1,6 @@
---- a/github.com/slackhq/nebula/udp/udp_darwin.go	2026-04-16 01:26:54
-+++ b/github.com/slackhq/nebula/udp/udp_darwin.go	2026-04-16 01:52:27
-@@ -4,9 +4,7 @@
+--- a/github.com/slackhq/nebula/udp/udp_darwin.go	2026-04-16 09:47:08
++++ b/github.com/slackhq/nebula/udp/udp_darwin.go	2026-04-16 09:47:07
+@@ -4,12 +4,11 @@
  package udp
  
  import (
@@ -10,7 +10,11 @@
  	"fmt"
  	"net"
  	"net/netip"
-@@ -18,47 +16,91 @@
++	"sync"
+ 	"syscall"
+ 	"unsafe"
+ 
+@@ -18,47 +17,110 @@
  	"golang.org/x/sys/unix"
  )
  
@@ -42,8 +46,25 @@
 -	sysFd uintptr
  	l     *logrus.Logger
 +	batch int
++
++	// Send batching state. Multiple goroutines call WriteTo concurrently
++	// (listenIn, listenOut callbacks, handshake manager, lighthouse, cert
++	// renewer), so sendMu guards the queue. Flush drives cadence — no timer.
++	// The lock is held across the sendmsg_x syscall so the syscall runs to
++	// completion without racing another producer rewriting the same msgs.
++	sendMu    sync.Mutex
++	sendQueue []sendEntry
++	sendMsgs  []msghdrX
++	sendIovs  []iovec
  }
  
++type sendEntry struct {
++	data    [MTU]byte
++	dataLen int
++	name    [unix.SizeofSockaddrInet6]byte
++	nameLen uint32
++}
++
  var _ Conn = &StdConn{}
  
  func NewListener(l *logrus.Logger, ip netip.Addr, port int, multi bool, batch int) (Conn, error) {
@@ -118,15 +139,17 @@
 +		batch: batch,
 +	}
 +
-+	// Send queue fields (sendQueue, sendMsgs, sendIovs, flushTimer) are left
-+	// nil — send batching is disabled because it hurts TCP throughput.
-+	// Receive batching (recvmsg_x) is controlled by the batch field in ListenOut.
++	if batch > 1 {
++		c.sendQueue = make([]sendEntry, 0, batch)
++		c.sendMsgs = make([]msghdrX, batch)
++		c.sendIovs = make([]iovec, batch)
++	}
 +
 +	return c, nil
  }
  
  func NewListenConfig(multi bool) net.ListenConfig {
-@@ -79,126 +121,205 @@
+@@ -79,126 +141,321 @@
  					return controlErr
  				}
  			}
@@ -223,6 +246,14 @@
 +			r(netip.AddrPortFrom(ip.Unmap(), binary.BigEndian.Uint16(names[i][2:4])), buffers[i][:msgs[i].Datalen])
 +		}
 +
++		// Flush any WriteTo responses queued during this batch (handshake
++		// replies, relay forwards, etc.). Without this, responses sit in the
++		// send queue until listenIn's Flush runs — but the TUN path may never
++		// fire (e.g., handshake has no TUN packet) and handshakes time out.
++		if err := u.Flush(); err != nil {
++			u.l.WithError(err).Debug("flush after listenOut batch failed")
++		}
++
 +		for i := 0; i < n; i++ {
 +			msgs[i].Namelen = uint32(unix.SizeofSockaddrInet6)
 +		}
@@ -234,27 +265,165 @@
  func (u *StdConn) WriteTo(b []byte, ap netip.AddrPort) error {
 -	var sa unsafe.Pointer
 -	var addrLen int32
-+	// Send batching (sendmsg_x with timer) hurts TCP throughput due to added
-+	// jitter. Always send immediately. Receive batching (recvmsg_x) is still
-+	// active and beneficial — controlled by the batch parameter in ListenOut.
-+	return u.writeToSingle(b, ap)
-+}
++	if u.batch <= 1 {
++		return u.writeToSingle(b, ap)
++	}
  
+-	if u.isV4 {
+-		if ap.Addr().Is6() {
+-			return ErrInvalidIPv6RemoteForSocket
++	// Validate socket/address compatibility before touching the queue.
++	if u.isV4 && ap.Addr().Is6() {
++		return ErrInvalidIPv6RemoteForSocket
++	}
++
++	u.sendMu.Lock()
++
++	// If queue is full, flush-and-retry (synchronous, holds lock) so we don't
++	// drop packets from non-batched callers (handshake, lighthouse, etc.).
++	if len(u.sendQueue) >= cap(u.sendQueue) {
++		if err := u.flushLocked(); err != nil {
++			u.sendMu.Unlock()
++			return err
+ 		}
++	}
+ 
+-		var rsa unix.RawSockaddrInet4
++	idx := len(u.sendQueue)
++	u.sendQueue = u.sendQueue[:idx+1]
++	entry := &u.sendQueue[idx]
++	entry.dataLen = copy(entry.data[:], b)
++
++	if u.isV4 {
++		rsa := (*unix.RawSockaddrInet4)(unsafe.Pointer(&entry.name[0]))
++		rsa.Len = unix.SizeofSockaddrInet4
+ 		rsa.Family = unix.AF_INET
+ 		rsa.Addr = ap.Addr().As4()
+ 		binary.BigEndian.PutUint16((*[2]byte)(unsafe.Pointer(&rsa.Port))[:], ap.Port())
+-		sa = unsafe.Pointer(&rsa)
+-		addrLen = syscall.SizeofSockaddrInet4
++		entry.nameLen = unix.SizeofSockaddrInet4
+ 	} else {
+-		var rsa unix.RawSockaddrInet6
++		rsa := (*unix.RawSockaddrInet6)(unsafe.Pointer(&entry.name[0]))
++		rsa.Len = unix.SizeofSockaddrInet6
+ 		rsa.Family = unix.AF_INET6
+ 		rsa.Addr = ap.Addr().As16()
+ 		binary.BigEndian.PutUint16((*[2]byte)(unsafe.Pointer(&rsa.Port))[:], ap.Port())
+-		sa = unsafe.Pointer(&rsa)
+-		addrLen = syscall.SizeofSockaddrInet6
++		entry.nameLen = unix.SizeofSockaddrInet6
+ 	}
+ 
+-	// Golang stdlib doesn't handle EAGAIN correctly in some situations so we do writes ourselves
+-	// See https://github.com/golang/go/issues/73919
+-	for {
+-		//_, _, err := unix.Syscall6(unix.SYS_SENDTO, u.sysFd, uintptr(unsafe.Pointer(&b[0])), uintptr(len(b)), 0, sa, addrLen)
+-		err := sendto(int(u.sysFd), b, 0, sa, addrLen)
+-		if err == nil {
+-			// Written, get out before the error handling
+-			return nil
++	u.sendMu.Unlock()
++	return nil
++}
++
++// Flush sends all queued packets in one sendmsg_x syscall. Safe to call from
++// any goroutine — internally takes the send mutex. Called by listenIn after
++// processing a TUN batch and by ListenOut after processing a UDP batch.
++// No-op if batch <= 1 or queue is empty.
++func (u *StdConn) Flush() error {
++	if u.batch <= 1 {
++		return nil
++	}
++	u.sendMu.Lock()
++	defer u.sendMu.Unlock()
++	return u.flushLocked()
++}
++
++// flushLocked sends queued packets via sendmsg_x. Caller must hold u.sendMu.
++func (u *StdConn) flushLocked() error {
++	n := len(u.sendQueue)
++	if n == 0 {
++		return nil
++	}
++
++	for i := 0; i < n; i++ {
++		entry := &u.sendQueue[i]
++		u.sendIovs[i] = iovec{
++			Base: &entry.data[0],
++			Len:  uint64(entry.dataLen),
+ 		}
++		msg := &u.sendMsgs[i]
++		msg.Name = &entry.name[0]
++		msg.Namelen = entry.nameLen
++		msg.Iov = &u.sendIovs[i]
++		msg.Iovlen = 1
++		msg.Control = nil
++		msg.Controllen = 0
++		msg.Flags = 0
++		msg.Datalen = 0
++	}
+ 
+-		if errors.Is(err, syscall.EINTR) {
+-			// Write was interrupted, retry
++	u.sendQueue = u.sendQueue[:0]
++
++	for {
++		sent, _, err := unix.Syscall6(
++			unix.SYS_SENDMSG_X,
++			uintptr(u.sysFd),
++			uintptr(unsafe.Pointer(&u.sendMsgs[0])),
++			uintptr(n),
++			0,
++			0,
++			0,
++		)
++		if err == syscall.EINTR {
+ 			continue
+ 		}
+-
+-		if errors.Is(err, syscall.EAGAIN) {
+-			return &net.OpError{Op: "sendto", Err: unix.EWOULDBLOCK}
++		if err == syscall.EAGAIN {
++			// Socket send buffer full; drop. Same behavior as writeToSingle.
++			return &net.OpError{Op: "sendmsg_x", Err: unix.EWOULDBLOCK}
+ 		}
+-
+-		if errors.Is(err, syscall.EBADF) {
++		if err == syscall.EBADF {
+ 			return net.ErrClosed
+ 		}
+-
+-		return &net.OpError{Op: "sendto", Err: err}
++		if err != 0 {
++			return &net.OpError{Op: "sendmsg_x", Err: err}
++		}
++		if int(sent) < n {
++			u.l.WithField("sent", sent).WithField("total", n).Warn("sendmsg_x partial send")
++		}
++		return nil
+ 	}
+ }
+ 
+-func (u *StdConn) LocalAddr() (netip.AddrPort, error) {
+-	a := u.UDPConn.LocalAddr()
 +func (u *StdConn) writeToSingle(b []byte, ap netip.AddrPort) error {
 +	var rsa unsafe.Pointer
 +	var addrLen uintptr
-+
- 	if u.isV4 {
- 		if ap.Addr().Is6() {
- 			return ErrInvalidIPv6RemoteForSocket
+ 
+-	switch v := a.(type) {
+-	case *net.UDPAddr:
+-		addr, ok := netip.AddrFromSlice(v.IP)
+-		if !ok {
+-			return netip.AddrPort{}, fmt.Errorf("LocalAddr returned invalid IP address: %s", v.IP)
++	if u.isV4 {
++		if ap.Addr().Is6() {
++			return ErrInvalidIPv6RemoteForSocket
  		}
+-		return netip.AddrPortFrom(addr, uint16(v.Port)), nil
 -
--		var rsa unix.RawSockaddrInet4
--		rsa.Family = unix.AF_INET
--		rsa.Addr = ap.Addr().As4()
--		binary.BigEndian.PutUint16((*[2]byte)(unsafe.Pointer(&rsa.Port))[:], ap.Port())
--		sa = unsafe.Pointer(&rsa)
--		addrLen = syscall.SizeofSockaddrInet4
+-	default:
+-		return netip.AddrPort{}, fmt.Errorf("LocalAddr returned: %#v", a)
 +		var sa unix.RawSockaddrInet4
 +		sa.Len = unix.SizeofSockaddrInet4
 +		sa.Family = unix.AF_INET
@@ -262,13 +431,7 @@
 +		binary.BigEndian.PutUint16((*[2]byte)(unsafe.Pointer(&sa.Port))[:], ap.Port())
 +		rsa = unsafe.Pointer(&sa)
 +		addrLen = unix.SizeofSockaddrInet4
- 	} else {
--		var rsa unix.RawSockaddrInet6
--		rsa.Family = unix.AF_INET6
--		rsa.Addr = ap.Addr().As16()
--		binary.BigEndian.PutUint16((*[2]byte)(unsafe.Pointer(&rsa.Port))[:], ap.Port())
--		sa = unsafe.Pointer(&rsa)
--		addrLen = syscall.SizeofSockaddrInet6
++	} else {
 +		var sa unix.RawSockaddrInet6
 +		sa.Len = unix.SizeofSockaddrInet6
 +		sa.Family = unix.AF_INET6
@@ -277,14 +440,12 @@
 +		rsa = unsafe.Pointer(&sa)
 +		addrLen = unix.SizeofSockaddrInet6
  	}
+-}
  
--	// Golang stdlib doesn't handle EAGAIN correctly in some situations so we do writes ourselves
--	// See https://github.com/golang/go/issues/73919
- 	for {
--		//_, _, err := unix.Syscall6(unix.SYS_SENDTO, u.sysFd, uintptr(unsafe.Pointer(&b[0])), uintptr(len(b)), 0, sa, addrLen)
--		err := sendto(int(u.sysFd), b, 0, sa, addrLen)
--		if err == nil {
--			// Written, get out before the error handling
+-func (u *StdConn) ReloadConfig(c *config.C) {
+-	// TODO
+-}
++	for {
 +		_, _, err := unix.Syscall6(
 +			unix.SYS_SENDTO,
 +			uintptr(u.sysFd),
@@ -294,64 +455,29 @@
 +			uintptr(rsa),
 +			addrLen,
 +		)
-+
-+		if err == 0 {
- 			return nil
- 		}
--
--		if errors.Is(err, syscall.EINTR) {
--			// Write was interrupted, retry
-+		if err == syscall.EINTR {
- 			continue
- 		}
--
--		if errors.Is(err, syscall.EAGAIN) {
-+		if err == syscall.EAGAIN {
- 			return &net.OpError{Op: "sendto", Err: unix.EWOULDBLOCK}
- 		}
--
--		if errors.Is(err, syscall.EBADF) {
-+		if err == syscall.EBADF {
- 			return net.ErrClosed
- 		}
--
- 		return &net.OpError{Op: "sendto", Err: err}
- 	}
- }
  
--func (u *StdConn) LocalAddr() (netip.AddrPort, error) {
--	a := u.UDPConn.LocalAddr()
- 
--	switch v := a.(type) {
--	case *net.UDPAddr:
--		addr, ok := netip.AddrFromSlice(v.IP)
--		if !ok {
--			return netip.AddrPort{}, fmt.Errorf("LocalAddr returned invalid IP address: %s", v.IP)
--		}
--		return netip.AddrPortFrom(addr, uint16(v.Port)), nil
-+// --- Utility ---
- 
--	default:
--		return netip.AddrPort{}, fmt.Errorf("LocalAddr returned: %#v", a)
-+func (u *StdConn) LocalAddr() (netip.AddrPort, error) {
-+	sa, err := unix.Getsockname(u.sysFd)
-+	if err != nil {
-+		return netip.AddrPort{}, err
- 	}
--}
- 
--func (u *StdConn) ReloadConfig(c *config.C) {
--	// TODO
--}
--
 -func NewUDPStatsEmitter(udpConns []Conn) func() {
 -	// No UDP stats for non-linux
 -	return func() {}
--}
--
++		if err == 0 {
++			return nil
++		}
++		if err == syscall.EINTR {
++			continue
++		}
++		if err == syscall.EAGAIN {
++			return &net.OpError{Op: "sendto", Err: unix.EWOULDBLOCK}
++		}
++		if err == syscall.EBADF {
++			return net.ErrClosed
++		}
++		return &net.OpError{Op: "sendto", Err: err}
++	}
+ }
+ 
 -func (u *StdConn) ListenOut(r EncReader) {
 -	buffer := make([]byte, MTU)
--
+ 
 -	for {
 -		// Just read one packet at a time
 -		n, rua, err := u.ReadFromUDPAddrPort(buffer)
@@ -360,10 +486,16 @@
 -				u.l.WithError(err).Debug("udp socket is closed, exiting read loop")
 -				return
 -			}
--
++// --- Utility ---
+ 
 -			u.l.WithError(err).Error("unexpected udp socket receive error")
 -		}
--
++func (u *StdConn) LocalAddr() (netip.AddrPort, error) {
++	sa, err := unix.Getsockname(u.sysFd)
++	if err != nil {
++		return netip.AddrPort{}, err
++	}
+ 
 -		r(netip.AddrPortFrom(rua.Addr().Unmap(), rua.Port()), buffer[:n])
 +	switch sa := sa.(type) {
 +	case *unix.SockaddrInet4:

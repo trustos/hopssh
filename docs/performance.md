@@ -146,17 +146,26 @@ to use batch UDP syscalls.
 not library calls. They've been unchanged since 2015 and Apple uses them for their own
 networking stack.
 
-**Spike results (2026-04-16):**
+**Spike 1 results (2026-04-16, recv-only):**
 - Pure Go implementation (no CGO) — struct layouts match XNU, verified with `unsafe.Sizeof`/`Offsetof`
 - `recvmsg_x` batch receive: working, 64 packets per syscall, integrated into ListenOut
 - `sendmsg_x` batch send with 500μs timer: **hurts TCP** — adds jitter that congestion control
   interprets as loss. 63 Mbps (batch=64) vs 154 Mbps (batch=1). Timer-based send batching
   is fundamentally incompatible with the serial TUN read → encrypt → send architecture.
-- **Shipped: receive-only batching** (recvmsg_x). Send path uses direct sendto.
-- Next: send batching needs architectural change — non-blocking TUN reads or connected sockets
 
-**Status:** Receive batching shipped in `patches/04-batch-udp-darwin.patch`. Send batching
-requires deeper integration (non-blocking TUN read loop or per-peer connected sockets).
+**Spike 2 results (2026-04-16, full send+recv):**
+- Discovery: `recvmsg_x` works on the utun fd directly (utun is `SOCK_DGRAM`/`AF_SYSTEM`).
+  Batches TUN reads via the same syscall used for UDP receives.
+- Architecture: opportunistic batching. listenIn does blocking first read via Go netpoller,
+  then non-blocking drain via recvmsg_x. Encrypted packets queue in UDP send queue.
+  After processing the whole batch, a single sendmsg_x flushes everything.
+- **No timer.** Caller-driven flush (listenIn after TUN batch, ListenOut after UDP batch).
+  Mutex on the send queue (handshake manager + lighthouse + listenIn + listenOut all produce).
+- iperf3 results (WiFi raw 377 Mbps today): 134 Mbps single stream, 202 Mbps 4-stream.
+  Tunnel efficiency improved from 17.4% (recv-only) to 35-53% (full batch).
+
+**Status:** Both shipped. Patches 04-08 in `patches/`. Adds `Flush() error` to Nebula's
+`Conn` interface (no-op stubs on non-Darwin platforms).
 
 ### Linux
 - Full `sendmmsg`/`recvmmsg` support (batch 64 packets per syscall)
