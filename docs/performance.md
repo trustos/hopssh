@@ -212,6 +212,47 @@ buffers. None of these are quick wins.
 **Status:** Shipped in patches 09 (control-only logic) and 10 (tests). The size-based 3-lane
 variant lives in commit history as a documented dead-end.
 
+**Spike 4: SO_SNDBUF tuning investigation (negative result)**
+
+User reported screen sharing still felt laggy after the 2-lane PQ shipped. We did a proper
+A/B with continuous TCP-RTT probes (50ms interval, 3 minutes) during real screen sharing
+on both PQ-enabled and PQ-disabled builds. Result: **identical distributions**.
+
+| Metric | PQ ON | NO PQ |
+|--------|-------|-------|
+| p50 | 6.2ms | 6.3ms |
+| p90 | 50.0ms | 49.0ms |
+| p95 | 60.4ms | 62.0ms |
+| p99 | 94.0ms | 96.6ms |
+| % in 40-160ms band | 12.9% | 12.9% |
+
+The PQ change is invisible at the user level, confirmed by direct measurement.
+
+Next, hypothesized that kernel UDP send buffer was bufferbloating. Discovered the macOS
+default `SO_SNDBUF` is **9216 bytes** (~6 packets at MTU) — already very small. Tested
+overrides at 4KB / 32KB / 128KB / 512KB across 60s probes during real screen sharing:
+
+| SO_SNDBUF | p50 | p95 | p99 |
+|-----------|-----|-----|-----|
+| 4 KB | 6.1ms | 65ms | 124ms |
+| 32 KB | 6.1ms | 92ms | 121ms |
+| 128 KB | 6.1ms | 92ms | 122ms |
+| 512 KB | 6.2ms | 92ms | 119ms |
+
+**No effect at any size.** The kernel UDP buffer is not where the latency tail comes from.
+
+By process of elimination, the tail latency in the user's setup (Mac mini wired → router →
+laptop on WiFi) comes from:
+1. **WiFi MAC contention** between router and laptop — the only wireless leg in the chain
+2. **Apple Screen Sharing (RFB) protocol bunching** — full-frame TCP delivery is inherently bursty
+3. Possibly **TCP socket buffer on the laptop's receive side** — out of our reach
+
+None of these are fixable inside the VPN layer.
+
+**Status:** Shipped a `HOPSSH_UDP_SNDBUF` env-var knob in patch 11 as an opt-in tuning
+mechanism for edge cases (high pps, custom kernel tuning). Defaults to system default.
+Do NOT recommend it as a "performance fix" — we proved it doesn't help in the typical case.
+
 ### Linux
 - Full `sendmmsg`/`recvmmsg` support (batch 64 packets per syscall)
 - TUN multiqueue with `IFF_MULTI_QUEUE`
