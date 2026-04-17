@@ -511,14 +511,54 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 func reloadNebula() {
 	nebulaMu.Lock()
 
-	if currentNebula == nil {
-		nebulaMu.Unlock()
-		log.Printf("[renew] no embedded Nebula instance to reload")
-		return
-	}
-
 	configPath := filepath.Join(configDir, "nebula.yaml")
 	tunMode := readTunMode()
+
+	if currentNebula == nil {
+		// Nebula never started — e.g. cert was expired at boot. Try a fresh
+		// start now that we have a renewed cert. This is the fix for the
+		// "screen sharing broken after overnight sleep" bug: agent boots with
+		// expired cert → Nebula fails → falls back to OS stack → renewal
+		// gets fresh cert → this path starts Nebula for the first time.
+		nebulaMu.Unlock()
+		log.Printf("[renew] no embedded Nebula instance — attempting cold start with renewed cert")
+
+		newSvc := startMesh(configPath, tunMode)
+		if newSvc == nil {
+			log.Printf("[renew] Nebula cold start failed even after cert renewal")
+			return
+		}
+
+		nebulaMu.Lock()
+		currentNebula = newSvc
+		nebulaMu.Unlock()
+
+		log.Printf("[renew] Nebula started after cert renewal (mode: %s)", tunMode)
+
+		// Configure DNS (kernel TUN mode only).
+		if tunMode == "kernel" {
+			activeDNSConfig = readDNSConfig()
+			configureDNS(activeDNSConfig)
+		}
+
+		// Warm tunnels so Screen Sharing HP mode works immediately.
+		warmTunnel(configPath)
+		endpoint := readEndpointFromDisk()
+		if endpoint != "" {
+			warmPeersFromHeartbeat(endpoint)
+		}
+
+		// Start network-change watcher.
+		if ctrl := newSvc.NebulaControl(); ctrl != nil && endpoint != "" {
+			go watchNetworkChanges(ctrl, endpoint)
+		}
+
+		// Swap HTTP listener from OS stack to mesh.
+		if onNebulaRestart != nil {
+			onNebulaRestart(newSvc)
+		}
+		return
+	}
 
 	currentNebula.Close()
 
@@ -548,4 +588,15 @@ func reloadNebula() {
 	if onNebulaRestart != nil {
 		onNebulaRestart(newSvc)
 	}
+}
+
+// readEndpointFromDisk reads the control plane endpoint URL from the
+// persisted config (set during enrollment). Used by the cold-start path
+// in reloadNebula() where agentEndpoint (local to runServe) isn't available.
+func readEndpointFromDisk() string {
+	data, err := os.ReadFile(filepath.Join(configDir, "endpoint"))
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
 }

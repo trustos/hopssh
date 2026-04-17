@@ -177,9 +177,6 @@ func runServe(args []string) {
 	}
 	srv := newServer()
 
-	// DNS config for cleanup on shutdown.
-	var activeDNSConfig *dnsConfig
-
 	startOSListener := func() {
 		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
 		if err != nil {
@@ -220,6 +217,33 @@ func runServe(args []string) {
 		ensureP2PConfig(agentEndpoint)
 		meshSvc := startMesh(*nebulaConfig, tunMode)
 
+		// Register callback for Nebula restarts (cert renewal or cold-start
+		// after expired cert). This must be set in BOTH branches (mesh success
+		// AND OS-stack fallback) so the cold-start path in reloadNebula() can
+		// swap the HTTP listener from OS stack to mesh.
+		onNebulaRestart = func(newSvc meshService) {
+			serveMu.Lock()
+			defer serveMu.Unlock()
+
+			shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			srv.Shutdown(shutCtx)
+			shutCancel()
+
+			newLn, err := newSvc.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
+			if err != nil {
+				log.Printf("[agent] CRITICAL: cannot listen on new Nebula instance: %v", err)
+				return
+			}
+
+			srv = newServer()
+			go func() {
+				if err := srv.Serve(newLn); err != nil && err != http.ErrServerClosed {
+					log.Printf("[agent] Serve after Nebula restart: %v", err)
+				}
+			}()
+			log.Printf("[agent] HTTP server restarted on new Nebula mesh listener")
+		}
+
 		if meshSvc == nil {
 			// All Nebula modes failed — fall back to OS stack.
 			startOSListener()
@@ -258,29 +282,6 @@ func runServe(args []string) {
 				}
 			}()
 
-			// Register callback for Nebula restarts (cert renewal).
-			onNebulaRestart = func(newSvc meshService) {
-				serveMu.Lock()
-				defer serveMu.Unlock()
-
-				shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				srv.Shutdown(shutCtx)
-				shutCancel()
-
-				newLn, err := newSvc.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
-				if err != nil {
-					log.Printf("[agent] CRITICAL: cannot listen on new Nebula instance: %v", err)
-					return
-				}
-
-				srv = newServer()
-				go func() {
-					if err := srv.Serve(newLn); err != nil && err != http.ErrServerClosed {
-						log.Printf("[agent] Serve after Nebula restart: %v", err)
-					}
-				}()
-				log.Printf("[agent] HTTP server restarted on new Nebula mesh listener")
-			}
 		}
 	} else {
 		// No Nebula config — listen on OS stack.

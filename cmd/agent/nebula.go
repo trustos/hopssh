@@ -39,6 +39,12 @@ var (
 // Set by runServe() to recreate the mesh HTTP listener.
 var onNebulaRestart func(svc meshService)
 
+// activeDNSConfig holds the current split-DNS configuration (kernel TUN mode).
+// Set during Nebula startup (runServe or reloadNebula cold-start), cleaned up
+// on agent shutdown. Package-level so reloadNebula() can configure DNS when
+// starting Nebula for the first time after a cert-expired boot.
+var activeDNSConfig *dnsConfig
+
 // --- Userspace mode (gvisor netstack) ---
 
 // userspaceMeshService wraps an embedded Nebula userspace instance.
@@ -152,16 +158,34 @@ func watchNetworkChanges(ctrl *nebula.Control, endpoint string) {
 
 	lastIface, _ := nebulacfg.DetectPhysicalInterface(host)
 	lastAddrs := getLocalAddrs()
+	lastTick := time.Now()
 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
+		now := time.Now()
+
+		// Detect sleep/wake: if the ticker fires and the gap since the
+		// last tick is >15s (3× the 5s interval), the process was suspended
+		// — almost certainly a macOS/Windows sleep cycle. Force a rebind
+		// even if the network fingerprint hasn't changed, because the
+		// underlying UDP sockets are stale (NAT mappings expired, lighthouse
+		// handshakes will fail on the old socket).
+		sleptAndWoke := now.Sub(lastTick) > 15*time.Second
+		lastTick = now
+
 		currentIface, _ := nebulacfg.DetectPhysicalInterface(host)
 		currentAddrs := getLocalAddrs()
 
-		if currentIface != lastIface || currentAddrs != lastAddrs {
-			log.Printf("[agent] network change detected (iface: %s→%s), rebinding Nebula", lastIface, currentIface)
+		addrChanged := currentIface != lastIface || currentAddrs != lastAddrs
+
+		if addrChanged || sleptAndWoke {
+			reason := "network change"
+			if sleptAndWoke && !addrChanged {
+				reason = fmt.Sprintf("sleep/wake detected (tick gap %v)", now.Sub(lastTick).Round(time.Second))
+			}
+			log.Printf("[agent] %s detected (iface: %s→%s), rebinding Nebula", reason, lastIface, currentIface)
 			ctrl.RebindUDPServer()
 			closed := ctrl.CloseAllTunnels(true)
 			if closed > 0 {
