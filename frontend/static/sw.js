@@ -106,6 +106,16 @@ self.addEventListener('fetch', function (event) {
       url.pathname === '/logo.svg' ||
       url.pathname.startsWith('/proxy/')) return;
 
+  // Skip hopssh control-plane API paths. Proxied-app requests with the
+  // /api/networks/<id>/nodes/<id>/proxy/<port>/... prefix are caught by
+  // PROXY_PATTERN above; any remaining /api/networks/... is always hopssh
+  // control plane (health, shell, exec, forward, dns, members, etc.) and
+  // must pass through to the server, NEVER be rewritten via a stale
+  // proxy mapping. Deliberately narrow to `/api/networks/` — other /api/
+  // prefixes like /api/auth/ collide with proxied apps (Grafana uses
+  // /api/auth/*), so those stay rewritable via proxy mapping.
+  if (url.pathname.startsWith('/api/networks/')) return;
+
   // Only intercept if this client has a proxy mapping. The check is
   // synchronous — if the map has no entry, the request passes through
   // natively without respondWith. This avoids a Chrome bug where
