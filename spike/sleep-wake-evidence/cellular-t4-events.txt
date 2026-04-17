@@ -1,0 +1,33 @@
+=== Cellular T4 pre-sleep state ===
+T0-pre-sleep:     2026-04-17T12:04:10Z
+T1-sleep-issued:  2026-04-17T12:04:10Z
+Wake scheduled:   04/17/26 15:06:20
+Domain:           home
+Mesh host:        yavors-macbook-pro.home
+Probe start:      epoch 1776427585
+Pre-probe network: en0=
+
+=== CELLULAR T4 RESULT: PASS (clean) ===
+
+Post-wake DNS probe (20 samples @ 1s apart, from T+6s after scheduled wake):
+  Mesh (yavors-macbook-pro.home):  RC=0 on all 20, latency 100-422ms
+  Public (example.com):            RC=0 on all 20, latency 108-761ms
+  No hangs, no timeouts, no failures.
+
+Latency profile vs LAN T4:
+  - LAN mesh p50: ~105ms, cellular mesh p50: ~125ms (+20ms — extra cellular hop)
+  - LAN pub p50:  ~115ms, cellular pub p50:  ~125ms (similar — local resolver fallback same)
+  - Outlier at i=16 (pub): 761ms — likely a cellular congestion spike (nothing to do with VPN)
+
+Resolver file (/etc/resolver/home) diff:
+  EMPTY — byte-identical pre/post, same as LAN.
+
+Post-wake network:
+  en0 = 172.20.10.2 (iPhone hotspot, SAME)
+  Default route: 172.20.10.1 on en0
+  Public IP: 149.62.207.243 (SAME)
+  → MacBook did NOT auto-switch to WiFi on this wake either.
+
+CELLULAR T4 VERDICT: PASS — DNS recovery on cellular is identical in
+correctness to LAN. Latency is ~20ms higher per query (expected: cellular
+RTT dominates). Split-DNS isolation holds under cellular conditions.

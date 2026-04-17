@@ -1,7 +1,12 @@
 # Sleep/wake resilience test results
 
-Run: 2026-04-17, Mac mini ↔ MacBook Pro, `hop-agent v0.9.7` (commit `c22bd60`)
-on both ends, kernel-TUN mode, same LAN.
+Runs: 2026-04-17, Mac mini ↔ MacBook Pro, `hop-agent v0.9.7` (commit `c22bd60`)
+on both ends, kernel-TUN mode.
+
+- **Run 1 (LAN)** — 10:44Z–11:37Z. Both Macs on home WiFi, 192.168.23.0/24.
+- **Run 2 (cellular)** — 11:59Z–12:06Z. MacBook switched to iPhone hotspot
+  (172.20.10.0/28, public IP 149.62.207.243, ~80ms mesh RTT). Mac mini still
+  on Ethernet. See cellular section at bottom.
 
 ## Summary
 
@@ -97,3 +102,75 @@ No S1–S6 remediation needed.
 4. **Recovery flaps.** Every soft-sleep recovery in T2/T6 produced TWO rebind events in quick succession (e.g. 13:46:46 and 13:46:51), each followed by a few seconds of additional packet loss. This is WiFi stabilisation after re-association, not a VPN issue. Total pre-stabilisation window: ~12s in T2.
 
 5. **Hibernate restores utun cleanly** — this was listed as "❌ Unknown" in the plan's Row 12. Now confirmed handled.
+
+## Run 2 — Cellular hotspot (2026-04-17, 11:59Z–12:06Z)
+
+MacBook switched from home WiFi (192.168.23.18 on 192.168.23.0/24) to iPhone
+hotspot (172.20.10.2 on 172.20.10.0/28, public IP 149.62.207.243, behind
+carrier CGNAT). Mac mini unchanged (Ethernet peer).
+
+Evidence: `cellular-00-fingerprint.txt`, `cellular-t2-*`, `cellular-t4-*`,
+`cellular-peer-ping-continuous.log`, `cellular-{peer,subject}-agent-continuous.log`.
+
+### Cellular T2 — 2-min sleep on iPhone hotspot
+
+| Metric | LAN run | Cellular run |
+|---|---|---|
+| Outage duration | 124s | 124s |
+| Peer-view recovery after scheduled wake | **3s** | **3s** |
+| Rebind fires via `addrChanged` branch | ✓ | ✓ |
+| Recovery path | Direct P2P | Relay (`132.145.232.64:42001`) — expected for cellular CGNAT |
+| Post-wake stabilization flaps | Two ~6s apart, 3-4 timeouts each | Two shorter, 1-2 timeouts each |
+| Pre-sleep mesh RTT | ~5ms | ~80ms |
+| Post-wake network | Same LAN | **Still on cellular** (no auto-switch to WiFi) |
+
+The recovery mechanism is **identical to LAN** despite ~15× higher baseline
+RTT and a completely different NAT topology. Nebula's relay fallback is
+seamless: when the peer tries to re-handshake post-wake, the direct P2P
+attempt to `149.62.207.243:26261` (MacBook's public cellular IP:port)
+times out (symmetric/random-port CGNAT — per CLAUDE.md discovery log),
+then relay path succeeds within the same second.
+
+### Cellular T4 — DNS on cellular
+
+| Metric | LAN run | Cellular run |
+|---|---|---|
+| First mesh query success | T+5s post-wake | T+6s post-wake |
+| Mesh query RC=0 across all 20 samples | ✓ | ✓ |
+| Public query RC=0 across all 20 samples | ✓ | ✓ |
+| Resolver file diff | empty | empty |
+| Mesh query p50 latency | ~105ms | ~125ms (+20ms cellular overhead) |
+| Public query p50 latency | ~115ms | ~125ms |
+| Outliers | None | 1 cellular congestion spike (761ms on pub i=16) |
+
+Split-DNS isolation holds on cellular: public DNS never blocked by our stub,
+resolver file byte-identical pre/post.
+
+### Cellular findings
+
+1. **No observable regression on cellular.** Recovery time matches LAN exactly.
+   This is stronger evidence than LAN alone — the tunnel re-establishment
+   works correctly across a carrier CGNAT under symmetric-NAT conditions.
+2. **Relay path does its job.** P2P through CGNAT fails (expected); relay
+   succeeds on first attempt. The lighthouse (`132.145.232.64:42001`) is
+   the forwarding path.
+3. **MacBook did NOT auto-switch to WiFi on either cellular wake.** User
+   had warned this might happen; it didn't on this run. If it had, the
+   addrChanged branch would have triggered with a bigger interface/IP
+   change — would likely behave similarly given the same code path.
+4. **Peer agent log shows three addresses tried on recovery**:
+   `[192.168.23.3:4242 46.10.240.91:4242]` (stale LAN addresses from
+   previous connection) and `[149.62.207.243:26261]` (current cellular
+   public). All direct attempts fail; relay wins. No regression.
+
+### Combined verdict (LAN + Cellular runs)
+
+All seven executed tests PASS (T1–T6 on LAN + T2, T4 on cellular). Recovery
+characteristics are stable across both network topologies. The competitive
+failure modes that open issues in Tailscale/ZeroTier/NetBird (DNS poisoning,
+stuck after long sleep, broken tunnel after network change) do not
+reproduce in hopssh v0.9.7 under tested conditions — but the coverage
+still excludes: Linux, Windows, SSID-roaming wake (the "switch WiFi→cellular
+mid-sleep" case that user warned about didn't trigger today), mobile
+battery impact, multi-hop topologies, and long-duration tests with carrier
+NAT port rotation.

@@ -1,0 +1,14 @@
+=== Cellular T4 pre-sleep state ===
+T0-pre-sleep:     2026-04-17T12:04:10Z
+T1-sleep-issued:  2026-04-17T12:04:10Z
+Wake scheduled:   04/17/26 15:06:20
+Domain:           home
+Mesh host:        yavors-macbook-pro.home
+Probe start:      epoch 1776427585
+Pre-probe network: en0=
+>>> issuing sleepnow at 2026-04-17T12:04:10Z
+awk: syntax error at source line 1
+ context is
+	/inet /{print >>>  \ <<< $2}
+awk: illegal statement at source line 1
+Sleeping now...

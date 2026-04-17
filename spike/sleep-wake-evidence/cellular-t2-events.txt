@@ -1,0 +1,55 @@
+=== Cellular T2 pre-sleep state ===
+T0-pre-sleep:     2026-04-17T11:59:26Z
+T1-sleep-issued:  2026-04-17T11:59:26Z
+Wake scheduled:   04/17/26 15:01:36 (in 130s)
+Schedule output:  
+Pre-sleep interface carrying mesh: utun0
+Pre-sleep en0 IP: 172.20.10.2
+Pre-sleep lighthouse route: gateway: 172.20.10.1 interface: en0 
+
+=== CELLULAR T2 RESULT: PASS ===
+
+Outage window (peer-ping-continuous.log):
+  T0 sleep-issued:          11:59:26Z
+  First Request-timeout:    11:59:34Z (8s after sleepnow — machine entering sleep)
+  Last Request-timeout:     12:01:38Z (125 timeouts ≈ 2m 4s)
+  Scheduled wake:           12:01:36Z (confirmed fired this time)
+  First OK ping post-wake:  12:01:39Z  → peer-recovery = +3s from wake (SAME AS LAN)
+  Brief flaps:              12:01:58Z (1 TO), 12:02:01Z (2 TO) — much smaller than LAN (3+ TO each)
+  Stable from:              12:02:03Z
+
+Subject agent log highlights (from cellular-subject-agent-continuous.log):
+  14:59:29 local — "network change detected (iface: en0→en0), rebinding Nebula"
+                   "closed 1 tunnels to force re-handshake on new network"
+                   (pre-sleep, as WiFi disassociated)
+  15:01:38 local — Same message again, post-wake.
+  15:01:38 local — Handshake timeouts to 10.42.1.255 (broadcast — normal, ignore)
+  15:01:38 local — Handshake message RECEIVED via relay 132.145.232.64:42001
+                   → "sentCachedPackets=15" (cached packets flushed on recovery)
+
+Peer agent log highlights (from cellular-peer-agent-continuous.log):
+  15:01:32-36 local — Repeated Handshake timeouts to [10.42.1.6] during MacBook sleep
+  15:01:37 local — Handshake sent to [149.62.207.243:26261] — MacBook's PUBLIC cellular IP+port
+                   (lighthouse shared it via hole-punch info)
+  15:01:37 local — That direct attempt ALSO timed out (symmetric NAT / CGNAT — expected)
+  15:01:38 local — Handshake received via relay 132.145.232.64:42001 — tunnel re-established
+
+Recovery path: relay-routed (as expected for cellular CGNAT — CLAUDE.md discovery
+log notes "Symmetric NAT with random ports is unsolvable" for P2P).
+
+Post-wake network check:
+  en0 = 172.20.10.2 (iPhone hotspot, SAME as pre-sleep)
+  Default route: 172.20.10.1 (iPhone gateway) on en0
+  Public IP: 149.62.207.243 (SAME as pre-sleep — same cellular session)
+  MacBook did NOT auto-switch to WiFi on this wake.
+
+Comparison: LAN T2 (yesterday) vs Cellular T2 (today):
+  Outage:               124s vs 124s (identical — matches sleep duration)
+  Peer recovery:        3s vs 3s (identical)
+  Rebind path:          addrChanged branch fires, closed tunnels (identical)
+  Flap behavior:        LAN had 4+3 timeout flaps; cellular had 1+2 (cellular smoother)
+  RTT pre-sleep:        ~5ms (LAN) vs ~80ms (cellular relay)
+
+CELLULAR T2 VERDICT: PASS — recovery performance is INDISTINGUISHABLE from LAN
+despite ~15× higher RTT. Relay fallback is seamless. addrChanged detection
+fires correctly on cellular wake.

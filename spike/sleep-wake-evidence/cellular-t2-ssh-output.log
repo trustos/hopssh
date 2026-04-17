@@ -1,0 +1,10 @@
+=== Cellular T2 pre-sleep state ===
+T0-pre-sleep:     2026-04-17T11:59:26Z
+T1-sleep-issued:  2026-04-17T11:59:26Z
+Wake scheduled:   04/17/26 15:01:36 (in 130s)
+Schedule output:  
+Pre-sleep interface carrying mesh: utun0
+Pre-sleep en0 IP: 172.20.10.2
+Pre-sleep lighthouse route: gateway: 172.20.10.1 interface: en0 
+>>> issuing sleepnow at 2026-04-17T11:59:26Z
+Sleeping now...

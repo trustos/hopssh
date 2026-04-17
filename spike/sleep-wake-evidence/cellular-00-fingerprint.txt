@@ -1,0 +1,38 @@
+=== MacBook cellular fingerprint 2026-04-17T11:58:43Z ===
+hop-agent v0.9.7 (c22bd60)
+--- nebula status ---
+Service:    running (launchd)
+Nebula IP:  10.42.1.6/24
+Endpoint:   https://hopssh.com
+Node ID:    84d7cc3a-e587-4c70-83ed-3d9981f07909
+Cert:       valid (expires in 19h31m0s)
+Groups:     node
+Config:     /etc/hop-agent
+--- interfaces with IPv4 ---
+en3: 192.168.105.1
+en3: 10.172.41.193
+en3: 10.243.146.226
+en3: 10.147.20.193
+en0: 172.20.10.2
+utun8: 10.147.18.193
+utun11: 172.30.3.123
+utun0: 10.42.1.6
+--- public IP (via hopssh endpoint) ---
+149.62.207.243
+--- route to lighthouse ---
+   route to: 132.145.232.64
+destination: 132.145.232.64
+    gateway: 172.20.10.1
+  interface: en0
+      flags: <UP,GATEWAY,HOST,DONE,WASCLONED,IFSCOPE,IFREF,GLOBAL>
+ recvpipe  sendpipe  ssthresh  rtt,msec    rttvar  hopcount      mtu     expire
+       0         0         0         0         0         0      1500         0 
+--- tun-mode ---
+kernel--- nebula p2p/relay to peer ---
+Hostname:   Yavors-MacBook-Pro.local
+DNS Name:   yavors-macbook-pro
+OS:         darwin/arm64
+Node ID:    84d7cc3a-e587-4c70-83ed-3d9981f07909
+Endpoint:   https://hopssh.com
+Config:     /etc/hop-agent
+Version:    v0.9.7 (c22bd60)

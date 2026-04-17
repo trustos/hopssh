@@ -1,0 +1,51 @@
+=== events ===
+=== Cellular T4 pre-sleep state ===
+T0-pre-sleep:     2026-04-17T12:04:10Z
+T1-sleep-issued:  2026-04-17T12:04:10Z
+Wake scheduled:   04/17/26 15:06:20
+Domain:           home
+Mesh host:        yavors-macbook-pro.home
+Probe start:      epoch 1776427585
+Pre-probe network: en0=
+=== dns probe ===
+=== CELLULAR T4 PRE-SLEEP DNS baseline ===
+2026-04-17T12:04:10Z dig yavors-macbook-pro.home (mesh):
+2026-04-17T12:04:10Z dig example.com (pub):
+172.66.147.243
+104.20.23.154
+=== CELLULAR POST-WAKE DNS probe ===
+2026-04-17T12:06:26Z i=01 mesh_t=0m0.122s mesh_rc=0 pub_t=0m0.115s pub_rc=0
+2026-04-17T12:06:27Z i=02 mesh_t=0m0.127s mesh_rc=0 pub_t=0m0.121s pub_rc=0
+2026-04-17T12:06:28Z i=03 mesh_t=0m0.127s mesh_rc=0 pub_t=0m0.128s pub_rc=0
+2026-04-17T12:06:30Z i=04 mesh_t=0m0.125s mesh_rc=0 pub_t=0m0.123s pub_rc=0
+2026-04-17T12:06:31Z i=05 mesh_t=0m0.108s mesh_rc=0 pub_t=0m0.113s pub_rc=0
+2026-04-17T12:06:32Z i=06 mesh_t=0m0.123s mesh_rc=0 pub_t=0m0.124s pub_rc=0
+2026-04-17T12:06:33Z i=07 mesh_t=0m0.129s mesh_rc=0 pub_t=0m0.109s pub_rc=0
+2026-04-17T12:06:35Z i=08 mesh_t=0m0.100s mesh_rc=0 pub_t=0m0.122s pub_rc=0
+2026-04-17T12:06:36Z i=09 mesh_t=0m0.143s mesh_rc=0 pub_t=0m0.115s pub_rc=0
+2026-04-17T12:06:37Z i=10 mesh_t=0m0.108s mesh_rc=0 pub_t=0m0.110s pub_rc=0
+2026-04-17T12:06:38Z i=11 mesh_t=0m0.125s mesh_rc=0 pub_t=0m0.125s pub_rc=0
+2026-04-17T12:06:40Z i=12 mesh_t=0m0.186s mesh_rc=0 pub_t=0m0.158s pub_rc=0
+2026-04-17T12:06:41Z i=13 mesh_t=0m0.116s mesh_rc=0 pub_t=0m0.142s pub_rc=0
+2026-04-17T12:06:43Z i=14 mesh_t=0m0.422s mesh_rc=0 pub_t=0m0.368s pub_rc=0
+2026-04-17T12:06:44Z i=15 mesh_t=0m0.215s mesh_rc=0 pub_t=0m0.158s pub_rc=0
+2026-04-17T12:06:46Z i=16 mesh_t=0m0.127s mesh_rc=0 pub_t=0m0.761s pub_rc=0
+2026-04-17T12:06:48Z i=17 mesh_t=0m0.120s mesh_rc=0 pub_t=0m0.108s pub_rc=0
+2026-04-17T12:06:49Z i=18 mesh_t=0m0.108s mesh_rc=0 pub_t=0m0.114s pub_rc=0
+2026-04-17T12:06:50Z i=19 mesh_t=0m0.105s mesh_rc=0 pub_t=0m0.113s pub_rc=0
+2026-04-17T12:06:51Z i=20 mesh_t=0m0.122s mesh_rc=0 pub_t=0m0.109s pub_rc=0
+DONE
+=== diff ===
+=== post-net ===
+--- post-wake network ---
+en3: 192.168.105.1
+en3: 10.172.41.193
+en3: 10.243.146.226
+en3: 10.147.20.193
+en0: 172.20.10.2
+utun8: 10.147.18.193
+utun11: 172.30.3.123
+utun0: 10.42.1.6
+gateway: 172.20.10.1
+interface: en0
+public: 149.62.207.243
