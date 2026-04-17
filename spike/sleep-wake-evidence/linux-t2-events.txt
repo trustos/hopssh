@@ -1,0 +1,63 @@
+=== Linux-T2 (SIGSTOP/SIGCONT functional test) ===
+Context: QEMU ARM VM can't resume from S3 or freeze (VM cold-reboots or
+hangs), so we can't do a genuine OS-level sleep. Instead we SIGSTOP the
+agent for 130s, which freezes the Go runtime's goroutines including
+watchNetworkChanges's 5s ticker. On SIGCONT, the next ticker tick sees
+wall-clock tickGap >> 15s and should fire the sleep/wake detection code
+path (cmd/agent/nebula.go:166-197).
+
+T0-pre-pause:     2026-04-17T16:17:13Z
+Agent PID:        3424
+nebula1 pre:      10.42.1.8/24
+Uptime pre:       128.28
+T2-measurement-end: 2026-04-17T16:19:47Z
+
+=== Linux-T2 RESULT: PASS (functional test via SIGSTOP) ===
+
+Peer-side outage:
+  First Request-timeout:  2026-04-17T16:17:15Z
+  Last Request-timeout:   2026-04-17T16:19:23Z (129 timeouts ≈ 2m 8s)
+  First OK ping:          2026-04-17T16:19:23Z — SAME SECOND as SIGCONT
+  Secondary outage:       none
+
+Subject-side agent log (CRITICAL — first appearance of the log string we
+designed tests T1-T6 around, never seen on the macOS runs):
+
+  16:19:23Z [agent] sleep/wake detected (tick gap 2m14s) detected
+           (iface: enp0s1→enp0s1), rebinding Nebula
+  16:19:23Z [agent] closed 2 tunnels to force re-handshake on new network
+
+Interpretation:
+  - sleptAndWoke branch fired (tickGap=2m14s > 15s threshold)
+  - addrChanged branch did NOT fire (interface enp0s1→enp0s1 unchanged)
+  - So the condition `sleptAndWoke && !addrChanged` was true, and the
+    "sleep/wake detected" log message was used instead of "network change"
+  - This validates the code path in cmd/agent/nebula.go:183-187
+  - The cosmetic log bug fix (capture tickGap before reassignment) is
+    confirmed working — "tick gap 2m14s" is the actual measured gap,
+    not "0s".
+
+Recovery mechanism:
+  - Agent PID unchanged (3424) — process was paused, not restarted
+  - On SIGCONT: ticker's next tick runs, detects tick gap, fires rebind
+  - CloseAllTunnels(true) closed 2 tunnels
+  - Peer (queued up 129 seconds of handshake attempts) immediately
+    re-handshakes via relay (132.145.232.64:42001)
+  - Tunnel re-established within the same second
+
+Test methodology caveat:
+  Original plan was real S3 or freeze sleep. Found:
+  - S3 (systemctl suspend): QEMU ARM on Apple Silicon doesn't support
+    resume. Cold-reboots instead of resuming. Evidence: boot ID changed
+    in journalctl --list-boots.
+  - freeze (echo freeze > /sys/power/state): VM hung indefinitely,
+    required manual UTM "Restart VM" to recover.
+  - SIGSTOP/SIGCONT: works. Pauses Go runtime, including the 5s ticker,
+    so when the process resumes, time.Now() reports a large tick gap —
+    exactly the code path we wanted to exercise.
+
+  SIGSTOP tests the AGENT's time-jump handling, NOT the full OS-level
+  sleep/wake (no network interface down, no DNS reset, no TUN driver
+  pause). We had those dimensions covered by the macOS LAN + cellular
+  runs. The Linux-specific gap — "does the agent's tick-gap detection
+  work on Linux?" — is now closed.

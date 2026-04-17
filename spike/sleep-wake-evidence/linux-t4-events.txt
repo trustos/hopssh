@@ -1,0 +1,83 @@
+=== Linux-T4: DNS integration — FINDINGS ===
+
+Scope: baseline DNS test BEFORE getting to recovery — turns out mesh DNS
+is broken in baseline on Linux v0.9.7.
+
+Setup observed on VM:
+- hop-agent registers per-link DNS via systemd-resolved:
+  - Link 4 (nebula1): DNS 132.145.232.64:15300, Domain ~home
+- Public DNS (via home router) works fine through the stub (23ms)
+- Mesh DNS (*.home via systemd-resolved stub) TIMES OUT (3s timeout)
+
+Evidence:
+
+  # Via systemd-resolved stub (client default)
+  $ dig +short yavors-macbook-pro.home
+  ;; communications error to 127.0.0.53#53: timed out
+  ;; no servers could be reached
+  real 0m3.016s
+
+  # Direct to the same DNS server (bypasses stub)
+  $ dig +short @132.145.232.64 -p 15300 yavors-macbook-pro.home
+  10.42.1.6
+  real 0m0.039s
+
+  # resolvectl query (systemd native)
+  $ resolvectl query yavors-macbook-pro.home
+  yavors-macbook-pro.home: resolve call failed: Query timed out
+
+  # Direct to the lighthouse's MESH IP on the DNS port
+  $ dig +short @10.42.1.1 -p 15300 yavors-macbook-pro.home
+  ;; communications error to 10.42.1.1#15300: connection refused
+
+systemd-resolved DBus state (confirmed the registration happened correctly):
+  DNS:     [2, 4, 132.145.232.64]    # 132.145.232.64, AF_INET
+  Domains: [("home", true)]          # ~home (routing-only, not search)
+
+So the registration is correct-looking, but the stub can't use it. Possible
+causes (not fully pinned down):
+  - systemd-resolved (Ubuntu 25.10, systemd 257+) may not forward to
+    non-standard DNS ports (15300 instead of 53) via stub. Needs config
+    change or upstream bug file.
+  - Or: per-link DNS expects the DNS server to be ON that link's subnet.
+    132.145.232.64 is a public IP reachable via default route (enp0s1),
+    not via nebula1. Some systemd-resolved versions source-bind the
+    outgoing query to the link, which may cause drops.
+  - Or: Ubuntu 25.10's newer systemd-resolved has stricter validation.
+
+The macOS equivalent works because /etc/resolver/home writes a resolver
+file that the macOS libresolver uses directly — no per-link routing,
+just a rule "for *.home, query this server via default route." That
+matches systemd-resolved's NOT configured as per-link.
+
+=== LINUX-T4 VERDICT: FAIL (baseline bug, not recovery bug) ===
+
+Mesh DNS resolution does not work at all on Linux v0.9.7 via
+systemd-resolved stub. Recovery tests (post-SIGSTOP) are moot because
+the baseline is already broken.
+
+Action item (Linux-specific bug):
+  - Investigate why systemd-resolved can't forward to 132.145.232.64:15300
+  - Possible fixes:
+    * Register DNS as GLOBAL (not per-link) — easiest to test
+    * Have the lighthouse DNS listen on port 53 as well (needs root on
+      lighthouse)
+    * Have the lighthouse DNS listen on a mesh IP so per-link binding
+      via nebula1 is consistent with routing
+  - This is independent of the sleep/wake test; it's a v0.9.7 Linux DNS
+    integration issue that would affect any Linux user.
+
+Functional tests that DID pass on Linux (from the T2 run):
+  - Mesh IP routing works (ping 10.42.1.7 works)
+  - SSH via mesh works (10.42.1.8 reachable from Mac mini at mesh level)
+  - Handshakes + tunnel establishment work
+  - tick-gap sleep/wake detection fires correctly (tick gap 2m14s logged)
+  - Rebind + CloseAllTunnels works
+  - Tunnel recovers in <1s on resume
+
+What this DOESN'T mean:
+  - Linux users can still use hopssh for VPN connectivity (pings, SSH,
+    arbitrary TCP/UDP to mesh IPs all work)
+  - They just can't resolve <hostname>.<domain> names via the OS resolver
+  - Workaround: use mesh IPs directly, or configure /etc/resolv.conf
+    manually with 132.145.232.64:15300 (would need dig-style workaround)

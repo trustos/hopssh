@@ -1,0 +1,26 @@
+=== Linux T2 pre-sleep ===
+T0-pre-sleep: 2026-04-17T13:58:26Z
+T1-sleep-issued: 2026-04-17T13:58:26Z
+Kernel: 6.17.0-22-generic
+nebula1 pre-sleep: 10.42.1.8/24
+Default route: default via 192.168.23.1 dev enp0s1 proto dhcp src 192.168.23.232 metric 100 
+>>> rtcwake -s 130 -m mem at 2026-04-17T13:58:26Z
+rtcwake: set rtc wake alarm failed: Invalid argument
+rtcwake: assuming RTC uses UTC ...
+>>> wake returned at 2026-04-17T13:58:26Z
+=== subject post-wake ping ===
+2026-04-17T13:58:26Z attempt 1: 64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=4.15 ms
+2026-04-17T13:58:27Z attempt 2: 64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=7.54 ms
+2026-04-17T13:58:28Z attempt 3: 64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=5.68 ms
+2026-04-17T13:58:29Z attempt 4: 64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=5.88 ms
+2026-04-17T13:58:30Z attempt 5: 64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=5.59 ms
+2026-04-17T13:58:31Z attempt 6: 64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=34.1 ms
+2026-04-17T13:58:32Z attempt 7: 64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=25.2 ms
+2026-04-17T13:58:33Z attempt 8: 64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=41.8 ms
+2026-04-17T13:58:34Z attempt 9: 64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=29.8 ms
+2026-04-17T13:58:35Z attempt 10: 64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=32.2 ms
+2026-04-17T13:58:36Z attempt 11: 64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=32.1 ms
+2026-04-17T13:58:37Z attempt 12: 64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=34.6 ms
+2026-04-17T13:58:38Z attempt 13: 64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=32.9 ms
+2026-04-17T13:58:39Z attempt 14: 64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=36.2 ms
+2026-04-17T13:58:41Z attempt 15: 64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=40.6 ms

@@ -1,0 +1,36 @@
+=== Linux-T2 (SIGSTOP/SIGCONT functional test) ===
+Context: QEMU ARM VM can't resume from S3 or freeze (VM cold-reboots or
+hangs), so we can't do a genuine OS-level sleep. Instead we SIGSTOP the
+agent for 130s, which freezes the Go runtime's goroutines including
+watchNetworkChanges's 5s ticker. On SIGCONT, the next ticker tick sees
+wall-clock tickGap >> 15s and should fire the sleep/wake detection code
+path (cmd/agent/nebula.go:166-197).
+
+T0-pre-pause:     2026-04-17T16:17:13Z
+Agent PID:        3424
+nebula1 pre:      10.42.1.8/24
+Uptime pre:       128.28
+
+>>> SIGSTOP at 2026-04-17T16:17:13Z
+agent state after SIGSTOP: T
+
+>>> SIGCONT at 2026-04-17T16:19:23Z
+agent state after SIGCONT: S
+
+--- post-CONT subject-side ping (attempts over 15s) ---
+2026-04-17T16:19:31Z attempt 01: 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+2026-04-17T16:19:32Z attempt 02: 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+2026-04-17T16:19:33Z attempt 03: 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+2026-04-17T16:19:34Z attempt 04: 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+2026-04-17T16:19:35Z attempt 05: 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+2026-04-17T16:19:36Z attempt 06: 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+2026-04-17T16:19:38Z attempt 07: 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+2026-04-17T16:19:39Z attempt 08: 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+2026-04-17T16:19:40Z attempt 09: 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+2026-04-17T16:19:41Z attempt 10: 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+2026-04-17T16:19:42Z attempt 11: 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+2026-04-17T16:19:43Z attempt 12: 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+2026-04-17T16:19:44Z attempt 13: 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+2026-04-17T16:19:45Z attempt 14: 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+2026-04-17T16:19:46Z attempt 15: 1 packets transmitted, 1 received, 0% packet loss, time 0ms
+

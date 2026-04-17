@@ -86,13 +86,18 @@ So **recovery performance is indistinguishable from LAN** on cellular despite
 ~15× higher baseline RTT and CGNAT-forced relay-routing. Nebula's relay
 fallback is seamless when direct P2P fails.
 
-Scope this covers: macOS 15.x on Apple Silicon, same-LAN WiFi and iPhone
-hotspot (cellular CGNAT), two-node topology, kernel-TUN mode. Behavior on
-**Linux, Windows, SSID-roam mid-sleep (WiFi↔cellular switch on wake),
-multi-hop, mobile battery** is **not yet measured** — those are the
-dimensions where competitor VPNs have long-open issues (Tailscale #17736,
-#10688, #1554; ZeroTier #2026, #2545; NetBird #2454), and we have no data
-either way.
+**Linux VM (Ubuntu 25.10 aarch64 in UTM, 2026-04-17)** — sleep code path validated functionally, but hit a separate DNS bug:
+
+| Signal | Linux VM (SIGSTOP-based test) |
+|---|---|
+| Tick-gap detection fires on time-jump | **✅ confirmed** — log line `"sleep/wake detected (tick gap 2m14s) detected (iface: enp0s1→enp0s1), rebinding Nebula"` appeared (first time observed across any run — macOS's `addrChanged` branch had masked it) |
+| Rebind + tunnels closed + tunnel recovery | ✅ <1s post-resume, same PID, no restart |
+| Mesh IP connectivity (ping, SSH, arbitrary TCP) | ✅ works end-to-end |
+| **Mesh DNS via systemd-resolved stub** | ❌ **FAIL** — unrelated bug in `cmd/agent/dns_linux.go:15-46`; `resolvectl dns <iface> <ip>:<port>` syntax doesn't work on Ubuntu 25.10 systemd-resolved (v257+). Direct query to `132.145.232.64:15300` works; stub-routed doesn't. |
+
+**Scope caveat for the Linux run:** real OS-level suspend-resume is NOT testable on QEMU ARM in UTM — `systemctl suspend` cold-reboots the VM on "wake," `rtcwake -m mem` has no RTC alarm support, `freeze` hangs. Testing used SIGSTOP/SIGCONT on the agent process, which exercises only the agent's time-jump detection (not interface down/up or kernel sleep). Full Linux validation needs bare-metal hardware.
+
+Scope this covers: macOS 15.x on Apple Silicon (same-LAN WiFi + iPhone hotspot cellular CGNAT, two-node topology, kernel-TUN mode) + Linux VM sleep-simulation via SIGSTOP. Behavior on **bare-metal Linux suspend, Windows, SSID-roam mid-sleep (WiFi↔cellular switch on wake), multi-hop, mobile battery** is **not yet measured** — those are the dimensions where competitor VPNs have long-open issues (Tailscale #17736, #10688, #1554; ZeroTier #2026, #2545; NetBird #2454), and we have no data either way.
 
 Observed design quirks worth knowing:
 - The `"sleep/wake detected (tick gap Ns)"` log string from
@@ -673,7 +678,7 @@ strategic priority across all platforms, use this tier list instead. It incorpor
 | 1 | **DPLPMTUD (build it)** | **✅ Would be first for mesh VPN** — no competitor ships this in production. Design already drafted (Phase 4 below). | 2-3 weeks | All platforms. Biggest "first-in-class" win we have realistic access to. |
 | 1 | **Linux GSO/GRO + checksum unwind + crypto vector** | ❌ Catch-up to Tailscale, not novel. But necessary. | 3-4 weeks | Gap is multi-Gbps on modern hardware (not 900 Mbps — that figure is specific to DN's c6i-class bench). See `linux-throughput-plan.md` for the full MVP + ship-gated Step 4 plan. |
 | 2 | **Windows RIO (Registered I/O)** | ⚠️ First for *userspace* VPNs only — kernel VPNs (WireGuardNT) went WSK instead, so RIO is irrelevant to the kernel class. Narrower positioning than "unique across all VPNs." | 6-8 weeks incl. Windows CI/CD setup | Requires CGO or syscall wrappers. Real win but scope-heavier than initial "3 weeks" claim. |
-| 2 | **Sleep/wake resilience** | ⚠️ Measured on macOS same-LAN + iPhone hotspot cellular (2026-04-17): all tests PASS, 3s recovery from 2-min sleep, indistinguishable between LAN and cellular CGNAT. Evidence: `spike/sleep-wake-evidence/RESULTS.md`. Linux/Windows/SSID-roam-mid-sleep NOT yet measured — avoid "surpasses Tailscale/ZeroTier" claims until they are. | macOS LAN+cellular done (0); Linux/Windows each ~1 day | See `#sleep-wake-recovery` section above for measured numbers. |
+| 2 | **Sleep/wake resilience** | ⚠️ macOS LAN + cellular: all PASS. Linux VM: sleep code path PASS (SIGSTOP-simulated) — new tick-gap log line observed for the first time. Found separate **Linux DNS bug** (`cmd/agent/dns_linux.go:15-46` — systemd-resolved stub can't forward to `<ip>:<port>` on systemd 257+). Windows, bare-metal Linux suspend, SSID-roam-mid-sleep still unmeasured. Evidence: `spike/sleep-wake-evidence/RESULTS.md`. | macOS done; Linux DNS fix 0.5–1 day; Windows VM ~1 day; bare-metal Linux needs hardware | See `#sleep-wake-recovery` section above. |
 | 3 | **Cross-platform vectorized crypto pipeline (batch)** | ⚠️ Incremental. wireguard-go's per-core pool is already cross-platform; the *batch* optimization that needs PR #75's vector channels is Linux-gated because it consumes the GSO/GRO packet vectors. On macOS/Windows, crypto parallelism from per-core pools is available but batching requires equivalent platform I/O. | 3-4 weeks | Most meaningful *after* Linux GSO/GRO lands (to produce the vectors). |
 | 4 | macOS Network.framework eval | Research only — may not help given `sendmsg_x` lead | 1 week | Phase 3 below |
 | Drop | **Smart pacing / BBR for WiFi airtime** | ❌ Dead end. Research ([arxiv.org/html/2512.18259v1](https://arxiv.org/html/2512.18259v1)) + our own Discovery Log confirm: WiFi airtime contention is MAC-layer, below IP. Userspace pacing cannot help. | — | Not pursued. |

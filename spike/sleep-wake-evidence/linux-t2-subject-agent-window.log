@@ -1,0 +1,7 @@
+Apr 17 16:19:23 trustos hop-agent[3424]: 2026/04/17 16:19:23 [agent] sleep/wake detected (tick gap 2m14s) detected (iface: enp0s1→enp0s1), rebinding Nebula
+Apr 17 16:19:23 trustos hop-agent[3424]: 2026/04/17 16:19:23 [agent] closed 2 tunnels to force re-handshake on new network
+Apr 17 16:19:23 trustos hop-agent[3424]: time="2026-04-17T16:19:23Z" level=info msg="Taking new handshake" certName=node-01275a88 localIndex=1899923463 remoteIndex=2757677790 vpnAddrs="[10.42.1.7]"
+Apr 17 16:19:23 trustos hop-agent[3424]: time="2026-04-17T16:19:23Z" level=info msg="Taking new handshake" certName=node-01275a88 localIndex=823972913 remoteIndex=2870255342 vpnAddrs="[10.42.1.7]"
+Apr 17 16:19:23 trustos hop-agent[3424]: time="2026-04-17T16:19:23Z" level=info msg="Taking new handshake" certName=node-01275a88 localIndex=2473604787 remoteIndex=4067286236 vpnAddrs="[10.42.1.7]"
+Apr 17 16:19:23 trustos hop-agent[3424]: time="2026-04-17T16:19:23Z" level=info msg="Taking new handshake" certName=node-01275a88 localIndex=55808619 remoteIndex=921942074 vpnAddrs="[10.42.1.7]"
+Apr 17 16:19:23 trustos hop-agent[3424]: time="2026-04-17T16:19:23Z" level=info msg="Taking new handshake" certName=node-01275a88 localIndex=755362139 remoteIndex=68910415 vpnAddrs="[10.42.1.7]"

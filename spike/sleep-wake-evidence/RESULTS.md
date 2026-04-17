@@ -163,14 +163,85 @@ resolver file byte-identical pre/post.
    previous connection) and `[149.62.207.243:26261]` (current cellular
    public). All direct attempts fail; relay wins. No regression.
 
-### Combined verdict (LAN + Cellular runs)
+### Combined macOS verdict (LAN + Cellular runs)
 
 All seven executed tests PASS (T1–T6 on LAN + T2, T4 on cellular). Recovery
 characteristics are stable across both network topologies. The competitive
 failure modes that open issues in Tailscale/ZeroTier/NetBird (DNS poisoning,
 stuck after long sleep, broken tunnel after network change) do not
-reproduce in hopssh v0.9.7 under tested conditions — but the coverage
-still excludes: Linux, Windows, SSID-roaming wake (the "switch WiFi→cellular
-mid-sleep" case that user warned about didn't trigger today), mobile
-battery impact, multi-hop topologies, and long-duration tests with carrier
-NAT port rotation.
+reproduce in hopssh v0.9.7 on macOS.
+
+## Run 3 — Linux VM (Ubuntu 25.10 on UTM, aarch64, 2026-04-17 ~16:17Z)
+
+Subject: Ubuntu 25.10 VM inside UTM on the MacBook, bridged to MacBook's
+en0. Mesh IP `10.42.1.8`. Kernel-TUN mode. Enrolled via `hop-agent enroll
+--endpoint https://hopssh.com` using the device flow.
+
+Evidence: `linux-00-fingerprint.txt`, `linux-t2-*`, `linux-t4-*`,
+`linux-peer-*.log`, `linux-t2-subject-agent-*.log`.
+
+### What DIDN'T work (ruled out paths)
+
+- **`rtcwake -s 130 -m mem`** — fails with `set rtc wake alarm failed: Invalid argument`. QEMU ARM's `rtc-efi` doesn't accept wake alarms.
+- **Write to `/sys/class/rtc/rtc0/wakealarm`** — same rejection (`Invalid argument`).
+- **`systemctl suspend`** (real S3) — VM enters S3 but cannot be woken. UTM's "wake" action cold-resets the VM instead of resuming — journal shows a new boot ID between the pre/post entries, and `uptime` confirms fresh boot. Wake-on-LAN, packet flood, and TCP SYN storms all fail to wake the VM from S3.
+- **`echo freeze > /sys/power/state`** — VM hangs indefinitely, requires manual "Restart VM" from UTM.
+
+So: **QEMU ARM on Apple Silicon does not support real sleep-resume.** Real OS-level sleep/wake testing on Linux needs bare-metal Linux hardware, not a UTM VM.
+
+### Linux-T2 via SIGSTOP (functional test, works reliably)
+
+Pivot: pause the `hop-agent` process with `SIGSTOP`, wait 130s, resume with `SIGCONT`. This freezes the Go runtime's goroutines — including the 5s ticker in `watchNetworkChanges` — without needing OS-level sleep. On `SIGCONT`, the next ticker tick sees `time.Now()` 130s ahead of its last recorded tick — the exact code path that real sleep would trigger.
+
+| Metric | Measured |
+|---|---|
+| SIGSTOP issued | 2026-04-17T16:17:13Z (agent PID 3424) |
+| SIGCONT issued | 2026-04-17T16:19:23Z (128s later, same PID) |
+| Peer ping outage | 129 timeouts, 16:17:15 → 16:19:23 |
+| Peer-view recovery | same second as SIGCONT |
+| Agent PID post-resume | **3424 (unchanged)** — agent resumed, not restarted |
+| Tick-gap log fired | **✅ `[agent] sleep/wake detected (tick gap 2m14s) detected (iface: enp0s1→enp0s1), rebinding Nebula`** |
+| Tunnels closed | 2 |
+
+**This is the first appearance of the `"sleep/wake detected"` log string across all runs.** On macOS (LAN and cellular) the `addrChanged` branch always won because WiFi re-associate changed local addresses; the log reported `"network change detected"` instead. On Linux with SIGSTOP, the interface stays `enp0s1→enp0s1` unchanged, so `sleptAndWoke && !addrChanged` is true and the sleep-specific log fires. This validates:
+
+- `cmd/agent/nebula.go:183-187` branch selection works correctly.
+- The cosmetic fix from commit `c22bd60` (capture `tickGap` before reassignment) is observable — `tick gap 2m14s` is the real value, not `0s`.
+- The functional code path on Linux matches macOS (same rebind + tunnel-close behavior).
+
+### Linux-T4 — FAIL (separate bug, not sleep/wake-related)
+
+Linux hop-agent **registers mesh DNS correctly** with systemd-resolved (confirmed via `resolvectl status` and DBus), but **systemd-resolved cannot forward `.home` queries to the configured DNS server**.
+
+| Query path | Result |
+|---|---|
+| `dig +short yavors-macbook-pro.home` (via stub 127.0.0.53) | **TIMES OUT (3s)** |
+| `dig +short example.com` (via stub 127.0.0.53) | **WORKS (23ms)** — public uplink OK |
+| `dig @132.145.232.64 -p 15300 yavors-macbook-pro.home` (direct) | **WORKS (39ms)** |
+| `resolvectl query yavors-macbook-pro.home` | `Query timed out` |
+
+systemd-resolved DBus state:
+```
+DNS on nebula1:   132.145.232.64 (AF_INET)
+Domains on nebula1: ~home (routing-only)
+```
+
+The DNS server is reachable via the default route (`enp0s1`), not via `nebula1` (it's a public IP). systemd-resolved on Ubuntu 25.10 (systemd 257+) appears unable to forward non-port-53 DNS queries through this per-link-with-non-link-local-server setup — possibly strictness introduced in recent systemd versions.
+
+Code path: `cmd/agent/dns_linux.go:15-46` calls `resolvectl dns <iface> <ip>:<port>` + `resolvectl domain <iface> ~<domain>`. This syntax works on older systemd-resolved but fails on 257+.
+
+Workarounds users can apply today:
+- `dig @132.145.232.64 -p 15300 <host>.home` (direct query bypassing stub)
+- Manually add to `/etc/resolv.conf` (but systemd-resolved rewrites it)
+
+Fix directions (for a follow-up patch, NOT sleep/wake-related):
+- Register DNS globally (`resolvectl dns --set-global`) instead of per-link
+- Have the lighthouse DNS also listen on port 53 (requires root on lighthouse, or a privileged port proxy)
+- Have the lighthouse DNS listen on its mesh IP (`10.42.1.1:15300`) so per-link binding via `nebula1` routes consistently
+- Ship a `/etc/systemd/resolved.conf.d/hopssh.conf` drop-in file
+
+### Linux verdict
+
+- **Sleep/wake code path: PASS (functional)** — tick-gap detection fires correctly, rebind fires, tunnel recovers on SIGCONT within the same second. Log message appears as designed.
+- **DNS on Linux: FAIL (baseline bug)** — unrelated to sleep/wake. Mesh DNS simply doesn't work on Ubuntu 25.10 systemd-resolved in v0.9.7. File-level: `cmd/agent/dns_linux.go:15-46` needs a fix. Mesh IP connectivity itself is fine (ping/SSH/arbitrary TCP to `10.42.X.X` works end-to-end).
+- **Scope of SIGSTOP test**: exercises the agent's time-jump handling only — NOT network interface down/up (interfaces never went down), NOT TUN driver pause, NOT kernel DNS reset. Those dimensions are fundamentally untestable on QEMU ARM and remain unvalidated on Linux until we get bare-metal Linux hardware.

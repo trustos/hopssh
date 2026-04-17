@@ -1,0 +1,59 @@
+=== Ubuntu VM fingerprint 2026-04-17T13:38:07Z ===
+--- OS / kernel ---
+ Static hostname: trustos
+       Icon name: computer-vm
+         Chassis: vm 🖴
+      Machine ID: 4a6a64fe64404876ae3b9fec7053a5ba
+         Boot ID: 69a6915e86fe4d7cb13b05b623aca535
+    AF_VSOCK CID: 1
+  Virtualization: qemu
+Operating System: Ubuntu 25.10
+          Kernel: Linux 6.17.0-22-generic
+    Architecture: arm64
+ Hardware Vendor: QEMU
+  Hardware Model: QEMU Virtual Machine
+Firmware Version: 0.0.0
+   Firmware Date: Fri 2015-02-06
+    Firmware Age: 11y 2month 1w 2d
+NAME="Ubuntu"
+VERSION_ID="25.10"
+VERSION="25.10 (Questing Quokka)"
+--- CPU / arch ---
+aarch64
+5
+--- network (relevant interfaces + default route) ---
+lo: 127.0.0.1/8
+enp0s1: 192.168.23.232/24
+--- default route ---
+default via 192.168.23.1 dev enp0s1 proto dhcp src 192.168.23.232 metric 100 
+--- DNS resolver ---
+active
+Global
+         Protocols: -LLMNR -mDNS -DNSOverTLS DNSSEC=no/unsupported
+  resolv.conf mode: stub
+
+Link 2 (enp0s1)
+    Current Scopes: DNS
+         Protocols: +DefaultRoute -LLMNR -mDNS -DNSOverTLS DNSSEC=no/unsupported
+Current DNS Server: 192.168.23.1
+       DNS Servers: 192.168.23.1
+     Default Route: yes
+--- power management / S3 support ---
+freeze mem
+freeze_filesystems
+mem_sleep
+pm_async
+pm_debug_messages
+pm_freeze_timeout
+pm_print_times
+pm_test
+pm_wakeup_irq
+state
+suspend_stats
+--- rtcwake capability ---
+/usr/sbin/rtcwake
+rtcwake from util-linux 2.41
+--- hop-agent check ---
+(not installed — will install next)
+--- TUN device support ---
+crw-rw-rw- 1 root root 10, 200 Apr 17 13:20 /dev/net/tun

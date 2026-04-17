@@ -85,6 +85,7 @@ v0.9.6 fix is a **floor** (parity with their core detection), not a ceiling.
 | 11 | Recovery ordering (rebind before WiFi reassociates) | ✅ **Handled in practice** — T2 showed two rebinds in quick succession (6s apart) as WiFi stabilised; full convergence ≤12s | — |
 | 12 | TUN device corruption after hibernation | ✅ **Handled** — T6 confirmed: `utun0` with mesh IP `10.42.1.6` survived `hibernatemode 25` cycle. No cold-restart needed. | — |
 | 13 | Battery vs speed tradeoff | ❌ Not considered — rebind on every tick-gap unconditionally. Matters for mobile. | LOW (no mobile clients) |
+| 14 | **Linux mesh DNS via systemd-resolved stub doesn't work** (discovered 2026-04-17) | ❌ **BUG** — `cmd/agent/dns_linux.go:15-46` uses `resolvectl dns <iface> <ip>:<port>` which fails to forward on systemd-resolved v257+. Direct DNS to lighthouse works; stub-routed doesn't. Unrelated to sleep/wake but blocks Linux mesh-hostname resolution. See Solution S7. | **HIGH (Linux usability)** |
 
 ---
 
@@ -549,6 +550,43 @@ Prefer S5a.
 zero-length read from the utun fd with a short deadline. If it errors in a
 way that looks like "fd invalidated," tear down Nebula and restart via
 `reloadNebula()` cold-start path (already exists for the cert case).
+
+### S7 — Linux mesh DNS via systemd-resolved drop-in or global DNS (NEW)
+
+**When:** discovered 2026-04-17 while testing on Ubuntu 25.10 (systemd 257+).
+`cmd/agent/dns_linux.go:15-46` calls `resolvectl dns <iface> <ip>:<port>` +
+`resolvectl domain <iface> ~<domain>`. The per-link DNS with a public-IP
+server on a non-link-local port isn't forwarded by the stub on modern
+systemd-resolved. Direct queries to `132.145.232.64:15300` work; the stub
+(127.0.0.53) times out. Public DNS still works (uplink).
+
+**What (in order of simplicity):**
+
+1. **Try global DNS**: `resolvectl dns --set-global 132.145.232.64:15300` +
+   `resolvectl domain --set-global ~home`. Might forward correctly from
+   systemd's global scope.
+2. **Drop-in file**: write `/etc/systemd/resolved.conf.d/hopssh.conf`:
+   ```
+   [Resolve]
+   DNS=132.145.232.64:15300
+   Domains=~home
+   ```
+   Reload with `systemctl reload systemd-resolved`. More robust than
+   `resolvectl` commands if the transient config fails.
+3. **Listen on port 53 at the lighthouse**: requires root on lighthouse
+   or a privileged-port proxy; adds surface for attacks on the control
+   plane.
+4. **Listen on a mesh IP at the lighthouse**: `10.42.1.1:15300`. Then
+   per-link DNS via `nebula1` routes correctly (source-binds to mesh
+   IP, server on same mesh network).
+
+**Risk:** complexity and rollback for each option varies. Option 1 is
+easiest to test (can `resolvectl` revert). Option 2 needs Ansible-style
+config management. Options 3 and 4 are server-side changes.
+
+**Status:** v0.9.7 ships with a Linux DNS bug. Workaround for users:
+`dig @132.145.232.64 -p 15300 <host>.home`. Fix is independent of
+sleep/wake tests — they still pass (see Linux-T2 in RESULTS.md).
 
 ---
 
