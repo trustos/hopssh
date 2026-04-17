@@ -1,0 +1,52 @@
+=== VPS validation evidence (Ubuntu 24.04 x86_64) ===
+Host: Oracle Cloud instance, 158.101.160.202, ubuntu user
+PRETTY_NAME="Ubuntu 24.04.4 LTS"
+NAME="Ubuntu"
+VERSION_ID="24.04"
+VERSION="24.04.4 LTS (Noble Numbat)"
+systemd: systemd 255 (255.4-1ubuntu8.12)
+Architecture: x86_64
+Kernel: 6.17.0-1007-oracle
+
+=== Pre-existing Nebula (separate from hopssh) ===
+active
+    inet 10.42.14.2/24 brd 10.42.14.255 scope global nebula1
+
+=== hop-agent state ===
+hop-agent v0.9.8-dev (5d1e5a0)
+Service:    active (systemd)
+Nebula IP:  10.42.1.9/24
+Endpoint:   https://hopssh.com
+Node ID:    9d4ba674-7fec-47b8-adad-973ed90ab9e8
+Cert:       valid (expires in 23h58m0s)
+Groups:     node
+Config:     /etc/hop-agent
+
+=== probe+fallback triggered? ===
+Apr 17 21:47:36 instance hop-agent[2216]: 2026/04/17 21:47:36 [agent] WARNING: kernel TUN failed: start nebula (kernel TUN): Failed to get a tun/tap device (map[]): could not set tun device name: nebula1 because device or resource busy (falling back to userspace)
+Apr 17 21:47:38 instance hop-agent[2216]: 2026/04/17 21:47:38 [dns] per-link DNS registered on nebula1 but stub not forwarding queries; switching to systemd-resolved drop-in config
+Apr 17 21:47:38 instance hop-agent[2216]: 2026/04/17 21:47:38 [dns] split-DNS configured: .home → 132.145.232.64:15300
+
+=== drop-in file ===
+# Written by hop-agent. Safe to remove; regenerated on next enroll.
+[Resolve]
+DNS=132.145.232.64:15300
+Domains=~home
+
+=== resolvectl (global scope set by drop-in) ===
+Global
+         Protocols: -LLMNR -mDNS -DNSOverTLS DNSSEC=no/unsupported
+  resolv.conf mode: stub
+Current DNS Server: 132.145.232.64:15300
+       DNS Servers: 132.145.232.64:15300
+        DNS Domain: ~home
+
+Link 2 (ens3)
+
+=== functional DNS ===
+yavors-macbook-pro.home: 10.42.1.6                          -- link: ens3
+
+tenevis-mac-mini-2.home: 10.42.1.7                          -- link: ens3
+
+example.com: 172.66.147.243                                 -- link: ens3
+             104.20.23.154                                  -- link: ens3

@@ -280,3 +280,55 @@ Fix deliberately targets only the broken case:
 - Systems where per-link `resolvectl` works (port 53, or older systemd) keep using per-link.
 - Systems where the stub doesn't forward (port != 53 on affected systemd) auto-fall-back to drop-in.
 - Distros without `resolvectl` (Debian 12+, RHEL, Alpine, NixOS, etc.) continue to use `/etc/resolver/<domain>` unchanged.
+
+### Second validation — Ubuntu 24.04 LTS / systemd 255.4 / x86_64 (2026-04-18)
+
+Evidence: `spike/sleep-wake-evidence/linux-dns-fix-ubuntu-24-validation.txt`.
+
+Tested on an Oracle Cloud VPS (Ubuntu 24.04.4 LTS Noble Numbat, kernel
+6.17.0-1007-oracle, systemd 255 v255.4-1ubuntu8.12, x86_64). Purpose:
+determine whether the per-link DNS bug is 25.10-specific or broader
+across the Ubuntu LTS line.
+
+Result: **the bug is present on Ubuntu 24.04 LTS too.** The fallback
+triggered on first agent startup — same log line, same code path:
+
+```
+[agent] WARNING: kernel TUN failed: ... nebula1 because device or
+        resource busy (falling back to userspace)
+[dns] per-link DNS registered on nebula1 but stub not forwarding
+      queries; switching to systemd-resolved drop-in config
+[dns] split-DNS configured: .home → 132.145.232.64:15300
+```
+
+DNS functional post-fix:
+
+| Query | Result |
+|---|---|
+| `yavors-macbook-pro.home` via systemd-resolved | 10.42.1.6 (1.8ms) |
+| `tenevis-mac-mini-2.home` via systemd-resolved | 10.42.1.7 (1.4ms) |
+| `example.com` via systemd-resolved | 172.66.147.243 (66.3ms, public) |
+
+Verdict: **probe+fallback is load-bearing across the Ubuntu LTS line**,
+not just a 25.10 workaround. The MagicDNS-style structural fix (deferred)
+would have been the alternative path; since our client-side fix works
+across both versions, no urgency for structural change until we start
+on Windows or mobile.
+
+### Pre-existing side finding: two Nebulas on one host
+
+The 24.04 VPS happened to already run a separate standalone Nebula
+(unrelated to hopssh) on interface `nebula1`. When hopssh enrolled:
+
+1. hopssh's kernel-TUN tried to claim `nebula1` and failed (`device or
+   resource busy`) — fell back to userspace mode (gvisor netstack).
+2. `findNebulaInterface()` in `cmd/agent/dns_linux.go` picked the
+   existing `nebula1` (first-match) even though it belongs to the other
+   Nebula. Harmless because our probe fallback configures DNS globally,
+   not per-link.
+
+Pre-existing sub-bug worth tracking: the interface-picking heuristic
+should filter by our own Nebula process or skip interfaces with IPs
+outside our mesh range. Low priority — only affects hosts running
+multiple Nebulas, and the functional outcome on this run was correct
+(fallback took over).
