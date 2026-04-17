@@ -1,0 +1,41 @@
+=== T1 — very short sleep (~10s target, actual 9s) ===
+
+Setup: unlike T2-T6 which use pmset-scheduled-wake, T1 needs a sub-15s sleep
+which pmset schedule can't reliably achieve. Used delayed WOL from Mac mini
+fired 13s after sleepnow-issued.
+
+Timeline (from peer-ping-continuous.log + SSH output):
+  11:36:58Z  T0 pre-sleep
+  11:36:59Z  sleepnow issued on MacBook
+  11:37:02Z  MacBook agent: "network change detected (iface: en0→en0), rebinding Nebula"
+             "closed 1 tunnels to force re-handshake on new network"
+             (WiFi going down as part of sleep sequence — normal)
+  11:37:03Z  First Request-timeout on peer ping (machine asleep)
+  11:37:12Z  WOL magic packet sent from Mac mini
+  11:37:12Z  First OK ping (icmp_seq recovered same second)
+             → 10 consecutive timeouts = 9 seconds of actual network outage
+  11:37:13Z+ Tunnel working normally, no rebind-fire
+
+Key observation — the AGENT LOG post-wake:
+  - NO "sleep/wake detected" log line appeared
+  - NO "network change detected" log line appeared after 11:37:02
+  - NO "closed N tunnels" post-wake
+  → tick-gap threshold (>15s in code at cmd/agent/nebula.go:176) did NOT fire
+  → addrChanged path did NOT fire
+  → tunnel recovered via natural Nebula re-handshake mechanism
+
+T1 VERDICT: PASS.
+- 9-second sleep produces a tick-gap that stays under the 15-second
+  threshold (tick gap ≈ 9s of sleep + ≤5s ticker phase = 9-14s).
+- The >15s threshold in watchNetworkChanges correctly ignores short
+  sleeps. NAT mapping survives this duration (confirmed: first ping
+  succeeded immediately on wake, no packet loss beyond the exact outage).
+- This is the negative-control test: shows our code does NOT overreact
+  to trivial sleep durations.
+
+RELATIONSHIP TO T2:
+- T1: 9s sleep → no rebind, tunnel survives → maps to Row 6 "very short
+  sleep — NAT survives"
+- T2: 124s sleep → rebind fires (via addrChanged branch), tunnel recovers
+  in 3s
+- Our code handles both endpoints of the sleep-duration spectrum correctly.

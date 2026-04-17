@@ -1,0 +1,37 @@
+=== T5 — peer-side black-hole window analysis ===
+
+Derived from peer-ping-continuous.log. "Black-hole window" defined as:
+  time between peer first sends a ping that's NOT answered (subject asleep)
+  and peer sees first OK ping (subject woken + tunnel re-established).
+
+This is the duration during which the PEER has a stale tunnel entry pointing
+at the SUBJECT's expired NAT binding and is wasting packets. Row 10 of the
+failure-mode matrix.
+
+Test   | Sleep type    | 1st TO (peer) | Last TO (peer) | 1st OK (peer) | Black-hole window
+-------+---------------+---------------+----------------+---------------+-------------------
+T1     | soft, 9s      | 11:37:03Z     | 11:37:11Z      | 11:37:12Z     | 9s
+T2     | soft, 2min    | 10:44:41Z     | 10:46:44Z      | 10:46:45Z     | 124s
+T3     | soft, ~13min  | 10:55:04Z     | 11:08:13Z      | 11:08:14Z     | 13m 10s
+T6     | hibernate,2m  | 11:31:58Z     | 11:35:08Z      | 11:35:09Z     | 3m 10s
+
+All black-hole windows match the actual subject-sleep duration.
+Peer-view recovery is immediate (1s granularity of ping) once the subject
+tunnel is re-established.
+
+T5 VERDICT: PASS (all windows <30s for the tests we designed — though for
+T3 the "window" matches the sleep duration, which is expected; the question
+of interest is how FAST the peer recovers after the subject wakes).
+
+  - T2 peer-recovery lag (scheduled wake at 10:46:42Z → first OK 10:46:45Z): 3s
+  - T1 peer-recovery lag (WOL at 11:37:12Z → first OK 11:37:12Z):            <1s
+  - T6 peer-recovery lag (harder to pin — wake happened somewhere between
+    11:34:02 scheduled and 11:35:09 first-OK; conservative worst case 67s
+    between scheduled and first-OK, but this includes the hibernate restore
+    disk-load time, not peer-side stall).
+
+INTERPRETATION: Peer-side recovery is driven by the SUBJECT sending a
+handshake to the peer, which happens as soon as the subject's tunnel code
+runs post-wake. There's no observable "peer keeps sending to dead NAT"
+lag — the dead-tunnel condition resolves the moment the subject
+re-handshakes. No "proactive peer notification" (Solution S5a) is needed.

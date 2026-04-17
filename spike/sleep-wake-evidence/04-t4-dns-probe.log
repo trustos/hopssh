@@ -1,0 +1,27 @@
+=== PRE-SLEEP DNS baseline ===
+2026-04-17T11:23:32Z dig yavors-macbook-pro.home:
+2026-04-17T11:23:32Z dig example.com:
+172.66.147.243
+104.20.23.154
+=== POST-WAKE DNS probe ===
+2026-04-17T11:25:48Z i=01 mesh_t=0m0.161s mesh_rc=0 pub_t=0m0.085s pub_rc=0
+2026-04-17T11:25:50Z i=02 mesh_t=0m0.104s mesh_rc=0 pub_t=0m0.101s pub_rc=0
+2026-04-17T11:25:51Z i=03 mesh_t=0m0.100s mesh_rc=0 pub_t=0m0.148s pub_rc=0
+2026-04-17T11:25:52Z i=04 mesh_t=0m0.107s mesh_rc=0 pub_t=0m0.149s pub_rc=0
+2026-04-17T11:25:54Z i=05 mesh_t=0m0.102s mesh_rc=0 pub_t=0m0.167s pub_rc=0
+2026-04-17T11:25:55Z i=06 mesh_t=0m0.104s mesh_rc=0 pub_t=0m0.103s pub_rc=0
+2026-04-17T11:25:56Z i=07 mesh_t=0m0.106s mesh_rc=0 pub_t=0m0.097s pub_rc=0
+2026-04-17T11:25:57Z i=08 mesh_t=0m0.138s mesh_rc=0 pub_t=0m0.096s pub_rc=0
+2026-04-17T11:25:59Z i=09 mesh_t=0m0.103s mesh_rc=0 pub_t=0m0.104s pub_rc=0
+2026-04-17T11:26:00Z i=10 mesh_t=0m0.099s mesh_rc=0 pub_t=0m0.136s pub_rc=0
+2026-04-17T11:26:01Z i=11 mesh_t=0m0.098s mesh_rc=0 pub_t=0m0.101s pub_rc=0
+2026-04-17T11:26:02Z i=12 mesh_t=0m0.100s mesh_rc=0 pub_t=0m0.108s pub_rc=0
+2026-04-17T11:26:04Z i=13 mesh_t=0m0.130s mesh_rc=0 pub_t=0m0.096s pub_rc=0
+2026-04-17T11:26:05Z i=14 mesh_t=0m0.100s mesh_rc=0 pub_t=0m0.103s pub_rc=0
+2026-04-17T11:26:06Z i=15 mesh_t=0m0.102s mesh_rc=0 pub_t=0m0.125s pub_rc=0
+2026-04-17T11:26:07Z i=16 mesh_t=0m0.098s mesh_rc=0 pub_t=0m0.099s pub_rc=0
+2026-04-17T11:26:09Z i=17 mesh_t=0m0.099s mesh_rc=0 pub_t=0m0.095s pub_rc=0
+2026-04-17T11:26:10Z i=18 mesh_t=0m0.143s mesh_rc=0 pub_t=0m0.097s pub_rc=0
+2026-04-17T11:26:11Z i=19 mesh_t=0m0.093s mesh_rc=0 pub_t=0m0.094s pub_rc=0
+2026-04-17T11:26:12Z i=20 mesh_t=0m0.111s mesh_rc=0 pub_t=0m0.133s pub_rc=0
+DONE

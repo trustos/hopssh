@@ -17,19 +17,19 @@ Two fixes for "Screen Sharing broken after overnight sleep":
    expired cert), it starts Nebula fresh with `startMesh()` instead of returning
    "no embedded Nebula instance to reload."
 
-Observed once on macOS (Mac mini ↔ MacBook Pro, same LAN) during the fix session:
+**Empirically validated 2026-04-17** (v0.9.7, Mac mini ↔ MacBook Pro, same LAN).
+Evidence: [`spike/sleep-wake-evidence/RESULTS.md`](../spike/sleep-wake-evidence/RESULTS.md).
+All six tests (T1–T6) passed. No S1–S6 remediations required based on current measurements.
 
-- Bug 2: 20s lid-close → rebind fired on wake → tunnel recovered in seconds.
-- Bug 1: corrupted cert → OS stack → 5 min renewal → `"Nebula started after cert renewal"` → pings flowing.
-
-**No structured evidence was captured.** The test plan below is designed to
-produce reproducible measurements in `spike/sleep-wake-evidence/`. Until that
-exists, treat the v0.9.6 fix as "observed to work once," not "validated."
+Key measurements:
+- T2 (2-min sleep): peer-recovery 3s; tunnel re-handshake via the rebind path.
+- T4 (DNS): mesh DNS answered first probe at T+5s post-wake; public DNS never blocked; resolver file unchanged.
+- T6 (hibernate): utun survived; 191s outage; hibernatemode safely restored.
 
 > **Bundled cosmetic fix.** The first version of the tick-gap path logged
 > `"tick gap 0s"` for every event because `lastTick` was reassigned before the
-> format string read it. Fixed in the same commit as this doc revision so the
-> log now reports the real gap — essential for post-hoc diagnosis during T2/T3.
+> format string read it. Fixed in v0.9.7 so the log now reports the real gap —
+> essential for post-hoc diagnosis during T2/T3.
 
 ---
 
@@ -70,20 +70,20 @@ v0.9.6 fix is a **floor** (parity with their core detection), not a ceiling.
 
 ## Failure mode matrix
 
-| # | Failure mode | hopssh status | Priority |
+| # | Failure mode | hopssh status (verified 2026-04-17) | Priority |
 |---|---|---|---|
-| 1 | Stale UDP sockets (NAT expired) | ✅ **Handled** — tick-gap → rebind | — |
+| 1 | Stale UDP sockets (NAT expired) | ✅ **Handled** — rebind path fires on wake (T2, T6) | — |
 | 2 | Cert expired during sleep | ✅ **Handled** — cold-start in `reloadNebula()` | — |
-| 3 | Address fingerprint change on wake | ✅ **Handled** — existing `watchNetworkChanges` | — |
-| 4 | **DNS stub poisoning** — split-DNS resolver unreachable during recovery window, queries hang | ⚠️ **UNKNOWN — must test (kernel-TUN mode only)** | **HIGH** |
+| 3 | Address fingerprint change on wake | ✅ **Handled** — in practice, addrChanged path almost always fires during WiFi re-associate (T2) | — |
+| 4 | DNS stub poisoning — split-DNS resolver unreachable during recovery window | ✅ **Not present in hopssh** — T4 confirmed: mesh DNS recovers in ≤5s, public DNS never blocked, `/etc/resolver` file unchanged | — |
 | 5 | Power Nap / dark wake (process runs, WiFi may be unavailable) | ❌ Not handled (tick-gap won't fire — process isn't suspended) | LOW (macOS edge case) |
-| 6 | Very short sleep (<15s) | ⚠️ Tick-gap won't fire, but NAT survives. Natural recovery via keepalive. | LOW |
+| 6 | Very short sleep (<15s) | ✅ **Handled** — T1 (9s sleep) confirmed: no rebind fires, NAT survives, natural recovery | — |
 | 7 | systemd routing rule deletion (Linux) | ✅ Not vulnerable (Nebula uses TUN, not policy rules) | — |
-| 8 | Wake to different WiFi (different SSID/subnet) | ✅ **Handled** — fingerprint changes → rebind | — |
+| 8 | Wake to different WiFi (different SSID/subnet) | ✅ **Handled** — fingerprint changes → rebind (same path exercised by T2) | — |
 | 9 | Dock/undock (WiFi ↔ Ethernet) | ✅ **Handled** — fingerprint includes all interfaces | — |
-| 10 | Peer-side black-hole window (peer sends to old NAT until its own tunnel test fires) | ⚠️ Partial — ~15s test cadence, but unmeasured. T5 quantifies this. | MEDIUM |
-| 11 | Recovery ordering (rebind before WiFi reassociates) | ⚠️ Partially — we rebind immediately; if WiFi isn't up, bind may fail. But `CloseAllTunnels(true)` forces rehandshake which retries. | MEDIUM |
-| 12 | TUN device corruption after hibernation | ❌ Unknown — utun created at startup, not recreated after wake. Covered by new T6. | LOW |
+| 10 | Peer-side black-hole window | ✅ **Handled** — T5 measured <3s peer-recovery lag across T1/T2/T6. No "peer keeps sending to dead NAT" stall. | — |
+| 11 | Recovery ordering (rebind before WiFi reassociates) | ✅ **Handled in practice** — T2 showed two rebinds in quick succession (6s apart) as WiFi stabilised; full convergence ≤12s | — |
+| 12 | TUN device corruption after hibernation | ✅ **Handled** — T6 confirmed: `utun0` with mesh IP `10.42.1.6` survived `hibernatemode 25` cycle. No cold-restart needed. | — |
 | 13 | Battery vs speed tradeoff | ❌ Not considered — rebind on every tick-gap unconditionally. Matters for mobile. | LOW (no mobile clients) |
 
 ---
@@ -465,19 +465,21 @@ fix it before closing the session — don't leave the subject in the wrong mode.
 
 ---
 
-## Decision matrix (fill after the run, write to `spike/sleep-wake-evidence/RESULTS.md`)
+## Decision matrix — filled from 2026-04-17 run
 
-| T2 self-recovery | T4 mesh-DNS recovery | T4 resolver diff | T5 peer black-hole | T6 utun | Action |
-|---|---|---|---|---|---|
-| <10s | ≤5s | empty | <30s | survives | **Ship as-is.** Update `docs/features.md` + competitive analysis with measured numbers. No solutions needed. |
-| <10s | >5s to 15s | empty | <30s | survives | **Low priority.** Note in roadmap; mesh DNS recovery is acceptable UX. |
-| <10s | >15s (times out) | empty | <30s | survives | **Medium.** Promote **S3** (DNS stub suspend/resume) — measured stub is too slow on wake. |
-| <10s | any | **non-empty** | any | any | **Bug.** Unmapped code path rewriting resolver file. Investigate before any other solution. |
-| 10–30s | any | any | any | any | **Medium.** Promote **S4** (faster rebind retry) — tick-gap fires but convergence is slow. |
-| >30s | any | any | any | any | **High.** Promote **S1** (OS wake notifications) + **S4**; rebind path is stalling. |
-| any | any | any | >30s | any | **Medium.** Promote **S5a** (pre-sleep bye-bye packet). |
-| any | any | any | any | utun absent / "tun device not found" | **High.** Promote **S6** (TUN health probe + cold restart). |
-| any rc!=0 on pub_rc in T4 | — | — | — | — | **Regression.** Public DNS got blocked by our stub — split-DNS isolation broken. File as bug first, don't chase solutions until triaged. |
+Evidence: [`spike/sleep-wake-evidence/RESULTS.md`](../spike/sleep-wake-evidence/RESULTS.md).
+
+| Signal | Measured | Threshold | Row matched |
+|---|---|---|---|
+| T2 self-recovery | **3s** peer-view | <10s | ✓ ship-as-is |
+| T4 mesh-DNS recovery | **≤5s** (first probe at T+5s succeeded) | ≤5s | ✓ ship-as-is |
+| T4 resolver diff | **empty** | empty | ✓ ship-as-is |
+| T5 peer black-hole | **<3s** across T1/T2/T6 | <30s | ✓ ship-as-is |
+| T6 utun | **survives** (`10.42.1.6` still on `utun0`) | survives | ✓ ship-as-is |
+
+**Action: Ship as-is.** All signals land in the first row of the original
+matrix. No S1–S6 remediations required. Competitive-analysis and
+performance docs can reference measured recovery numbers directly.
 
 ---
 

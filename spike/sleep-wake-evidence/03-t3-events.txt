@@ -1,0 +1,42 @@
+=== T3 — 10-min sleep attempt ===
+
+Setup: same as T2, but wake scheduled +620s ahead, sleep issued at ~10:55:00Z.
+
+OBSERVED TIMELINE (from peer-ping-continuous.log):
+  10:55:04Z  first Request-timeout (sleep entered)
+  11:05:15Z  scheduled wake SHOULD have fired — did NOT (ping remained timeouts)
+  11:08:14Z  first OK ping (icmp_seq 1612), after cumulative WOL from Mac mini
+             → actual outage 10:55:04 → 11:08:14 = 13m 10s (vs planned 10m 15s)
+  11:08:29Z  MacBook returned to sleep after ~15s wake window
+             → 19 OK pings seen in that first wake window
+  11:08:30Z  Request-timeouts resume (2nd outage)
+  11:11:33Z  Recovered again via aggressive WOL, brief wake window
+  11:13:31Z  Recovered yet again via WOL
+  Currently alternating sleep/wake every 1-3 minutes.
+
+SUBJECT AGENT LOG: unable to reliably retrieve full window — SSH sessions
+kept dropping because MacBook sleeps aggressively and caffeinate (both
+sudo and user-level variants) did not survive the session dropouts.
+
+CORE TEST QUESTION (does the VPN recover after a 10-min sleep?):
+  ✓ YES — the ping log shows the tunnel comes back within ~1 second of
+  each wake event (first OK ping typically on the same second the
+  WiFi stack is back). This is actually FASTER than T2's 3s peer-view
+  recovery, possibly because the tunnel was already "still alive" on
+  the peer side (we never fully rebinded on the peer).
+
+ANCILLARY FINDINGS (not the test's primary question, but worth logging):
+  1. `pmset schedule wake` on this Apple Silicon MacBook (M-series) is
+     UNRELIABLE for 10-minute sleeps. It fired within ~3s for T2 (2-min
+     sleep) but failed to fire for T3 (10-min sleep). WOL via magic
+     packet is the reliable fallback.
+  2. macOS standby kicks in aggressively — MacBook re-slept after ~15s
+     of the wake window even with no user at the machine. Nothing we
+     can do about this in the VPN layer.
+  3. Subject agent log retrieval is racy under these conditions; for
+     future runs, log should be shipped off-host continuously (rsyslog
+     to mini, or mini-agent-log tail preserved in an SSH multiplex).
+
+T3 VERDICT: PASS (on the narrow question "does the VPN recover from a
+10-minute sleep?"). FAIL to capture the subject-side diagnostic log
+window — a testing-methodology issue, not a VPN-functionality issue.

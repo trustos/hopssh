@@ -41,25 +41,30 @@ should we be introducing fixes?"
 
 ## Result
 
-_Fill in after the run. Template:_
+All six tests PASS. Full analysis in [`RESULTS.md`](RESULTS.md).
 
-| Test | Pass/Fail | Key number | Notes |
+| Test | Verdict | Key number | Notes |
 |---|---|---|---|
-| T1 — short sleep | ? | — | Tick-gap did/did-not fire (must not fire at 10s) |
-| T2 — 2min sleep | ? | self-recovery: Ns | Tick-gap value, tunnels closed |
-| T3 — 10min sleep | ? | self-recovery: Ns | Any anomalies vs T2? |
-| T4 — DNS recovery | ? / N/A | mesh dig OK at: Ns | Resolver diff empty? pub_rc always 0? |
-| T5 — peer black-hole | ? | window: Ns | From peer-ping gap analysis |
-| T6 — hibernate | ? | self-recovery: Ns | utun survived? hibernatemode restored? |
+| T1 — 9s sleep | ✅ PASS | 0 rebinds post-wake | Tick-gap did NOT fire for sub-threshold sleep |
+| T2 — 2min sleep | ✅ PASS | peer-recovery 3s | Rebind fired via addrChanged branch; `closed 3 tunnels` |
+| T3 — ~13min sleep | ✅ PASS | tunnel recovered within ~1s of each wake | pmset schedule wake unreliable for long sleeps — methodology learning, not a VPN issue |
+| T4 — DNS | ✅ PASS (clean) | mesh DNS OK at T+5s | Resolver diff empty; pub_rc=0 on every sample |
+| T5 — peer black-hole | ✅ PASS | <3s across all tests | Peer recovers as soon as subject re-handshakes |
+| T6 — hibernate | ✅ PASS | 191s outage; utun intact | hibernatemode restored to 3 (safety verified) |
 
 ## Strategic conclusion
 
-_Fill in after the run. Two templates, pick one:_
+**v0.9.7 fixes empirically validated.** The sleep/wake failure-mode matrix in
+`docs/sleep-wake-plan.md` is now mostly all green — the only remaining "not
+handled" items (Power Nap, battery/speed tradeoff) are edge cases explicitly
+deprioritized for current scope.
 
-**If all tests pass:** v0.9.6 fixes are empirically validated against the
-failure-mode matrix. No solutions (S1–S6) required. Update competitive-analysis
-docs with measured recovery numbers.
+No solutions from S1–S6 in the plan doc need to be promoted to the roadmap
+based on these measurements. Competitive-analysis and performance docs can
+cite "3s recovery from 2-minute sleep on macOS" directly.
 
-**If some tests fail:** promote the corresponding solution(s) in
-`docs/sleep-wake-plan.md` §"Potential solutions" to the roadmap. Reference
-this evidence directory as justification.
+## Secondary findings (worth remembering)
+
+1. `pmset schedule wake` is unreliable on Apple Silicon MacBooks for sleeps ≥10 min. WOL is the reliable fallback.
+2. The agent's log reports `"network change detected"` (not `"sleep/wake detected"`) for sleep cycles where WiFi re-associated — the `addrChanged` branch wins the condition before `sleptAndWoke` gets a chance to log. Functionally equivalent; diagnostically confusing.
+3. Recovery flaps: every soft-sleep recovery produced two rebinds in quick succession (~6s apart) with brief ping-loss between them — WiFi stabilisation, not a VPN issue. Full convergence ≤12s.

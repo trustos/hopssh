@@ -1,0 +1,27 @@
+=== T4 pre-sleep state ===
+T0-pre-sleep:     2026-04-17T11:23:33Z
+T1-sleep-issued:  2026-04-17T11:23:33Z
+Wake scheduled:   04/17/26 14:25:43 (epoch 1776425143)
+Probe start:      epoch 1776425148
+Probe end:        epoch 1776425168
+Domain:           home
+Mesh host query:  yavors-macbook-pro.home
+
+=== T4 RESULT: PASS (clean) ===
+
+DNS probe (20 samples, 1s apart, starting T+5s after wake):
+  - Every mesh query   (yavors-macbook-pro.home)    succeeded, RC=0, 93-161ms
+  - Every public query (example.com)                succeeded, RC=0, 85-170ms
+  - NO hangs, NO blocks, NO timeouts
+
+Resolver file:
+  - /etc/resolver/home identical pre-sleep vs post-wake
+  - Diff: EMPTY
+
+Conclusions vs plan:
+  - pub_rc=0 on every sample                      ✓ (public DNS never blocked)
+  - mesh_rc=0 within 5 samples (≤5s) of wake      ✓ (first sample at T+5s succeeded)
+  - resolver-diff empty                           ✓ (no unmapped rewrite)
+
+T4 VERDICT: PASS. Maps to decision-matrix row "Ship as-is" — DNS stub
+suspend/resume (S3) is NOT needed.

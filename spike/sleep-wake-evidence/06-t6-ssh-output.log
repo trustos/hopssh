@@ -1,0 +1,26 @@
+original hibernatemode: 3
+ifconfig: interface utun1: does not exist
+ifconfig: interface utun2: does not exist
+ifconfig: interface utun3: does not exist
+ifconfig: interface utun4: does not exist
+ifconfig: interface utun5: does not exist
+ifconfig: interface utun6: does not exist
+ifconfig: interface utun7: does not exist
+ifconfig: interface utun8: does not exist
+ifconfig: interface utun9: does not exist
+ifconfig: interface utun10: does not exist
+ifconfig: interface utun11: does not exist
+ifconfig: interface utun0: does not exist
+utun with mesh IP pre-sleep: 
+Warning: Idle sleep timings for "Battery Power" may not behave as expected.
+- Disk sleep should be non-zero whenever system sleep is non-zero.
+=== T6 pre-hibernate state ===
+T0-pre-hibernate:   2026-04-17T11:31:52Z
+T1-sleep-issued:    2026-04-17T11:31:52Z
+Wake scheduled:     04/17/26 14:34:02
+Original hibernatemode: 3
+Set hibernatemode:  25 (force full suspend to disk)
+utun with mesh IP pre-sleep:
+
+>>> issuing sleepnow at 2026-04-17T11:31:52Z
+Sleeping now...

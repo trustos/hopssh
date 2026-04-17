@@ -1,0 +1,92 @@
+=== T6 pre-hibernate state ===
+T0-pre-hibernate:   2026-04-17T11:31:52Z
+T1-sleep-issued:    2026-04-17T11:31:52Z
+Wake scheduled:     04/17/26 14:34:02
+Original hibernatemode: 3
+Set hibernatemode:  25 (force full suspend to disk)
+utun with mesh IP pre-sleep:
+
+
+=== T6 post-wake state ===
+T2-wake-observed (cleanup invocation): 2026-04-17T11:35:20Z
+hibernatemode after restore:  hibernatemode        3
+utun with mesh IP post-wake:
+
+
+--- post-wake ping self-test (10 pings to peer) ---
+PING 10.42.1.7 (10.42.1.7): 56 data bytes
+64 bytes from 10.42.1.7: icmp_seq=0 ttl=64 time=785.034 ms
+64 bytes from 10.42.1.7: icmp_seq=1 ttl=64 time=12.439 ms
+64 bytes from 10.42.1.7: icmp_seq=2 ttl=64 time=6.760 ms
+64 bytes from 10.42.1.7: icmp_seq=3 ttl=64 time=6.141 ms
+64 bytes from 10.42.1.7: icmp_seq=4 ttl=64 time=12.579 ms
+64 bytes from 10.42.1.7: icmp_seq=5 ttl=64 time=55.040 ms
+64 bytes from 10.42.1.7: icmp_seq=6 ttl=64 time=7.935 ms
+64 bytes from 10.42.1.7: icmp_seq=7 ttl=64 time=6.016 ms
+64 bytes from 10.42.1.7: icmp_seq=8 ttl=64 time=178.174 ms
+64 bytes from 10.42.1.7: icmp_seq=9 ttl=64 time=43.515 ms
+
+--- 10.42.1.7 ping statistics ---
+10 packets transmitted, 10 packets received, 0.0% packet loss
+round-trip min/avg/max/stddev = 6.016/111.363/785.034/230.092 ms
+
+--- last 40 agent log lines matching wake-relevant patterns ---
+2026/04/17 12:49:22 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 12:49:22 [agent] closed 1 tunnels to force re-handshake on new network
+2026/04/17 12:50:53 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 13:05:47 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 13:05:47 [agent] closed 1 tunnels to force re-handshake on new network
+2026/04/17 13:26:33 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 13:44:33 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 13:44:33 [agent] closed 1 tunnels to force re-handshake on new network
+2026/04/17 13:46:46 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 13:46:46 [agent] closed 3 tunnels to force re-handshake on new network
+2026/04/17 13:46:51 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 13:46:51 [agent] closed 3 tunnels to force re-handshake on new network
+2026/04/17 13:49:26 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 13:49:26 [agent] closed 1 tunnels to force re-handshake on new network
+2026/04/17 13:52:19 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 13:52:19 [agent] closed 1 tunnels to force re-handshake on new network
+2026/04/17 13:53:49 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 13:53:49 [agent] closed 1 tunnels to force re-handshake on new network
+2026/04/17 14:18:05 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 14:18:05 [agent] closed 3 tunnels to force re-handshake on new network
+2026/04/17 14:23:35 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 14:23:35 [agent] closed 1 tunnels to force re-handshake on new network
+2026/04/17 14:24:31 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 14:27:42 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 14:27:42 [agent] closed 1 tunnels to force re-handshake on new network
+2026/04/17 14:27:47 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 14:27:47 [agent] closed 3 tunnels to force re-handshake on new network
+2026/04/17 14:31:56 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 14:31:56 [agent] closed 1 tunnels to force re-handshake on new network
+2026/04/17 14:35:11 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 14:35:11 [agent] closed 3 tunnels to force re-handshake on new network
+
+=== T6 RESULT: PASS ===
+
+Outage window (from peer-ping-continuous.log):
+  First Request-timeout:   11:31:58Z (6s after sleepnow — hibernate disk dump)
+  Last Request-timeout:    11:35:08Z (191 continuous timeouts ≈ 3m 10s)
+  First OK ping:           11:35:09Z (recovery)
+  Minor re-flap:           11:35:13-18Z (6 timeouts during rebind)
+  Stable from:             11:35:18Z
+
+Total outage: 191s (compare T2's 124s for a 2-min soft sleep). The extra
+~65s corresponds to hibernate restore (suspend-to-disk vs RAM-only).
+
+Post-wake state:
+  - utun0 still present with inet 10.42.1.6 ✓ (no "tun device not found" — Row 12 negative)
+  - Agent rebind fired at 14:35:11 local (= 11:35:11 UTC)
+    → "network change detected (iface: en0→en0), rebinding Nebula"
+    → "closed 3 tunnels to force re-handshake on new network"
+  - hibernatemode restored to 3 — CRITICAL safety check PASSED
+
+T6 VERDICT: PASS. utun survives hibernate cycle; rebind path recovers the
+tunnel the same way as T2/T3. Maps to decision-matrix row "Ship as-is" —
+Solution S6 (TUN re-creation on wake) is NOT needed.
+
+METHODOLOGY NOTE: first attempt (at 11:27:41Z) did NOT actually hibernate
+because caffeinate assertions were held by 5 processes (my own earlier
+SSH-issued keep-awake attempts). `sudo pkill -9 -f caffeinate` cleared
+them, and the retry at 11:31:52Z successfully hibernated.

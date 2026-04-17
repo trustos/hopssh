@@ -1,0 +1,12 @@
+DNS domain: home
+Mesh hostname to query: yavors-macbook-pro.home
+=== T4 pre-sleep state ===
+T0-pre-sleep:     2026-04-17T11:23:33Z
+T1-sleep-issued:  2026-04-17T11:23:33Z
+Wake scheduled:   04/17/26 14:25:43 (epoch 1776425143)
+Probe start:      epoch 1776425148
+Probe end:        epoch 1776425168
+Domain:           home
+Mesh host query:  yavors-macbook-pro.home
+>>> issuing sleepnow at 2026-04-17T11:23:33Z
+Sleeping now...

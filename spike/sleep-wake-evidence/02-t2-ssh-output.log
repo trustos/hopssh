@@ -1,0 +1,13 @@
+=== T2 pre-sleep state ===
+T0-pre-sleep:     2026-04-17T10:44:32Z
+T1-sleep-issued:  2026-04-17T10:44:32Z
+Wake scheduled at: 04/17/26 13:46:42 (in 130s)
+Schedule cmd output: 
+--- pmset -g sched ---
+Scheduled power events:
+ [0]  wake at 04/17/2026 13:46:42 by 'pmset'
+ [1]  wake at 04/17/2026 18:08:12 by 'com.apple.alarm.user-invisible-com.apple.calaccessd.travelEngine.periodicRefreshTimer'
+ [2]  wake at 04/17/2026 22:00:00 by 'com.apple.alarm.user-visible-com.apple.donotdisturb.server.ScheduleLifetimeMonitor.timer' User visible: true
+ [3]  wake at 04/18/2026 02:55:00 by 'com.apple.alarm.user-invisible-com.apple.osanalytics.hardhighengagementtimer'
+issuing sleepnow...
+Sleeping now...

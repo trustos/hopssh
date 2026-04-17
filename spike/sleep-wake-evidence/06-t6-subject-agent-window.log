@@ -1,0 +1,13 @@
+2026/04/17 14:18:05 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 14:18:05 [agent] closed 3 tunnels to force re-handshake on new network
+2026/04/17 14:23:35 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 14:23:35 [agent] closed 1 tunnels to force re-handshake on new network
+2026/04/17 14:24:31 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 14:27:42 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 14:27:42 [agent] closed 1 tunnels to force re-handshake on new network
+2026/04/17 14:27:47 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 14:27:47 [agent] closed 3 tunnels to force re-handshake on new network
+2026/04/17 14:31:56 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 14:31:56 [agent] closed 1 tunnels to force re-handshake on new network
+2026/04/17 14:35:11 [agent] network change detected (iface: en0→en0), rebinding Nebula
+2026/04/17 14:35:11 [agent] closed 3 tunnels to force re-handshake on new network

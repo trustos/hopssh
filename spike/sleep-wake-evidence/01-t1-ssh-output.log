@@ -1,0 +1,6 @@
+=== T1 — very short sleep (~10s target) ===
+T0-pre-sleep:     2026-04-17T11:36:58Z
+T1-sleep-issued:  2026-04-17T11:36:58Z
+WOL expected:     ~T0 + 13s (from peer)
+>>> issuing sleepnow at 2026-04-17T11:36:59Z
+Sleeping now...

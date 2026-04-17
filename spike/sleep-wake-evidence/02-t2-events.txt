@@ -1,0 +1,45 @@
+=== T2 — 2min sleep, primary baseline ===
+Scheduled wake-up via `pmset schedule wake` (130s ahead).
+
+Subject (MacBook) state changes (from SSH script output):
+T0-pre-sleep:    2026-04-17T10:44:32Z
+T1-sleep-issued: 2026-04-17T10:44:32Z
+Wake scheduled:  2026-04-17T10:46:42Z (local 13:46:42+03:00)
+
+Peer-view timeline (from peer-ping-continuous.log, icmp_seq range):
+- Last OK ping before sleep: seq 206 @ 10:44:40Z
+- First Request-timeout:     seq 207 @ 10:44:41Z
+- Last Request-timeout:      seq 329 @ 10:46:44Z (123s of continuous timeouts)
+- First OK ping after wake:  seq 330 @ 10:46:45Z   → peer-recovery = 10:46:45 - 10:46:42 = +3s from scheduled wake
+- Secondary outage (flap 1): seq 332-335 missing, 10:46:46Z-10:46:49Z (4s)
+- Secondary outage (flap 2): seq 337-339 missing, 10:46:51Z-10:46:53Z (3s)
+- Stable recovery from:      seq 340 @ 10:46:54Z
+
+Subject agent log (from /var/log/hop-agent.log post-wake, local BGT):
+- 13:46:45 — Handshake message sent/received (cached=true) to peer 10.42.1.7
+- 13:46:46 — [agent] network change detected (iface: en0→en0), rebinding Nebula
+- 13:46:46 — [agent] closed 3 tunnels to force re-handshake on new network
+- 13:46:51 — [agent] network change detected (iface: en0→en0), rebinding Nebula (2nd rebind)
+- 13:46:51 — [agent] closed 3 tunnels to force re-handshake on new network
+- 13:46:54 — Handshake message received via relay (132.145.232.64:42001 (relayed))
+
+IMPORTANT: no "sleep/wake detected" log line appeared despite the 2-minute
+tick-gap. Reason: in cmd/agent/nebula.go:184, `addrChanged || sleptAndWoke`
+fires the rebind, but the log string reports "sleep/wake detected" only
+when `sleptAndWoke && !addrChanged`. Some local address changed during
+sleep (WiFi re-associated), so addrChanged==true and the log reported
+"network change" instead. The behavior (rebind + tunnel close) is correct,
+but the tick-gap log we designed T2 to verify is masked by the earlier
+addr-change detection.
+
+Pass criteria verdict:
+  [✓] Rebind fired after wake
+  [✓] closed N tunnels (N=3, twice)
+  [✓] Self-recovery <10s (peer-view: 3s; fully-stable: 12s)
+  [~] "sleep/wake detected" log string NOT observed — masked by addr change
+  [~] Two rebind events in quick succession — WiFi stabilization flaps
+
+T2 VERDICT: PASS with caveats.
+- Functional recovery is fast (3-12s).
+- Log masking is a diagnostic gap: future diagnosis of pure tick-gap events
+  (where no address changed) will need to rely on different signals.

@@ -1,0 +1,73 @@
+=== Mac mini (peer) Tenevis-Mac-mini-2.local 2026-04-17T10:39:34Z ===
+hop-agent v0.9.7 (c22bd60)
+--- hop-agent status (root) ---
+Service:    running (launchd)
+Nebula IP:  10.42.1.7/24
+Endpoint:   https://hopssh.com
+Node ID:    01275a88-966b-4df0-b4b9-389fb0ccf198
+Cert:       valid (expires in 6h10m0s)
+Groups:     node
+Config:     /etc/hop-agent
+--- hop-agent info (root) ---
+Hostname:   Tenevis-Mac-mini-2.local
+DNS Name:   tenevis-mac-mini-2
+OS:         darwin/arm64
+Node ID:    01275a88-966b-4df0-b4b9-389fb0ccf198
+Endpoint:   https://hopssh.com
+Config:     /etc/hop-agent
+Version:    v0.9.7 (c22bd60)
+--- tun-mode ---
+kernel--- /etc/resolver ---
+total 8
+drwxr-xr-x   3 root  wheel    96 Apr 17 13:38 .
+drwxr-xr-x  88 root  wheel  2816 Apr 14 11:10 ..
+-rw-r--r--   1 root  wheel    37 Apr 17 13:38 home
+### /etc/resolver/home
+nameserver 132.145.232.64
+port 15300
+--- scutil --dns (supplemental lines only) ---
+--- hibernatemode ---
+--- iface + overlay IP ---
+	inet 192.168.23.3 netmask 0xffffff00 broadcast 192.168.23.255
+	inet 192.168.105.1 netmask 0xffffff00 broadcast 192.168.105.255
+	inet 10.42.1.7 --> 10.42.1.7 netmask 0xffffff00
+=== MacBook (subject) Yavors-MacBook-Pro.local 2026-04-17T10:39:54Z ===
+hop-agent v0.9.7 (c22bd60)
+--- hop-agent status (root) ---
+Service:    running (launchd)
+Nebula IP:  10.42.1.6/24
+Endpoint:   https://hopssh.com
+Node ID:    84d7cc3a-e587-4c70-83ed-3d9981f07909
+Cert:       valid (expires in 20h50m0s)
+Groups:     node
+Config:     /etc/hop-agent
+--- hop-agent info (root) ---
+Hostname:   Yavors-MacBook-Pro.local
+DNS Name:   yavors-macbook-pro
+OS:         darwin/arm64
+Node ID:    84d7cc3a-e587-4c70-83ed-3d9981f07909
+Endpoint:   https://hopssh.com
+Config:     /etc/hop-agent
+Version:    v0.9.7 (c22bd60)
+--- tun-mode ---
+kernel
+--- /etc/resolver ---
+total 16
+drwxr-xr-x   4 root  wheel   128 Apr 17 13:38 .
+drwxr-xr-x  94 root  wheel  3008 Apr 15 09:56 ..
+-rw-r--r--   1 root  wheel    37 Apr 17 13:38 home
+-rw-r--r--   1 root  wheel    21 Aug 11  2025 rs-estates
+### /etc/resolver/home
+nameserver 132.145.232.64
+port 15300
+
+### /etc/resolver/rs-estates
+nameserver 127.0.0.1
+
+--- scutil --dns (supplemental) ---
+--- hibernatemode (CRITICAL — restore this after T6) ---
+ hibernatemode        3
+--- iface + overlay IP ---
+	inet 192.168.105.1 netmask 0xffffff00 broadcast 192.168.105.255
+	inet 192.168.23.18 netmask 0xffffff00 broadcast 192.168.23.255
+	inet 10.42.1.6 --> 10.42.1.6 netmask 0xffffff00
