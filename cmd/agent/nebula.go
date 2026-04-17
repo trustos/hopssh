@@ -172,7 +172,8 @@ func watchNetworkChanges(ctrl *nebula.Control, endpoint string) {
 		// even if the network fingerprint hasn't changed, because the
 		// underlying UDP sockets are stale (NAT mappings expired, lighthouse
 		// handshakes will fail on the old socket).
-		sleptAndWoke := now.Sub(lastTick) > 15*time.Second
+		tickGap := now.Sub(lastTick)
+		sleptAndWoke := tickGap > 15*time.Second
 		lastTick = now
 
 		currentIface, _ := nebulacfg.DetectPhysicalInterface(host)
@@ -183,7 +184,7 @@ func watchNetworkChanges(ctrl *nebula.Control, endpoint string) {
 		if addrChanged || sleptAndWoke {
 			reason := "network change"
 			if sleptAndWoke && !addrChanged {
-				reason = fmt.Sprintf("sleep/wake detected (tick gap %v)", now.Sub(lastTick).Round(time.Second))
+				reason = fmt.Sprintf("sleep/wake detected (tick gap %v)", tickGap.Round(time.Second))
 			}
 			log.Printf("[agent] %s detected (iface: %s→%s), rebinding Nebula", reason, lastIface, currentIface)
 			ctrl.RebindUDPServer()
