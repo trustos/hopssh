@@ -55,6 +55,37 @@ Tunnel overhead: 70% throughput reduction, +5.6ms latency. The throughput gap is
 Each packet requires two kernel transitions: TUN read (userspace←kernel) and
 UDP sendto (userspace→kernel). These context switches dominate CPU time.
 
+### Sleep/Wake Recovery (v0.9.7, measured 2026-04-17)
+
+Tested: Mac mini (peer, 10.42.1.7, Ethernet) ↔ MacBook Pro (subject,
+10.42.1.6, WiFi), same LAN, kernel-TUN mode. Six-test battery T1–T6.
+Full evidence: [`spike/sleep-wake-evidence/RESULTS.md`](../spike/sleep-wake-evidence/RESULTS.md).
+
+| Scenario | Measured | Notes |
+|---|---|---|
+| 9s soft sleep | No tunnel break | Sub-15s tick-gap threshold correctly ignored |
+| 2-min soft sleep | **3s peer-view recovery** | Rebind fires via `addrChanged` branch in `watchNetworkChanges`; two WiFi-stabilization flaps in the first 12s |
+| ~13-min soft sleep | <1s after each actual wake event | `pmset schedule wake` unreliable for 10-min sleeps on Apple Silicon; WOL is the reliable fallback |
+| Hibernate (`hibernatemode 25`, 2-min) | **191s** (+65s vs soft-sleep for disk restore) | `utun0` and mesh IP `10.42.1.6` survive the cycle |
+| DNS on wake | mesh query answers at **T+5s**; `/etc/resolver/<domain>` byte-identical pre/post | Public DNS queries never blocked — split-DNS isolation holds |
+| Peer-side black-hole window | **<3s** across all tests | Peer recovers as soon as subject re-handshakes |
+
+Scope this covers: macOS 15.x on Apple Silicon, same-LAN WiFi, two-node
+topology, kernel-TUN mode. Behavior on **cellular hotspot, Linux, Windows,
+SSID-roam, multi-hop, mobile battery** is **not yet measured** — those are
+the dimensions where competitor VPNs have long-open issues (Tailscale #17736,
+#10688, #1554; ZeroTier #2026, #2545; NetBird #2454), and we have no data
+either way.
+
+Observed design quirks worth knowing:
+- The `"sleep/wake detected (tick gap Ns)"` log string from
+  `cmd/agent/nebula.go:187` rarely appears in practice — the `addrChanged`
+  branch wins the condition because WiFi re-associates during sleep.
+  Functionally equivalent (rebind + tunnel-close still fire); diagnostically
+  confusing post-hoc.
+- Every soft-sleep recovery produces two rebind events ~6s apart during
+  WiFi stabilization. Total convergence under 12s.
+
 ## Applied Optimizations
 
 ### GOGC=400 (v0.6.50)
@@ -625,7 +656,7 @@ strategic priority across all platforms, use this tier list instead. It incorpor
 | 1 | **DPLPMTUD (build it)** | **✅ Would be first for mesh VPN** — no competitor ships this in production. Design already drafted (Phase 4 below). | 2-3 weeks | All platforms. Biggest "first-in-class" win we have realistic access to. |
 | 1 | **Linux GSO/GRO + checksum unwind + crypto vector** | ❌ Catch-up to Tailscale, not novel. But necessary. | 3-4 weeks | Gap is multi-Gbps on modern hardware (not 900 Mbps — that figure is specific to DN's c6i-class bench). See `linux-throughput-plan.md` for the full MVP + ship-gated Step 4 plan. |
 | 2 | **Windows RIO (Registered I/O)** | ⚠️ First for *userspace* VPNs only — kernel VPNs (WireGuardNT) went WSK instead, so RIO is irrelevant to the kernel class. Narrower positioning than "unique across all VPNs." | 6-8 weeks incl. Windows CI/CD setup | Requires CGO or syscall wrappers. Real win but scope-heavier than initial "3 weeks" claim. |
-| 2 | **Sleep/wake resilience** | ⚠️ Possibly novel — every competitor has open complaints. Needs measurement before code. | 30 min to test + 1-2 weeks to fix if broken | macOS + Windows primary; Linux secondary. User-visible win. |
+| 2 | **Sleep/wake resilience** | ⚠️ Measured on macOS same-LAN (2026-04-17): T1–T6 all PASS, 3s recovery from 2-min sleep, no DNS poisoning, utun survives hibernate. Evidence: `spike/sleep-wake-evidence/RESULTS.md`. Cellular/Linux/Windows/SSID-roam NOT yet measured — avoid competitive "surpasses" claims until they are. | macOS done (0); cellular ~30 min next; Linux/Windows each ~1 day | See `#sleep-wake-recovery` section above for measured numbers. |
 | 3 | **Cross-platform vectorized crypto pipeline (batch)** | ⚠️ Incremental. wireguard-go's per-core pool is already cross-platform; the *batch* optimization that needs PR #75's vector channels is Linux-gated because it consumes the GSO/GRO packet vectors. On macOS/Windows, crypto parallelism from per-core pools is available but batching requires equivalent platform I/O. | 3-4 weeks | Most meaningful *after* Linux GSO/GRO lands (to produce the vectors). |
 | 4 | macOS Network.framework eval | Research only — may not help given `sendmsg_x` lead | 1 week | Phase 3 below |
 | Drop | **Smart pacing / BBR for WiFi airtime** | ❌ Dead end. Research ([arxiv.org/html/2512.18259v1](https://arxiv.org/html/2512.18259v1)) + our own Discovery Log confirm: WiFi airtime contention is MAC-layer, below IP. Userspace pacing cannot help. | — | Not pursued. |
