@@ -453,11 +453,22 @@ Sleep/wake **code path** works on every OS we've tested:
   - Linux VM (SIGSTOP): <1s recovery, `sleep/wake detected` log fires
   - Windows VM (NtSuspendProcess): 1s recovery, `sleep/wake detected` log fires
 
-DNS integration still has gaps on **Windows** (same bug class as the
-original Linux issue). The Linux fix (probe + drop-in fallback) doesn't
-translate directly to Windows because the Windows API limitation is
-different (NRPT strips port vs systemd-resolved stub not forwarding).
+DNS integration on **Windows** — **FIXED** in a follow-up commit
+(`1e74dd9` + `f428803`). Different API limitation from Linux (NRPT
+strips port vs systemd-resolved stub not forwarding), so a different
+fix shape: a local miekg/dns forwarder on `127.53.0.1:53` that relays
+to the real `<lighthouse>:15300` upstream. NRPT registers the
+loopback — port 53 is NRPT's default, so no port-stripping issue.
 
-Windows also has non-DNS gaps (no working service, fragile detachment)
-that would need to be addressed before shipping Windows as a
-first-class supported platform.
+Validation on the same Windows 11 25H2 VM post-fix:
+  `Resolve-DnsName yavors-macbook-pro.home` → 10.42.1.6 (A record)
+  `Resolve-DnsName tenevis-mac-mini-2.home` → 10.42.1.7
+  `ping tenevis-mac-mini-2.home` → 4-6ms via mesh
+  Public DNS still works
+Also fixed the accumulating-NRPT-rules side finding: new
+`removeHopsshNRPTRules()` runs at startup to clear stale Comment-tagged
+rules.
+
+Windows still has non-DNS gaps (no working service, fragile detachment)
+that remain for a future session — see commit 093e516 message for
+specifics. DNS is no longer blocking.

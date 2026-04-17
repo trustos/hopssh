@@ -94,6 +94,7 @@ fallback is seamless when direct P2P fails.
 | Rebind + tunnels closed + tunnel recovery | ✅ <1s post-resume, same PID, no restart |
 | Mesh IP connectivity (ping, SSH, arbitrary TCP) | ✅ works end-to-end |
 | **Mesh DNS via systemd-resolved stub** | ✅ **FIXED in v0.9.8-dev** — agent now probes the stub after per-link registration and falls back to a drop-in config (`/etc/systemd/resolved.conf.d/hopssh.conf`) on affected systemd-resolved versions. Post-fix: 39ms per query (was 3s timeout). See `spike/sleep-wake-evidence/linux-dns-fix-validation.txt`. |
+| **Mesh DNS on Windows (NRPT port-stripping)** | ✅ **FIXED in v0.9.8-dev** — `cmd/agent/dnsproxy_windows.go` runs a local miekg/dns-based forwarder on `127.53.0.1:53` relaying to the real lighthouse DNS port. NRPT registers the loopback (no port field needed). Post-fix: `Resolve-DnsName <host>.home` returns A record, `ping <host>.home` from Windows hits the mesh in 4-6ms. |
 
 **Scope caveat for the Linux run:** real OS-level suspend-resume is NOT testable on QEMU ARM in UTM — `systemctl suspend` cold-reboots the VM on "wake," `rtcwake -m mem` has no RTC alarm support, `freeze` hangs. Testing used SIGSTOP/SIGCONT on the agent process, which exercises only the agent's time-jump detection (not interface down/up or kernel sleep). Full Linux validation needs bare-metal hardware.
 
