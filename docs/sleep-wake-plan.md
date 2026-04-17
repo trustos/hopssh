@@ -85,7 +85,7 @@ v0.9.6 fix is a **floor** (parity with their core detection), not a ceiling.
 | 11 | Recovery ordering (rebind before WiFi reassociates) | ✅ **Handled in practice** — T2 showed two rebinds in quick succession (6s apart) as WiFi stabilised; full convergence ≤12s | — |
 | 12 | TUN device corruption after hibernation | ✅ **Handled** — T6 confirmed: `utun0` with mesh IP `10.42.1.6` survived `hibernatemode 25` cycle. No cold-restart needed. | — |
 | 13 | Battery vs speed tradeoff | ❌ Not considered — rebind on every tick-gap unconditionally. Matters for mobile. | LOW (no mobile clients) |
-| 14 | **Linux mesh DNS via systemd-resolved stub doesn't work** (discovered 2026-04-17) | ❌ **BUG** — `cmd/agent/dns_linux.go:15-46` uses `resolvectl dns <iface> <ip>:<port>` which fails to forward on systemd-resolved v257+. Direct DNS to lighthouse works; stub-routed doesn't. Unrelated to sleep/wake but blocks Linux mesh-hostname resolution. See Solution S7. | **HIGH (Linux usability)** |
+| 14 | **Linux mesh DNS via systemd-resolved stub doesn't work** (discovered 2026-04-17) | ✅ **Fixed in `cmd/agent/dns_linux.go`** — try per-link first, probe stub, fall back to drop-in config (`/etc/systemd/resolved.conf.d/hopssh.conf` + `systemctl reload-or-restart systemd-resolved`). Self-diagnostic: log line `"per-link DNS registered but stub not forwarding queries; switching to systemd-resolved drop-in config"` appears on affected systems. Validated on Ubuntu 25.10 / systemd 257.9. | — |
 
 ---
 
@@ -551,42 +551,47 @@ zero-length read from the utun fd with a short deadline. If it errors in a
 way that looks like "fd invalidated," tear down Nebula and restart via
 `reloadNebula()` cold-start path (already exists for the cert case).
 
-### S7 — Linux mesh DNS via systemd-resolved drop-in or global DNS (NEW)
+### S7 — Linux mesh DNS via systemd-resolved drop-in ✅ SHIPPED
 
-**When:** discovered 2026-04-17 while testing on Ubuntu 25.10 (systemd 257+).
-`cmd/agent/dns_linux.go:15-46` calls `resolvectl dns <iface> <ip>:<port>` +
-`resolvectl domain <iface> ~<domain>`. The per-link DNS with a public-IP
-server on a non-link-local port isn't forwarded by the stub on modern
-systemd-resolved. Direct queries to `132.145.232.64:15300` work; the stub
-(127.0.0.53) times out. Public DNS still works (uplink).
+**Why:** `cmd/agent/dns_linux.go` registered DNS per-link via
+`resolvectl dns <iface> <ip>:<port>`. On Ubuntu 25.10 (systemd 257.9) —
+and per NetBird [#3443](https://github.com/netbirdio/netbird/issues/3443)
+on older systemd too — the stub (127.0.0.53) does not forward `.<domain>`
+queries when the configured server port is non-53, even though
+registration succeeds. Symptom: `dig <host>.<domain>` times out at 3s;
+`dig @<server> -p <port> <host>.<domain>` (bypassing stub) works fine.
 
-**What (in order of simplicity):**
+**Implemented solution (v0.9.8):**
 
-1. **Try global DNS**: `resolvectl dns --set-global 132.145.232.64:15300` +
-   `resolvectl domain --set-global ~home`. Might forward correctly from
-   systemd's global scope.
-2. **Drop-in file**: write `/etc/systemd/resolved.conf.d/hopssh.conf`:
-   ```
-   [Resolve]
-   DNS=132.145.232.64:15300
-   Domains=~home
-   ```
-   Reload with `systemctl reload systemd-resolved`. More robust than
-   `resolvectl` commands if the transient config fails.
-3. **Listen on port 53 at the lighthouse**: requires root on lighthouse
-   or a privileged-port proxy; adds surface for attacks on the control
-   plane.
-4. **Listen on a mesh IP at the lighthouse**: `10.42.1.1:15300`. Then
-   per-link DNS via `nebula1` routes correctly (source-binds to mesh
-   IP, server on same mesh network).
+`cmd/agent/dns_linux.go` now:
+1. Attempts the existing per-link registration via `resolvectl`.
+2. If port is non-53, probes the stub with a random subdomain lookup
+   against `127.0.0.53:53` using Go's `net.Resolver` (no external
+   dependency on `dig`). A `net.DNSError` with `IsTimeout` true means
+   the stub is broken for this configuration.
+3. On probe failure: reverts the per-link config (`resolvectl revert
+   <iface>`), writes `/etc/systemd/resolved.conf.d/hopssh.conf` with
+   `[Resolve]\nDNS=<server>:<port>\nDomains=~<domain>`, and
+   `systemctl reload-or-restart systemd-resolved`.
+4. Re-probes. If still broken, returns a clear error ("drop-in config
+   written but stub still not forwarding") that the operator can diagnose.
+5. On cleanup, both the drop-in and any per-link state are reverted.
 
-**Risk:** complexity and rollback for each option varies. Option 1 is
-easiest to test (can `resolvectl` revert). Option 2 needs Ansible-style
-config management. Options 3 and 4 are server-side changes.
+Scope this deliberately targets: **systems where the per-link approach
+is broken get auto-fallback. Systems where per-link works stay on
+per-link.** This matches Tailscale's approach (they only use per-link
+because MagicDNS runs on port 53 so they never hit the bug).
 
-**Status:** v0.9.7 ships with a Linux DNS bug. Workaround for users:
-`dig @132.145.232.64 -p 15300 <host>.home`. Fix is independent of
-sleep/wake tests — they still pass (see Linux-T2 in RESULTS.md).
+**Validation evidence:** `spike/sleep-wake-evidence/linux-dns-fix-validation.txt`.
+On Ubuntu 25.10/systemd 257.9 the agent log produces the expected
+self-diagnostic; `dig <host>.home` via stub resolves in ~39ms after
+fix (vs 3s timeout before).
+
+**Not addressed by this fix** (out of scope for this change):
+- Distros without systemd-resolved (Debian 12+, Arch-default,
+  openSUSE, RHEL, Alpine, NixOS) — fall through to `/etc/resolver/`
+  (unchanged).
+- Windows — separate code path in `dns_windows.go`.
 
 ---
 

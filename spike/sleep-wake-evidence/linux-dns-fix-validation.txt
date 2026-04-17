@@ -1,0 +1,32 @@
+=== POST-FIX validation evidence ===
+VM: Ubuntu 25.10 aarch64, systemd 257.9
+VERSION_ID="25.10"
+257.9-0ubuntu2.4
+
+=== agent log showing fallback triggered + DNS configured ===
+Apr 17 17:02:27 trustos hop-agent[5058]: time="2026-04-17T17:02:27Z" level=info msg="Read relay from config" relay=10.42.1.1
+Apr 17 17:02:27 trustos hop-agent[5058]: time="2026-04-17T17:02:27Z" level=info msg="Loaded send_recv_error config" sendRecvError=always
+Apr 17 17:02:27 trustos hop-agent[5058]: time="2026-04-17T17:02:27Z" level=info msg="Loaded accept_recv_error config" acceptRecvError=always
+Apr 17 17:02:29 trustos hop-agent[5058]: 2026/04/17 17:02:29 [dns] per-link DNS registered on nebula1 but stub not forwarding queries; switching to systemd-resolved drop-in config
+Apr 17 17:02:29 trustos hop-agent[5058]: 2026/04/17 17:02:29 [dns] split-DNS configured: .home → 132.145.232.64:15300
+
+=== resolvectl global config (set by drop-in) ===
+Global
+         Protocols: -LLMNR -mDNS -DNSOverTLS DNSSEC=no/unsupported
+  resolv.conf mode: stub
+Current DNS Server: 132.145.232.64:15300
+       DNS Servers: 132.145.232.64:15300
+        DNS Domain: ~home
+
+Link 2 (enp0s1)
+
+=== drop-in contents ===
+# Written by hop-agent. Safe to remove; regenerated on next enroll.
+[Resolve]
+DNS=132.145.232.64:15300
+Domains=~home
+
+=== DNS resolution working ===
+10.42.1.6
+10.42.1.7
+104.20.23.154

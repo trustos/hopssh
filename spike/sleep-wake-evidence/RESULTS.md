@@ -243,5 +243,40 @@ Fix directions (for a follow-up patch, NOT sleep/wake-related):
 ### Linux verdict
 
 - **Sleep/wake code path: PASS (functional)** — tick-gap detection fires correctly, rebind fires, tunnel recovers on SIGCONT within the same second. Log message appears as designed.
-- **DNS on Linux: FAIL (baseline bug)** — unrelated to sleep/wake. Mesh DNS simply doesn't work on Ubuntu 25.10 systemd-resolved in v0.9.7. File-level: `cmd/agent/dns_linux.go:15-46` needs a fix. Mesh IP connectivity itself is fine (ping/SSH/arbitrary TCP to `10.42.X.X` works end-to-end).
+- **DNS on Linux: FIXED** — bug identified and patched (post-commit, same session). See next section.
 - **Scope of SIGSTOP test**: exercises the agent's time-jump handling only — NOT network interface down/up (interfaces never went down), NOT TUN driver pause, NOT kernel DNS reset. Those dimensions are fundamentally untestable on QEMU ARM and remain unvalidated on Linux until we get bare-metal Linux hardware.
+
+### Linux DNS fix validation (v0.9.8-dev, `cmd/agent/dns_linux.go`)
+
+Evidence: `spike/sleep-wake-evidence/linux-dns-fix-validation.txt`.
+
+Fix summary: try per-link `resolvectl dns <iface> <ip>:<port>` first, probe
+the stub, fall back to a global drop-in config
+(`/etc/systemd/resolved.conf.d/hopssh.conf`) if the stub doesn't forward
+queries. Self-diagnostic log line reveals which path was taken.
+
+Post-fix results on Ubuntu 25.10 / systemd 257.9:
+
+| Query | Pre-fix (v0.9.7) | Post-fix (v0.9.8-dev) |
+|---|---|---|
+| `dig yavors-macbook-pro.home` via stub | Times out, 3s | **Resolves in 39ms → 10.42.1.6** |
+| `dig tenevis-mac-mini-2.home` via stub | Times out, 3s | **Resolves in 39ms → 10.42.1.7** |
+| `dig example.com` via stub | Works, 23ms | Still works, 21ms |
+| `ping tenevis-mac-mini-2.home` | Fails (DNS) | **Works, 5.5ms** |
+
+Agent log on startup shows the self-diagnostic triggered:
+```
+[dns] per-link DNS registered on nebula1 but stub not forwarding queries;
+      switching to systemd-resolved drop-in config
+[dns] split-DNS configured: .home → 132.145.232.64:15300
+```
+
+Regression checks:
+- SIGSTOP/SIGCONT 60s cycle: tick-gap log fires (`tick gap 1m1s`), DNS works post-resume, agent PID stable. Sleep/wake still functioning.
+- `systemctl stop hop-agent`: drop-in file removed, resolvectl global DNS cleared. Clean uninstall.
+- `systemctl start hop-agent`: drop-in re-applied, DNS works within ~5s of startup.
+
+Fix deliberately targets only the broken case:
+- Systems where per-link `resolvectl` works (port 53, or older systemd) keep using per-link.
+- Systems where the stub doesn't forward (port != 53 on affected systemd) auto-fall-back to drop-in.
+- Distros without `resolvectl` (Debian 12+, RHEL, Alpine, NixOS, etc.) continue to use `/etc/resolver/<domain>` unchanged.
