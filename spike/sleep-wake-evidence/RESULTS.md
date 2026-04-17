@@ -332,3 +332,132 @@ should filter by our own Nebula process or skip interfaces with IPs
 outside our mesh range. Low priority — only affects hosts running
 multiple Nebulas, and the functional outcome on this run was correct
 (fallback took over).
+
+## Run 4 — Windows 11 Home 25H2 ARM64 (UTM VM, 2026-04-18)
+
+Host: Windows 11 Home 25H2 (version 10.0.26200), ARM 64-bit, running as
+UTM VM on Apple Silicon. Mesh IP 10.42.1.10. WinTun kernel-TUN mode.
+
+Evidence: `windows-00-fingerprint.txt`, `windows-t2-events.txt`,
+`windows-t4-events.txt`, `windows-peer-ping-continuous.log`,
+`windows-subject-agent-window.log`, `windows-subject-agent-full.log`.
+
+### Summary matrix
+
+| Dimension | Result |
+|---|---|
+| Enrollment via device flow | ✅ works |
+| Agent binary cross-compiled windows/arm64 | ✅ works |
+| WinTun driver (shipped with Windows 11 25H2) detected | ✅ oem18.inf |
+| `wintun.dll` bundled + auto-extracted by agent | ✅ to `C:\Users\Yavor\dist\windows\wintun\bin\arm64\` |
+| Kernel-TUN interface created | ✅ `nebula1` with 10.42.1.10/24 |
+| Mesh P2P bidirectional (5ms LAN RTT) | ✅ |
+| **Sleep/wake code path** (via NtSuspendProcess/NtResumeProcess) | ✅ PASS — `sleep/wake detected (tick gap 2m35s) detected (iface: Ethernet→Ethernet)` — 1s recovery post-resume |
+| Mesh DNS via Windows NRPT | ❌ **FAIL — non-53 port stripped by NRPT** |
+| Public DNS | ✅ (unaffected — uses uplink) |
+| Windows service auto-install | ❌ "Service auto-install not supported on windows" |
+| Agent binary SCM-compatible | ❌ `sc.exe start` fails error 1053 (StartServiceCtrlDispatcher not implemented) |
+| "✓ Agent started" log correctness | ❌ prints even when no service created and no process running |
+| Process detachment (`Start-Process`, scheduled task) | ⚠️ fragile — agent exits shortly after detaching. Only reliable run is foreground blocking SSH. |
+
+### Sleep/wake detail (Windows-T2)
+
+Methodology: UTM/QEMU ARM reports no sleep states available
+(`powercfg /a`), so real Windows sleep is untestable on this VM — same
+limitation as the Linux VM. Used `NtSuspendProcess` via P/Invoke to
+`ntdll.dll`, which freezes all threads of the agent process (Windows
+equivalent of Unix `SIGSTOP`). Resumed with `NtResumeProcess`.
+
+Timeline:
+  22:26:33Z  NtSuspendProcess (agent PID 4184, return code 0 = success)
+  22:26:35Z  First peer Request-timeout
+  22:29:04Z  NtResumeProcess (same PID, return code 0)
+  22:29:05Z  Peer first OK ping (icmp_seq 164, 162ms — handshake catch-up)
+  22:29:06Z  Steady 5-7ms LAN P2P RTT restored
+
+Outage: 150s (matches 151s suspend). Peer recovery: +1s from resume.
+
+Subject agent log on resume:
+
+```
+2026/04/18 01:29:04 [agent] sleep/wake detected (tick gap 2m35s) detected
+        (iface: Ethernet→Ethernet), rebinding Nebula
+2026/04/18 01:29:04 [agent] closed 5 tunnels to force re-handshake on new network
+```
+
+This is the **third OS** (after Linux SIGSTOP, macOS cellular) where
+we've directly observed the tick-gap detection firing, and the **second
+OS** (after Linux) where the `sleep/wake detected` log message wins
+(interface unchanged, so `addrChanged` branch doesn't mask it).
+
+Same code path works on all three OSes. Cosmetic `tickGap` fix is
+observable (value "2m35s" correctly reports the 151s pause, not "0s").
+
+### DNS bug (Windows-T4) — same class as original Linux bug
+
+`cmd/agent/dns_windows.go` calls `Add-DnsClientNrptRule -Namespace <domain>
+-NameServers <ip>`. The configured server in enrollment is
+`132.145.232.64:15300`, but Windows NRPT only accepts plain IPs — **the
+port is silently stripped**. Windows then sends DNS queries to
+`132.145.232.64:53` (default) where nothing responds.
+
+Observed:
+```
+Namespace NameServers    DirectAccessDnsServers
+--------- -----------    ----------------------
+.home     132.145.232.64           ← no port
+
+> Resolve-DnsName yavors-macbook-pro.home
+Resolve-DnsName : … This operation returned because the timeout period expired
+```
+
+Public DNS unaffected (uses uplink). Same category of bug as the
+original Linux per-link issue, different Windows API limitation. Needs
+a follow-up fix in `dns_windows.go` (not shipped this session).
+
+### Secondary findings — Windows integration gaps
+
+These are pre-existing issues I discovered during setup that are worth
+tracking:
+
+1. **No Windows service support.** The agent tells the user to manually
+   run `sc.exe create hop-agent binPath= "… serve"` but the binary
+   doesn't implement `StartServiceCtrlDispatcher`, so `sc.exe start`
+   fails with error 1053 ("service did not respond in a timely
+   fashion"). Either implement the SCM protocol in the agent or ship
+   an NSSM-style service wrapper.
+
+2. **Misleading startup log.** When the user doesn't install the
+   service, the enrollment path prints `✓ Agent started` immediately
+   followed by no process and no service. Should say something like
+   `Agent needs to be started manually — run …`.
+
+3. **Process detachment is fragile.** `Start-Process -WindowStyle Hidden
+   -RedirectStandardOutput` and `schtasks /run` both resulted in the
+   agent exiting shortly after startup (~seconds). Foreground run
+   (blocking SSH) works fine. Root cause not isolated; likely tied to
+   console / session ownership on Windows, OR our own code exiting on
+   some condition that's hit when the parent goes away. Worth
+   investigating before shipping Windows as a supported platform.
+
+4. **Stale NRPT rules accumulate.** Multiple test runs left 4 rules
+   with the same `.home` namespace in NRPT. `platformCleanupDNS` on
+   Windows doesn't appear to remove them. Should use
+   `Get-DnsClientNrptRule | Where-Object Comment -eq 'hopssh mesh DNS' | Remove-DnsClientNrptRule`.
+
+### Combined verdict across all 4 runs (macOS LAN + cellular + Linux + Windows)
+
+Sleep/wake **code path** works on every OS we've tested:
+  - macOS LAN: 3s peer recovery (T2)
+  - macOS cellular: 3s peer recovery, relay-routed
+  - Linux VM (SIGSTOP): <1s recovery, `sleep/wake detected` log fires
+  - Windows VM (NtSuspendProcess): 1s recovery, `sleep/wake detected` log fires
+
+DNS integration still has gaps on **Windows** (same bug class as the
+original Linux issue). The Linux fix (probe + drop-in fallback) doesn't
+translate directly to Windows because the Windows API limitation is
+different (NRPT strips port vs systemd-resolved stub not forwarding).
+
+Windows also has non-DNS gaps (no working service, fragile detachment)
+that would need to be addressed before shipping Windows as a
+first-class supported platform.

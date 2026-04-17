@@ -1,0 +1,53 @@
+** WARNING: connection is not using a post-quantum key exchange algorithm.
+** This session may be vulnerable to "store now, decrypt later" attacks.
+** The server may need to be upgraded. See https://openssh.com/pq.html
+=== OS ===
+
+
+Caption        : Microsoft Windows 11 Home
+Version        : 10.0.26200
+BuildNumber    : 26200
+OSArchitecture : ARM 64-bit Processor
+
+
+
+
+=== sleep states ===
+The following sleep states are not available on this system:
+    Standby (S1)
+
+    Standby (S2)
+
+    Standby (S3)
+
+    Hibernate
+	Hibernation has not been enabled.
+
+    Standby (S0 Low Power Idle)
+	The system firmware does not support this standby state.
+
+    Hybrid Sleep
+	Standby (S3) is not available.
+	Hibernation is not available.
+
+    Fast Startup
+	Hibernation is not available.
+
+=== NRPT state ===
+
+Namespace NameServers    DirectAccessDnsServers
+--------- -----------    ----------------------
+.home     132.145.232.64                       
+
+
+
+
+Name                                   Namespace DnsServers Comment        
+----                                   --------- ---------- -------        
+{73AE6844-86CB-4562-813A-601A2B43AAFD} {.home}              hopssh mesh DNS
+{7DDB3188-9EB3-48C7-98F9-E7CCC369F27C} {.home}              hopssh mesh DNS
+{BD9C2746-77E4-44DD-8C5B-B7B1E8F71395} {.home}              hopssh mesh DNS
+{E5C334D1-69FA-427C-BDDF-94D8702913A1} {.home}              hopssh mesh DNS
+
+
+

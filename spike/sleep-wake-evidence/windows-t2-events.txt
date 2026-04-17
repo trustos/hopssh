@@ -1,0 +1,54 @@
+=== Windows-T2 (SIGSTOP-equivalent sleep/wake test via NtSuspendProcess) ===
+
+Host: Windows 11 Home 25H2 (10.0.26200), ARM64 (Apple Silicon via UTM).
+Kernel mode: WinTun kernel-TUN via wintun.dll (extracted to
+`C:\Users\Yavor\dist\windows\wintun\bin\arm64\wintun.dll` by the agent itself).
+Mesh IP: 10.42.1.10.
+
+Context: UTM's ARM QEMU for Windows reports NO sleep states available
+(`powercfg /a` lists S1/S2/S3/Hibernate/S0-LPI all unavailable), same as
+Linux VM. Used NtSuspendProcess / NtResumeProcess via P/Invoke to
+simulate the tick-gap scenario, matching the Linux methodology
+(SIGSTOP/SIGCONT).
+
+Timeline (peer-ping + subject agent log):
+  22:26:33Z  NtSuspendProcess called (agent PID 4184, return 0 = success)
+  22:26:35Z  First peer Request-timeout (agent frozen, stopped processing packets)
+  22:29:04Z  NtResumeProcess called (same PID, return 0 = success)
+  22:29:05Z  Peer first OK ping (icmp_seq 164, 162ms RTT — handshake catch-up)
+  22:29:06Z  Steady 5-7ms RTT P2P restored
+
+Outage: 150 consecutive timeouts ≈ 2m31s (matches wait duration).
+Peer recovery: +1s from resume.
+
+Agent log on resume (01:29:04 local = 22:29:04Z UTC):
+
+  [agent] sleep/wake detected (tick gap 2m35s) detected
+          (iface: Ethernet→Ethernet), rebinding Nebula
+  [agent] closed 5 tunnels to force re-handshake on new network
+
+Interpretation:
+  - sleptAndWoke branch fired with `iface: Ethernet→Ethernet` — same
+    pattern as Linux (where enp0s1→enp0s1 was unchanged). The
+    `sleptAndWoke && !addrChanged` log message appears cleanly because
+    the Ethernet interface didn't change during the pause.
+  - This matches the Linux validation: our tick-gap detection code path
+    in `cmd/agent/nebula.go:175-187` works on Windows too.
+  - The cosmetic fix for `tickGap` is observable: value "2m35s" matches
+    the 151s suspend duration, no "0s" bug.
+  - Recovery: 5 tunnels closed → fresh handshakes → bidirectional peer
+    communication restored in ~1 second. Same speed as macOS LAN T2.
+
+Scope caveat (same as Linux):
+  UTM ARM on Apple Silicon doesn't support real Windows sleep states.
+  `Suspend-Process` via NtSuspendProcess freezes ALL threads of the
+  target process, which is equivalent to SIGSTOP. This exercises the
+  agent's time-jump handling (tick-gap detection + rebind) but NOT:
+    - Windows network adapter pause/resume
+    - WinTun driver state preservation across sleep
+    - Windows DNS stub behavior across sleep
+    - Modern Standby's partial-run behavior
+  Those are untestable on a VM that doesn't support sleep, and remain
+  unvalidated on Windows until we get a bare-metal Windows machine.
+
+Windows-T2 VERDICT: PASS (functional test via NtSuspendProcess).

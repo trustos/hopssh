@@ -1,0 +1,6 @@
+2026/04/18 01:22:59 Using existing driver 0.14
+2026/04/18 01:22:59 Creating adapter
+time="2026-04-18T01:22:59+03:00" level=info msg="Nebula interface is active" boringcrypto=false build=hop-agent interface=nebula1 networks="[10.42.1.10/24]" udpAddr="0.0.0.0:4242"
+2026/04/18 01:22:59 [agent] Nebula mesh connected (mode: kernel)
+2026/04/18 01:29:04 [agent] sleep/wake detected (tick gap 2m35s) detected (iface: Ethernet→Ethernet), rebinding Nebula
+2026/04/18 01:29:04 [agent] closed 5 tunnels to force re-handshake on new network

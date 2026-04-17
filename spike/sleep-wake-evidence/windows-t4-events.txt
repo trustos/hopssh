@@ -1,0 +1,59 @@
+=== Windows-T4: DNS via NRPT + mesh hostname resolution ===
+
+TL;DR: Windows mesh DNS is broken in v0.9.8-dev. Same root cause as the
+original Linux bug (systemd-resolved stub not forwarding non-53 port
+queries) but a different Windows API limitation: Get/Add-DnsClientNrptRule
+(the NRPT API) doesn't accept an `IP:port` form — the port is silently
+stripped.
+
+Code path: `cmd/agent/dns_windows.go` calls (via PowerShell invocation)
+`Add-DnsClientNrptRule -Namespace .<domain> -NameServers <ip>`. The
+port from the enrollment config (`132.145.232.64:15300`) is dropped
+before reaching NRPT. Windows DNS client queries resolve against
+`132.145.232.64:53` (default port) — the hopssh DNS listener is on
+:15300, so no one answers.
+
+Evidence (from this session):
+
+  PS> Get-DnsClientNrptPolicy
+  Namespace NameServers    DirectAccessDnsServers
+  --------- -----------    ----------------------
+  .home     132.145.232.64                     <- NO PORT
+
+  PS> Resolve-DnsName yavors-macbook-pro.home
+  Resolve-DnsName : yavors-macbook-pro.home : This operation returned
+  because the timeout period expired
+
+  PS> Resolve-DnsName tenevis-mac-mini-2.home
+  Resolve-DnsName : tenevis-mac-mini-2.home : This operation returned
+  because the timeout period expired
+
+  PS> nslookup tenevis-mac-mini-2.home
+  *** Request to UnKnown timed-out
+  DNS request timed out.
+     timeout was 2 seconds.
+
+Direct queries to the lighthouse DNS on its correct port WORK (we have
+mesh connectivity): the bug is purely in how Windows queries the DNS
+server — it uses the NRPT-configured IP with port 53, not the
+configured port 15300.
+
+Cleanup note: NRPT rules accumulated from multiple test runs (4 rules
+with the same `.home` namespace). Cleanup code in `platformCleanupDNS`
+on Windows isn't removing them on restart.
+
+Windows-T4 VERDICT: FAIL (same class as Linux bug at v0.9.7). Requires
+a follow-up fix in `cmd/agent/dns_windows.go`, parallel to what was done
+for Linux in commit 5d1e5a0 (which added a probe + fallback).
+
+Candidate Windows fix approaches (to research in follow-up):
+  - Use `netsh dns add forwarder <zone>=<ip>:<port>` — needs testing
+    to see if non-53 ports are accepted there.
+  - Run a local DNS proxy on 127.0.0.53:53 (or similar) that forwards
+    .home queries over the mesh to the lighthouse. Works around the
+    Windows API limitation entirely.
+  - Tailscale-style MagicDNS: move lighthouse DNS to port 53 at a mesh
+    address. Same conclusion as the user already deferred — comes back
+    into scope if we hit DNS friction on Windows (which we just did).
+
+For now, document the bug and move on.
