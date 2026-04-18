@@ -62,7 +62,7 @@
 	let deleteNodeError = $state('');
 
 	// Active tab — default to "join" for new networks, "nodes" once there are nodes
-	let activeTab = $state<'nodes' | 'dns' | 'join' | 'members' | 'topology'>('nodes');
+	let activeTab = $state<'nodes' | 'dns' | 'join' | 'members' | 'topology' | 'activity'>('nodes');
 	let initialTabSet = $state(false);
 
 	// Rename node
@@ -101,6 +101,46 @@
 	// Per-peer drill-down: click a node row to expand a nested table
 	// of that node's peers. Keyed by nodeId; reactive Set reassignment.
 	let expandedNodes = $state<Set<string>>(new Set());
+
+	// Activity feed: in-memory ring buffer of the last 50 WS events.
+	// Not persisted — resets on page load; matches "live tail" UX.
+	interface ActivityEvent {
+		at: number;    // unix seconds
+		type: string;  // "node.enrolled", "node.status", ...
+		data: Record<string, unknown>;
+	}
+	const ACTIVITY_MAX = 50;
+	let activity = $state<ActivityEvent[]>([]);
+	function pushActivity(ev: ActivityEvent) {
+		const next = [ev, ...activity];
+		activity = next.length > ACTIVITY_MAX ? next.slice(0, ACTIVITY_MAX) : next;
+	}
+
+	// Resolve a nodeId → a readable name via the current network's
+	// node list.
+	function nodeName(nodeId: string | undefined): string {
+		if (!nodeId) return '';
+		const nodes = network?.nodes ?? [];
+		const match = nodes.find(n => n.id === nodeId);
+		return match?.dnsName || match?.hostname || nodeId.slice(0, 8);
+	}
+
+	// Human-readable label for each event type the server emits.
+	function activityLabel(ev: ActivityEvent): string {
+		const { type, data } = ev;
+		const d = data as Record<string, string>;
+		const who = nodeName(d.nodeId);
+		switch (type) {
+			case 'node.enrolled':     return `${who} enrolled`;
+			case 'node.status':       return `${who} ${d.status ?? 'updated'}`;
+			case 'node.renamed':      return `${who} renamed`;
+			case 'node.capabilities': return `${who} capabilities changed`;
+			case 'node.deleted':      return `${who} deleted`;
+			case 'dns.changed':       return 'DNS records changed';
+			case 'member.changed':    return 'membership changed';
+			default:                  return type;
+		}
+	}
 	function toggleExpand(nodeId: string) {
 		const next = new Set(expandedNodes);
 		if (next.has(nodeId)) next.delete(nodeId); else next.add(nodeId);
@@ -163,8 +203,20 @@
 			if (!networkId) return;
 			const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
 			ws = new WebSocket(`${proto}//${window.location.host}/api/networks/${networkId}/events`);
-			ws.onmessage = () => {
+			ws.onmessage = (msg) => {
 				debouncedReload();
+				// Push a copy into the activity ring buffer for the
+				// Activity tab. Best-effort — ignore unparseable.
+				try {
+					const evt = JSON.parse(msg.data);
+					if (evt && typeof evt.type === 'string') {
+						pushActivity({
+							at: Math.floor(Date.now() / 1000),
+							type: evt.type,
+							data: evt.data ?? {},
+						});
+					}
+				} catch { /* ignore */ }
 			};
 			ws.onclose = () => {
 				ws = null;
@@ -564,6 +616,7 @@
 				<Tabs.Trigger value="topology" class="hidden sm:inline-flex">Topology</Tabs.Trigger>
 				<Tabs.Trigger value="dns">DNS</Tabs.Trigger>
 				<Tabs.Trigger value="members">Members ({networkMembers.length})</Tabs.Trigger>
+				<Tabs.Trigger value="activity">Activity{activity.length > 0 ? ` (${activity.length})` : ''}</Tabs.Trigger>
 			</Tabs.List>
 		</Tabs.Root>
 
@@ -1117,6 +1170,44 @@
 					</div>
 				{/if}
 			</div>
+		{:else if activeTab === 'activity'}
+			<!-- Live event feed. In-memory ring buffer (last 50);
+			     resets on page load. Hooks into the same WebSocket
+			     already driving status reloads. -->
+			{#if activity.length === 0}
+				<div class="rounded-lg border border-dashed p-8 text-center">
+					<p class="mb-2 text-lg font-medium">No activity yet</p>
+					<p class="text-sm text-muted-foreground">
+						Live network events will appear here as they happen — enrollment,
+						status changes, renames, membership updates.
+					</p>
+				</div>
+			{:else}
+				<div class="overflow-hidden rounded-lg border">
+					<table class="w-full text-sm">
+						<thead>
+							<tr class="border-b bg-muted/50">
+								<th class="px-4 py-2 text-left font-medium">When</th>
+								<th class="px-4 py-2 text-left font-medium">Event</th>
+								<th class="px-4 py-2 text-left font-medium">Detail</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each activity as ev, i (`${ev.at}-${i}`)}
+								<tr class="border-b last:border-0">
+									<td class="px-4 py-2 text-xs text-muted-foreground whitespace-nowrap">{timeAgo(ev.at)}</td>
+									<td class="px-4 py-2 text-xs font-mono text-muted-foreground">{ev.type}</td>
+									<td class="px-4 py-2 text-xs">{activityLabel(ev)}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+				<p class="mt-3 text-xs text-muted-foreground">
+					Last {activity.length} event{activity.length === 1 ? '' : 's'} —
+					in-memory only, cleared on refresh.
+				</p>
+			{/if}
 		{/if}
 
 		<!-- Create Invite Dialog -->
