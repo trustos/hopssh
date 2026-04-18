@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -78,8 +79,23 @@ func runHeartbeat(ctx context.Context, endpoint, nodeID, agentToken string) {
 }
 
 func sendHeartbeat(endpoint, nodeID, agentToken string) error {
-	reqBody := fmt.Sprintf(`{"nodeId":%q}`, nodeID)
-	req, err := http.NewRequest("POST", endpoint+"/api/heartbeat", strings.NewReader(reqBody))
+	// Build the heartbeat body. Include peer counts when Nebula control
+	// is available (both kernel-TUN and userspace modes expose it).
+	// Omit them when unavailable — the server preserves the last known
+	// good values via COALESCE rather than overwriting with zeros.
+	reqBody := map[string]any{"nodeId": nodeID}
+	nebulaMu.Lock()
+	var ctrl = nebulaControlLocked()
+	nebulaMu.Unlock()
+	if direct, relayed, ok := collectPeerState(ctrl); ok {
+		reqBody["peersDirect"] = direct
+		reqBody["peersRelayed"] = relayed
+	}
+	reqBodyBytes, err := json.Marshal(reqBody)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest("POST", endpoint+"/api/heartbeat", bytes.NewReader(reqBodyBytes))
 	if err != nil {
 		return err
 	}

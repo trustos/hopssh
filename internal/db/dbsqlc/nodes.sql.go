@@ -186,6 +186,38 @@ func (q *Queries) GetNodeByID(ctx context.Context, id string) (GetNodeByIDRow, e
 	return i, err
 }
 
+const heartbeatNode = `-- name: HeartbeatNode :exec
+UPDATE nodes
+SET last_seen_at = unixepoch(),
+    status = 'online',
+    agent_real_ip = COALESCE(NULLIF(CAST(?1 AS TEXT), ''), agent_real_ip),
+    peers_direct = COALESCE(?2, peers_direct),
+    peers_relayed = COALESCE(?3, peers_relayed),
+    peers_reported_at = CASE
+        WHEN ?2 IS NOT NULL OR ?3 IS NOT NULL
+        THEN unixepoch()
+        ELSE peers_reported_at
+    END
+WHERE id = ?4
+`
+
+type HeartbeatNodeParams struct {
+	AgentRealIp  string
+	PeersDirect  *int64
+	PeersRelayed *int64
+	ID           string
+}
+
+func (q *Queries) HeartbeatNode(ctx context.Context, arg HeartbeatNodeParams) error {
+	_, err := q.db.ExecContext(ctx, heartbeatNode,
+		arg.AgentRealIp,
+		arg.PeersDirect,
+		arg.PeersRelayed,
+		arg.ID,
+	)
+	return err
+}
+
 const insertNode = `-- name: InsertNode :exec
 INSERT INTO nodes (id, network_id, hostname, os, arch, nebula_cert, nebula_key, nebula_ip, agent_token, enrollment_token, enrollment_expires_at, node_type, dns_name, status)
 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -292,25 +324,29 @@ func (q *Queries) ListNodeIPsForNetwork(ctx context.Context, networkID string) (
 
 const listNodesForNetwork = `-- name: ListNodesForNetwork :many
 SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, node_type,
-       exposed_ports, dns_name, capabilities, status, last_seen_at, created_at
+       exposed_ports, dns_name, capabilities, status, last_seen_at, created_at,
+       peers_direct, peers_relayed, peers_reported_at
 FROM nodes WHERE network_id = ? ORDER BY created_at ASC
 `
 
 type ListNodesForNetworkRow struct {
-	ID           string
-	NetworkID    string
-	Hostname     string
-	Os           string
-	Arch         string
-	NebulaIp     *string
-	AgentRealIp  *string
-	NodeType     string
-	ExposedPorts *string
-	DnsName      *string
-	Capabilities string
-	Status       string
-	LastSeenAt   *int64
-	CreatedAt    int64
+	ID              string
+	NetworkID       string
+	Hostname        string
+	Os              string
+	Arch            string
+	NebulaIp        *string
+	AgentRealIp     *string
+	NodeType        string
+	ExposedPorts    *string
+	DnsName         *string
+	Capabilities    string
+	Status          string
+	LastSeenAt      *int64
+	CreatedAt       int64
+	PeersDirect     *int64
+	PeersRelayed    *int64
+	PeersReportedAt *int64
 }
 
 func (q *Queries) ListNodesForNetwork(ctx context.Context, networkID string) ([]ListNodesForNetworkRow, error) {
@@ -337,6 +373,9 @@ func (q *Queries) ListNodesForNetwork(ctx context.Context, networkID string) ([]
 			&i.Status,
 			&i.LastSeenAt,
 			&i.CreatedAt,
+			&i.PeersDirect,
+			&i.PeersRelayed,
+			&i.PeersReportedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -353,7 +392,8 @@ func (q *Queries) ListNodesForNetwork(ctx context.Context, networkID string) ([]
 
 const listNodesForNetworkByType = `-- name: ListNodesForNetworkByType :many
 SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, node_type,
-       exposed_ports, dns_name, capabilities, status, last_seen_at, created_at
+       exposed_ports, dns_name, capabilities, status, last_seen_at, created_at,
+       peers_direct, peers_relayed, peers_reported_at
 FROM nodes WHERE network_id = ? AND node_type = ? ORDER BY created_at ASC
 `
 
@@ -363,20 +403,23 @@ type ListNodesForNetworkByTypeParams struct {
 }
 
 type ListNodesForNetworkByTypeRow struct {
-	ID           string
-	NetworkID    string
-	Hostname     string
-	Os           string
-	Arch         string
-	NebulaIp     *string
-	AgentRealIp  *string
-	NodeType     string
-	ExposedPorts *string
-	DnsName      *string
-	Capabilities string
-	Status       string
-	LastSeenAt   *int64
-	CreatedAt    int64
+	ID              string
+	NetworkID       string
+	Hostname        string
+	Os              string
+	Arch            string
+	NebulaIp        *string
+	AgentRealIp     *string
+	NodeType        string
+	ExposedPorts    *string
+	DnsName         *string
+	Capabilities    string
+	Status          string
+	LastSeenAt      *int64
+	CreatedAt       int64
+	PeersDirect     *int64
+	PeersRelayed    *int64
+	PeersReportedAt *int64
 }
 
 func (q *Queries) ListNodesForNetworkByType(ctx context.Context, arg ListNodesForNetworkByTypeParams) ([]ListNodesForNetworkByTypeRow, error) {
@@ -403,6 +446,9 @@ func (q *Queries) ListNodesForNetworkByType(ctx context.Context, arg ListNodesFo
 			&i.Status,
 			&i.LastSeenAt,
 			&i.CreatedAt,
+			&i.PeersDirect,
+			&i.PeersRelayed,
+			&i.PeersReportedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -455,21 +501,6 @@ type UpdateNodeAgentRealIPParams struct {
 
 func (q *Queries) UpdateNodeAgentRealIP(ctx context.Context, arg UpdateNodeAgentRealIPParams) error {
 	_, err := q.db.ExecContext(ctx, updateNodeAgentRealIP, arg.AgentRealIp, arg.ID)
-	return err
-}
-
-const heartbeatNode = `-- name: HeartbeatNode :exec
-UPDATE nodes SET last_seen_at = unixepoch(), status = 'online',
-  agent_real_ip = COALESCE(NULLIF(?, ''), agent_real_ip) WHERE id = ?
-`
-
-type HeartbeatNodeParams struct {
-	AgentRealIp string
-	ID          string
-}
-
-func (q *Queries) HeartbeatNode(ctx context.Context, arg HeartbeatNodeParams) error {
-	_, err := q.db.ExecContext(ctx, heartbeatNode, arg.AgentRealIp, arg.ID)
 	return err
 }
 

@@ -106,6 +106,9 @@ type Node struct {
 	Status              string
 	LastSeenAt          *int64
 	CreatedAt           int64
+	PeersDirect         *int64
+	PeersRelayed        *int64
+	PeersReportedAt     *int64
 }
 
 type Session struct {

@@ -266,20 +266,24 @@ func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 	nodeResponses := make([]NodeResponse, 0, len(nodes))
 	for _, n := range nodes {
 		nodeResponses = append(nodeResponses, NodeResponse{
-			ID:           n.ID,
-			NetworkID:    n.NetworkID,
-			Hostname:     n.Hostname,
-			OS:           n.OS,
-			Arch:         n.Arch,
-			NebulaIP:     n.NebulaIP,
-			AgentRealIP:  n.AgentRealIP,
-			NodeType:     n.NodeType,
-			ExposedPorts: n.ExposedPorts,
-			DNSName:      n.DNSName,
-			Capabilities: parseCapabilities(n.Capabilities),
-			Status:       effectiveStatus(n.Status, n.LastSeenAt),
-			LastSeenAt:   n.LastSeenAt,
-			CreatedAt:    n.CreatedAt,
+			ID:              n.ID,
+			NetworkID:       n.NetworkID,
+			Hostname:        n.Hostname,
+			OS:              n.OS,
+			Arch:            n.Arch,
+			NebulaIP:        n.NebulaIP,
+			AgentRealIP:     n.AgentRealIP,
+			NodeType:        n.NodeType,
+			ExposedPorts:    n.ExposedPorts,
+			DNSName:         n.DNSName,
+			Capabilities:    parseCapabilities(n.Capabilities),
+			Status:          effectiveStatus(n.Status, n.LastSeenAt),
+			LastSeenAt:      n.LastSeenAt,
+			CreatedAt:       n.CreatedAt,
+			PeersDirect:     n.PeersDirect,
+			PeersRelayed:    n.PeersRelayed,
+			PeersReportedAt: n.PeersReportedAt,
+			Connectivity:    deriveConnectivity(n.PeersDirect, n.PeersRelayed, n.NodeType),
 		})
 	}
 

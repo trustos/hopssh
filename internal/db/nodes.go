@@ -44,6 +44,9 @@ type Node struct {
 	Status              string   // pending, enrolled, online, offline
 	LastSeenAt          *int64
 	CreatedAt           int64
+	PeersDirect         *int64 // last-reported count of direct (P2P) peers; nil if never reported
+	PeersRelayed        *int64 // last-reported count of relay-routed peers; nil if never reported
+	PeersReportedAt     *int64 // unix seconds of the last heartbeat that carried peer state
 }
 
 // HasCapability checks if a node has a specific capability enabled.
@@ -258,19 +261,22 @@ func (s *NodeStore) ListForNetwork(networkID string) ([]*Node, error) {
 	nodes := make([]*Node, 0, len(rows))
 	for _, r := range rows {
 		n := &Node{
-			ID:           r.ID,
-			NetworkID:    r.NetworkID,
-			Hostname:     r.Hostname,
-			OS:           r.Os,
-			Arch:         r.Arch,
-			AgentRealIP:  r.AgentRealIp,
-			NodeType:     r.NodeType,
-			ExposedPorts: r.ExposedPorts,
-			DNSName:      r.DnsName,
-			Capabilities: r.Capabilities,
-			Status:       r.Status,
-			LastSeenAt:   r.LastSeenAt,
-			CreatedAt:    r.CreatedAt,
+			ID:              r.ID,
+			NetworkID:       r.NetworkID,
+			Hostname:        r.Hostname,
+			OS:              r.Os,
+			Arch:            r.Arch,
+			AgentRealIP:     r.AgentRealIp,
+			NodeType:        r.NodeType,
+			ExposedPorts:    r.ExposedPorts,
+			DNSName:         r.DnsName,
+			Capabilities:    r.Capabilities,
+			Status:          r.Status,
+			LastSeenAt:      r.LastSeenAt,
+			CreatedAt:       r.CreatedAt,
+			PeersDirect:     r.PeersDirect,
+			PeersRelayed:    r.PeersRelayed,
+			PeersReportedAt: r.PeersReportedAt,
 		}
 		if r.NebulaIp != nil {
 			n.NebulaIP = *r.NebulaIp
@@ -443,12 +449,29 @@ func (s *NodeStore) DeleteForNetwork(networkID string) error {
 	return q.DeleteNodesForNetwork(context.Background(), networkID)
 }
 
+// heartbeatEntry is the buffered row written on each flush. agent_real_ip
+// merges via COALESCE(NULLIF(...)), so empty ip preserves the prior value.
+// peersDirect / peersRelayed are nullable: heartbeats that don't carry
+// peer state (e.g., userspace agents without Nebula Control access, or
+// agents mid-startup) leave the prior value in place via COALESCE.
+type heartbeatEntry struct {
+	ip           string
+	peersDirect  *int64
+	peersRelayed *int64
+}
+
 // RecordHeartbeat buffers a heartbeat for batch writing. Non-blocking.
 // If ip is empty, only last_seen_at is updated (agent_real_ip preserved).
+// peersDirect / peersRelayed are optional; pass nil when the agent has
+// no peer-state to report this round.
 // Coalesces: if the same node heartbeats multiple times between flushes,
-// only the latest IP is kept.
-func (s *NodeStore) RecordHeartbeat(nodeID, ip string) {
-	s.heartbeats.Store(nodeID, ip)
+// only the latest values are kept.
+func (s *NodeStore) RecordHeartbeat(nodeID, ip string, peersDirect, peersRelayed *int64) {
+	s.heartbeats.Store(nodeID, heartbeatEntry{
+		ip:           ip,
+		peersDirect:  peersDirect,
+		peersRelayed: peersRelayed,
+	})
 }
 
 // StartHeartbeatFlusher starts periodic batch flushing of heartbeats.
@@ -472,12 +495,20 @@ func (s *NodeStore) StartHeartbeatFlusher(ctx context.Context) {
 // single transaction. Safe to call from the shutdown path.
 func (s *NodeStore) FlushHeartbeats() {
 	type entry struct {
-		id string
-		ip string
+		id           string
+		ip           string
+		peersDirect  *int64
+		peersRelayed *int64
 	}
 	var batch []entry
 	s.heartbeats.Range(func(key, value any) bool {
-		batch = append(batch, entry{id: key.(string), ip: value.(string)})
+		e := value.(heartbeatEntry)
+		batch = append(batch, entry{
+			id:           key.(string),
+			ip:           e.ip,
+			peersDirect:  e.peersDirect,
+			peersRelayed: e.peersRelayed,
+		})
 		s.heartbeats.Delete(key)
 		return true
 	})
@@ -493,8 +524,10 @@ func (s *NodeStore) FlushHeartbeats() {
 	q := dbsqlc.New(WrapTx(tx))
 	for _, e := range batch {
 		if err := q.HeartbeatNode(context.Background(), dbsqlc.HeartbeatNodeParams{
-			AgentRealIp: e.ip,
-			ID:          e.id,
+			AgentRealIp:  e.ip,
+			PeersDirect:  e.peersDirect,
+			PeersRelayed: e.peersRelayed,
+			ID:           e.id,
 		}); err != nil {
 			log.Printf("[heartbeat] update %s: %v", e.id, err)
 			tx.Rollback()

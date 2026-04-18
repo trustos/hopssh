@@ -71,10 +71,11 @@ func (s *InviteStore) Claim(code string) (*NetworkInvite, error) {
 
 	// Atomically increment use_count only if the invite is still valid.
 	q := dbsqlc.New(WrapDB(s.wdb))
-	affected, err := q.AtomicClaimInvite(ctx, code)
+	result, err := q.AtomicClaimInvite(ctx, code)
 	if err != nil {
 		return nil, fmt.Errorf("failed to claim invite: %w", err)
 	}
+	affected, _ := result.RowsAffected()
 	if affected == 0 {
 		// No rows updated — either not found, expired, or maxed out.
 		// Read to give a better error message.

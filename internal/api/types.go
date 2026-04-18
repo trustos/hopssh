@@ -193,20 +193,57 @@ type EnrollResponse struct {
 
 // NodeResponse represents a node in API responses.
 type NodeResponse struct {
-	ID           string  `json:"id" example:"550e8400-e29b-41d4-a716-446655440000"`
-	NetworkID    string  `json:"networkId" example:"550e8400-e29b-41d4-a716-446655440000"`
-	Hostname     string  `json:"hostname" example:"web-server-1"`
-	OS           string  `json:"os" example:"linux"`
-	Arch         string  `json:"arch" example:"arm64"`
-	NebulaIP     string  `json:"nebulaIP" example:"10.42.1.2/24"`
-	AgentRealIP  *string `json:"agentRealIP" example:"203.0.113.10"`
-	NodeType     string   `json:"nodeType" example:"node"`
-	ExposedPorts *string  `json:"exposedPorts,omitempty"`
-	DNSName      *string  `json:"dnsName,omitempty"`
-	Capabilities []string `json:"capabilities" example:"terminal,health,forward"`
-	Status       string  `json:"status" example:"online"`
-	LastSeenAt   *int64  `json:"lastSeenAt" example:"1712361600"`
-	CreatedAt    int64   `json:"createdAt" example:"1712361600"`
+	ID              string   `json:"id" example:"550e8400-e29b-41d4-a716-446655440000"`
+	NetworkID       string   `json:"networkId" example:"550e8400-e29b-41d4-a716-446655440000"`
+	Hostname        string   `json:"hostname" example:"web-server-1"`
+	OS              string   `json:"os" example:"linux"`
+	Arch            string   `json:"arch" example:"arm64"`
+	NebulaIP        string   `json:"nebulaIP" example:"10.42.1.2/24"`
+	AgentRealIP     *string  `json:"agentRealIP" example:"203.0.113.10"`
+	NodeType        string   `json:"nodeType" example:"node"`
+	ExposedPorts    *string  `json:"exposedPorts,omitempty"`
+	DNSName         *string  `json:"dnsName,omitempty"`
+	Capabilities    []string `json:"capabilities" example:"terminal,health,forward"`
+	Status          string   `json:"status" example:"online"`
+	LastSeenAt      *int64   `json:"lastSeenAt" example:"1712361600"`
+	CreatedAt       int64    `json:"createdAt" example:"1712361600"`
+	PeersDirect     *int64   `json:"peersDirect,omitempty" example:"3"`
+	PeersRelayed    *int64   `json:"peersRelayed,omitempty" example:"1"`
+	PeersReportedAt *int64   `json:"peersReportedAt,omitempty" example:"1712361600"`
+	// Connectivity is derived from PeersDirect / PeersRelayed at serialize time.
+	// Values: "" (unknown — agent hasn't reported), "idle" (no peers),
+	// "direct" (all peers direct), "relayed" (all peers relayed),
+	// "mixed" (some direct, some relayed). Skipped entirely for lighthouse nodes.
+	Connectivity string `json:"connectivity,omitempty" example:"direct"`
+}
+
+// deriveConnectivity translates the raw direct/relayed peer counts into
+// a single display state. Returns "" for nodes that haven't reported,
+// so the frontend can tell "unknown" from "idle".
+func deriveConnectivity(peersDirect, peersRelayed *int64, nodeType string) string {
+	if nodeType == "lighthouse" {
+		return "" // meaningless for the relay itself
+	}
+	if peersDirect == nil && peersRelayed == nil {
+		return ""
+	}
+	var d, r int64
+	if peersDirect != nil {
+		d = *peersDirect
+	}
+	if peersRelayed != nil {
+		r = *peersRelayed
+	}
+	switch {
+	case d == 0 && r == 0:
+		return "idle"
+	case r == 0:
+		return "direct"
+	case d == 0:
+		return "relayed"
+	default:
+		return "mixed"
+	}
 }
 
 // HealthResponse is returned from the agent health check.

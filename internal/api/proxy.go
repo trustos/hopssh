@@ -204,8 +204,9 @@ func (h *ProxyHandler) NodeHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Update node status on successful health check.
-	h.Nodes.RecordHeartbeat(node.ID, "")
+	// Update node status on successful health check. Health probes
+	// don't carry peer state — that flows through /api/heartbeat.
+	h.Nodes.RecordHeartbeat(node.ID, "", nil, nil)
 	if h.EventHub != nil {
 		h.EventHub.Publish(node.NetworkID, Event{Type: "node.status", Data: map[string]string{"nodeId": node.ID, "status": "online"}})
 	}
@@ -992,20 +993,24 @@ func (h *ProxyHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
 	result := make([]NodeResponse, 0, len(nodes))
 	for _, n := range nodes {
 		result = append(result, NodeResponse{
-			ID:           n.ID,
-			NetworkID:    n.NetworkID,
-			Hostname:     n.Hostname,
-			OS:           n.OS,
-			Arch:         n.Arch,
-			NebulaIP:     n.NebulaIP,
-			AgentRealIP:  n.AgentRealIP,
-			NodeType:     n.NodeType,
-			ExposedPorts: n.ExposedPorts,
-			DNSName:      n.DNSName,
-			Capabilities: parseCapabilities(n.Capabilities),
-			Status:       effectiveStatus(n.Status, n.LastSeenAt),
-			LastSeenAt:   n.LastSeenAt,
-			CreatedAt:    n.CreatedAt,
+			ID:              n.ID,
+			NetworkID:       n.NetworkID,
+			Hostname:        n.Hostname,
+			OS:              n.OS,
+			Arch:            n.Arch,
+			NebulaIP:        n.NebulaIP,
+			AgentRealIP:     n.AgentRealIP,
+			NodeType:        n.NodeType,
+			ExposedPorts:    n.ExposedPorts,
+			DNSName:         n.DNSName,
+			Capabilities:    parseCapabilities(n.Capabilities),
+			Status:          effectiveStatus(n.Status, n.LastSeenAt),
+			LastSeenAt:      n.LastSeenAt,
+			CreatedAt:       n.CreatedAt,
+			PeersDirect:     n.PeersDirect,
+			PeersRelayed:    n.PeersRelayed,
+			PeersReportedAt: n.PeersReportedAt,
+			Connectivity:    deriveConnectivity(n.PeersDirect, n.PeersRelayed, n.NodeType),
 		})
 	}
 

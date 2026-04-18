@@ -86,8 +86,9 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Update agent's real IP (may change between renewals).
-	h.Nodes.RecordHeartbeat(node.ID, captureAgentIP(r))
+	// Update agent's real IP (may change between renewals). Renewal
+	// doesn't carry peer state — that flows through /api/heartbeat.
+	h.Nodes.RecordHeartbeat(node.ID, captureAgentIP(r), nil, nil)
 
 	// Persist to DB.
 	if err := h.Nodes.UpdateCert(node.ID, nodeCert.CertPEM, nodeCert.KeyPEM); err != nil {
@@ -128,7 +129,9 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(authHeader, "Bearer ")
 
 	var body struct {
-		NodeID string `json:"nodeId"`
+		NodeID       string `json:"nodeId"`
+		PeersDirect  *int64 `json:"peersDirect,omitempty"`
+		PeersRelayed *int64 `json:"peersRelayed,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NodeID == "" {
 		http.Error(w, "nodeId is required", http.StatusBadRequest)
@@ -145,10 +148,17 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.Nodes.RecordHeartbeat(node.ID, captureAgentIP(r))
+	h.Nodes.RecordHeartbeat(node.ID, captureAgentIP(r), body.PeersDirect, body.PeersRelayed)
 
 	if h.EventHub != nil {
-		h.EventHub.Publish(node.NetworkID, Event{Type: "node.status", Data: map[string]string{"nodeId": node.ID, "status": "online"}})
+		evt := map[string]any{"nodeId": node.ID, "status": "online"}
+		if body.PeersDirect != nil {
+			evt["peersDirect"] = *body.PeersDirect
+		}
+		if body.PeersRelayed != nil {
+			evt["peersRelayed"] = *body.PeersRelayed
+		}
+		h.EventHub.Publish(node.NetworkID, Event{Type: "node.status", Data: evt})
 	}
 
 	// Return online peer mesh IPs so the agent can pre-warm tunnels.

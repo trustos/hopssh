@@ -28,6 +28,18 @@ type meshService interface {
 	NebulaControl() *nebula.Control
 }
 
+// nebulaControlLocked returns the current mesh's Nebula Control for
+// read-only inspection (peer state, host map), or nil if no mesh is
+// running. Caller must hold nebulaMu. Returns nil in the brief window
+// between Nebula shutdown and the reloadNebula callback swapping in
+// the next instance.
+func nebulaControlLocked() *nebula.Control {
+	if currentNebula == nil {
+		return nil
+	}
+	return currentNebula.NebulaControl()
+}
+
 // currentNebula is the running embedded Nebula instance.
 // Protected by nebulaMu for concurrent access from main and renewal goroutines.
 var (
@@ -49,7 +61,8 @@ var activeDNSConfig *dnsConfig
 
 // userspaceMeshService wraps an embedded Nebula userspace instance.
 type userspaceMeshService struct {
-	svc *service.Service
+	svc  *service.Service
+	ctrl *nebula.Control // kept so NebulaControl() can expose peer state
 }
 
 // startNebula starts an embedded Nebula instance in userspace mode.
@@ -73,7 +86,7 @@ func startNebula(configPath string) (*userspaceMeshService, error) {
 		return nil, fmt.Errorf("create nebula service: %w", err)
 	}
 
-	return &userspaceMeshService{svc: svc}, nil
+	return &userspaceMeshService{svc: svc, ctrl: ctrl}, nil
 }
 
 // Listen creates a TCP listener on the Nebula mesh's userspace network stack.
@@ -81,7 +94,11 @@ func (u *userspaceMeshService) Listen(network, address string) (net.Listener, er
 	return u.svc.Listen(network, address)
 }
 
-func (u *userspaceMeshService) NebulaControl() *nebula.Control { return nil }
+// NebulaControl exposes the underlying Nebula control for read-only
+// inspection (peer state, host map). The returned *Control is the same
+// one service.Service wraps; safe to call concurrently with normal
+// mesh traffic.
+func (u *userspaceMeshService) NebulaControl() *nebula.Control { return u.ctrl }
 
 // Close shuts down the Nebula instance gracefully.
 func (u *userspaceMeshService) Close() {

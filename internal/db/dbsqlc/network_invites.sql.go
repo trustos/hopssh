@@ -7,7 +7,19 @@ package dbsqlc
 
 import (
 	"context"
+	"database/sql"
 )
+
+const atomicClaimInvite = `-- name: AtomicClaimInvite :execresult
+UPDATE network_invites SET use_count = use_count + 1
+WHERE code = ?
+  AND (expires_at IS NULL OR expires_at > unixepoch())
+  AND (max_uses IS NULL OR use_count < max_uses)
+`
+
+func (q *Queries) AtomicClaimInvite(ctx context.Context, code string) (sql.Result, error) {
+	return q.db.ExecContext(ctx, atomicClaimInvite, code)
+}
 
 const deleteExpiredInvites = `-- name: DeleteExpiredInvites :exec
 DELETE FROM network_invites
@@ -57,25 +69,6 @@ UPDATE network_invites SET use_count = use_count + 1 WHERE id = ?
 func (q *Queries) IncrementInviteUseCount(ctx context.Context, id string) error {
 	_, err := q.db.ExecContext(ctx, incrementInviteUseCount, id)
 	return err
-}
-
-const atomicClaimInvite = `-- name: AtomicClaimInvite :execresult
-UPDATE network_invites SET use_count = use_count + 1
-WHERE code = ?
-  AND (expires_at IS NULL OR expires_at > unixepoch())
-  AND (max_uses IS NULL OR use_count < max_uses)
-`
-
-type AtomicClaimInviteResult struct {
-	RowsAffected int64
-}
-
-func (q *Queries) AtomicClaimInvite(ctx context.Context, code string) (int64, error) {
-	result, err := q.db.ExecContext(ctx, atomicClaimInvite, code)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
 }
 
 const insertInvite = `-- name: InsertInvite :exec
