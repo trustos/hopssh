@@ -66,6 +66,16 @@ type Network struct {
 	CreatedAt      int64
 }
 
+type NetworkEvent struct {
+	ID        int64
+	NetworkID string
+	EventType string
+	TargetID  *string
+	Status    *string
+	Details   *string
+	CreatedAt int64
+}
+
 type NetworkInvite struct {
 	ID        string
 	NetworkID string

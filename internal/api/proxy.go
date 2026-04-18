@@ -55,6 +55,7 @@ type ProxyHandler struct {
 	Audit          *db.AuditStore
 	AllowedOrigins []string // allowed WebSocket origins; empty = same-origin only
 	EventHub       *EventHub
+	Events         *db.NetworkEventStore
 
 	// authCache caches requireNode results for the proxy hot path.
 	// Key: "networkID:nodeID:userID", Value: *proxyAuthEntry.
@@ -211,6 +212,11 @@ func (h *ProxyHandler) NodeHealth(w http.ResponseWriter, r *http.Request) {
 	h.Nodes.RecordProxyActivity(node.ID)
 	if h.EventHub != nil {
 		h.EventHub.Publish(node.NetworkID, Event{Type: "node.status", Data: map[string]string{"nodeId": node.ID, "status": "online"}})
+	}
+	if h.Events != nil && h.Nodes.StatusTransition(node.ID, "online") {
+		targetID := node.ID
+		status := "online"
+		h.Events.Record(node.NetworkID, "node.status", &targetID, &status, nil)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -1080,6 +1086,11 @@ func (h *ProxyHandler) RenameNode(w http.ResponseWriter, r *http.Request) {
 	if h.EventHub != nil {
 		h.EventHub.Publish(network.ID, Event{Type: "node.renamed", Data: map[string]string{"nodeId": node.ID, "name": body.Name}})
 	}
+	if h.Events != nil {
+		targetID := node.ID
+		details := jsonDetails(map[string]any{"name": body.Name, "dnsName": dnsName})
+		h.Events.Record(network.ID, "node.renamed", &targetID, nil, details)
+	}
 
 	writeJSON(w, map[string]string{"name": body.Name, "dnsName": dnsName})
 }
@@ -1125,6 +1136,11 @@ func (h *ProxyHandler) UpdateCapabilities(w http.ResponseWriter, r *http.Request
 	if h.EventHub != nil {
 		h.EventHub.Publish(node.NetworkID, Event{Type: "node.capabilities", Data: map[string]interface{}{"nodeId": node.ID, "capabilities": body.Capabilities}})
 	}
+	if h.Events != nil {
+		targetID := node.ID
+		details := jsonDetails(map[string]any{"capabilities": body.Capabilities})
+		h.Events.Record(node.NetworkID, "node.capabilities", &targetID, nil, details)
+	}
 
 	writeJSON(w, map[string]interface{}{"capabilities": body.Capabilities})
 }
@@ -1156,6 +1172,11 @@ func (h *ProxyHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
 	h.audit(user.ID, "node.delete", &networkID, &node.ID, nil)
 	if h.EventHub != nil {
 		h.EventHub.Publish(networkID, Event{Type: "node.deleted", Data: map[string]string{"nodeId": node.ID}})
+	}
+	if h.Events != nil {
+		targetID := node.ID
+		details := jsonDetails(map[string]any{"hostname": node.Hostname})
+		h.Events.Record(networkID, "node.deleted", &targetID, nil, details)
 	}
 
 	w.WriteHeader(http.StatusNoContent)

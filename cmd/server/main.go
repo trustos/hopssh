@@ -158,6 +158,12 @@ func main() {
 	audit.StartFlusher(reaperCtx)
 	nodes.StartHeartbeatFlusher(reaperCtx)
 
+	// Persistent activity log (network_events) + sweeper that flips
+	// online→offline for nodes whose heartbeat has gone stale.
+	networkEvents := db.NewNetworkEventStore(database)
+	networkEvents.StartFlusher(reaperCtx)
+	nodes.StartStatusTransitionSweeper(reaperCtx, networkEvents, api.NodeStaleThresholdSeconds*time.Second)
+
 	// Initialize handlers.
 	authH := &api.AuthHandler{Users: users, Sessions: sessions, Audit: audit}
 	networkH := &api.NetworkHandler{Networks: networks, Nodes: nodes, Members: members, NetworkManager: netMgr, ForwardManager: fwdMgr}
@@ -204,6 +210,13 @@ func main() {
 	enrollH.EventHub = eventHub
 	deviceH.EventHub = eventHub
 	renewH.EventHub = eventHub
+
+	// Wire the persistent activity-log store into the same handlers
+	// so every Publish call also lands a row in network_events.
+	proxyH.Events = networkEvents
+	enrollH.Events = networkEvents
+	deviceH.Events = networkEvents
+	renewH.Events = networkEvents
 
 	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH, eventsH)
 
@@ -293,6 +306,7 @@ func main() {
 	}
 	audit.Flush()
 	nodes.FlushHeartbeats()
+	networkEvents.Flush()
 	fwdMgr.StopAll()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()

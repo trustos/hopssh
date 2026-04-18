@@ -87,6 +87,78 @@ type NodeStore struct {
 	// through a port-forward) doesn't churn the heartbeats map at
 	// connection rate. Key: nodeID, Value: time.Time of last fire.
 	lastProxyHeartbeat sync.Map
+
+	// lastLoggedStatus tracks the last "online"|"offline" state we
+	// persisted to network_events for a node, so that the caller can
+	// suppress redundant logs when a heartbeat lands on an already-
+	// online node. Populated lazily — the first heartbeat after server
+	// start is always logged as a transition. Key: nodeID, Value: string.
+	lastLoggedStatus sync.Map
+}
+
+// StatusTransition reports whether the given heartbeat constitutes a
+// state change relative to the last logged status for this node, and
+// updates the internal tracker if so. Returns (true, "online") when
+// we should log an online transition; (false, "") when the status is
+// unchanged. Callers use this to decide whether to persist a
+// node.status event alongside the WS publish.
+func (s *NodeStore) StatusTransition(nodeID, newStatus string) bool {
+	prev, loaded := s.lastLoggedStatus.LoadOrStore(nodeID, newStatus)
+	if !loaded {
+		return true
+	}
+	if prev.(string) == newStatus {
+		return false
+	}
+	s.lastLoggedStatus.Store(nodeID, newStatus)
+	return true
+}
+
+// MarkOfflineOnStale transitions a currently-online node to offline in
+// the database when its last_seen_at is older than the stale threshold.
+// Called by the sweeper for each row returned from ScanStaleOnlineNodes.
+// Returns true if this was a real online→offline transition (so the
+// caller should also log it).
+func (s *NodeStore) MarkOfflineOnStale(nodeID string) bool {
+	q := dbsqlc.New(WrapDB(s.wdb))
+	if err := q.UpdateNodeStatus(context.Background(), dbsqlc.UpdateNodeStatusParams{
+		Status: "offline",
+		ID:     nodeID,
+	}); err != nil {
+		log.Printf("[sweep] mark offline %s: %v", nodeID, err)
+		return false
+	}
+	return s.StatusTransition(nodeID, "offline")
+}
+
+// StaleOnlineNodes returns nodes still marked "online" in the DB whose
+// last_seen_at is older than cutoff (unix seconds). Used by the
+// transition sweeper to flip stale rows to "offline" + emit a log
+// event. Lighthouses are excluded (they heartbeat via the mesh, not
+// the control-plane heartbeat endpoint).
+type StaleNode struct {
+	ID         string
+	NetworkID  string
+	Hostname   string
+	LastSeenAt *int64
+}
+
+func (s *NodeStore) StaleOnlineNodes(cutoff int64) ([]StaleNode, error) {
+	q := dbsqlc.New(WrapDB(s.rdb))
+	rows, err := q.ScanStaleOnlineNodes(context.Background(), &cutoff)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]StaleNode, 0, len(rows))
+	for _, r := range rows {
+		out = append(out, StaleNode{
+			ID:         r.ID,
+			NetworkID:  r.NetworkID,
+			Hostname:   r.Hostname,
+			LastSeenAt: r.LastSeenAt,
+		})
+	}
+	return out, nil
 }
 
 func NewNodeStore(p *DBPair, enc *crypto.Encryptor) *NodeStore {

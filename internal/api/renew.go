@@ -20,6 +20,7 @@ type RenewHandler struct {
 	Networks *db.NetworkStore
 	Nodes    *db.NodeStore
 	EventHub *EventHub
+	Events   *db.NetworkEventStore
 }
 
 // Renew issues a fresh short-lived certificate for an enrolled node.
@@ -170,6 +171,14 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 			evt["peersRelayed"] = *body.PeersRelayed
 		}
 		h.EventHub.Publish(node.NetworkID, Event{Type: "node.status", Data: evt})
+	}
+	// Persist only on actual transitions (e.g., offline→online). A
+	// steady stream of "already online" heartbeats does NOT produce
+	// log rows — the in-memory StatusTransition tracker coalesces.
+	if h.Events != nil && h.Nodes.StatusTransition(node.ID, "online") {
+		targetID := node.ID
+		status := "online"
+		h.Events.Record(node.NetworkID, "node.status", &targetID, &status, nil)
 	}
 
 	// Return online peer mesh IPs so the agent can pre-warm tunnels.

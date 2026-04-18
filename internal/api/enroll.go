@@ -28,6 +28,7 @@ type EnrollHandler struct {
 	Endpoint       string // public URL of this server (e.g. "https://hopssh.com")
 	LighthouseHost string // public IP/host for Nebula lighthouse UDP (separate from HTTP endpoint)
 	EventHub       *EventHub
+	Events         *db.NetworkEventStore
 }
 
 // CreateNode generates an enrollment token and returns the install command.
@@ -164,6 +165,11 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.EventHub != nil {
 		h.EventHub.Publish(node.NetworkID, Event{Type: "node.enrolled", Data: map[string]string{"nodeId": node.ID, "hostname": body.Hostname}})
+	}
+	if h.Events != nil {
+		targetID := node.ID
+		details := jsonDetails(map[string]any{"hostname": body.Hostname})
+		h.Events.Record(node.NetworkID, "node.enrolled", &targetID, nil, details)
 	}
 
 	// Compute lighthouse VPN IP and port for agent's static_host_map.

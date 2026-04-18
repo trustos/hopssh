@@ -39,6 +39,28 @@ func sanitizeDNSName(hostname string) string {
 // single missed beat. 3 min = 3× normal heartbeat with headroom.
 const nodeStaleThreshold = 3 * 60 // 3 minutes in seconds
 
+// NodeStaleThresholdSeconds is the exported form used by the background
+// sweeper in internal/db to decide which online nodes to flip to
+// offline. Kept as a named export so external callers don't duplicate
+// the literal.
+const NodeStaleThresholdSeconds = nodeStaleThreshold
+
+// jsonDetails serialises a small payload for persisted network events.
+// Returns nil if the payload is empty or serialization fails — callers
+// pass the returned value straight through to NetworkEventStore.Record,
+// which already handles nil (details column stays NULL).
+func jsonDetails(v map[string]any) *string {
+	if len(v) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	s := string(b)
+	return &s
+}
+
 // effectiveStatus returns the display status, marking "online" nodes as "offline"
 // if they haven't sent a heartbeat within the staleness threshold.
 func effectiveStatus(status string, lastSeenAt *int64) string {
