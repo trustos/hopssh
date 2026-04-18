@@ -14,7 +14,11 @@ echo "==> Building agent..."
 make build
 
 echo "==> Deploying to Mac mini (local)..."
-sudo /bin/cp hop-agent "${AGENT_PATH}"
+# ditto --noextattr instead of cp: a local cp carries xattrs from the
+# build directory into /usr/local/bin, and launchd's AMFI then refuses
+# to load the LaunchDaemon with OS_REASON_CODESIGNING. scp to the laptop
+# strips xattrs in transit so `cp` is fine there.
+sudo /usr/bin/ditto --noextattr hop-agent "${AGENT_PATH}"
 sudo launchctl bootout "system/${SERVICE_NAME}" 2>/dev/null || true
 sleep 1
 sudo launchctl bootstrap system "${SERVICE_PLIST}"
