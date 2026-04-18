@@ -109,6 +109,7 @@ type Node struct {
 	PeersDirect         *int64
 	PeersRelayed        *int64
 	PeersReportedAt     *int64
+	PeerState           *string
 }
 
 type Session struct {

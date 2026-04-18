@@ -47,6 +47,7 @@ type Node struct {
 	PeersDirect         *int64 // last-reported count of direct (P2P) peers; nil if never reported
 	PeersRelayed        *int64 // last-reported count of relay-routed peers; nil if never reported
 	PeersReportedAt     *int64 // unix seconds of the last heartbeat that carried peer state
+	PeerState           *string // JSON array: [{vpnAddr, direct, lastHandshakeSec, remoteAddr}, ...]; nil if never reported
 }
 
 // HasCapability checks if a node has a specific capability enabled.
@@ -284,6 +285,7 @@ func (s *NodeStore) ListForNetwork(networkID string) ([]*Node, error) {
 			PeersDirect:     r.PeersDirect,
 			PeersRelayed:    r.PeersRelayed,
 			PeersReportedAt: r.PeersReportedAt,
+			PeerState:       r.PeerState,
 		}
 		if r.NebulaIp != nil {
 			n.NebulaIP = *r.NebulaIp
@@ -458,26 +460,29 @@ func (s *NodeStore) DeleteForNetwork(networkID string) error {
 
 // heartbeatEntry is the buffered row written on each flush. agent_real_ip
 // merges via COALESCE(NULLIF(...)), so empty ip preserves the prior value.
-// peersDirect / peersRelayed are nullable: heartbeats that don't carry
-// peer state (e.g., userspace agents without Nebula Control access, or
-// agents mid-startup) leave the prior value in place via COALESCE.
+// peersDirect / peersRelayed / peerState are nullable: heartbeats that
+// don't carry peer state (e.g., userspace agents without Nebula Control
+// access, or agents mid-startup) leave the prior value in place via
+// COALESCE server-side.
 type heartbeatEntry struct {
 	ip           string
 	peersDirect  *int64
 	peersRelayed *int64
+	peerState    *string // JSON blob: [{vpnAddr, direct, remoteAddr, ...}, ...]
 }
 
 // RecordHeartbeat buffers a heartbeat for batch writing. Non-blocking.
 // If ip is empty, only last_seen_at is updated (agent_real_ip preserved).
-// peersDirect / peersRelayed are optional; pass nil when the agent has
-// no peer-state to report this round.
+// peersDirect / peersRelayed / peerState are optional; pass nil when
+// the agent has no peer-state to report this round.
 // Coalesces: if the same node heartbeats multiple times between flushes,
 // only the latest values are kept.
-func (s *NodeStore) RecordHeartbeat(nodeID, ip string, peersDirect, peersRelayed *int64) {
+func (s *NodeStore) RecordHeartbeat(nodeID, ip string, peersDirect, peersRelayed *int64, peerState *string) {
 	s.heartbeats.Store(nodeID, heartbeatEntry{
 		ip:           ip,
 		peersDirect:  peersDirect,
 		peersRelayed: peersRelayed,
+		peerState:    peerState,
 	})
 }
 
@@ -510,7 +515,7 @@ func (s *NodeStore) RecordProxyActivity(nodeID string) {
 		}
 	}
 	s.lastProxyHeartbeat.Store(nodeID, now)
-	s.RecordHeartbeat(nodeID, "", nil, nil)
+	s.RecordHeartbeat(nodeID, "", nil, nil, nil)
 }
 
 // StartHeartbeatFlusher starts periodic batch flushing of heartbeats.
@@ -538,6 +543,7 @@ func (s *NodeStore) FlushHeartbeats() {
 		ip           string
 		peersDirect  *int64
 		peersRelayed *int64
+		peerState    *string
 	}
 	var batch []entry
 	s.heartbeats.Range(func(key, value any) bool {
@@ -547,6 +553,7 @@ func (s *NodeStore) FlushHeartbeats() {
 			ip:           e.ip,
 			peersDirect:  e.peersDirect,
 			peersRelayed: e.peersRelayed,
+			peerState:    e.peerState,
 		})
 		s.heartbeats.Delete(key)
 		return true
@@ -566,6 +573,7 @@ func (s *NodeStore) FlushHeartbeats() {
 			AgentRealIp:  e.ip,
 			PeersDirect:  e.peersDirect,
 			PeersRelayed: e.peersRelayed,
+			PeerState:    e.peerState,
 			ID:           e.id,
 		}); err != nil {
 			log.Printf("[heartbeat] update %s: %v", e.id, err)

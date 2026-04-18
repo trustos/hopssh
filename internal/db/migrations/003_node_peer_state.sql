@@ -1,0 +1,12 @@
+-- Per-node peer detail: JSON array of {vpnAddr, direct, lastHandshakeSec,
+-- remoteAddr}, one entry per reachable peer from this node's Nebula
+-- hostmap. Reported via the existing heartbeat alongside the aggregate
+-- peers_direct / peers_relayed counts. Enables the per-peer drill-down
+-- and topology diagram in the dashboard.
+--
+-- Nullable — old agents (or agents in userspace mode before the agent
+-- exposed Control) don't report, server preserves last value via
+-- COALESCE. One row per (networkID, nodeID); multi-network-per-agent
+-- (roadmap #29) keeps this schema valid because peer state is always
+-- scoped to a single network via the nodes row's FK.
+ALTER TABLE nodes ADD COLUMN peer_state TEXT;

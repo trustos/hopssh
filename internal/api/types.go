@@ -194,6 +194,16 @@ type EnrollResponse struct {
 	NebulaIP   string `json:"nebulaIP" example:"10.42.1.2/24"`
 }
 
+// PeerDetail mirrors the agent's per-peer report shape, re-serialized
+// from the `nodes.peer_state` JSON blob. Drives the dashboard's
+// per-peer drill-down table and the topology diagram edges.
+type PeerDetail struct {
+	VpnAddr          string `json:"vpnAddr" example:"10.42.1.7"`
+	Direct           bool   `json:"direct" example:"true"`
+	LastHandshakeSec int64  `json:"lastHandshakeSec,omitempty" example:"1712361600"`
+	RemoteAddr       string `json:"remoteAddr,omitempty" example:"192.168.23.18:4242"`
+}
+
 // NodeResponse represents a node in API responses.
 type NodeResponse struct {
 	ID              string   `json:"id" example:"550e8400-e29b-41d4-a716-446655440000"`
@@ -217,7 +227,22 @@ type NodeResponse struct {
 	// Values: "" (unknown — agent hasn't reported), "idle" (no peers),
 	// "direct" (all peers direct), "relayed" (all peers relayed),
 	// "mixed" (some direct, some relayed). Skipped entirely for lighthouse nodes.
-	Connectivity string `json:"connectivity,omitempty" example:"direct"`
+	Connectivity string       `json:"connectivity,omitempty" example:"direct"`
+	Peers        []PeerDetail `json:"peers,omitempty"` // parsed from peer_state JSON; nil if never reported
+}
+
+// parsePeerState decodes the agent-reported JSON blob into a structured
+// slice. Returns nil on missing/empty/invalid — callers treat that as
+// "no data reported yet" (the UI renders nothing).
+func parsePeerState(raw *string) []PeerDetail {
+	if raw == nil || *raw == "" || *raw == "null" {
+		return nil
+	}
+	var out []PeerDetail
+	if err := json.Unmarshal([]byte(*raw), &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // deriveConnectivity translates the raw direct/relayed peer counts into

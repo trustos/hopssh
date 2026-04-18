@@ -11,13 +11,13 @@ FROM nodes WHERE id = ?;
 -- name: ListNodesForNetwork :many
 SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, node_type,
        exposed_ports, dns_name, capabilities, status, last_seen_at, created_at,
-       peers_direct, peers_relayed, peers_reported_at
+       peers_direct, peers_relayed, peers_reported_at, peer_state
 FROM nodes WHERE network_id = ? ORDER BY created_at ASC;
 
 -- name: ListNodesForNetworkByType :many
 SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, node_type,
        exposed_ports, dns_name, capabilities, status, last_seen_at, created_at,
-       peers_direct, peers_relayed, peers_reported_at
+       peers_direct, peers_relayed, peers_reported_at, peer_state
 FROM nodes WHERE network_id = ? AND node_type = ? ORDER BY created_at ASC;
 
 -- name: CountNodesForNetwork :one
@@ -59,8 +59,11 @@ SET last_seen_at = unixepoch(),
     agent_real_ip = COALESCE(NULLIF(CAST(sqlc.arg('agent_real_ip') AS TEXT), ''), agent_real_ip),
     peers_direct = COALESCE(sqlc.narg('peers_direct'), peers_direct),
     peers_relayed = COALESCE(sqlc.narg('peers_relayed'), peers_relayed),
+    peer_state = COALESCE(sqlc.narg('peer_state'), peer_state),
     peers_reported_at = CASE
-        WHEN sqlc.narg('peers_direct') IS NOT NULL OR sqlc.narg('peers_relayed') IS NOT NULL
+        WHEN sqlc.narg('peers_direct') IS NOT NULL
+             OR sqlc.narg('peers_relayed') IS NOT NULL
+             OR sqlc.narg('peer_state') IS NOT NULL
         THEN unixepoch()
         ELSE peers_reported_at
     END

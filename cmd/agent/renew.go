@@ -101,17 +101,26 @@ func runHeartbeat(ctx context.Context, endpoint, nodeID, agentToken string) {
 }
 
 func sendHeartbeat(endpoint, nodeID, agentToken string) error {
-	// Build the heartbeat body. Include peer counts when Nebula control
-	// is available (both kernel-TUN and userspace modes expose it).
-	// Omit them when unavailable — the server preserves the last known
-	// good values via COALESCE rather than overwriting with zeros.
+	// Build the heartbeat body. Include peer counts + per-peer detail
+	// when Nebula control is available (both kernel-TUN and userspace
+	// modes expose it). Omit the peer fields when unavailable — the
+	// server preserves the last known good values via COALESCE rather
+	// than overwriting with zeros/empty.
+	//
+	// Multi-network-per-agent invariant (roadmap #29): one heartbeat
+	// POST represents one nodeID in one network. When that feature
+	// lands, the agent will fire N heartbeat goroutines, each posting
+	// independently. Keep this body schema singular.
 	reqBody := map[string]any{"nodeId": nodeID}
 	nebulaMu.Lock()
 	var ctrl = nebulaControlLocked()
 	nebulaMu.Unlock()
-	if direct, relayed, ok := collectPeerState(ctrl); ok {
+	if direct, relayed, peers, ok := collectPeerState(ctrl); ok {
 		reqBody["peersDirect"] = direct
 		reqBody["peersRelayed"] = relayed
+		if len(peers) > 0 {
+			reqBody["peers"] = peers
+		}
 	}
 	reqBodyBytes, err := json.Marshal(reqBody)
 	if err != nil {

@@ -38,7 +38,8 @@ func newHeartbeatTestDB(t *testing.T) (*NodeStore, *DBPair) {
 			created_at INTEGER NOT NULL DEFAULT (unixepoch()),
 			peers_direct INTEGER,
 			peers_relayed INTEGER,
-			peers_reported_at INTEGER
+			peers_reported_at INTEGER,
+			peer_state TEXT
 		);
 	`)
 	if err != nil {
@@ -55,8 +56,8 @@ func TestRecordHeartbeat_BatchFlush(t *testing.T) {
 	store, pair := newHeartbeatTestDB(t)
 	defer pair.ReadDB.Close()
 
-	store.RecordHeartbeat("node-1", "1.2.3.4", nil, nil)
-	store.RecordHeartbeat("node-2", "5.6.7.8", nil, nil)
+	store.RecordHeartbeat("node-1", "1.2.3.4", nil, nil, nil)
+	store.RecordHeartbeat("node-2", "5.6.7.8", nil, nil, nil)
 
 	// Nothing written yet.
 	var count int
@@ -95,9 +96,9 @@ func TestRecordHeartbeat_Coalesces(t *testing.T) {
 	defer pair.ReadDB.Close()
 
 	// Same node, multiple heartbeats — only latest IP should be kept.
-	store.RecordHeartbeat("node-1", "1.1.1.1", nil, nil)
-	store.RecordHeartbeat("node-1", "2.2.2.2", nil, nil)
-	store.RecordHeartbeat("node-1", "3.3.3.3", nil, nil)
+	store.RecordHeartbeat("node-1", "1.1.1.1", nil, nil, nil)
+	store.RecordHeartbeat("node-1", "2.2.2.2", nil, nil, nil)
+	store.RecordHeartbeat("node-1", "3.3.3.3", nil, nil, nil)
 
 	store.FlushHeartbeats()
 
@@ -116,7 +117,7 @@ func TestRecordHeartbeat_EmptyIPPreservesExisting(t *testing.T) {
 	pair.WriteDB.Exec("UPDATE nodes SET agent_real_ip = '10.0.0.1' WHERE id = 'node-1'")
 
 	// Heartbeat with empty IP (health check path).
-	store.RecordHeartbeat("node-1", "", nil, nil)
+	store.RecordHeartbeat("node-1", "", nil, nil, nil)
 	store.FlushHeartbeats()
 
 	var ip string
@@ -141,7 +142,7 @@ func TestRecordHeartbeat_FlushOnContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	store.StartHeartbeatFlusher(ctx)
 
-	store.RecordHeartbeat("node-1", "9.9.9.9", nil, nil)
+	store.RecordHeartbeat("node-1", "9.9.9.9", nil, nil, nil)
 	cancel()
 	time.Sleep(100 * time.Millisecond)
 
@@ -156,10 +157,10 @@ func TestRecordHeartbeat_MultipleFlushes(t *testing.T) {
 	store, pair := newHeartbeatTestDB(t)
 	defer pair.ReadDB.Close()
 
-	store.RecordHeartbeat("node-1", "1.0.0.1", nil, nil)
+	store.RecordHeartbeat("node-1", "1.0.0.1", nil, nil, nil)
 	store.FlushHeartbeats()
 
-	store.RecordHeartbeat("node-1", "2.0.0.2", nil, nil)
+	store.RecordHeartbeat("node-1", "2.0.0.2", nil, nil, nil)
 	store.FlushHeartbeats()
 
 	var ip string
