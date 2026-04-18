@@ -1,0 +1,25 @@
+=== Round-trip heartbeat tests against prod control plane ===
+Date: Sat Apr 18 10:35:00 UTC 2026
+Node: 01275a88-966b-4df0-b4b9-389fb0ccf198 (Mac mini)
+Control plane: https://hopssh.com (v0.9.10-2-g701efac)
+
+--- direct_only ---
+body: {"nodeId":"01275a88-966b-4df0-b4b9-389fb0ccf198","peersDirect":3,"peersRelayed":0}
+HTTP 200, response: {"peers":["10.42.1.6","10.42.1.10"]}
+
+--- relayed_only ---
+body: {"nodeId":"01275a88-966b-4df0-b4b9-389fb0ccf198","peersDirect":0,"peersRelayed":2}
+HTTP 200, response: {"peers":["10.42.1.6","10.42.1.10"]}
+
+--- mixed ---
+body: {"nodeId":"01275a88-966b-4df0-b4b9-389fb0ccf198","peersDirect":2,"peersRelayed":1}
+HTTP 200, response: {"peers":["10.42.1.6","10.42.1.10"]}
+
+--- idle ---
+body: {"nodeId":"01275a88-966b-4df0-b4b9-389fb0ccf198","peersDirect":0,"peersRelayed":0}
+HTTP 200, response: {"peers":["10.42.1.6","10.42.1.10"]}
+
+--- omitted ---
+body: {"nodeId":"01275a88-966b-4df0-b4b9-389fb0ccf198"}
+HTTP 200, response: {"peers":["10.42.1.6","10.42.1.10"]}
+

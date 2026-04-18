@@ -1,0 +1,16 @@
+Live agent on Mac mini (/usr/local/bin/hop-agent, commit 701efac)
+with temporary TESTONLY log in sendHeartbeat() (reverted after capture).
+
+Agent restart: 2026-04-18 13:34:08Z
+First heartbeat:   13:34:08  no Nebula ctrl yet (startup race — handled
+                             cleanly by server-side COALESCE)
+Second heartbeat:  13:38:57  peers direct=3 relayed=0 (Nebula up,
+                             lighthouse + MacBook + Windows all P2P)
+
+Captured log lines:
+
+2026/04/18 13:34:08 [heartbeat] TESTONLY no ctrl available
+2026/04/18 13:38:57 [heartbeat] TESTONLY peers direct=3 relayed=0
+
+Expected dashboard state on Mac mini row: "P2P" badge (green,
+Zap icon). Tooltip: "3 direct, 0 relayed, <~2m ago>".
