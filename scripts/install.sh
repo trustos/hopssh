@@ -28,7 +28,22 @@ OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 case "$OS" in
   linux)  OS="linux" ;;
   darwin) OS="darwin" ;;
-  *)      echo "Error: Unsupported operating system: $OS"; echo "hopssh supports Linux and macOS."; exit 1 ;;
+  mingw*|msys*|cygwin*)
+          cat <<EOF
+Error: This shell installer is Linux/macOS only.
+
+For Windows, download the hop-agent.exe binary directly:
+  https://github.com/${GITHUB_REPO}/releases/latest
+
+Then in an Administrator PowerShell or cmd.exe:
+  .\hop-agent.exe enroll --endpoint http://<control-plane>:9473
+  .\hop-agent.exe install
+
+That registers hop-agent as a Windows service (SCM, LocalSystem,
+auto-restart) and starts it.
+EOF
+          exit 1 ;;
+  *)      echo "Error: Unsupported operating system: $OS"; echo "hopssh supports Linux, macOS, and Windows."; exit 1 ;;
 esac
 
 # Detect architecture

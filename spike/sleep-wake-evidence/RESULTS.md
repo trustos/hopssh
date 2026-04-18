@@ -353,12 +353,13 @@ Evidence: `windows-00-fingerprint.txt`, `windows-t2-events.txt`,
 | Kernel-TUN interface created | ✅ `nebula1` with 10.42.1.10/24 |
 | Mesh P2P bidirectional (5ms LAN RTT) | ✅ |
 | **Sleep/wake code path** (via NtSuspendProcess/NtResumeProcess) | ✅ PASS — `sleep/wake detected (tick gap 2m35s) detected (iface: Ethernet→Ethernet)` — 1s recovery post-resume |
-| Mesh DNS via Windows NRPT | ❌ **FAIL — non-53 port stripped by NRPT** |
+| Mesh DNS via Windows NRPT | ✅ **FIXED in v0.9.8-dev** — local miekg/dns forwarder on `127.53.0.1:53` bypasses NRPT's port-stripping (`cmd/agent/dnsproxy_windows.go`) |
 | Public DNS | ✅ (unaffected — uses uplink) |
-| Windows service auto-install | ❌ "Service auto-install not supported on windows" |
-| Agent binary SCM-compatible | ❌ `sc.exe start` fails error 1053 (StartServiceCtrlDispatcher not implemented) |
-| "✓ Agent started" log correctness | ❌ prints even when no service created and no process running |
-| Process detachment (`Start-Process`, scheduled task) | ⚠️ fragile — agent exits shortly after detaching. Only reliable run is foreground blocking SSH. |
+| Windows service auto-install | ✅ **FIXED post-v0.9.9** — `hop-agent install` drives Windows SCM (`cmd/agent/service_windows.go`, `svc/mgr`) |
+| Agent binary SCM-compatible | ✅ **FIXED post-v0.9.9** — `svc.IsWindowsService()` + `svc.Run()` wired through `runServe`; Stop/Shutdown control codes translate to graceful shutdown |
+| "✓ Agent started" log correctness | ✅ **FIXED post-v0.9.9** — install now actually starts the service or fails loudly with a clear message |
+| Process detachment (`Start-Process`, scheduled task) | ✅ Moot — users install as a proper service (SCM) instead; no manual detachment needed |
+| Self-update binary swap | ✅ **FIXED post-v0.9.9** — Windows rename-swap `<exe>` → `<exe>.old` + `sc.exe stop/start` (`internal/selfupdate/selfupdate.go`) |
 
 ### Sleep/wake detail (Windows-T2)
 
@@ -469,6 +470,13 @@ Also fixed the accumulating-NRPT-rules side finding: new
 `removeHopsshNRPTRules()` runs at startup to clear stale Comment-tagged
 rules.
 
-Windows still has non-DNS gaps (no working service, fragile detachment)
-that remain for a future session — see commit 093e516 message for
-specifics. DNS is no longer blocking.
+**Update (post-v0.9.9):** the non-DNS Windows gaps called out in the
+earlier version of this section — "no working service" and "fragile
+detachment" — are now closed. `cmd/agent/service_windows.go` +
+`service_other.go` + the `runServe` context refactor land full SCM
+integration: `hop-agent install` creates a LocalSystem service with
+auto-restart, `Stop`/`Shutdown` control codes translate to the same
+graceful shutdown SIGTERM uses on Unix, and `hop-agent
+update` on Windows swaps the running .exe via rename trick then
+cycles the service. Evidence in
+`spike/windows-service-evidence/`.

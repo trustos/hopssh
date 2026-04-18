@@ -86,7 +86,7 @@
 
 - **`enroll`** — Join a network (4 modes: device flow, token, stdin, bundle). Flags: `--endpoint`, `--tun-mode`, `--no-service`, `--force`, `--config-dir`.
 - **`serve`** — Run the agent service. Listens on port 41820 for control plane proxy connections.
-- **`install`** — Install as a system service (systemd on Linux, launchd on macOS, Windows service via registry).
+- **`install`** — Install as a system service (systemd on Linux, launchd on macOS, Windows SCM on Windows — LocalSystem with auto-restart).
 - **`uninstall`** — Remove the system service.
 - **`status`** — Show enrollment status, Nebula IP, cert expiry, groups, endpoint, node ID.
 - **`info`** — Show hostname, DNS name, OS/arch, node ID, endpoint, config location.
@@ -96,7 +96,7 @@
 - **`version`** — Show version and build info.
 - **`help`** — Show help.
 - **Non-root support** — Runs in user-level config with userspace TUN mode. No root required.
-- **Platform DNS configuration** — Auto-configures split DNS (systemd-resolved on Linux, scutil on macOS, registry on Windows).
+- **Platform DNS configuration** — Auto-configures split DNS (systemd-resolved on Linux with per-link + drop-in fallback, scutil on macOS, NRPT via loopback forwarder on Windows).
 
 ## Server (`hop-server`)
 
@@ -124,7 +124,7 @@
 - **Docker Compose** — Local dev setup with mapped ports and volume mount.
 - **systemd** — Unit file generation for Linux (agent and server).
 - **launchd** — Plist generation for macOS (agent and server).
-- **Windows service** — Registry-based service installation for the agent.
+- **Windows service (SCM)** — `hop-agent install` on Windows registers as a proper Service Control Manager service (LocalSystem, auto-restart recovery, auto-start at boot). Graceful shutdown wired through Stop/Shutdown control codes; logs written to `%ProgramData%\hopssh\hop-agent.log`. Self-update uses rename-swap to replace the running .exe + `sc.exe stop/start` to apply.
 - **Non-root agent** — Userspace TUN mode, user-level config directory.
 - **Container health check** — `hop-server healthz` every 10 seconds.
 - **Port ranges** — TCP 9473 (API/web), UDP 42001-42100 (Nebula per network), UDP 15300-15400 (DNS per network).

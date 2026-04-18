@@ -110,9 +110,11 @@ hop-agent enroll --force                Re-enroll (clean + fresh)
 hop-agent status                        Show connection status
 hop-agent info                          Show node information
 hop-agent help                          Show all commands
-hop-agent install                       Install as a service
+hop-agent install                       Install as a service (systemd / launchd / Windows SCM)
 hop-agent uninstall [--purge]           Remove service + config
-hop-agent update                        Self-update
+hop-agent restart                       Restart the service
+hop-agent stop                          Stop the service
+hop-agent update                        Self-update (binary swap + service restart)
 hop-agent version                       Print version
 ```
 
