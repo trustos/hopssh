@@ -16,6 +16,7 @@
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { getTerminals } from '$lib/stores/terminals.svelte';
 	import { Zap, Waypoints, Router } from 'lucide-svelte';
+	import { displayStatus } from '$lib/node-status';
 
 	const termStore = getTerminals();
 
@@ -88,8 +89,13 @@
 		return `echo '${token}' | sudo hop-agent enroll --token-stdin --endpoint ${endpoint}`;
 	});
 
-	// Time ticker for reactive timeAgo
+	// Time ticker for reactive timeAgo + reactive stale-status derivation
 	let now = $state(Math.floor(Date.now() / 1000));
+
+	// Wrap the pure displayStatus helper against the reactive `now`
+	// ticker so call sites read `stateOf(node)` without repeating args.
+	// Recomputes every second; mirrors the server's effectiveStatus.
+	const stateOf = (n: NodeResponse) => displayStatus(n, now);
 
 	const networkId = $derived(page.params.id!);
 
@@ -592,12 +598,12 @@
 								<tr class="border-b last:border-0 hover:bg-accent/50">
 									<td class="px-4 py-3">
 										<div class="flex items-center gap-2" title={node.status === 'pending' ? 'Waiting for agent enrollment. Run the enroll command on your device.' : ''}>
-											<div class="h-2.5 w-2.5 rounded-full transition-colors duration-500 {statusColor(node.status)}"></div>
-											<span class="text-xs capitalize text-muted-foreground">{node.status}</span>
+											<div class="h-2.5 w-2.5 rounded-full transition-colors duration-500 {statusColor(stateOf(node))}"></div>
+											<span class="text-xs capitalize text-muted-foreground">{stateOf(node)}</span>
 											{#if node.status === 'pending'}
 												<span class="text-xs text-yellow-500">awaiting enrollment</span>
 											{/if}
-											{#if node.connectivity && node.status === 'online'}
+											{#if node.connectivity && stateOf(node) === 'online'}
 												<span
 													class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium {connectivityClass(node.connectivity)}"
 													title={connectivityTooltip(node)}
@@ -628,7 +634,7 @@
 											</form>
 										{:else}
 											<span class="group flex items-center gap-1">
-												{#if hasCap(node, 'terminal') && node.status === 'online'}
+												{#if hasCap(node, 'terminal') && stateOf(node) === 'online'}
 													<button
 														onclick={() => termStore.open(networkId, node.id, node.dnsName || node.hostname || node.id.slice(0, 8))}
 														class="cursor-pointer font-mono font-medium text-primary hover:underline"
@@ -680,7 +686,7 @@
 									<td class="px-4 py-3 text-muted-foreground">{timeAgo(node.lastSeenAt)}</td>
 									<td class="px-4 py-3 text-right">
 										<div class="flex justify-end gap-1">
-											{#if hasCap(node, 'health') && node.status === 'online'}
+											{#if hasCap(node, 'health') && stateOf(node) === 'online'}
 												<button
 													onclick={() => checkHealth(node)}
 													class="rounded px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -688,7 +694,7 @@
 													Health
 												</button>
 											{/if}
-											{#if hasCap(node, 'terminal') && node.status === 'online'}
+											{#if hasCap(node, 'terminal') && stateOf(node) === 'online'}
 												<button
 													onclick={() => termStore.open(networkId, node.id, node.dnsName || node.hostname || node.id.slice(0, 8))}
 													class="rounded px-2 py-1 text-xs font-medium text-primary hover:bg-primary/10"
@@ -696,7 +702,7 @@
 													Terminal
 												</button>
 											{/if}
-											{#if hasCap(node, 'forward') && node.status === 'online'}
+											{#if hasCap(node, 'forward') && stateOf(node) === 'online'}
 												<button
 													onclick={() => { forwardNodeId = forwardNodeId === node.id ? null : node.id; fwdRemotePort = ''; fwdLocalPort = ''; }}
 													class="rounded px-2 py-1 text-xs text-primary hover:bg-primary/10"
@@ -1175,7 +1181,7 @@
 				<Dialog.Title>Delete node "{nodeToDelete?.hostname || nodeToDelete?.id?.slice(0, 8)}"?</Dialog.Title>
 				<Dialog.Description>
 					This will remove the node from the network and revoke its certificate.
-					{#if nodeToDelete?.status === 'online'}
+					{#if nodeToDelete && stateOf(nodeToDelete) === 'online'}
 						This node is currently online.
 					{/if}
 				</Dialog.Description>

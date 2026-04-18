@@ -79,6 +79,13 @@ type NodeStore struct {
 	// Key: nodeID (string), Value: string (latest agent IP, "" = no IP update).
 	// sync.Map for lock-free concurrent writes from heartbeat handlers.
 	heartbeats sync.Map
+
+	// lastProxyHeartbeat tracks the last time RecordProxyActivity fired
+	// for a given nodeID. Used to throttle the proxy-liveness signal so
+	// that a high-frequency proxy path (e.g., many TCP connections
+	// through a port-forward) doesn't churn the heartbeats map at
+	// connection rate. Key: nodeID, Value: time.Time of last fire.
+	lastProxyHeartbeat sync.Map
 }
 
 func NewNodeStore(p *DBPair, enc *crypto.Encryptor) *NodeStore {
@@ -472,6 +479,38 @@ func (s *NodeStore) RecordHeartbeat(nodeID, ip string, peersDirect, peersRelayed
 		peersDirect:  peersDirect,
 		peersRelayed: peersRelayed,
 	})
+}
+
+// proxyHeartbeatThrottle caps the rate at which proxy-traffic events
+// (shell / exec / port-forward / health) can refresh a node's
+// last_seen_at. The underlying `heartbeats` map already coalesces and
+// the 5s flush bounds DB writes, so this is a CPU optimization for
+// high-frequency proxy paths (e.g., a busy port-forward accepting
+// many TCP connections) — not a correctness mechanism. 30s is well
+// below the 180s stale threshold, so long-running interactive sessions
+// still keep nodes marked online.
+const proxyHeartbeatThrottle = 30 * time.Second
+
+// RecordProxyActivity records a liveness beat triggered by a successful
+// mesh-proxy interaction (shell opened, exec completed, port-forward
+// established, health probe returned 2xx). Unlike the agent's own
+// heartbeat, this fires from the control-plane side whenever we see
+// the agent respond — so an agent whose outbound heartbeat is broken
+// (blocked firewall, TLS glitch) but still serves proxy traffic stays
+// correctly marked "online" in the dashboard.
+//
+// Throttled per nodeID so a high-throughput proxy (many short TCP
+// connections through a port-forward) doesn't churn the sync.Map at
+// connection rate.
+func (s *NodeStore) RecordProxyActivity(nodeID string) {
+	now := time.Now()
+	if last, ok := s.lastProxyHeartbeat.Load(nodeID); ok {
+		if now.Sub(last.(time.Time)) < proxyHeartbeatThrottle {
+			return
+		}
+	}
+	s.lastProxyHeartbeat.Store(nodeID, now)
+	s.RecordHeartbeat(nodeID, "", nil, nil)
 }
 
 // StartHeartbeatFlusher starts periodic batch flushing of heartbeats.

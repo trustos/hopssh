@@ -204,9 +204,11 @@ func (h *ProxyHandler) NodeHealth(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	// Update node status on successful health check. Health probes
-	// don't carry peer state — that flows through /api/heartbeat.
-	h.Nodes.RecordHeartbeat(node.ID, "", nil, nil)
+	// Update node status on successful health check. Uses the proxy-
+	// activity path so it's throttled together with shell / exec /
+	// forward interactions, and so the sync.Map doesn't churn if
+	// multiple clients probe simultaneously.
+	h.Nodes.RecordProxyActivity(node.ID)
 	if h.EventHub != nil {
 		h.EventHub.Publish(node.NetworkID, Event{Type: "node.status", Data: map[string]string{"nodeId": node.ID, "status": "online"}})
 	}
@@ -274,6 +276,11 @@ func (h *ProxyHandler) NodeShell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer agentConn.Close()
+
+	// Successful upgrade to the agent = proof the node is alive.
+	// Refresh its last_seen_at so the dashboard stays accurate even if
+	// the node's outbound heartbeat is broken. Throttled per-node.
+	h.Nodes.RecordProxyActivity(node.ID)
 
 	// Bidirectional relay.
 	done := make(chan struct{})
@@ -351,6 +358,9 @@ func (h *ProxyHandler) NodeExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+
+	// Agent responded = node is alive. Throttled per-node.
+	h.Nodes.RecordProxyActivity(node.ID)
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
@@ -571,6 +581,11 @@ func (h *ProxyHandler) NodeProxy(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 		ModifyResponse: func(resp *http.Response) error {
+			// A response landing here means the agent replied over the
+			// mesh — live enough to refresh last_seen_at. Throttled
+			// per-node via RecordProxyActivity.
+			h.Nodes.RecordProxyActivity(node.ID)
+
 			// Rewrite Location headers so redirects stay within the proxy prefix.
 			if location := resp.Header.Get("Location"); location != "" {
 				if strings.HasPrefix(location, "/") {
@@ -924,6 +939,9 @@ func (h *ProxyHandler) proxyNodeWebSocket(w http.ResponseWriter, r *http.Request
 		return
 	}
 	defer agentConn.Close()
+
+	// Successful upgrade to the agent = node is alive. Throttled.
+	h.Nodes.RecordProxyActivity(node.ID)
 
 	done := make(chan struct{})
 
