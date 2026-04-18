@@ -1,0 +1,7 @@
+08:01:30.153 DIAL ws://10.42.1.8:41820/shell
+08:01:30.174 DIALED in 20.7665ms, status=101
+08:01:30.174 SENT resize rows=24 cols=80
+08:01:30.175 RECV BIN n=35 ascii=".[2m[hopssh] shell: /bin/bash.[0m.." hex=1b5b 326d 5b68 6f70 7373 685d 2073 6865 6c6c 3a20 2f62 696e 2f62 6173 681b 5b30 6d0d 0a
+08:01:30.262 RECV BIN n=52 ascii=".[?2004h.[32mroot@trustos.[0m .[36m/.[0m .[37m#.[0m " hex=1b5b 3f32 3030 3468 1b5b 3332 6d72 6f6f 7440 7472 7573 746f 731b 5b30 6d20 1b5b 3336 6d2f 1b5b 306d 201b 5b33 376d 231b 5b30 6d20
+08:01:33.174 READ ended: deadline reached
+08:01:33.174 SUMMARY frames=2 bytes=87 duration=3.021035916s
