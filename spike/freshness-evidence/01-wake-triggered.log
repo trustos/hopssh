@@ -1,0 +1,33 @@
+=== Wake-triggered heartbeat evidence ===
+Date:     2026-04-18
+Subject:  MacBook Pro (yavortenev@192.168.23.18), agent running as launchd
+Agent:    171a7b6 (post-plan, pre-commit) — runHeartbeat select now reacts
+          to heartbeatTrigger from watchNetworkChanges.
+Method:   SIGSTOP/SIGCONT on the agent process simulates a sleep/wake
+          tick gap without requiring real OS sleep. Same methodology
+          used in the Linux/Windows VM validation (see spike/sleep-wake-
+          evidence/RESULTS.md Run 3 / Run 4).
+
+Timeline:
+  12:20:35Z  sudo kill -STOP <hop-agent-pid>
+  12:21:05Z  sudo kill -CONT <hop-agent-pid>  (+30s)
+  12:21:05Z  [agent] sleep/wake detected (tick gap 33s) detected
+             (iface: en0→en0), rebinding Nebula
+  12:21:05Z  [heartbeat] wake/network-change triggered out-of-cycle heartbeat
+
+End-to-end latency from wake signal to outbound heartbeat: <1 second.
+
+Interpretation:
+  - watchNetworkChanges ticker fired 5s after SIGCONT.
+  - tick-gap detection (nebula.go:193) identified the >15s gap as
+    sleep/wake.
+  - Rebind + CloseAllTunnels ran.
+  - signalHeartbeat() sent a non-blocking token on heartbeatTrigger.
+  - runHeartbeat's select.case <-heartbeatTrigger fired, logged the
+    out-of-cycle message, drained the scheduled timer, called
+    sendHeartbeat — all in the same second.
+
+Before this change, the next heartbeat would have landed whenever the
+5-min schedule said (originally); with the interval also dropped to
+60s, the worst-case without this signal would be ~60s of stale state.
+With the signal, it's <1s on any detected wake/addr-change.

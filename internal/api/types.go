@@ -34,7 +34,10 @@ func sanitizeDNSName(hostname string) string {
 	return name
 }
 
-const nodeStaleThreshold = 10 * 60 // 10 minutes in seconds
+// nodeStaleThreshold must be ≥ 2× the agent heartbeat interval
+// (cmd/agent/renew.go:normalInterval, 60s) to avoid flapping on a
+// single missed beat. 3 min = 3× normal heartbeat with headroom.
+const nodeStaleThreshold = 3 * 60 // 3 minutes in seconds
 
 // effectiveStatus returns the display status, marking "online" nodes as "offline"
 // if they haven't sent a heartbeat within the staleness threshold.

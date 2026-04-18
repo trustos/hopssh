@@ -47,6 +47,23 @@ var (
 	nebulaMu      sync.Mutex
 )
 
+// heartbeatTrigger is signaled from wake/network-change detection to
+// kick an out-of-cycle heartbeat so the dashboard sees state changes
+// within seconds instead of up to one heartbeat interval later.
+// Buffered size 1 + non-blocking send: if a signal is already pending,
+// additional signals are dropped (the pending one will fire exactly
+// one heartbeat, which is what we want — no pile-up on WiFi flap).
+var heartbeatTrigger = make(chan struct{}, 1)
+
+// signalHeartbeat asks runHeartbeat to fire an out-of-cycle heartbeat
+// immediately. Safe to call from any goroutine; never blocks.
+func signalHeartbeat() {
+	select {
+	case heartbeatTrigger <- struct{}{}:
+	default:
+	}
+}
+
 // onNebulaRestart is called after Nebula is successfully restarted (cert renewal).
 // Set by runServe() to recreate the mesh HTTP listener.
 var onNebulaRestart func(svc meshService)
@@ -209,6 +226,10 @@ func watchNetworkChanges(ctrl *nebula.Control, endpoint string) {
 			if closed > 0 {
 				log.Printf("[agent] closed %d tunnels to force re-handshake on new network", closed)
 			}
+			// Poke the heartbeat goroutine so the dashboard learns the
+			// node's real state within seconds instead of waiting up to
+			// one full heartbeat interval.
+			signalHeartbeat()
 			lastIface = currentIface
 			lastAddrs = currentAddrs
 		}

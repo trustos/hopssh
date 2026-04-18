@@ -30,7 +30,7 @@ import (
 // thundering herd across agents.
 func runHeartbeat(ctx context.Context, endpoint, nodeID, agentToken string) {
 	const (
-		normalInterval = 5 * time.Minute
+		normalInterval = 60 * time.Second
 		initialRetry   = 5 * time.Second
 		maxRetry       = 2 * time.Minute
 	)
@@ -47,33 +47,55 @@ func runHeartbeat(ctx context.Context, endpoint, nodeID, agentToken string) {
 	timer := time.NewTimer(addJitter(next))
 	defer timer.Stop()
 
+	// fire sends one heartbeat and schedules the next tick based on
+	// success/failure. Shared between the scheduled-timer path and the
+	// wake-triggered out-of-cycle path so both obey the same
+	// backoff/recovery state machine.
+	fire := func() {
+		err := sendHeartbeat(endpoint, nodeID, agentToken)
+		if err != nil {
+			if !failing {
+				failing = true
+				retryInterval = initialRetry
+				log.Printf("[heartbeat] failed, switching to fast retry: %v", err)
+			} else {
+				retryInterval *= 2
+				if retryInterval > maxRetry {
+					retryInterval = maxRetry
+				}
+			}
+			timer.Reset(addJitter(retryInterval))
+		} else {
+			if failing {
+				log.Printf("[heartbeat] recovered after retry")
+				failing = false
+				retryInterval = initialRetry
+			}
+			timer.Reset(addJitter(normalInterval))
+		}
+	}
+
+	// drainTimer stops the scheduled timer and drains any pending tick,
+	// so an out-of-cycle fire doesn't race with a scheduled one.
+	drainTimer := func() {
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-timer.C:
-			err := sendHeartbeat(endpoint, nodeID, agentToken)
-
-			if err != nil {
-				if !failing {
-					failing = true
-					retryInterval = initialRetry
-					log.Printf("[heartbeat] failed, switching to fast retry: %v", err)
-				} else {
-					retryInterval *= 2
-					if retryInterval > maxRetry {
-						retryInterval = maxRetry
-					}
-				}
-				timer.Reset(addJitter(retryInterval))
-			} else {
-				if failing {
-					log.Printf("[heartbeat] recovered after retry")
-					failing = false
-					retryInterval = initialRetry
-				}
-				timer.Reset(addJitter(normalInterval))
-			}
+			fire()
+		case <-heartbeatTrigger:
+			log.Printf("[heartbeat] wake/network-change triggered out-of-cycle heartbeat")
+			drainTimer()
+			fire()
 		}
 	}
 }
