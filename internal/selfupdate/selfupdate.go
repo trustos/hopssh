@@ -1,6 +1,7 @@
 package selfupdate
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -168,6 +169,19 @@ func Apply(component string, release *Release, endpoint string) error {
 		return fmt.Errorf("chmod failed: %w", err)
 	}
 
+	// Windows: can't overwrite a running .exe (ERROR_SHARING_VIOLATION).
+	// But renaming a running .exe to a sibling name IS allowed — the
+	// running process keeps its open handle, and the original path
+	// becomes free for the new binary. Clean up any <exe>.old from a
+	// prior update first so the rename doesn't collide.
+	if runtime.GOOS == "windows" {
+		oldPath := currentPath + ".old"
+		_ = os.Remove(oldPath) // best-effort; old file might not exist
+		if err := os.Rename(currentPath, oldPath); err != nil {
+			return fmt.Errorf("cannot move running binary aside: %w", err)
+		}
+	}
+
 	// Atomic replace.
 	if err := os.Rename(tmpPath, currentPath); err != nil {
 		return fmt.Errorf("cannot replace binary at %s: %w\nRun with sudo: sudo hop-%s update", currentPath, err, component)
@@ -250,6 +264,31 @@ func restartService(component string) {
 			if out, err := exec.Command("systemctl", "restart", serviceName).CombinedOutput(); err != nil {
 				fmt.Printf("    Warning: Failed to restart service: %v\n%s", err, out)
 				fmt.Printf("    Restart manually: sudo systemctl restart %s\n", serviceName)
+			} else {
+				fmt.Println("    Service restarted.")
+			}
+			return
+		}
+	}
+
+	// Try Windows SCM.
+	if runtime.GOOS == "windows" {
+		if err := exec.Command("sc.exe", "query", serviceName).Run(); err == nil {
+			fmt.Printf("==> Restarting %s service...\n", serviceName)
+			// sc.exe stop may fail if already stopped — that's fine.
+			_ = exec.Command("sc.exe", "stop", serviceName).Run()
+			// Poll until stopped; sc.exe start on a pending-stop state fails.
+			deadline := time.Now().Add(10 * time.Second)
+			for time.Now().Before(deadline) {
+				out, _ := exec.Command("sc.exe", "query", serviceName).CombinedOutput()
+				if bytes.Contains(out, []byte("STATE              : 1")) { // SERVICE_STOPPED
+					break
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+			if out, err := exec.Command("sc.exe", "start", serviceName).CombinedOutput(); err != nil {
+				fmt.Printf("    Warning: Failed to restart service: %v\n%s", err, out)
+				fmt.Printf("    Restart manually: sc.exe start %s\n", serviceName)
 			} else {
 				fmt.Println("    Service restarted.")
 			}
