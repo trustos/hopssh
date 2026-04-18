@@ -1,0 +1,10 @@
+07:06:22.957 DIAL ws://10.42.1.10:41820/shell
+07:06:23.007 DIALED in 49.299042ms, status=101
+07:06:23.007 SENT resize rows=24 cols=80
+07:06:23.058 RECV BIN n=16 ascii=".[?9001h.[?1004h" hex=1b5b 3f39 3030 3168 1b5b 3f31 3030 3468
+07:06:23.058 RECV BIN n=103 ascii=".[?25l.[2J.[m.[H...............................................[H.]0;C:\\WINDOWS\\system32\\cmd.exe" hex=1b5b 3f32 356c 1b5b 324a 1b5b 6d1b 5b48 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 0d0a 1b5b 481b 5d30 3b43 3a5c 5749 4e44 4f57 535c 7379 7374 656d 3332 5c63 6d64 2e65 7865 ...(+7)
+07:06:23.077 RECV BIN n=47 ascii=".]0;C:\\WINDOWS\\system32\\cmd.exe - chcp  65001 ." hex=1b5d 303b 433a 5c57 494e 444f 5753 5c73 7973 7465 6d33 325c 636d 642e 6578 6520 2d20 6368 6370 2020 3635 3030 3120 07
+07:06:23.170 RECV BIN n=47 ascii=".]0;Administrator: C:\\WINDOWS\\system32\\cmd.exe." hex=1b5d 303b 4164 6d69 6e69 7374 7261 746f 723a 2043 3a5c 5749 4e44 4f57 535c 7379 7374 656d 3332 5c63 6d64 2e65 7865 07
+07:06:24.508 SENT input (21 bytes): "echo HOP_TEST_OK_42\r\n"
+07:06:29.008 READ ended: deadline reached
+07:06:29.008 SUMMARY frames=4 bytes=213 duration=6.050648125s

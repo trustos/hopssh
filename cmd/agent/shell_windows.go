@@ -94,15 +94,31 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Find shell executable.
+	//
+	// Shell preference:
+	//  1. pwsh.exe (PowerShell 7) if installed — works reliably in ConPTY,
+	//     defaults to UTF-8.
+	//  2. cmd.exe — reliable in ConPTY, plus `chcp 65001` for UTF-8 codepage
+	//     so non-ASCII output (e.g. box drawing, file-system non-ASCII names)
+	//     renders correctly in xterm.js.
+	//  3. Windows PowerShell 5.1 (powershell.exe) — AVOID for now. Debugging
+	//     showed it emits only terminal-setup ANSI codes + title-set OSC
+	//     sequences and NEVER emits its prompt string when launched inside
+	//     ConPTY by a non-console parent process. Rather than shim around
+	//     that (tried -NoExit -Command injection, made it worse), route
+	//     users to cmd.exe unless PS7 is available. PowerShell 5.1 stays
+	//     accessible — users can type `powershell` at the cmd prompt.
 	shell := os.Getenv("COMSPEC")
 	if shell == "" {
 		shell = `C:\Windows\System32\cmd.exe`
 	}
-	if ps, err := os.Stat(`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`); err == nil && !ps.IsDir() {
-		shell = `C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`
+	cmdLineStr := `"` + shell + `" /K "chcp 65001 > nul"`
+	if _, err := os.Stat(`C:\Program Files\PowerShell\7\pwsh.exe`); err == nil {
+		shell = `C:\Program Files\PowerShell\7\pwsh.exe`
+		cmdLineStr = `"` + shell + `" -NoLogo`
 	}
 
-	cmdLine, err := windows.UTF16PtrFromString(shell)
+	cmdLine, err := windows.UTF16PtrFromString(cmdLineStr)
 	if err != nil {
 		log.Printf("[shell] UTF16PtrFromString failed: %v", err)
 		cleanup()
@@ -110,8 +126,19 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// STARTF_USESTDHANDLES is set with zero StdInput/StdOutput/StdError by
+	// design — matches UserExistsError/conpty. Without this flag, Windows
+	// falls back to handing the child our inherited console's stdio, and
+	// cmd.exe's prompt ends up written to the agent's parent stream instead
+	// of the pseudoconsole pipe. Setting the flag (even with zero handles)
+	// forces Windows to use the PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE pipes
+	// for the child's stdio instead. Verified empirically against the
+	// UE-conpty library source.
 	si := &windows.StartupInfoEx{
-		StartupInfo:             windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfoEx{}))},
+		StartupInfo: windows.StartupInfo{
+			Cb:    uint32(unsafe.Sizeof(windows.StartupInfoEx{})),
+			Flags: windows.STARTF_USESTDHANDLES,
+		},
 		ProcThreadAttributeList: attrList.List(),
 	}
 	var pi windows.ProcessInformation
@@ -132,11 +159,12 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("[shell] started %s (PID %d)", shell, pi.ProcessId)
 
-	// Close the PTY-side pipe ends. ConPTY duplicates these internally,
-	// and closing them here ensures ReadFile(pipeIn) gets EOF when the
-	// ConPTY closes (no extra writer keeping the pipe alive).
+	// Close only the PTY-side read end of the input pipe. DON'T close
+	// ptyOut (the child-side write end of the output pipe) here —
+	// ConPTY may not duplicate that handle, and closing it before the
+	// child writes anything cuts off the output path. We close ptyOut
+	// later in cleanup when the session ends.
 	closeHandle(&ptyIn)
-	closeHandle(&ptyOut)
 
 	done := make(chan struct{})
 
@@ -146,16 +174,13 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 		buf := make([]byte, 4096)
 		for {
 			var n uint32
-			err := windows.ReadFile(pipeIn, buf, &n, nil)
-			if err != nil {
-				log.Printf("[shell] ReadFile ended: %v (n=%d)", err, n)
+			if err := windows.ReadFile(pipeIn, buf, &n, nil); err != nil {
 				return
 			}
 			if n == 0 {
 				continue
 			}
 			if werr := conn.WriteMessage(websocket.BinaryMessage, buf[:n]); werr != nil {
-				log.Printf("[shell] WebSocket write failed: %v", werr)
 				return
 			}
 		}
