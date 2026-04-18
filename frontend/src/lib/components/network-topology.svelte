@@ -132,15 +132,58 @@
 		});
 	});
 
-	// React to prop changes — rebuild elements + re-layout when nodes
-	// or `now` tick causes status colour shifts.
+	// React to prop changes without nuking the user's pan/zoom/drag.
+	//
+	// The 1 s `now` ticker only shifts colors (status / connectivity);
+	// the node+edge SET rarely changes. So:
+	//   * Update data.colour in place for elements already in the
+	//     graph — no re-layout, no view reset.
+	//   * Add new elements as they appear; remove elements that
+	//     vanished.
+	//   * Re-run fcose layout ONLY when the structure changed
+	//     (nodes or edges added/removed). Drag-positioned nodes and
+	//     the user's pan/zoom survive steady-state ticks.
 	$effect(() => {
 		if (!cy) return;
 		const newEls = buildElements(nodes, now);
-		cy.elements().remove();
-		cy.add(newEls);
-		cy.layout({ name: 'fcose', animate: false, randomize: false } as any).run();
+		const incoming = new Set(newEls.map(el => String(el.data.id)));
+		let structureChanged = false;
+
+		for (const el of newEls) {
+			const existing = cy.getElementById(String(el.data.id));
+			if (existing.empty()) {
+				cy.add(el);
+				structureChanged = true;
+			} else {
+				// In-place data update — preserves position.
+				for (const [k, v] of Object.entries(el.data)) {
+					if (k === 'id') continue;
+					existing.data(k, v);
+				}
+			}
+		}
+
+		// Drop elements that left the graph.
+		cy.elements().forEach(el => {
+			if (!incoming.has(el.id())) {
+				el.remove();
+				structureChanged = true;
+			}
+		});
+
+		if (structureChanged) {
+			cy.layout({ name: 'fcose', animate: false, randomize: false } as any).run();
+		}
 	});
+
+	// Recenter: fit everything into view with a small margin, and
+	// center. Useful after the user has panned far off-screen or
+	// zoomed in on one node.
+	function recenter() {
+		if (!cy) return;
+		cy.fit(undefined, 30);
+		cy.center();
+	}
 
 	onDestroy(() => {
 		cy?.destroy();
@@ -150,6 +193,16 @@
 
 <div class="relative">
 	<div bind:this={container} class="h-[500px] w-full rounded-lg border bg-[#0a0e14]"></div>
+	<!-- Recenter button -->
+	<button
+		onclick={recenter}
+		class="absolute right-3 top-3 flex items-center gap-1.5 rounded-md border border-border/50 bg-background/90 backdrop-blur-sm px-2.5 py-1.5 text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-background transition-colors"
+		title="Reset pan + zoom to fit everything"
+		aria-label="Recenter topology view"
+	>
+		<svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/></svg>
+		Recenter
+	</button>
 	<!-- Legend -->
 	<div class="absolute left-3 top-3 flex flex-col gap-1.5 rounded-md border border-border/50 bg-background/90 backdrop-blur-sm p-2.5 text-[10px]">
 		<div class="mb-0.5 font-medium uppercase tracking-wider text-muted-foreground">Legend</div>
