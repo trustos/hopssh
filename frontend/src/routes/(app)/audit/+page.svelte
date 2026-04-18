@@ -6,22 +6,64 @@
 	import * as Alert from '$lib/components/ui/alert/index.js';
 	import * as Tooltip from '$lib/components/ui/tooltip/index.js';
 	import { Badge } from '$lib/components/ui/badge/index.js';
+	import { Button } from '$lib/components/ui/button/index.js';
+	import { Input } from '$lib/components/ui/input/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 
 	let entries = $state<AuditEntryResponse[]>([]);
 	let loading = $state(true);
 	let error = $state('');
+	let search = $state('');
+
+	// Time window buttons → unix seconds cutoff. Matches the activity log
+	// conventions (server defaults to now-24h; explicit 0 = all).
+	type RangeKey = '24h' | '7d' | '30d' | 'all';
+	let range = $state<RangeKey>('24h');
+	function rangeSince(k: RangeKey): number {
+		const n = Math.floor(Date.now() / 1000);
+		switch (k) {
+			case '24h': return n - 86400;
+			case '7d':  return n - 86400 * 7;
+			case '30d': return n - 86400 * 30;
+			case 'all': return 0;
+		}
+	}
 
 	let now = $state(Math.floor(Date.now() / 1000));
 
+	async function reload() {
+		loading = true;
+		error = '';
+		try {
+			entries = await auditApi.list({ since: rangeSince(range), limit: 500 });
+		} catch (e) {
+			error = e instanceof Error ? e.message : 'Failed to load audit log';
+		} finally {
+			loading = false;
+		}
+	}
+
 	onMount(() => {
-		auditApi.list()
-			.then(data => { entries = data; })
-			.catch(e => { error = e instanceof Error ? e.message : 'Failed to load audit log'; })
-			.finally(() => { loading = false; });
+		reload();
 		const interval = setInterval(() => { now = Math.floor(Date.now() / 1000); }, 30_000);
 		return () => clearInterval(interval);
 	});
+
+	// Refetch when the range changes.
+	$effect(() => {
+		void range;
+		reload();
+	});
+
+	// Client-side search across action + user + hostname + details.
+	const filtered = $derived(entries.filter(e => {
+		if (!search) return true;
+		const q = search.toLowerCase();
+		return [
+			e.action, e.userEmail ?? '', e.userName ?? '',
+			e.nodeHostname ?? '', e.details ?? '',
+		].join(' ').toLowerCase().includes(q);
+	}));
 
 	function timeAgo(ts: number): string {
 		const diff = now - ts;
@@ -74,6 +116,24 @@
 <div class="p-6">
 	<h1 class="mb-6 text-2xl font-semibold">Audit Log</h1>
 
+	<div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+		<div class="flex gap-1">
+			{#each ['24h', '7d', '30d', 'all'] as r (r)}
+				<Button
+					size="sm"
+					variant={range === r ? 'default' : 'outline'}
+					onclick={() => (range = r as RangeKey)}
+				>{r}</Button>
+			{/each}
+		</div>
+		<Input
+			type="search"
+			placeholder="Search"
+			class="h-8 w-full sm:w-48"
+			bind:value={search}
+		/>
+	</div>
+
 	{#if loading}
 		<div class="space-y-3">
 			{#each Array(5) as _}
@@ -88,31 +148,35 @@
 		<div class="rounded-lg border border-dashed p-8 text-center">
 			<p class="text-sm text-muted-foreground">No audit entries yet. Actions like logins, terminal sessions, and node changes will appear here.</p>
 		</div>
+	{:else if filtered.length === 0}
+		<div class="rounded-lg border border-dashed p-8 text-center">
+			<p class="text-sm text-muted-foreground">No entries match the current search.</p>
+		</div>
 	{:else}
-		<div class="overflow-x-auto rounded-lg border">
+		<div class="rounded-lg border overflow-hidden">
 			<Table.Root>
 				<Table.Header>
 					<Table.Row>
 						<Table.Head>Action</Table.Head>
-						<Table.Head>User</Table.Head>
-						<Table.Head>Info</Table.Head>
-						<Table.Head>Node</Table.Head>
+						<Table.Head class="hidden sm:table-cell">User</Table.Head>
+						<Table.Head class="hidden lg:table-cell">Info</Table.Head>
+						<Table.Head class="hidden md:table-cell">Node</Table.Head>
 						<Table.Head class="text-right">When</Table.Head>
 					</Table.Row>
 				</Table.Header>
 				<Table.Body>
-					{#each entries as entry}
+					{#each filtered as entry}
 						<Table.Row>
 							<Table.Cell>
 								<Badge variant={actionVariant(entry.action)}>
 									{actionLabel(entry.action)}
 								</Badge>
 							</Table.Cell>
-							<Table.Cell class="text-muted-foreground">{displayUser(entry)}</Table.Cell>
-							<Table.Cell class="max-w-[200px] truncate font-mono text-xs text-muted-foreground">
+							<Table.Cell class="hidden sm:table-cell text-muted-foreground">{displayUser(entry)}</Table.Cell>
+							<Table.Cell class="hidden lg:table-cell max-w-[200px] truncate font-mono text-xs text-muted-foreground">
 								{entry.details || ''}
 							</Table.Cell>
-							<Table.Cell class="font-mono text-xs text-muted-foreground">
+							<Table.Cell class="hidden md:table-cell font-mono text-xs text-muted-foreground">
 								{displayNode(entry)}
 							</Table.Cell>
 							<Table.Cell class="text-right">

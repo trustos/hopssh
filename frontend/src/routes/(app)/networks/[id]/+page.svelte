@@ -9,6 +9,7 @@
 	import * as Dialog from '$lib/components/ui/dialog/index.js';
 	import * as Tabs from '$lib/components/ui/tabs/index.js';
 	import * as Alert from '$lib/components/ui/alert/index.js';
+	import * as Table from '$lib/components/ui/table/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
@@ -677,20 +678,26 @@
 					</p>
 				</div>
 			{:else}
-				<div class="overflow-x-auto rounded-lg border">
-					<table class="w-full text-sm">
-						<thead>
-							<tr class="border-b bg-muted/50">
-								<th class="px-4 py-3 text-left font-medium">Status</th>
-								<th class="px-4 py-3 text-left font-medium">Name</th>
-								<th class="px-4 py-3 text-left font-medium">Capabilities</th>
-								<th class="px-4 py-3 text-left font-medium">IP</th>
-								<th class="px-4 py-3 text-left font-medium">DNS</th>
-								<th class="px-4 py-3 text-left font-medium">Last Seen</th>
-								<th class="px-4 py-3 text-right font-medium">Actions</th>
-							</tr>
-						</thead>
-						<tbody>
+				<!-- Column visibility: core "Status + Name + Actions" always
+				     visible. Capabilities hide below sm, IP/DNS hide below
+				     md and lg respectively, Last Seen below sm. Nested peer
+				     table + inline forward form below use colspan that
+				     counts all 7 structural columns — browsers render the
+				     spanning cell across whatever's visible without issue. -->
+				<div class="rounded-lg border overflow-hidden">
+					<Table.Root class="text-sm">
+						<Table.Header>
+							<Table.Row>
+								<Table.Head>Status</Table.Head>
+								<Table.Head>Name</Table.Head>
+								<Table.Head class="hidden sm:table-cell">Capabilities</Table.Head>
+								<Table.Head class="hidden lg:table-cell">IP</Table.Head>
+								<Table.Head class="hidden md:table-cell">DNS</Table.Head>
+								<Table.Head class="hidden sm:table-cell">Last Seen</Table.Head>
+								<Table.Head class="text-right">Actions</Table.Head>
+							</Table.Row>
+						</Table.Header>
+						<Table.Body>
 							{#each visibleNodes as node}
 								{@const isExpanded = expandedNodes.has(node.id)}
 								{@const canExpand = node.nodeType !== 'lighthouse' && (node.peers?.length ?? 0) > 0}
@@ -768,7 +775,7 @@
 											</span>
 										{/if}
 									</td>
-									<td class="px-4 py-3">
+									<td class="hidden sm:table-cell px-4 py-3">
 										<div class="flex gap-1">
 											{#each ['terminal', 'health', 'forward'] as cap}
 												{#if isAdmin}
@@ -786,15 +793,15 @@
 											{/each}
 										</div>
 									</td>
-									<td class="px-4 py-3 font-mono text-muted-foreground">{node.nebulaIP}</td>
-									<td class="px-4 py-3 font-mono text-muted-foreground text-xs">
+									<td class="hidden lg:table-cell px-4 py-3 font-mono text-muted-foreground">{node.nebulaIP}</td>
+									<td class="hidden md:table-cell px-4 py-3 font-mono text-muted-foreground text-xs">
 										{#if node.dnsName || node.hostname}
 											{node.dnsName || node.hostname}.{network.dnsDomain}
 										{:else}
 											<span class="text-muted-foreground/50">—</span>
 										{/if}
 									</td>
-									<td class="px-4 py-3 text-muted-foreground">{timeAgo(node.lastSeenAt)}</td>
+									<td class="hidden sm:table-cell px-4 py-3 text-muted-foreground">{timeAgo(node.lastSeenAt)}</td>
 									<td class="px-4 py-3 text-right">
 										<div class="flex justify-end gap-1">
 											{#if hasCap(node, 'health') && stateOf(node) === 'online'}
@@ -840,18 +847,18 @@
 											<div class="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
 												Peers ({node.peers?.length ?? 0})
 											</div>
-											<div class="overflow-x-auto rounded border">
-												<table class="w-full text-xs">
-													<thead>
-														<tr class="border-b bg-background/50">
-															<th class="px-3 py-2 text-left font-medium">Peer</th>
-															<th class="px-3 py-2 text-left font-medium">Mesh IP</th>
-															<th class="px-3 py-2 text-left font-medium">Type</th>
-															<th class="px-3 py-2 text-left font-medium">Remote</th>
-															<th class="px-3 py-2 text-left font-medium">Handshake</th>
-														</tr>
-													</thead>
-													<tbody>
+											<div class="rounded border overflow-hidden">
+												<Table.Root class="text-xs">
+													<Table.Header>
+														<Table.Row class="bg-background/50">
+															<Table.Head>Peer</Table.Head>
+															<Table.Head>Mesh IP</Table.Head>
+															<Table.Head>Type</Table.Head>
+															<Table.Head class="hidden md:table-cell">Remote</Table.Head>
+															<Table.Head class="hidden lg:table-cell">Handshake</Table.Head>
+														</Table.Row>
+													</Table.Header>
+													<Table.Body>
 														{#each node.peers ?? [] as peer (peer.vpnAddr)}
 															<tr class="border-b last:border-0">
 																<td class="px-3 py-2 font-mono">{peerHostname(peer.vpnAddr) || '—'}</td>
@@ -867,12 +874,12 @@
 																		</span>
 																	{/if}
 																</td>
-																<td class="px-3 py-2 font-mono text-muted-foreground">{peer.remoteAddr || '—'}</td>
-																<td class="px-3 py-2 text-muted-foreground">{peer.lastHandshakeSec ? timeAgo(peer.lastHandshakeSec) : 'unknown'}</td>
+																<td class="hidden md:table-cell px-3 py-2 font-mono text-muted-foreground">{peer.remoteAddr || '—'}</td>
+																<td class="hidden lg:table-cell px-3 py-2 text-muted-foreground">{peer.lastHandshakeSec ? timeAgo(peer.lastHandshakeSec) : 'unknown'}</td>
 															</tr>
 														{/each}
-													</tbody>
-												</table>
+													</Table.Body>
+												</Table.Root>
 											</div>
 										</td>
 									</tr>
@@ -935,8 +942,8 @@
 									</tr>
 								{/if}
 							{/each}
-						</tbody>
-					</table>
+						</Table.Body>
+					</Table.Root>
 				</div>
 			{/if}
 
@@ -985,27 +992,27 @@
 					<p class="text-xs text-muted-foreground">Node hostnames are added automatically when agents enroll. You can also add custom records.</p>
 				</div>
 			{:else}
-				<div class="overflow-x-auto rounded-lg border">
-					<table class="w-full text-sm">
-						<thead>
-							<tr class="border-b bg-muted/50">
-								<th class="px-4 py-3 text-left font-medium">Hostname</th>
-								<th class="px-4 py-3 text-left font-medium">Resolves to</th>
-								<th class="px-4 py-3 text-left font-medium">FQDN</th>
-								<th class="px-4 py-3 text-left font-medium">Source</th>
-								<th class="px-4 py-3 text-left font-medium"></th>
-							</tr>
-						</thead>
-						<tbody>
+				<div class="rounded-lg border overflow-hidden">
+					<Table.Root class="text-sm">
+						<Table.Header>
+							<Table.Row>
+								<Table.Head>Hostname</Table.Head>
+								<Table.Head>Resolves to</Table.Head>
+								<Table.Head class="hidden md:table-cell">FQDN</Table.Head>
+								<Table.Head class="hidden sm:table-cell">Source</Table.Head>
+								<Table.Head></Table.Head>
+							</Table.Row>
+						</Table.Header>
+						<Table.Body>
 							{#each allRecords as record}
 								<tr class="border-b last:border-0 hover:bg-accent/50">
 									<td class="px-4 py-3 font-mono font-medium">{record.name}</td>
 									<td class="px-4 py-3 font-mono text-muted-foreground">{record.ip}</td>
-									<td class="px-4 py-3">
+									<td class="hidden md:table-cell px-4 py-3">
 										<span class="font-mono text-xs text-muted-foreground">{record.name}.{network.dnsDomain}</span>
 										<button onclick={() => copyToClipboard(`${record.name}.${network.dnsDomain}`)} class="ml-1 rounded px-1 py-0.5 text-xs text-muted-foreground/40 hover:text-foreground" title="Copy FQDN">&#128203;</button>
 									</td>
-									<td class="px-4 py-3">
+									<td class="hidden sm:table-cell px-4 py-3">
 										<Badge variant={record.source === 'auto' ? 'secondary' : 'default'}>
 											{record.source}
 										</Badge>
@@ -1022,8 +1029,8 @@
 									</td>
 								</tr>
 							{/each}
-						</tbody>
-					</table>
+						</Table.Body>
+					</Table.Root>
 				</div>
 			{/if}
 
@@ -1094,26 +1101,26 @@
 				{/if}
 
 				{#if networkMembers.length > 0}
-					<div class="rounded-lg border">
-						<table class="w-full text-sm">
-							<thead>
-								<tr class="border-b bg-muted/50">
-									<th class="px-4 py-3 text-left font-medium">Name</th>
-									<th class="px-4 py-3 text-left font-medium">Email</th>
-									<th class="px-4 py-3 text-left font-medium">Role</th>
-									<th class="px-4 py-3 text-left font-medium">Joined</th>
-									{#if isAdmin}<th class="px-4 py-3 text-left font-medium"></th>{/if}
-								</tr>
-							</thead>
-							<tbody>
+					<div class="rounded-lg border overflow-hidden">
+						<Table.Root class="text-sm">
+							<Table.Header>
+								<Table.Row>
+									<Table.Head>Name</Table.Head>
+									<Table.Head class="hidden sm:table-cell">Email</Table.Head>
+									<Table.Head>Role</Table.Head>
+									<Table.Head class="hidden md:table-cell">Joined</Table.Head>
+									{#if isAdmin}<Table.Head></Table.Head>{/if}
+								</Table.Row>
+							</Table.Header>
+							<Table.Body>
 								{#each networkMembers as member}
 									<tr class="border-b last:border-0 hover:bg-accent/50">
 										<td class="px-4 py-3 font-medium">{member.name}</td>
-										<td class="px-4 py-3 text-muted-foreground">{member.email}</td>
+										<td class="hidden sm:table-cell px-4 py-3 text-muted-foreground">{member.email}</td>
 										<td class="px-4 py-3">
 											<Badge variant={member.role === 'admin' ? 'default' : 'secondary'}>{member.role === 'admin' ? 'Admin' : 'Member'}</Badge>
 										</td>
-										<td class="px-4 py-3 text-muted-foreground">{timeAgo(member.createdAt)}</td>
+										<td class="hidden md:table-cell px-4 py-3 text-muted-foreground">{timeAgo(member.createdAt)}</td>
 										{#if isAdmin}
 											<td class="px-4 py-3 text-right">
 												{#if member.role !== 'admin'}
@@ -1128,8 +1135,8 @@
 										{/if}
 									</tr>
 								{/each}
-							</tbody>
-						</table>
+							</Table.Body>
+						</Table.Root>
 					</div>
 				{:else}
 					<div class="rounded-lg border border-dashed p-8 text-center">
