@@ -283,6 +283,7 @@ func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 			PeersDirect:     n.PeersDirect,
 			PeersRelayed:    n.PeersRelayed,
 			PeersReportedAt: n.PeersReportedAt,
+			AgentVersion:    n.AgentVersion,
 			Connectivity:    deriveConnectivity(n.PeersDirect, n.PeersRelayed, n.NodeType),
 			Peers:           parsePeerState(n.PeerState),
 		})

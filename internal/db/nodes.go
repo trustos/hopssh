@@ -48,6 +48,7 @@ type Node struct {
 	PeersRelayed        *int64 // last-reported count of relay-routed peers; nil if never reported
 	PeersReportedAt     *int64 // unix seconds of the last heartbeat that carried peer state
 	PeerState           *string // JSON array: [{vpnAddr, direct, lastHandshakeSec, remoteAddr}, ...]; nil if never reported
+	AgentVersion        *string // self-reported hop-agent build (e.g. "v0.9.15"); nil for pre-v0.9.15 agents
 }
 
 // HasCapability checks if a node has a specific capability enabled.
@@ -249,6 +250,7 @@ func (s *NodeStore) mapNodeRow(row dbsqlc.GetNodeByIDRow) (*Node, error) {
 		Status:          row.Status,
 		LastSeenAt:      row.LastSeenAt,
 		CreatedAt:       row.CreatedAt,
+		AgentVersion:    row.AgentVersion,
 	}
 	if row.NebulaIp != nil {
 		n.NebulaIP = *row.NebulaIp
@@ -358,6 +360,7 @@ func (s *NodeStore) ListForNetwork(networkID string) ([]*Node, error) {
 			PeersRelayed:    r.PeersRelayed,
 			PeersReportedAt: r.PeersReportedAt,
 			PeerState:       r.PeerState,
+			AgentVersion:    r.AgentVersion,
 		}
 		if r.NebulaIp != nil {
 			n.NebulaIP = *r.NebulaIp
@@ -541,20 +544,22 @@ type heartbeatEntry struct {
 	peersDirect  *int64
 	peersRelayed *int64
 	peerState    *string // JSON blob: [{vpnAddr, direct, remoteAddr, ...}, ...]
+	agentVersion *string // e.g. "v0.9.15"; nil when caller has no version to report
 }
 
 // RecordHeartbeat buffers a heartbeat for batch writing. Non-blocking.
 // If ip is empty, only last_seen_at is updated (agent_real_ip preserved).
-// peersDirect / peersRelayed / peerState are optional; pass nil when
-// the agent has no peer-state to report this round.
-// Coalesces: if the same node heartbeats multiple times between flushes,
-// only the latest values are kept.
-func (s *NodeStore) RecordHeartbeat(nodeID, ip string, peersDirect, peersRelayed *int64, peerState *string) {
+// peersDirect / peersRelayed / peerState / agentVersion are optional;
+// pass nil when the caller has no value to report this round. Coalesces:
+// if the same node heartbeats multiple times between flushes, only the
+// latest values are kept.
+func (s *NodeStore) RecordHeartbeat(nodeID, ip string, peersDirect, peersRelayed *int64, peerState *string, agentVersion *string) {
 	s.heartbeats.Store(nodeID, heartbeatEntry{
 		ip:           ip,
 		peersDirect:  peersDirect,
 		peersRelayed: peersRelayed,
 		peerState:    peerState,
+		agentVersion: agentVersion,
 	})
 }
 
@@ -587,7 +592,7 @@ func (s *NodeStore) RecordProxyActivity(nodeID string) {
 		}
 	}
 	s.lastProxyHeartbeat.Store(nodeID, now)
-	s.RecordHeartbeat(nodeID, "", nil, nil, nil)
+	s.RecordHeartbeat(nodeID, "", nil, nil, nil, nil)
 }
 
 // StartHeartbeatFlusher starts periodic batch flushing of heartbeats.
@@ -616,6 +621,7 @@ func (s *NodeStore) FlushHeartbeats() {
 		peersDirect  *int64
 		peersRelayed *int64
 		peerState    *string
+		agentVersion *string
 	}
 	var batch []entry
 	s.heartbeats.Range(func(key, value any) bool {
@@ -626,6 +632,7 @@ func (s *NodeStore) FlushHeartbeats() {
 			peersDirect:  e.peersDirect,
 			peersRelayed: e.peersRelayed,
 			peerState:    e.peerState,
+			agentVersion: e.agentVersion,
 		})
 		s.heartbeats.Delete(key)
 		return true
@@ -646,6 +653,7 @@ func (s *NodeStore) FlushHeartbeats() {
 			PeersDirect:  e.peersDirect,
 			PeersRelayed: e.peersRelayed,
 			PeerState:    e.peerState,
+			AgentVersion: e.agentVersion,
 			ID:           e.id,
 		}); err != nil {
 			log.Printf("[heartbeat] update %s: %v", e.id, err)

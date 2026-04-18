@@ -5,19 +5,19 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 -- name: GetNodeByID :one
 SELECT id, network_id, hostname, os, arch, nebula_cert, nebula_key, nebula_ip,
        agent_token, enrollment_token, agent_real_ip, node_type, exposed_ports,
-       dns_name, capabilities, status, last_seen_at, created_at
+       dns_name, capabilities, status, last_seen_at, created_at, agent_version
 FROM nodes WHERE id = ?;
 
 -- name: ListNodesForNetwork :many
 SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, node_type,
        exposed_ports, dns_name, capabilities, status, last_seen_at, created_at,
-       peers_direct, peers_relayed, peers_reported_at, peer_state
+       peers_direct, peers_relayed, peers_reported_at, peer_state, agent_version
 FROM nodes WHERE network_id = ? ORDER BY created_at ASC;
 
 -- name: ListNodesForNetworkByType :many
 SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, node_type,
        exposed_ports, dns_name, capabilities, status, last_seen_at, created_at,
-       peers_direct, peers_relayed, peers_reported_at, peer_state
+       peers_direct, peers_relayed, peers_reported_at, peer_state, agent_version
 FROM nodes WHERE network_id = ? AND node_type = ? ORDER BY created_at ASC;
 
 -- name: CountNodesForNetwork :one
@@ -60,6 +60,7 @@ SET last_seen_at = unixepoch(),
     peers_direct = COALESCE(sqlc.narg('peers_direct'), peers_direct),
     peers_relayed = COALESCE(sqlc.narg('peers_relayed'), peers_relayed),
     peer_state = COALESCE(sqlc.narg('peer_state'), peer_state),
+    agent_version = COALESCE(sqlc.narg('agent_version'), agent_version),
     peers_reported_at = CASE
         WHEN sqlc.narg('peers_direct') IS NOT NULL
              OR sqlc.narg('peers_relayed') IS NOT NULL

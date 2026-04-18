@@ -120,6 +120,7 @@ type Node struct {
 	PeersRelayed        *int64
 	PeersReportedAt     *int64
 	PeerState           *string
+	AgentVersion        *string
 }
 
 type Session struct {

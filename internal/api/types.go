@@ -245,6 +245,7 @@ type NodeResponse struct {
 	PeersDirect     *int64   `json:"peersDirect,omitempty" example:"3"`
 	PeersRelayed    *int64   `json:"peersRelayed,omitempty" example:"1"`
 	PeersReportedAt *int64   `json:"peersReportedAt,omitempty" example:"1712361600"`
+	AgentVersion    *string  `json:"agentVersion,omitempty" example:"v0.9.15"`
 	// Connectivity is derived from PeersDirect / PeersRelayed at serialize time.
 	// Values: "" (unknown — agent hasn't reported), "idle" (no peers),
 	// "direct" (all peers direct), "relayed" (all peers relayed),

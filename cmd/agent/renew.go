@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/slackhq/nebula/cert"
+	"github.com/trustos/hopssh/internal/buildinfo"
 	"github.com/trustos/hopssh/internal/nebulacfg"
 	"gopkg.in/yaml.v3"
 )
@@ -111,7 +112,10 @@ func sendHeartbeat(endpoint, nodeID, agentToken string) error {
 	// POST represents one nodeID in one network. When that feature
 	// lands, the agent will fire N heartbeat goroutines, each posting
 	// independently. Keep this body schema singular.
-	reqBody := map[string]any{"nodeId": nodeID}
+	reqBody := map[string]any{
+		"nodeId":       nodeID,
+		"agentVersion": buildinfo.Version, // "vX.Y.Z" (tagged) or "vX.Y.Z-N-gSHORTSHA(-dirty)" (dev)
+	}
 	nebulaMu.Lock()
 	var ctrl = nebulaControlLocked()
 	nebulaMu.Unlock()

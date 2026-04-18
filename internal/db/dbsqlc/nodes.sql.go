@@ -135,7 +135,7 @@ func (q *Queries) GetNodeByEnrollmentToken(ctx context.Context, arg GetNodeByEnr
 const getNodeByID = `-- name: GetNodeByID :one
 SELECT id, network_id, hostname, os, arch, nebula_cert, nebula_key, nebula_ip,
        agent_token, enrollment_token, agent_real_ip, node_type, exposed_ports,
-       dns_name, capabilities, status, last_seen_at, created_at
+       dns_name, capabilities, status, last_seen_at, created_at, agent_version
 FROM nodes WHERE id = ?
 `
 
@@ -158,6 +158,7 @@ type GetNodeByIDRow struct {
 	Status          string
 	LastSeenAt      *int64
 	CreatedAt       int64
+	AgentVersion    *string
 }
 
 func (q *Queries) GetNodeByID(ctx context.Context, id string) (GetNodeByIDRow, error) {
@@ -182,6 +183,7 @@ func (q *Queries) GetNodeByID(ctx context.Context, id string) (GetNodeByIDRow, e
 		&i.Status,
 		&i.LastSeenAt,
 		&i.CreatedAt,
+		&i.AgentVersion,
 	)
 	return i, err
 }
@@ -194,6 +196,7 @@ SET last_seen_at = unixepoch(),
     peers_direct = COALESCE(?2, peers_direct),
     peers_relayed = COALESCE(?3, peers_relayed),
     peer_state = COALESCE(?4, peer_state),
+    agent_version = COALESCE(?5, agent_version),
     peers_reported_at = CASE
         WHEN ?2 IS NOT NULL
              OR ?3 IS NOT NULL
@@ -201,7 +204,7 @@ SET last_seen_at = unixepoch(),
         THEN unixepoch()
         ELSE peers_reported_at
     END
-WHERE id = ?5
+WHERE id = ?6
 `
 
 type HeartbeatNodeParams struct {
@@ -209,6 +212,7 @@ type HeartbeatNodeParams struct {
 	PeersDirect  *int64
 	PeersRelayed *int64
 	PeerState    *string
+	AgentVersion *string
 	ID           string
 }
 
@@ -218,6 +222,7 @@ func (q *Queries) HeartbeatNode(ctx context.Context, arg HeartbeatNodeParams) er
 		arg.PeersDirect,
 		arg.PeersRelayed,
 		arg.PeerState,
+		arg.AgentVersion,
 		arg.ID,
 	)
 	return err
@@ -330,7 +335,7 @@ func (q *Queries) ListNodeIPsForNetwork(ctx context.Context, networkID string) (
 const listNodesForNetwork = `-- name: ListNodesForNetwork :many
 SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, node_type,
        exposed_ports, dns_name, capabilities, status, last_seen_at, created_at,
-       peers_direct, peers_relayed, peers_reported_at, peer_state
+       peers_direct, peers_relayed, peers_reported_at, peer_state, agent_version
 FROM nodes WHERE network_id = ? ORDER BY created_at ASC
 `
 
@@ -353,6 +358,7 @@ type ListNodesForNetworkRow struct {
 	PeersRelayed    *int64
 	PeersReportedAt *int64
 	PeerState       *string
+	AgentVersion    *string
 }
 
 func (q *Queries) ListNodesForNetwork(ctx context.Context, networkID string) ([]ListNodesForNetworkRow, error) {
@@ -383,6 +389,7 @@ func (q *Queries) ListNodesForNetwork(ctx context.Context, networkID string) ([]
 			&i.PeersRelayed,
 			&i.PeersReportedAt,
 			&i.PeerState,
+			&i.AgentVersion,
 		); err != nil {
 			return nil, err
 		}
@@ -400,7 +407,7 @@ func (q *Queries) ListNodesForNetwork(ctx context.Context, networkID string) ([]
 const listNodesForNetworkByType = `-- name: ListNodesForNetworkByType :many
 SELECT id, network_id, hostname, os, arch, nebula_ip, agent_real_ip, node_type,
        exposed_ports, dns_name, capabilities, status, last_seen_at, created_at,
-       peers_direct, peers_relayed, peers_reported_at, peer_state
+       peers_direct, peers_relayed, peers_reported_at, peer_state, agent_version
 FROM nodes WHERE network_id = ? AND node_type = ? ORDER BY created_at ASC
 `
 
@@ -428,6 +435,7 @@ type ListNodesForNetworkByTypeRow struct {
 	PeersRelayed    *int64
 	PeersReportedAt *int64
 	PeerState       *string
+	AgentVersion    *string
 }
 
 func (q *Queries) ListNodesForNetworkByType(ctx context.Context, arg ListNodesForNetworkByTypeParams) ([]ListNodesForNetworkByTypeRow, error) {
@@ -458,6 +466,7 @@ func (q *Queries) ListNodesForNetworkByType(ctx context.Context, arg ListNodesFo
 			&i.PeersRelayed,
 			&i.PeersReportedAt,
 			&i.PeerState,
+			&i.AgentVersion,
 		); err != nil {
 			return nil, err
 		}
