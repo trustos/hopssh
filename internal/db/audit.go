@@ -131,10 +131,20 @@ func (s *AuditStore) writeBatch(batch []dbsqlc.InsertAuditEntryParams) {
 	}
 }
 
-func (s *AuditStore) ListForNetwork(networkID string, limit int) ([]*AuditEntry, error) {
+// ListForNetwork returns audit entries for a network, optionally filtered
+// by action and cutoff timestamp. since is a unix-seconds cutoff (entries
+// at or after since are returned). action empty matches all actions.
+func (s *AuditStore) ListForNetwork(networkID string, since int64, action string, limit int) ([]*AuditEntry, error) {
 	q := dbsqlc.New(WrapDB(s.rdb))
+	var actionArg interface{}
+	if action != "" {
+		actionArg = action
+	}
+	ntwID := networkID
 	rows, err := q.ListAuditForNetwork(context.Background(), dbsqlc.ListAuditForNetworkParams{
-		NetworkID: &networkID,
+		NetworkID: &ntwID,
+		Since:     since,
+		Action:    actionArg,
 		Limit:     int64(limit),
 	})
 	if err != nil {
@@ -159,10 +169,17 @@ func (s *AuditStore) ListForNetwork(networkID string, limit int) ([]*AuditEntry,
 	return entries, nil
 }
 
-func (s *AuditStore) ListForUser(userID string, limit int) ([]*AuditEntry, error) {
+// ListForUser mirrors ListForNetwork but scopes to a single user.
+func (s *AuditStore) ListForUser(userID string, since int64, action string, limit int) ([]*AuditEntry, error) {
 	q := dbsqlc.New(WrapDB(s.rdb))
+	var actionArg interface{}
+	if action != "" {
+		actionArg = action
+	}
 	rows, err := q.ListAuditForUser(context.Background(), dbsqlc.ListAuditForUserParams{
 		UserID: userID,
+		Since:  since,
+		Action: actionArg,
 		Limit:  int64(limit),
 	})
 	if err != nil {

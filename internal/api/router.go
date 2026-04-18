@@ -100,6 +100,7 @@ func NewRouter(
 	memberH *MemberHandler,
 	inviteH *InviteHandler,
 	eventsH *EventsHandler,
+	netEventsH *NetworkEventsHandler,
 ) chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -193,6 +194,10 @@ func NewRouter(
 
 		// Real-time events (WebSocket — no timeout, streaming).
 		r.Get("/api/networks/{networkID}/events", eventsH.Connect)
+
+		// Persistent activity log (history of events that already fired
+		// through the WebSocket). Supports since/type/limit query params.
+		r.With(wt).Get("/api/networks/{networkID}/events/history", netEventsH.ListHistory)
 
 		// Invites.
 		r.With(wt).Post("/api/networks/{networkID}/invites", inviteH.CreateInvite)

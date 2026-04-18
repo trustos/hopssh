@@ -2,12 +2,45 @@ package api
 
 import (
 	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/trustos/hopssh/internal/auth"
 	"github.com/trustos/hopssh/internal/authz"
 	"github.com/trustos/hopssh/internal/db"
 )
+
+// auditHistoryDefaultWindow matches the activity log history endpoint.
+const auditHistoryDefaultWindow = 24 * time.Hour
+
+// auditLimitDefault + auditLimitMax bound response sizes.
+const (
+	auditLimitDefault = 100
+	auditLimitMax     = 1000
+)
+
+// parseAuditListParams reads the shared since/action/limit query params.
+func parseAuditListParams(r *http.Request) (since int64, action string, limit int) {
+	q := r.URL.Query()
+	since = time.Now().Add(-auditHistoryDefaultWindow).Unix()
+	if s := q.Get("since"); s != "" {
+		if v, err := strconv.ParseInt(s, 10, 64); err == nil && v >= 0 {
+			since = v
+		}
+	}
+	action = q.Get("action")
+	limit = auditLimitDefault
+	if l := q.Get("limit"); l != "" {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 {
+			limit = v
+		}
+	}
+	if limit > auditLimitMax {
+		limit = auditLimitMax
+	}
+	return since, action, limit
+}
 
 // AuditHandler serves the audit log.
 type AuditHandler struct {
@@ -59,7 +92,8 @@ func mapAuditEntries(entries []*db.AuditEntry) []auditEntry {
 func (h *AuditHandler) ListAuditLog(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 
-	entries, err := h.Audit.ListForUser(user.ID, 100)
+	since, action, limit := parseAuditListParams(r)
+	entries, err := h.Audit.ListForUser(user.ID, since, action, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -94,7 +128,8 @@ func (h *AuditHandler) ListNetworkAuditLog(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	entries, err := h.Audit.ListForNetwork(networkID, 100)
+	since, action, limit := parseAuditListParams(r)
+	entries, err := h.Audit.ListForNetwork(networkID, since, action, limit)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

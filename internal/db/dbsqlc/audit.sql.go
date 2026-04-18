@@ -42,12 +42,16 @@ SELECT a.id, a.user_id, a.node_id, a.network_id, a.action, a.details, a.created_
 FROM audit_log a
 LEFT JOIN users u ON u.id = a.user_id
 LEFT JOIN nodes n ON n.id = a.node_id
-WHERE a.network_id = ?
-ORDER BY a.created_at DESC LIMIT ?
+WHERE a.network_id = ?1
+  AND a.created_at >= ?2
+  AND (?3 IS NULL OR a.action = ?3)
+ORDER BY a.created_at DESC LIMIT ?4
 `
 
 type ListAuditForNetworkParams struct {
 	NetworkID *string
+	Since     int64
+	Action    interface{}
 	Limit     int64
 }
 
@@ -65,7 +69,12 @@ type ListAuditForNetworkRow struct {
 }
 
 func (q *Queries) ListAuditForNetwork(ctx context.Context, arg ListAuditForNetworkParams) ([]ListAuditForNetworkRow, error) {
-	rows, err := q.db.QueryContext(ctx, listAuditForNetwork, arg.NetworkID, arg.Limit)
+	rows, err := q.db.QueryContext(ctx, listAuditForNetwork,
+		arg.NetworkID,
+		arg.Since,
+		arg.Action,
+		arg.Limit,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -105,12 +114,16 @@ SELECT a.id, a.user_id, a.node_id, a.network_id, a.action, a.details, a.created_
 FROM audit_log a
 LEFT JOIN users u ON u.id = a.user_id
 LEFT JOIN nodes n ON n.id = a.node_id
-WHERE a.user_id = ?
-ORDER BY a.created_at DESC LIMIT ?
+WHERE a.user_id = ?1
+  AND a.created_at >= ?2
+  AND (?3 IS NULL OR a.action = ?3)
+ORDER BY a.created_at DESC LIMIT ?4
 `
 
 type ListAuditForUserParams struct {
 	UserID string
+	Since  int64
+	Action interface{}
 	Limit  int64
 }
 
@@ -128,7 +141,12 @@ type ListAuditForUserRow struct {
 }
 
 func (q *Queries) ListAuditForUser(ctx context.Context, arg ListAuditForUserParams) ([]ListAuditForUserRow, error) {
-	rows, err := q.db.QueryContext(ctx, listAuditForUser, arg.UserID, arg.Limit)
+	rows, err := q.db.QueryContext(ctx, listAuditForUser,
+		arg.UserID,
+		arg.Since,
+		arg.Action,
+		arg.Limit,
+	)
 	if err != nil {
 		return nil, err
 	}

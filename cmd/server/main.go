@@ -204,6 +204,7 @@ func main() {
 
 	eventHub := api.NewEventHub()
 	eventsH := &api.EventsHandler{Networks: networks, Members: members, Hub: eventHub}
+	netEventsH := &api.NetworkEventsHandler{Events: networkEvents, Networks: networks, Members: members}
 
 	// Wire event hub into handlers that should publish events.
 	proxyH.EventHub = eventHub
@@ -218,7 +219,7 @@ func main() {
 	deviceH.Events = networkEvents
 	renewH.Events = networkEvents
 
-	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH, eventsH)
+	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH, eventsH, netEventsH)
 
 	// Clean up expired sessions periodically with graceful shutdown.
 	stopCleanup := make(chan struct{})
