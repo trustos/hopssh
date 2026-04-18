@@ -113,7 +113,7 @@ All nodes are equal — capabilities (terminal, health, forward) are per-node to
 | **Nebula** (embedded, dual-mode) | Kernel TUN (real OS interface) when root, userspace (gvisor) when non-root |
 | **HTTP server** (on mesh) | /health, /exec, /shell, /upload — controlled by capabilities |
 | **Cert renewal** | Auto-renews 24h certificates with jitter (±10%) |
-| **Heartbeat** | Reports online status to control plane every 5 min |
+| **Heartbeat** | Reports online status + per-peer connectivity counts to control plane every 60 s; also fires out-of-cycle on detected wake / network change so the dashboard sees state updates within seconds |
 | **Split-DNS** | Configures OS resolver for mesh domain (kernel TUN mode) |
 | **CLI** | help, status, info, enroll, serve, install, update |
 

@@ -328,6 +328,12 @@ repeating the same investigations.
 - **AES-GCM is faster than ChaCha20 on Apple Silicon** — dedicated hardware AES instructions (single-cycle) vs NEON vector ops. Keep `cipher: "aes"`.
 - **Large UDP socket buffers cause bufferbloat** — 2MB buffers caused 50-293ms spikes on macOS because it reads one packet at a time (no recvmmsg). OS defaults (~128KB) are correct.
 
+### Dashboard freshness architecture
+- **Heartbeat writes coalesce in a sync.Map + 5 s flush**, so tighter client cadence costs ≈ zero. `internal/db/nodes.go` buffers every `RecordHeartbeat` into a `sync.Map` keyed by nodeID; `StartHeartbeatFlusher` writes the whole batch once per 5 s in a single SQLite transaction. 5 × more heartbeats per minute = 5 × bigger batches, same number of transactions. Don't pre-optimize by keeping heartbeats rare — the architecture already absorbs it.
+- **Proxy traffic is a liveness signal we can piggyback.** `RecordProxyActivity(nodeID)` (added v0.9.12) fires from every successful shell/exec/health/HTTP-proxy/WebSocket-proxy interaction, throttled per-node at 30 s via `lastProxyHeartbeat sync.Map`. Pattern: when the agent has an independent "alive" channel (proxy round-trip over mesh), use it to backstop its self-reported heartbeat. Catches the failure mode where the agent can serve requests but its outbound heartbeat is broken (DNS, TLS glitch, firewall).
+- **Dashboard status needs BOTH server-side and client-side derivation** to feel fresh. Server's `effectiveStatus()` (`internal/api/types.go`) handles fresh API loads. Frontend's `displayStatus(node, now)` (`frontend/src/lib/node-status.ts`) mirrors the same logic against a 1 s `now` ticker so an already-open tab flips to "offline" within <1 s of the 180 s stale threshold — no polling dependency. Must-match: if you change `nodeStaleThreshold` on the server, update `NODE_STALE_THRESHOLD_SEC` on the client. Comments in both files point at each other.
+- **Event-driven out-of-cycle heartbeat beats cadence tuning.** `cmd/agent/nebula.go` exposes a buffered-1 `heartbeatTrigger` channel; `watchNetworkChanges` sends on it whenever it fires the rebind block (tick-gap or addr-change). `runHeartbeat`'s select adds a third case that drains the scheduled timer and fires immediately. Wake → dashboard latency is <1 s regardless of where the scheduled tick landed. `signalHeartbeat()` is non-blocking so WiFi flap can't pile up signals.
+
 ### Engineering Lessons (rules for future work)
 
 These are rules learned from real failures. Apply them to any new perf/networking work.

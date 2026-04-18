@@ -366,13 +366,13 @@ These appear across ALL competitors, sourced from Reddit/HN/GitHub/app-store rev
 
 | Pain | ZT | TS | DN | NetBird | hopssh Status |
 |------|----|----|-----|---------|---------------|
-| No connection type visibility (P2P/relay) | #1 | Notable | Notable | Notable | **Gap — adding to Phase 2A** |
+| No connection type visibility (P2P/relay) | #1 | Notable | Notable | Notable | **Solved v0.9.10** — per-node P2P/Mixed/Relayed badge |
 | Self-hosting is hard or impossible | #2 | #2,#3 | #3 | ✅ they solved | **Solved** |
 | DNS is broken/missing | #4 | #5 | #4 | ✅ they solved (Jan 2026) | **Solved** |
 | No browser-based terminal | #5 | #4 | Notable | Notable | **Solved** (unique to hopssh) |
 | Poor debugging/diagnostics | Notable | Notable | Notable | Notable | **Gap — adding to Phase 2A** |
 | Mobile apps are unreliable | #3 | #9 | #6 | ⚠️ unverified | Not yet (Phase 3B) |
-| Sleep/wake reconnection flaky | Notable (1-2 min) | Multi-year history of reports ([#1134](https://github.com/tailscale/tailscale/issues/1134), [#10688](https://github.com/tailscale/tailscale/issues/10688) still open) | Unverified | Unverified | Untested |
+| Sleep/wake reconnection flaky | Notable (1-2 min) | Multi-year history of reports ([#1134](https://github.com/tailscale/tailscale/issues/1134), [#10688](https://github.com/tailscale/tailscale/issues/10688) still open) | Unverified | Unverified | Measured — <5 s dashboard flip post-wake on macOS/Linux/Windows via wake-triggered heartbeat (v0.9.11). See `spike/sleep-wake-evidence/RESULTS.md` + `spike/freshness-evidence/`. Bare-metal Linux/Windows suspend still unmeasured. |
 | Pricing/lock-in anxiety | #7 | #1,#9 | — | — | **Solved** (self-hosted free forever) |
 
 ### Universal Unsolved Gaps (what NO competitor ships — research 2026-04-17)
