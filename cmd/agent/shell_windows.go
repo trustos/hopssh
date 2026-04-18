@@ -6,6 +6,8 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"time"
 	"unsafe"
 
@@ -110,11 +112,15 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 	//     accessible — users can type `powershell` at the cmd prompt.
 	shell := os.Getenv("COMSPEC")
 	if shell == "" {
-		shell = `C:\Windows\System32\cmd.exe`
+		if windir := os.Getenv("WINDIR"); windir != "" {
+			shell = filepath.Join(windir, `System32\cmd.exe`)
+		} else {
+			shell = `C:\Windows\System32\cmd.exe`
+		}
 	}
 	cmdLineStr := `"` + shell + `" /K "chcp 65001 > nul"`
-	if _, err := os.Stat(`C:\Program Files\PowerShell\7\pwsh.exe`); err == nil {
-		shell = `C:\Program Files\PowerShell\7\pwsh.exe`
+	if pwsh, err := exec.LookPath("pwsh.exe"); err == nil {
+		shell = pwsh
 		cmdLineStr = `"` + shell + `" -NoLogo`
 	}
 
