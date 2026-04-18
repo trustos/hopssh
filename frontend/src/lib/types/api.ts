@@ -62,6 +62,13 @@ export interface InviteDetailResponse {
 
 export type Connectivity = 'direct' | 'mixed' | 'relayed' | 'idle';
 
+export interface PeerDetail {
+	vpnAddr: string;
+	direct: boolean;
+	lastHandshakeSec?: number;
+	remoteAddr?: string;
+}
+
 export interface NodeResponse {
 	id: string;
 	networkId: string;
@@ -81,6 +88,7 @@ export interface NodeResponse {
 	peersRelayed?: number;
 	peersReportedAt?: number;
 	connectivity?: Connectivity;
+	peers?: PeerDetail[];
 }
 
 export interface CreateNodeResponse {

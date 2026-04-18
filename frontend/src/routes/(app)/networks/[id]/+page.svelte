@@ -97,6 +97,24 @@
 	// Recomputes every second; mirrors the server's effectiveStatus.
 	const stateOf = (n: NodeResponse) => displayStatus(n, now);
 
+	// Per-peer drill-down: click a node row to expand a nested table
+	// of that node's peers. Keyed by nodeId; reactive Set reassignment.
+	let expandedNodes = $state<Set<string>>(new Set());
+	function toggleExpand(nodeId: string) {
+		const next = new Set(expandedNodes);
+		if (next.has(nodeId)) next.delete(nodeId); else next.add(nodeId);
+		expandedNodes = next;
+	}
+
+	// Resolve a peer's mesh IP → hostname via the current network's
+	// node list. Returns "" when unknown (e.g., peer was deleted but
+	// is still in the reporting node's hostmap).
+	function peerHostname(vpnAddr: string): string {
+		const nodes = network?.nodes ?? [];
+		const match = nodes.find(n => (n.nebulaIP ?? '').split('/')[0] === vpnAddr);
+		return match?.dnsName || match?.hostname || '';
+	}
+
 	const networkId = $derived(page.params.id!);
 
 	// All nodes including pending (pending shown with special style).
@@ -618,9 +636,23 @@
 						</thead>
 						<tbody>
 							{#each visibleNodes as node}
+								{@const isExpanded = expandedNodes.has(node.id)}
+								{@const canExpand = node.nodeType !== 'lighthouse' && (node.peers?.length ?? 0) > 0}
 								<tr class="border-b last:border-0 hover:bg-accent/50">
 									<td class="px-4 py-3">
 										<div class="flex items-center gap-2" title={node.status === 'pending' ? 'Waiting for agent enrollment. Run the enroll command on your device.' : ''}>
+											{#if canExpand}
+												<button
+													onclick={() => toggleExpand(node.id)}
+													class="text-muted-foreground hover:text-foreground transition-transform duration-150 {isExpanded ? 'rotate-90' : ''}"
+													aria-label={isExpanded ? 'Hide peers' : 'Show peers'}
+													title={isExpanded ? 'Hide peers' : `Show peers (${node.peers?.length ?? 0})`}
+												>
+													<svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+												</button>
+											{:else}
+												<span class="inline-block h-3 w-3"></span>
+											{/if}
 											<div class="h-2.5 w-2.5 rounded-full transition-colors duration-500 {statusColor(stateOf(node))}"></div>
 											<span class="text-xs capitalize text-muted-foreground">{stateOf(node)}</span>
 											{#if node.status === 'pending'}
@@ -745,6 +777,50 @@
 										</div>
 									</td>
 								</tr>
+								<!-- Per-peer drill-down: expanded on chevron click above. -->
+								{#if isExpanded && canExpand}
+									<tr class="bg-muted/30">
+										<td colspan="7" class="px-6 py-3">
+											<div class="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+												Peers ({node.peers?.length ?? 0})
+											</div>
+											<div class="overflow-x-auto rounded border">
+												<table class="w-full text-xs">
+													<thead>
+														<tr class="border-b bg-background/50">
+															<th class="px-3 py-2 text-left font-medium">Peer</th>
+															<th class="px-3 py-2 text-left font-medium">Mesh IP</th>
+															<th class="px-3 py-2 text-left font-medium">Type</th>
+															<th class="px-3 py-2 text-left font-medium">Remote</th>
+															<th class="px-3 py-2 text-left font-medium">Handshake</th>
+														</tr>
+													</thead>
+													<tbody>
+														{#each node.peers ?? [] as peer (peer.vpnAddr)}
+															<tr class="border-b last:border-0">
+																<td class="px-3 py-2 font-mono">{peerHostname(peer.vpnAddr) || '—'}</td>
+																<td class="px-3 py-2 font-mono text-muted-foreground">{peer.vpnAddr}</td>
+																<td class="px-3 py-2">
+																	{#if peer.direct}
+																		<span class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20">
+																			<Zap class="h-3 w-3" />Direct
+																		</span>
+																	{:else}
+																		<span class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20">
+																			<Router class="h-3 w-3" />Relayed
+																		</span>
+																	{/if}
+																</td>
+																<td class="px-3 py-2 font-mono text-muted-foreground">{peer.remoteAddr || '—'}</td>
+																<td class="px-3 py-2 text-muted-foreground">{peer.lastHandshakeSec ? timeAgo(peer.lastHandshakeSec) : 'unknown'}</td>
+															</tr>
+														{/each}
+													</tbody>
+												</table>
+											</div>
+										</td>
+									</tr>
+								{/if}
 								<!-- Inline port forward form -->
 								{#if forwardNodeId === node.id}
 									<tr class="bg-muted/50">
