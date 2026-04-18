@@ -18,6 +18,7 @@
 	import { Zap, Waypoints, Router } from 'lucide-svelte';
 	import { displayStatus } from '$lib/node-status';
 	import NetworkTopology from '$lib/components/network-topology.svelte';
+	import ActivityTable from '$lib/components/activity-table.svelte';
 
 	const termStore = getTerminals();
 
@@ -1171,43 +1172,15 @@
 				{/if}
 			</div>
 		{:else if activeTab === 'activity'}
-			<!-- Live event feed. In-memory ring buffer (last 50);
-			     resets on page load. Hooks into the same WebSocket
-			     already driving status reloads. -->
-			{#if activity.length === 0}
-				<div class="rounded-lg border border-dashed p-8 text-center">
-					<p class="mb-2 text-lg font-medium">No activity yet</p>
-					<p class="text-sm text-muted-foreground">
-						Live network events will appear here as they happen — enrollment,
-						status changes, renames, membership updates.
-					</p>
-				</div>
-			{:else}
-				<div class="overflow-hidden rounded-lg border">
-					<table class="w-full text-sm">
-						<thead>
-							<tr class="border-b bg-muted/50">
-								<th class="px-4 py-2 text-left font-medium">When</th>
-								<th class="px-4 py-2 text-left font-medium">Event</th>
-								<th class="px-4 py-2 text-left font-medium">Detail</th>
-							</tr>
-						</thead>
-						<tbody>
-							{#each activity as ev, i (`${ev.at}-${i}`)}
-								<tr class="border-b last:border-0">
-									<td class="px-4 py-2 text-xs text-muted-foreground whitespace-nowrap">{timeAgo(ev.at)}</td>
-									<td class="px-4 py-2 text-xs font-mono text-muted-foreground">{ev.type}</td>
-									<td class="px-4 py-2 text-xs">{activityLabel(ev)}</td>
-								</tr>
-							{/each}
-						</tbody>
-					</table>
-				</div>
-				<p class="mt-3 text-xs text-muted-foreground">
-					Last {activity.length} event{activity.length === 1 ? '' : 's'} —
-					in-memory only, cleared on refresh.
-				</p>
-			{/if}
+			<!-- Persisted activity log (last 24h by default) merged with
+			     the live WebSocket ring buffer for events that fired
+			     while the tab was open. -->
+			<ActivityTable
+				{networkId}
+				{network}
+				liveEvents={activity}
+				{now}
+			/>
 		{/if}
 
 		<!-- Create Invite Dialog -->

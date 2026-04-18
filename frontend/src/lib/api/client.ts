@@ -133,11 +133,54 @@ export const dns = {
 };
 
 // --- Audit ---
+export interface AuditListOpts {
+	since?: number;    // unix seconds cutoff; default server-side = now-24h
+	action?: string;   // exact-match filter; empty = all actions
+	limit?: number;    // default 100, max 1000
+}
+function auditQuery(opts?: AuditListOpts): string {
+	if (!opts) return '';
+	const p = new URLSearchParams();
+	if (opts.since != null) p.set('since', String(opts.since));
+	if (opts.action) p.set('action', opts.action);
+	if (opts.limit != null) p.set('limit', String(opts.limit));
+	const qs = p.toString();
+	return qs ? `?${qs}` : '';
+}
 export const audit = {
-	list: () =>
-		request<import('$lib/types/api').AuditEntryResponse[]>('GET', '/api/audit'),
-	listForNetwork: (networkId: string) =>
-		request<import('$lib/types/api').AuditEntryResponse[]>('GET', `/api/networks/${e(networkId)}/audit`)
+	list: (opts?: AuditListOpts) =>
+		request<import('$lib/types/api').AuditEntryResponse[]>(
+			'GET',
+			`/api/audit${auditQuery(opts)}`,
+		),
+	listForNetwork: (networkId: string, opts?: AuditListOpts) =>
+		request<import('$lib/types/api').AuditEntryResponse[]>(
+			'GET',
+			`/api/networks/${e(networkId)}/audit${auditQuery(opts)}`,
+		),
+};
+
+// --- Network events (persistent activity log) ---
+export interface NetworkEventHistoryOpts {
+	since?: number;
+	type?: string;
+	limit?: number;
+}
+function netEventQuery(opts?: NetworkEventHistoryOpts): string {
+	if (!opts) return '';
+	const p = new URLSearchParams();
+	if (opts.since != null) p.set('since', String(opts.since));
+	if (opts.type) p.set('type', opts.type);
+	if (opts.limit != null) p.set('limit', String(opts.limit));
+	const qs = p.toString();
+	return qs ? `?${qs}` : '';
+}
+export const networkEvents = {
+	history: (networkId: string, opts?: NetworkEventHistoryOpts) =>
+		request<import('$lib/types/api').NetworkEventResponse[]>(
+			'GET',
+			`/api/networks/${e(networkId)}/events/history${netEventQuery(opts)}`,
+		),
 };
 
 // --- Members ---

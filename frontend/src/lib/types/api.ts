@@ -132,6 +132,17 @@ export interface DeviceCodeResponse {
 	interval: number;
 }
 
+export interface NetworkEventResponse {
+	id: number;
+	networkId: string;
+	type: string;
+	targetId?: string;
+	targetHostname?: string;
+	status?: string;
+	details?: string; // JSON-encoded; parse on demand
+	createdAt: number;
+}
+
 export interface AuditEntryResponse {
 	id: string;
 	userId: string;
