@@ -98,6 +98,12 @@ PS1='\[\033[32m\]\u@\h\[\033[0m\] \[\033[36m\]\w\[\033[0m\]$(__hop_git_branch) \
 		"ENV="+bashRCPath,      // sh sources this
 	)
 
+	// Info line printed before the shell's first output so the user knows
+	// which shell the agent picked. Sent directly over the WebSocket (not
+	// via the PTY) so it doesn't pollute the shell's input stream or
+	// command history. Dim gray via ANSI so it reads as a notice.
+	conn.WriteMessage(websocket.BinaryMessage, []byte("\x1b[2m[hopssh] shell: "+shell+"\x1b[0m\r\n"))
+
 	ptmx, err := pty.Start(cmd)
 	if err != nil {
 		log.Printf("[shell] PTY start failed: %v", err)

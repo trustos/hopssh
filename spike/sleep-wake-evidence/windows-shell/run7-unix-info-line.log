@@ -1,0 +1,24 @@
+07:44:40.623 DIAL ws://10.42.1.7:41820/shell
+07:44:40.646 DIALED in 23.114833ms, status=101
+07:44:40.646 SENT resize rows=24 cols=80
+07:44:40.650 RECV BIN n=34 ascii=".[2m[hopssh] shell: /bin/zsh.[0m.." hex=1b5b 326d 5b68 6f70 7373 685d 2073 6865 6c6c 3a20 2f62 696e 2f7a 7368 1b5b 306d 0d0a
+07:44:40.684 RECV BIN n=104 ascii=".[1m.[7m#.[27m.[1m.[0m                                                                          " hex=1b5b 316d 1b5b 376d 231b 5b32 376d 1b5b 316d 1b5b 306d 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 ...(+8)
+07:44:40.704 RECV BIN n=76 ascii="..[0m.[27m.[24m.[J.[32mroot@Tenevis-Mac-mini-2.[39m .[36m/.[39m .[37m#.[39m " hex=0d1b 5b30 6d1b 5b32 376d 1b5b 3234 6d1b 5b4a 1b5b 3332 6d72 6f6f 7440 5465 6e65 7669 732d 4d61 632d 6d69 6e69 2d32 1b5b 3339 6d20 1b5b 3336 6d2f 1b5b 3339 6d20 1b5b 3337 6d23 1b5b 3339 6d20
+07:44:40.704 RECV BIN n=11 ascii=".[K.[?2004h" hex=1b5b 4b1b 5b3f 3230 3034 68
+07:44:42.148 SENT input (16 bytes): "echo UNIX_INFO\r\n"
+07:44:42.149 RECV BIN n=1 ascii="e" hex=65
+07:44:42.149 RECV BIN n=7 ascii=".echo U" hex=0865 6368 6f20 55
+07:44:42.149 RECV BIN n=1 ascii="N" hex=4e
+07:44:42.149 RECV BIN n=2 ascii="IX" hex=4958
+07:44:42.149 RECV BIN n=1 ascii="_" hex=5f
+07:44:42.149 RECV BIN n=2 ascii="IN" hex=494e
+07:44:42.149 RECV BIN n=2 ascii="FO" hex=464f
+07:44:42.149 RECV BIN n=8 ascii=".[?2004l" hex=1b5b 3f32 3030 346c
+07:44:42.149 RECV BIN n=3 ascii="..." hex=0d0d 0a
+07:44:42.149 RECV BIN n=115 ascii="UNIX_INFO...[1m.[7m#.[27m.[1m.[0m                                                               " hex=554e 4958 5f49 4e46 4f0d 0a1b 5b31 6d1b 5b37 6d23 1b5b 3237 6d1b 5b31 6d1b 5b30 6d20 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 ...(+19)
+07:44:42.191 RECV BIN n=87 ascii="..[0m.[27m.[24m.[J.[32mroot@Tenevis-Mac-mini-2.[39m .[36m/.[39m .[37m#.[39m .[K.[?2004h" hex=0d1b 5b30 6d1b 5b32 376d 1b5b 3234 6d1b 5b4a 1b5b 3332 6d72 6f6f 7440 5465 6e65 7669 732d 4d61 632d 6d69 6e69 2d32 1b5b 3339 6d20 1b5b 3336 6d2f 1b5b 3339 6d20 1b5b 3337 6d23 1b5b 3339 6d20 1b5b 4b1b 5b3f 3230 3034 68
+07:44:42.191 RECV BIN n=11 ascii=".[?2004l..." hex=1b5b 3f32 3030 346c 0d0d 0a
+07:44:42.191 RECV BIN n=104 ascii=".[1m.[7m#.[27m.[1m.[0m                                                                          " hex=1b5b 316d 1b5b 376d 231b 5b32 376d 1b5b 316d 1b5b 306d 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 2020 ...(+8)
+07:44:42.217 RECV BIN n=87 ascii="..[0m.[27m.[24m.[J.[32mroot@Tenevis-Mac-mini-2.[39m .[36m/.[39m .[37m#.[39m .[K.[?2004h" hex=0d1b 5b30 6d1b 5b32 376d 1b5b 3234 6d1b 5b4a 1b5b 3332 6d72 6f6f 7440 5465 6e65 7669 732d 4d61 632d 6d69 6e69 2d32 1b5b 3339 6d20 1b5b 3336 6d2f 1b5b 3339 6d20 1b5b 3337 6d23 1b5b 3339 6d20 1b5b 4b1b 5b3f 3230 3034 68
+07:44:43.647 READ ended: deadline reached
+07:44:43.647 SUMMARY frames=18 bytes=656 duration=3.024237875s

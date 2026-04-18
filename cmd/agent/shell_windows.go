@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 	"unsafe"
 
@@ -118,10 +119,17 @@ func handleShell(w http.ResponseWriter, r *http.Request) {
 			shell = `C:\Windows\System32\cmd.exe`
 		}
 	}
-	cmdLineStr := `"` + shell + `" /K "chcp 65001 > nul"`
+	// Info line printed before the first prompt so the user knows which
+	// shell the agent picked. Printed by the shell itself (not our
+	// WebSocket layer) so it survives ConPTY's initial clear-screen.
+	// Sanitize " to keep the /K quoting intact; shell paths don't
+	// normally contain quotes.
+	safeShell := strings.ReplaceAll(shell, `"`, "")
+	cmdLineStr := `"` + shell + `" /K "chcp 65001 > nul && echo [hopssh] shell: ` + safeShell + `"`
 	if pwsh, err := exec.LookPath("pwsh.exe"); err == nil {
 		shell = pwsh
-		cmdLineStr = `"` + shell + `" -NoLogo`
+		safePwsh := strings.ReplaceAll(pwsh, `'`, "")
+		cmdLineStr = `"` + shell + `" -NoLogo -NoExit -Command "Write-Host '[hopssh] shell: ` + safePwsh + `' -ForegroundColor DarkGray"`
 	}
 
 	cmdLine, err := windows.UTF16PtrFromString(cmdLineStr)
