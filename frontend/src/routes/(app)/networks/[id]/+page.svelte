@@ -17,6 +17,7 @@
 	import { getTerminals } from '$lib/stores/terminals.svelte';
 	import { Zap, Waypoints, Router } from 'lucide-svelte';
 	import { displayStatus } from '$lib/node-status';
+	import NetworkTopology from '$lib/components/network-topology.svelte';
 
 	const termStore = getTerminals();
 
@@ -61,7 +62,7 @@
 	let deleteNodeError = $state('');
 
 	// Active tab — default to "join" for new networks, "nodes" once there are nodes
-	let activeTab = $state<'nodes' | 'dns' | 'join' | 'members'>('nodes');
+	let activeTab = $state<'nodes' | 'dns' | 'join' | 'members' | 'topology'>('nodes');
 	let initialTabSet = $state(false);
 
 	// Rename node
@@ -560,6 +561,7 @@
 			<Tabs.List>
 				<Tabs.Trigger value="join">Join</Tabs.Trigger>
 				<Tabs.Trigger value="nodes">Nodes ({visibleNodes.length})</Tabs.Trigger>
+				<Tabs.Trigger value="topology" class="hidden sm:inline-flex">Topology</Tabs.Trigger>
 				<Tabs.Trigger value="dns">DNS</Tabs.Trigger>
 				<Tabs.Trigger value="members">Members ({networkMembers.length})</Tabs.Trigger>
 			</Tabs.List>
@@ -882,6 +884,23 @@
 						</tbody>
 					</table>
 				</div>
+			{/if}
+
+		<!-- Topology Tab: live connection-quality graph. Hidden under sm;
+		     the tabular drill-down from the Nodes tab covers mobile. -->
+		{:else if activeTab === 'topology'}
+			{#if visibleNodes.length === 0}
+				<div class="rounded-lg border border-dashed p-8 text-center">
+					<p class="mb-2 text-lg font-medium">No nodes yet</p>
+					<p class="text-sm text-muted-foreground">Add nodes first to see the topology.</p>
+				</div>
+			{:else}
+				<NetworkTopology nodes={visibleNodes} {now} />
+				<p class="mt-3 text-xs text-muted-foreground">
+					Lines reflect what each node reports; asymmetric colors (one green, one blue) mean
+					one side hole-punched but the other fell back to relay — normal during recovery,
+					worth investigating if it persists.
+				</p>
 			{/if}
 
 		<!-- DNS Tab -->
