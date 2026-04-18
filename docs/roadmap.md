@@ -1,6 +1,6 @@
 # hopssh — Product Roadmap
 
-*Last updated: 2026-04-15*
+*Last updated: 2026-04-19*
 
 ---
 
@@ -16,7 +16,8 @@ hopssh is a working encrypted mesh networking platform. Phase 1 (mesh core) is c
 - 4 enrollment modes (device flow, token, bundle, client join)
 - Built-in DNS with user-defined domains per network
 - Teams with invite links, admin/member roles, network sharing
-- Audit logging, real-time WebSocket events, self-update
+- Audit logging, real-time WebSocket events, persistent activity log with search/filter/time-range, self-update
+- Per-node P2P / relay badge + per-peer drill-down table + network topology diagram (cytoscape)
 - Docker, systemd, launchd, non-root agent, cross-platform releases
 - macOS batch syscalls (`sendmsg_x`/`recvmsg_x`) — 17% → 35-53% tunnel efficiency
 - macOS TUN batch reads, control-lane priority queue, TUN buffer caching, AES-GCM default
@@ -34,9 +35,9 @@ See [competitive-analysis.md](competitive-analysis.md) for the full matrix.
 - Built-in DNS with user-defined domains (DN has none, ZeroTier's is incomplete, Tailscale is locked to .ts.net)
 - HTTP proxy to node-local services (unique — no competitor has browser-based reverse proxy through the mesh)
 - Single-binary self-hosted deployment (vs DN's SaaS + customer-hosted lighthouses; Tailscale and ZeroTier users get zero-infra but it's SaaS-dependent)
+- Connection visibility solved end-to-end (v0.9.10–v0.9.14): per-node P2P/relay badge, per-peer drill-down, full network topology diagram, persistent activity log with search/filter. The #1 cross-competitor pain; no competitor surfaces all of this in the dashboard.
 
 **Where we lose today:**
-- No connection visibility — P2P vs relay status not shown (the #1 cross-competitor pain point, and we don't have it either)
 - No SSO/OIDC (DN, Tailscale, ZeroTier all have it — table stakes for teams)
 - No scoped API keys (DN and Tailscale have them)
 - No granular firewall rules (DN has roles+tags, Tailscale has ACLs+grants, ZeroTier has flow rules)
@@ -108,7 +109,7 @@ Features that add network fabric depth. Positions hopssh against ZeroTier's netw
 | # | Feature | Description | Why | Size | Viability | Depends on |
 |---|---------|-------------|-----|------|-----------|------------|
 | 17 | **Regional relay nodes** | Add standalone relay nodes in different regions via the dashboard. Configure, deploy, and monitor relay health. | ZeroTier has private roots/moons. DN requires customer-hosted relays with no management UI. TS DERP servers are concentrated in US/EU — users in Asia/Africa/South America report high relay latency. Dashboard-managed relays are a UX win and needed for scale past ~10K nodes. | L | Moderate — lighthouses are currently tightly coupled to the control plane binary. Need to decouple relay into separate enrollment type and modify Nebula config to reference remote relay addresses. New enrollment flow needed. | — |
-| 18 | **Peer connectivity map** | Visual network topology showing P2P vs relayed connections, handshake status, latency per peer. Full mesh visualization. | Builds on #2 (per-node status) to show the complete network graph. No competitor has this. Operators need to see mesh health during incidents. | M | High — #2 and #4 establish the agent stats foundation. This is the dashboard visualization layer on top. | #2, #4 |
+| 18 | **Peer connectivity map** ✅ v0.9.13 | Visual network topology showing P2P vs relayed connections per edge, clickable nodes, pan/zoom/drag with state preserved across live updates, Recenter button. | **Shipped** — `frontend/src/lib/components/network-topology.svelte` (cytoscape + fcose layout). Edges colored green (direct) or blue (relayed) from each node's reported peer list; asymmetric paths render as two directed edges. Latency-per-peer still pending (gated on #4). | M | **Shipped** | #2 |
 | 19 | **IPv6 overlay** | Support IPv6 addresses in the mesh overlay using Nebula v2 certificates. | ZeroTier and Tailscale both support IPv6. Nebula v2 certs add this natively. Needed for modern infrastructure. | M | High — Nebula v2 certs support IPv6. Requires updating PKI code to use v2 cert format and extending subnet allocation. | — |
 | N4 | **macOS batch UDP via `sendmsg_x`/`recvmsg_x`** | Pure Go (no CGO) implementation of XNU private batch syscalls (#481/#480). Vendor patches 04-08 in `patches/`. | **No other VPN uses these.** Tunnel efficiency 17% → 35-53% of raw WiFi. First mesh VPN with batch UDP on macOS. | M | — | ✅ Done (patches 04-08). Pure Go, not CGO. |
 

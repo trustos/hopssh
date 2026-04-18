@@ -61,7 +61,7 @@
 | Port forwarding via dashboard | Yes (TCP + HTTP proxy) | No | No (Tailscale Serve/Funnel) | No |
 | Real-time health dashboard | Yes (WebSocket) | No | Yes | Partial |
 | Node rename | Yes (auto-updates DNS) | Yes | Yes | Yes |
-| Connectivity/topology map | No | No | No | No |
+| Connectivity/topology map | **Yes (v0.9.13, cytoscape)** | No | No | No |
 | Serve / Funnel (expose to internet) | No | No | Yes | No |
 | | | | | |
 | **Audit & Compliance** | | | | |
@@ -366,7 +366,8 @@ These appear across ALL competitors, sourced from Reddit/HN/GitHub/app-store rev
 
 | Pain | ZT | TS | DN | NetBird | hopssh Status |
 |------|----|----|-----|---------|---------------|
-| No connection type visibility (P2P/relay) | #1 | Notable | Notable | Notable | **Solved v0.9.10** — per-node P2P/Mixed/Relayed badge |
+| No connection type visibility (P2P/relay) | #1 | Notable | Notable | Notable | **Solved v0.9.10–v0.9.14** — per-node P2P/Mixed/Relayed badge, per-peer drill-down table, cytoscape topology diagram, persistent activity log with search/filter |
+| Poor debugging / incident post-hoc | Notable | Notable | Notable | Notable | **Solved v0.9.14** — persistent `network_events` table + Activity tab with time-range, type filter, search, pagination |
 | Self-hosting is hard or impossible | #2 | #2,#3 | #3 | ✅ they solved | **Solved** |
 | DNS is broken/missing | #4 | #5 | #4 | ✅ they solved (Jan 2026) | **Solved** |
 | No browser-based terminal | #5 | #4 | Notable | Notable | **Solved** (unique to hopssh) |
@@ -385,7 +386,7 @@ claim a *first*, not a catch-up.
 |-----|----------|--------------------|
 | **Sleep/wake bulletproofness across all OS** | Tailscale: multi-year history of reports ([#1134](https://github.com/tailscale/tailscale/issues/1134) closed, [#10688](https://github.com/tailscale/tailscale/issues/10688) open, [#2173](https://github.com/tailscale/tailscale/issues/2173) closed, [#17736](https://github.com/tailscale/tailscale/issues/17736) closed) on macOS/Linux/Windows; ZeroTier "1-2 minutes to restore" (often worse — some users report 10-20 min or needing restart); NetBird unverified. No competitor claims this as solved. | **High** — measure hopssh first (30 min test); fix is 1-2 weeks if broken. `internal/quictransport/session.go` reconnect pattern is a foundation. |
 | **DPI evasion / port-443 fallback for mesh VPN** | [NetBird #4879](https://github.com/netbirdio/netbird/issues/4879) documents users building wstunnel+nftables workarounds. [Mullvad shipped QUIC obfuscation](https://mullvad.net/en/blog/introducing-quic-obfuscation-for-wireguard) for WireGuard but that's for VPN-provider traffic, not mesh. | **High** — we have the building blocks in `internal/quictransport/` (unused by mesh today). Unique product angle for "works on hostile networks." |
-| **Connection-type visibility + diagnostic topology view** | #1 ZeroTier complaint; noted for TS, DN, NetBird. | **Medium** — product UX work. Real-time P2P/relay badges, per-peer RTT, route history. Dashboard-side mostly, not protocol changes. |
+| **Connection-type visibility + diagnostic topology view** | #1 ZeroTier complaint; noted for TS, DN, NetBird. | **Shipped (v0.9.10–v0.9.14)** — per-node P2P/Mixed/Relayed badges, per-peer drill-down, cytoscape topology diagram with pan/zoom preservation, persistent activity log. Still-missing: real-time per-peer RTT and route history (gated on roadmap #4 diagnostics). |
 | **Adaptive MTU (DPLPMTUD / RFC 8899)** | Tailscale experimental, ZeroTier open request since 2016, WireGuard refuses. Nobody in production. | **Medium** — design done (`performance.md` §Phase 4), 2-3 weeks to build. All platforms. |
 
 These four are the strategic frontier. Building any of them produces a

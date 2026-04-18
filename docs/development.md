@@ -90,9 +90,12 @@ internal/
     device.go           Device authorization flow (RFC 8628)
     bundles.go          Pre-bundled tarball generation
     proxy.go            Agent proxy: health, shell, exec, port forwards, node delete
-    renew.go            Certificate renewal endpoint
+    renew.go            Certificate renewal + heartbeat endpoint
     dns.go              DNS record management (planned)
     peers.go            Peer connectivity status (planned)
+    events.go           Real-time WebSocket event hub
+    network_events.go   Persistent activity log history endpoint
+    audit.go            Audit log search endpoints
     types.go            Request/response DTOs + helpers
   auth/
     middleware.go        Session auth middleware
@@ -110,7 +113,8 @@ internal/
     nodes.go             NodeStore (encrypted tokens, hashed enrollment tokens, atomic claims)
     device_codes.go      DeviceCodeStore (hashed codes, collision retry)
     bundles.go           BundleStore (hashed download tokens, single-use)
-    audit.go             AuditStore
+    audit.go             AuditStore (buffered flush, 2s / 100-entry batch)
+    network_events.go    NetworkEventStore (persistent activity log) + StartStatusTransitionSweeper
     dns_records.go       DNSRecordStore (planned)
     queries/             SQL query files (sqlc source)
     dbsqlc/              Generated Go code (sqlc output — do not edit)

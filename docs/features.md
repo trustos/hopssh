@@ -132,11 +132,27 @@
 - **Container health check** — `hop-server healthz` every 10 seconds.
 - **Port ranges** — TCP 9473 (API/web), UDP 42001-42100 (Nebula per network), UDP 15300-15400 (DNS per network).
 
-## Real-time Events
+## Real-time Events & Activity Log
 
 - **WebSocket event stream** — Per-network WebSocket endpoint pushes events as they happen.
 - **Event types** — `node.enrolled`, `node.status`, `node.renamed`, `node.deleted`, `node.capabilities`, `dns.changed`, `member.changed`.
 - **Dashboard integration** — Frontend receives events and updates the UI in real-time without polling.
+- **Persistent activity log** (v0.9.14) — Every event is also persisted to the `network_events` table so the Activity tab survives page refresh and supports post-hoc debugging. `GET /api/networks/{id}/events/history?since=&type=&limit=` returns latest-first with time-range, type, and pagination (`Load older` cursor).
+- **Transition-only `node.status` persistence** — A 30 s background sweeper flips stale → offline and logs exactly one transition event; heartbeats do NOT generate one row per beat. Write rate stays flat regardless of fleet size.
+- **Activity tab UI** — shadcn `ui/table/*` + TanStack data-table with sortable columns, type filter pills (All / Status / Enrollment / DNS / Members / Rename / Capability / Delete), free-text search, and time range (24 h / 7 d / 30 d / all).
+
+## Network Visibility
+
+- **Per-node P2P / relay badge** (v0.9.10) — Colored badge per node (Direct / Mixed / Relayed / Idle) derived from agent-reported peer counts in the heartbeat. #1 cross-competitor pain — no competitor surfaces this in the dashboard.
+- **Per-peer drill-down** (v0.9.13) — Click a node row to expand an inline table showing every peer with its own direct/relayed classification, mesh IP, and remote address. Asymmetric views (A says direct, B says relayed) render as two rows — genuine diagnostic signal for one-sided hole-punch.
+- **Network topology diagram** (v0.9.13, v0.9.14 fixes) — cytoscape + fcose force-directed graph. Nodes colored by status; edges colored by reported connection type. Lighthouses distinguished as diamonds. Pan / zoom / dragged positions preserved across live updates; Recenter button snaps back to fit-all.
+
+## Dashboard Freshness
+
+- **60 s heartbeat + 180 s stale threshold** (v0.9.11) — node flips online / offline within 3 min of a real state change. Wake events on the agent fire a single out-of-cycle heartbeat so dashboards see wake-from-sleep transitions in <5 s.
+- **Client-side offline derivation** (v0.9.12) — dashboard derives effective status from `lastSeenAt + 180 s`, so an already-open tab flips a node to "offline" ≤1 s after the threshold crosses without waiting for polling.
+- **Proxy traffic as liveness signal** (v0.9.12) — every successful shell / exec / port-forward / health proxy round-trip refreshes `last_seen_at` (throttled 30 s per node). Covers the case where the agent is serving mesh traffic but its heartbeat channel is broken.
+- **Responsive tables** (v0.9.14) — Nodes, Peers, DNS, Members, Audit, and Activity tables all use shadcn primitives with breakpoint-driven column hiding (no horizontal scroll at any viewport width).
 
 ## Performance & Optimization
 

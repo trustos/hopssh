@@ -190,6 +190,15 @@ dns_records (id, network_id, name, nebula_ip, created_at)
 audit_log (id, user_id, node_id, network_id, action, details, created_at)
   └─ actions: login, register, shell.connect, exec, port_forward.start,
               node.delete, network.create, dns.update
+  └─ buffered write path: 2 s flush, 100-entry batch, drop-on-overflow
+
+network_events (id, network_id, event_type, target_id, status, details, created_at)
+  └─ persistent activity log — every WebSocket event is also appended here
+  └─ event_types: node.enrolled, node.status, node.renamed, node.capabilities,
+                  node.deleted, dns.changed, member.changed
+  └─ `node.status` persisted only on transition (online ↔ offline), NOT every heartbeat
+  └─ indexed by (network_id, created_at DESC) and (network_id, event_type, created_at DESC)
+  └─ buffered write path: same 2 s flush / 100-entry batch pattern as audit_log
 ```
 
 ---
@@ -298,7 +307,6 @@ Per-node capabilities (terminal, health, forward) are checked at the control pla
 |--------|------|---------|
 | POST | `/api/auth/logout` | Destroy session |
 | GET | `/api/auth/me` | Current user info |
-| GET | `/api/audit` | Audit log |
 | **Networks** | | |
 | POST | `/api/networks` | Create network |
 | GET | `/api/networks` | List networks (owned + member) |
@@ -331,6 +339,9 @@ Per-node capabilities (terminal, health, forward) are checked at the control pla
 | POST | `/api/invites/{code}/accept` | Accept invite |
 | **Events** | | |
 | GET | `/api/networks/{id}/events` | WebSocket real-time events |
+| GET | `/api/networks/{id}/events/history` | Persistent activity log (`?since=&type=&limit=`) |
+| GET | `/api/audit` | User-scoped audit log (`?since=&action=&limit=`) |
+| GET | `/api/networks/{id}/audit` | Network-scoped audit log (`?since=&action=&limit=`) |
 | **Other** | | |
 | POST | `/api/networks/{id}/join` | Join network (issues cert) |
 | POST | `/api/device/authorize` | Authorize device code |
