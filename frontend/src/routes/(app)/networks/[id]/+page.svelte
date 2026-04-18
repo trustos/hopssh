@@ -104,6 +104,22 @@
 
 	const hasPendingNodes = $derived(network?.nodes.some(n => n.status === 'pending') ?? false);
 
+	// Push node-offline status into the terminals store for every open
+	// session that targets a node on THIS network. Reactive via both
+	// `network.nodes` (refetched on heartbeat events) and `now` (the
+	// 1-second ticker inside stateOf), so a node stale-ing out flips
+	// the terminal banner within ≤1 s of the client-side threshold
+	// crossing — same freshness as the node-row itself.
+	$effect(() => {
+		const nodes = network?.nodes ?? [];
+		for (const session of termStore.sessions) {
+			if (session.networkId !== networkId) continue;
+			const node = nodes.find(n => n.id === session.nodeId);
+			if (!node) continue;
+			termStore.setNodeOffline(session.id, stateOf(node) === 'offline');
+		}
+	});
+
 	onMount(() => {
 		// Tick every second for timeAgo + token countdown.
 		const tickInterval = setInterval(() => {
@@ -540,12 +556,19 @@
 						Active Forwards
 					</div>
 					{#each activeForwards as fwd}
-						<div class="flex items-center justify-between border-b border-primary/10 py-1.5 last:border-0 font-mono text-sm">
+						{@const fwdNode = network?.nodes.find(n => n.id === fwd.nodeId)}
+						{@const fwdOffline = !!fwdNode && stateOf(fwdNode) === 'offline'}
+						<div class="flex items-center justify-between border-b border-primary/10 py-1.5 last:border-0 font-mono text-sm {fwdOffline ? 'opacity-60' : ''}">
 							<span>
 								<span class="text-muted-foreground">{nodeHostname(fwd.nodeId)}</span>
 								<span class="text-muted-foreground">:</span>{fwd.remotePort}
 								<span class="text-muted-foreground mx-1">→</span>
 								localhost:{fwd.localPort}
+								{#if fwdOffline}
+									<span class="ml-2 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium bg-destructive/10 text-destructive border-destructive/20">
+										node offline
+									</span>
+								{/if}
 							</span>
 							<div class="flex gap-1">
 								<button

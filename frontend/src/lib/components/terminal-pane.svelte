@@ -35,10 +35,26 @@
 				if (connMap.has(sid)) return;
 				const el = document.getElementById(`term-${sid}`);
 				if (!el) return;
-				const conn = connectShell(el as HTMLDivElement, nid, nodeId);
+				const conn = connectShell(el as HTMLDivElement, nid, nodeId, {
+					onConnect:      () => terms.setWsState(sid, 'open'),
+					onReconnecting: () => terms.setWsState(sid, 'reconnecting'),
+					onReconnected:  () => terms.setWsState(sid, 'open'),
+					onFailed:       () => terms.setWsState(sid, 'failed'),
+				});
 				connMap.set(sid, conn);
 			});
 		}
+	});
+
+	// The active session (if any) drives the banner above xterm.
+	const activeSession = $derived(terms.sessions.find(s => s.id === terms.activeId) ?? null);
+	const bannerKind = $derived.by(() => {
+		const s = activeSession;
+		if (!s) return null;
+		if (s.nodeOffline) return 'node-offline';
+		if (s.wsState === 'reconnecting') return 'reconnecting';
+		if (s.wsState === 'failed') return 'failed';
+		return null;
 	});
 
 	// Re-fit terminal when active tab changes (xterm needs correct dimensions).
@@ -109,11 +125,18 @@
 		<!-- Tab bar -->
 		<div class="flex items-center gap-1 border-b border-border/50 bg-background/80 backdrop-blur-sm px-3 py-1.5">
 			{#each terms.sessions as session (session.id)}
+				{@const warn = session.nodeOffline || session.wsState === 'reconnecting' || session.wsState === 'failed'}
 				<div
 					class="flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium transition-colors cursor-pointer {terms.activeId === session.id ? 'bg-primary/10 text-primary shadow-sm shadow-primary/5' : 'text-muted-foreground hover:text-foreground hover:bg-white/5'}"
 					role="tab"
 					aria-selected={terms.activeId === session.id}
 				>
+					{#if warn}
+						<span
+							class="h-1.5 w-1.5 rounded-full bg-destructive animate-pulse"
+							title={session.nodeOffline ? 'Node offline' : 'Connection issue'}
+						></span>
+					{/if}
 					<button
 						onclick={() => { terms.focus(session.id); if (terms.collapsed) terms.toggleCollapse(); }}
 						class="max-w-24 truncate font-mono"
@@ -158,6 +181,17 @@
 		<!-- Terminal containers -->
 		{#if !terms.collapsed}
 			<div class="relative flex-1 overflow-hidden bg-[#0a0e14] rounded-t-lg">
+				{#if bannerKind}
+					<div class="absolute inset-x-0 top-0 z-10 bg-destructive/90 text-destructive-foreground text-center py-1.5 text-xs font-medium shadow-md">
+						{#if bannerKind === 'node-offline'}
+							Node is offline — your input isn't reaching the agent.
+						{:else if bannerKind === 'reconnecting'}
+							Connection lost — reconnecting…
+						{:else}
+							Connection failed — the agent isn't responding.
+						{/if}
+					</div>
+				{/if}
 				{#each terms.sessions as session, i (session.id)}
 					{@const isActive = terms.activeId === session.id}
 					<div

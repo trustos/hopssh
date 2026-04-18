@@ -5,6 +5,11 @@ export interface TerminalSession {
 	networkId: string;
 	nodeId: string;
 	hostname: string;
+	// Reactive UI state — updated by terminal-pane + the network
+	// detail page as events arrive. Drives the banner/tab-dot that
+	// tells the user their input isn't getting through.
+	nodeOffline: boolean;
+	wsState: 'connecting' | 'open' | 'reconnecting' | 'failed';
 }
 
 // Module-scoped singleton state — survives across route navigation.
@@ -37,9 +42,30 @@ export function getTerminals() {
 				collapsed = false;
 				return;
 			}
-			sessions = [...sessions, { id, networkId, nodeId, hostname }];
+			sessions = [
+				...sessions,
+				{ id, networkId, nodeId, hostname, nodeOffline: false, wsState: 'connecting' }
+			];
 			activeId = id;
 			collapsed = false;
+		},
+
+		setNodeOffline(id: string, offline: boolean) {
+			const idx = sessions.findIndex(s => s.id === id);
+			if (idx === -1) return;
+			if (sessions[idx].nodeOffline === offline) return; // no-op
+			const copy = [...sessions];
+			copy[idx] = { ...copy[idx], nodeOffline: offline };
+			sessions = copy;
+		},
+
+		setWsState(id: string, state: TerminalSession['wsState']) {
+			const idx = sessions.findIndex(s => s.id === id);
+			if (idx === -1) return;
+			if (sessions[idx].wsState === state) return; // no-op
+			const copy = [...sessions];
+			copy[idx] = { ...copy[idx], wsState: state };
+			sessions = copy;
 		},
 
 		close(id: string) {
