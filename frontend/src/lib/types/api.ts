@@ -89,6 +89,8 @@ export interface NodeResponse {
 	peersReportedAt?: number;
 	connectivity?: Connectivity;
 	peers?: PeerDetail[];
+	/** Self-reported hop-agent build, e.g. "v0.9.15". Undefined for pre-v0.9.15 agents. */
+	agentVersion?: string;
 }
 
 export interface CreateNodeResponse {

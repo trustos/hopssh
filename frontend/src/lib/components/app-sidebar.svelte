@@ -1,14 +1,21 @@
 <script lang="ts">
+	import { onMount } from 'svelte';
 	import { page } from '$app/state';
 	import { getAuth } from '$lib/stores/auth.svelte';
 	import { getTheme } from '$lib/stores/theme.svelte';
+	import { getServerInfo } from '$lib/stores/server-info.svelte';
 	import TerminalPane from '$lib/components/terminal-pane.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
-	import { Globe, Smartphone, FileText, Sun, Moon, LogOut } from 'lucide-svelte';
+	import { Globe, Smartphone, FileText, Sun, Moon, LogOut, Server } from 'lucide-svelte';
 
 	const auth = getAuth();
 	const theme = getTheme();
+	const serverInfo = getServerInfo();
 	let { children } = $props();
+
+	onMount(() => {
+		serverInfo.init();
+	});
 
 	const isNetworks = $derived(
 		page.url.pathname === '/' || page.url.pathname.startsWith('/networks')
@@ -79,6 +86,15 @@
 
 		<Sidebar.Footer>
 			<Sidebar.Menu>
+				<Sidebar.MenuItem>
+					<Sidebar.MenuButton
+						class="text-muted-foreground pointer-events-none"
+						tooltipContent={serverInfo.current ? `Control plane ${serverInfo.current}` : undefined}
+					>
+						<Server class="size-4" />
+						<span class="truncate font-mono text-xs">{serverInfo.current ?? '—'}</span>
+					</Sidebar.MenuButton>
+				</Sidebar.MenuItem>
 				<Sidebar.MenuItem>
 					<Sidebar.MenuButton class="text-muted-foreground pointer-events-none">
 						<span class="truncate text-xs">{auth.user?.email}</span>

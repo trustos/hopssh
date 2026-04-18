@@ -16,12 +16,14 @@
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { getTerminals } from '$lib/stores/terminals.svelte';
+	import { getServerInfo } from '$lib/stores/server-info.svelte';
 	import { Zap, Waypoints, Router } from 'lucide-svelte';
 	import { displayStatus } from '$lib/node-status';
 	import NetworkTopology from '$lib/components/network-topology.svelte';
 	import ActivityTable from '$lib/components/activity-table.svelte';
 
 	const termStore = getTerminals();
+	const serverInfo = getServerInfo();
 
 	let network = $state<NetworkDetailResponse | null>(null);
 	let dnsRecords = $state<DNSRecordResponse[]>([]);
@@ -694,6 +696,7 @@
 								<Table.Head class="hidden lg:table-cell">IP</Table.Head>
 								<Table.Head class="hidden md:table-cell">DNS</Table.Head>
 								<Table.Head class="hidden sm:table-cell">Last Seen</Table.Head>
+								<Table.Head class="hidden lg:table-cell">Version</Table.Head>
 								<Table.Head class="text-right">Actions</Table.Head>
 							</Table.Row>
 						</Table.Header>
@@ -802,6 +805,17 @@
 										{/if}
 									</td>
 									<td class="hidden sm:table-cell px-4 py-3 text-muted-foreground">{timeAgo(node.lastSeenAt)}</td>
+									<td class="hidden lg:table-cell px-4 py-3 font-mono text-xs">
+										{#if node.nodeType === 'lighthouse' || !node.agentVersion}
+											<span class="text-muted-foreground/50">—</span>
+										{:else if serverInfo.current && node.agentVersion !== serverInfo.current}
+											<span class="text-amber-500" title="Agent version differs from control plane ({serverInfo.current}) — self-update pending or rollback in progress">
+												{node.agentVersion}
+											</span>
+										{:else}
+											<span class="text-muted-foreground">{node.agentVersion}</span>
+										{/if}
+									</td>
 									<td class="px-4 py-3 text-right">
 										<div class="flex justify-end gap-1">
 											{#if hasCap(node, 'health') && stateOf(node) === 'online'}
@@ -843,7 +857,7 @@
 								<!-- Per-peer drill-down: expanded on chevron click above. -->
 								{#if isExpanded && canExpand}
 									<tr class="bg-muted/30">
-										<td colspan="7" class="px-6 py-3">
+										<td colspan="8" class="px-6 py-3">
 											<div class="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
 												Peers ({node.peers?.length ?? 0})
 											</div>
@@ -887,7 +901,7 @@
 								<!-- Inline port forward form -->
 								{#if forwardNodeId === node.id}
 									<tr class="bg-muted/50">
-										<td colspan="7" class="px-4 py-3">
+										<td colspan="8" class="px-4 py-3">
 											<form onsubmit={(e) => startForward(node.id, e)} class="flex items-center gap-3">
 												<span class="text-sm text-muted-foreground">Forward from {node.dnsName || node.hostname || node.id.slice(0, 8)}:</span>
 												<div class="flex items-center gap-1">
