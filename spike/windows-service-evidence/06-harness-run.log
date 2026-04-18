@@ -1,0 +1,8 @@
+$ shelltest --token-file /tmp/win-hop-agent-token --addr 10.42.1.10:41820 --duration 3s
+08:43:45.533 DIAL ws://10.42.1.10:41820/shell
+08:43:45.613 DIALED in 80.342291ms, status=101
+08:43:45.613 SENT resize rows=24 cols=80
+... (frames 1-4: focus, clear, title setup) ...
+08:43:45.761 RECV BIN n=128 "[hopssh] shell: C:\WINDOWS\system32\cmd.exe.[3;1HC:\Windows\System32>"
+       ^ note prompt cwd is C:\Windows\System32 — LocalSystem's default, not C:\Users\Yavor
+08:43:48.616 SUMMARY frames=5 bytes=327 duration=3.082595458s

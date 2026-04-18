@@ -79,11 +79,11 @@ func runAgentInstall(args []string) {
 		} else {
 			installAgentLaunchdUser()
 		}
+	case "windows":
+		installAgentWindows()
 	default:
 		fmt.Printf("  Service auto-install not supported on %s.\n", runtime.GOOS)
 		fmt.Println("  Start manually: hop-agent serve")
-		fmt.Println("  Or create a Windows service (use sc.exe, not sc — PowerShell aliases sc to Set-Content):")
-		fmt.Println("    sc.exe create hop-agent binPath= \"C:\\Windows\\System32\\hop-agent.exe serve\"")
 	}
 }
 
@@ -210,6 +210,8 @@ func runAgentUninstall(args []string) {
 		uninstallAgentSystemd()
 	case "darwin":
 		uninstallAgentLaunchd()
+	case "windows":
+		uninstallAgentWindows()
 	default:
 		fmt.Fprintf(os.Stderr, "Error: Unsupported operating system: %s\n", runtime.GOOS)
 		os.Exit(1)
@@ -271,6 +273,9 @@ func runRestart() {
 				return
 			}
 		}
+	case "windows":
+		restartAgentWindows()
+		return
 	}
 	fmt.Fprintf(os.Stderr, "No service found. Start manually: hop-agent serve\n")
 	os.Exit(1)
@@ -295,6 +300,9 @@ func runStop() {
 				return
 			}
 		}
+	case "windows":
+		stopAgentWindows()
+		return
 	}
 	fmt.Fprintf(os.Stderr, "No service found.\n")
 	os.Exit(1)

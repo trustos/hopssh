@@ -1,0 +1,12 @@
+$ hop-agent stop
+==> hop-agent stopped.
+
+Last 8 lines of C:\ProgramData\hopssh\hop-agent.log at stop:
+2026/04/18 11:43:45 [shell] started C:\WINDOWS\system32\cmd.exe (PID 8788)
+2026/04/18 11:43:45 [shell] resized to 80x24
+2026/04/18 11:43:48 [shell] WebSocket read ended: websocket: close 1006 (abnormal closure): unexpected EOF
+2026/04/18 11:43:58 Shutting down agent...
+2026/04/18 11:43:58 [dns-proxy] stopped
+2026/04/18 11:43:59 [dns] split-DNS removed for .home
+2026/04/18 11:43:59 [agent] stopping Nebula mesh connection (kernel TUN)
+time="2026-04-18T11:43:59+03:00" level=info msg=Goodbye

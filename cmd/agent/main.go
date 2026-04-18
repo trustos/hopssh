@@ -92,6 +92,20 @@ func main() {
 }
 
 func runServe(args []string) {
+	// Shutdown signalling. Set up first so the Windows service
+	// handler can redirect logs before any log.Fatal path runs.
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+	defer shutdownCancel()
+
+	// If launched by Windows SCM, redirect logs + install the service
+	// handler that bridges Stop/Shutdown into shutdownCancel. Returns
+	// false in console mode; we then rely on signals.
+	_ = svcIntegrateIfNeeded(shutdownCancel)
+
+	// Clean up any leftover <exe>.old from a previous Windows self
+	// update. No-op on other platforms.
+	cleanupOldBinary()
+
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	cfgDir := fs.String("config-dir", "", "Override config directory")
 	tokenFile := fs.String("token-file", "", "Path to the bearer token file")
@@ -289,9 +303,20 @@ func runServe(args []string) {
 		startOSListener()
 	}
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
+	// Wait for Unix signals (SIGINT/SIGTERM) OR Windows SCM
+	// Stop/Shutdown — both cancel shutdownCtx via shutdownCancel set
+	// up at the top of runServe.
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		select {
+		case <-sig:
+			shutdownCancel()
+		case <-shutdownCtx.Done():
+		}
+	}()
+
+	<-shutdownCtx.Done()
 
 	log.Println("Shutting down agent...")
 	renewCancel()

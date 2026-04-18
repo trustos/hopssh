@@ -1,0 +1,5 @@
+$ hop-agent uninstall
+==> hop-agent service uninstalled.
+
+$ Get-Service hop-agent -ErrorAction SilentlyContinue
+(returned empty — service deleted)

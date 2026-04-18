@@ -1,0 +1,22 @@
+$ hop-agent install
+==> hop-agent service installed and started.
+    Config:    C:\Users\Yavor\.config\hopssh
+    Logs:      C:\ProgramData\hopssh\hop-agent.log
+    Status:    sc.exe query hop-agent
+    Stop:      hop-agent stop
+    Restart:   hop-agent restart
+    Uninstall: hop-agent uninstall
+
+$ sc.exe qc hop-agent
+SERVICE_NAME: hop-agent
+        TYPE               : 10  WIN32_OWN_PROCESS
+        START_TYPE         : 2   AUTO_START
+        ERROR_CONTROL      : 1   NORMAL
+        BINARY_PATH_NAME   : C:\Users\Yavor\hop-agent.exe serve --config-dir C:\Users\Yavor\.config\hopssh
+        DISPLAY_NAME       : hopssh mesh agent
+        SERVICE_START_NAME : LocalSystem
+
+$ Get-Service hop-agent
+Status   Name               DisplayName
+------   ----               -----------
+Running  hop-agent          hopssh mesh agent
