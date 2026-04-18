@@ -15,6 +15,7 @@
 	import { Badge } from '$lib/components/ui/badge/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { getTerminals } from '$lib/stores/terminals.svelte';
+	import { Zap, Waypoints, Router } from 'lucide-svelte';
 
 	const termStore = getTerminals();
 
@@ -422,6 +423,36 @@
 		}
 	}
 
+	// Connectivity badge rendering. `connectivity` is set by the server
+	// only for non-lighthouse nodes whose agent has reported peer state
+	// (see deriveConnectivity in internal/api/types.go). Absent = unknown.
+	function connectivityLabel(c: string | undefined): string {
+		switch (c) {
+			case 'direct':  return 'P2P';
+			case 'mixed':   return 'Mixed';
+			case 'relayed': return 'Relayed';
+			case 'idle':    return '0 peers';
+			default:        return '';
+		}
+	}
+
+	function connectivityClass(c: string | undefined): string {
+		switch (c) {
+			case 'direct':  return 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20';
+			case 'mixed':   return 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20';
+			case 'relayed': return 'bg-blue-500/10 text-blue-600 dark:text-blue-400 border-blue-500/20';
+			case 'idle':    return 'bg-muted text-muted-foreground border-border';
+			default:        return '';
+		}
+	}
+
+	function connectivityTooltip(node: NodeResponse): string {
+		const d = node.peersDirect ?? 0;
+		const r = node.peersRelayed ?? 0;
+		const when = node.peersReportedAt ? `, ${timeAgo(node.peersReportedAt)}` : '';
+		return `${d} direct, ${r} relayed${when}`;
+	}
+
 	function timeAgo(ts: number | null): string {
 		if (!ts) return 'Never';
 		const diff = now - ts;
@@ -565,6 +596,21 @@
 											<span class="text-xs capitalize text-muted-foreground">{node.status}</span>
 											{#if node.status === 'pending'}
 												<span class="text-xs text-yellow-500">awaiting enrollment</span>
+											{/if}
+											{#if node.connectivity && node.status === 'online'}
+												<span
+													class="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium {connectivityClass(node.connectivity)}"
+													title={connectivityTooltip(node)}
+												>
+													{#if node.connectivity === 'direct'}
+														<Zap class="h-3 w-3" />
+													{:else if node.connectivity === 'mixed'}
+														<Waypoints class="h-3 w-3" />
+													{:else if node.connectivity === 'relayed'}
+														<Router class="h-3 w-3" />
+													{/if}
+													{connectivityLabel(node.connectivity)}
+												</span>
 											{/if}
 										</div>
 									</td>

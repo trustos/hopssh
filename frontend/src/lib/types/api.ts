@@ -60,6 +60,8 @@ export interface InviteDetailResponse {
 	expiresAt: number | null;
 }
 
+export type Connectivity = 'direct' | 'mixed' | 'relayed' | 'idle';
+
 export interface NodeResponse {
 	id: string;
 	networkId: string;
@@ -75,6 +77,10 @@ export interface NodeResponse {
 	status: string;
 	lastSeenAt: number | null;
 	createdAt: number;
+	peersDirect?: number;
+	peersRelayed?: number;
+	peersReportedAt?: number;
+	connectivity?: Connectivity;
 }
 
 export interface CreateNodeResponse {
