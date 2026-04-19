@@ -231,9 +231,19 @@ func loadPrimaryEnrollment() *enrollmentRegistry {
 var enrollmentNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
 
 // reservedEnrollmentNames are directory names that can't be used as an
-// enrollment name because they collide with registry artifacts.
+// enrollment name because they collide with registry artifacts or with
+// Windows device-file names (creating `.../con/` silently fails on
+// NTFS — Windows interprets `con` as the console device).
 var reservedEnrollmentNames = map[string]struct{}{
 	"enrollments.json": {},
+	// Windows reserved device names — case-folding is already handled
+	// by the lowercase-only validation regex, so only the lowercase
+	// forms need to be listed.
+	"con": {}, "prn": {}, "aux": {}, "nul": {},
+	"com1": {}, "com2": {}, "com3": {}, "com4": {}, "com5": {},
+	"com6": {}, "com7": {}, "com8": {}, "com9": {},
+	"lpt1": {}, "lpt2": {}, "lpt3": {}, "lpt4": {}, "lpt5": {},
+	"lpt6": {}, "lpt7": {}, "lpt8": {}, "lpt9": {},
 }
 
 func validateEnrollmentName(name string) error {

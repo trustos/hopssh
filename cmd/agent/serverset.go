@@ -145,7 +145,9 @@ func (s *serverSet) rebindMesh(inst *meshInstance, handler http.Handler, svc mes
 	return nil
 }
 
-// shutdownAll stops every tracked HTTP server gracefully.
+// shutdownAll stops every tracked HTTP server gracefully. Each server
+// gets its own 5 s timeout so a hung connection on one instance can't
+// starve the remaining instances out of their shutdown budget.
 func (s *serverSet) shutdownAll() {
 	s.mu.Lock()
 	entries := make([]*instanceServer, 0, len(s.servers))
@@ -157,18 +159,20 @@ func (s *serverSet) shutdownAll() {
 	s.bare = nil
 	s.mu.Unlock()
 
-	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	shutdown := func(srv *http.Server) {
+		if srv == nil {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}
 	for _, e := range entries {
 		e.mu.Lock()
 		srv := e.srv
 		e.srv = nil
 		e.mu.Unlock()
-		if srv != nil {
-			_ = srv.Shutdown(shutCtx)
-		}
+		shutdown(srv)
 	}
-	if bare != nil {
-		_ = bare.Shutdown(shutCtx)
-	}
+	shutdown(bare)
 }

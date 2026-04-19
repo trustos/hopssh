@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -146,8 +147,11 @@ func (k *kernelTunMeshService) Close() {
 // connection times out (minutes).
 //
 // Scoped to one meshInstance — each instance runs its own watcher
-// against its own Control, pokes its own heartbeat channel.
-func watchNetworkChanges(inst *meshInstance, ctrl *nebula.Control) {
+// against its own Control, pokes its own heartbeat channel. Exits
+// when ctx is cancelled so `hop-agent leave` and cert-renewal reloads
+// don't leak the goroutine or keep it calling methods on a stopped
+// Nebula Control.
+func watchNetworkChanges(ctx context.Context, inst *meshInstance, ctrl *nebula.Control) {
 	host := extractHost(inst.endpoint())
 	if host == "" {
 		return
@@ -160,7 +164,13 @@ func watchNetworkChanges(inst *meshInstance, ctrl *nebula.Control) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
 		now := time.Now()
 
 		// Detect sleep/wake: if the ticker fires and the gap since the

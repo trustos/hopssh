@@ -184,7 +184,9 @@ func updateResolvedDropIn(instanceName string, entry *dropInEntry) error {
 		strings.Join(dnsAddrs, " "),
 		strings.Join(domains, " "),
 	)
-	return os.WriteFile(dropInPath, []byte(content), 0644)
+	// atomicWrite (temp + rename) so a SIGKILL mid-write can't leave
+	// a truncated block that systemd-resolved silently drops.
+	return atomicWrite(dropInPath, []byte(content), 0644)
 }
 
 // stubForwardsQueries sends a single UDP DNS query to 127.0.0.53:53

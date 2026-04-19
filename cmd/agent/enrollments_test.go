@@ -175,7 +175,7 @@ func TestValidateEnrollmentName(t *testing.T) {
 			t.Errorf("valid name %q rejected: %v", name, err)
 		}
 	}
-	invalid := []string{"", "A", "Home", "has space", "has.dot", "has/slash", "-leading", strings.Repeat("a", 33), "enrollments.json"}
+	invalid := []string{"", "A", "Home", "has space", "has.dot", "has/slash", "-leading", strings.Repeat("a", 33), "enrollments.json", "con", "nul", "com1", "lpt9", "aux", "prn"}
 	for _, name := range invalid {
 		if err := validateEnrollmentName(name); err == nil {
 			t.Errorf("invalid name %q accepted", name)

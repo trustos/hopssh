@@ -663,9 +663,9 @@ func reloadNebula(inst *meshInstance) {
 			warmPeersFromHeartbeat(inst, endpoint)
 		}
 
-		// Start network-change watcher.
+		// (Re)start network-change watcher bound to the fresh ctrl.
 		if ctrl := newSvc.NebulaControl(); ctrl != nil && inst.endpoint() != "" {
-			go watchNetworkChanges(inst, ctrl)
+			inst.startWatcher(ctrl)
 		}
 
 		// Swap HTTP listener from OS stack to mesh.
@@ -675,6 +675,9 @@ func reloadNebula(inst *meshInstance) {
 		return
 	}
 
+	// Hot-restart path: tear down the old watcher first so it doesn't
+	// outlive its Control, then close the old svc, start the new one.
+	inst.stopWatcher()
 	oldSvc := inst.svc
 	inst.svc = nil
 	inst.svcMu.Unlock()
@@ -695,6 +698,11 @@ func reloadNebula(inst *meshInstance) {
 	}
 
 	inst.setSvc(newSvc)
+
+	// Spawn a fresh watcher against the new ctrl.
+	if ctrl := newSvc.NebulaControl(); ctrl != nil && inst.endpoint() != "" {
+		inst.startWatcher(ctrl)
+	}
 
 	log.Printf("[renew %s] Nebula restarted with new certificate (mode: %s)", inst.name(), tunMode)
 

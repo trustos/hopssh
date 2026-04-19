@@ -231,6 +231,7 @@ func runServe(args []string) {
 // control plane and recover later.
 func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverSet, mux http.Handler) {
 	cfgPath := filepath.Join(inst.dir(), "nebula.yaml")
+	inst.parentCtx = ctx
 
 	authToken, err := readInstanceToken(inst)
 	if err != nil {
@@ -285,7 +286,7 @@ func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverS
 	warmPeersFromHeartbeat(inst, inst.endpoint())
 
 	if ctrl := meshSvc.NebulaControl(); ctrl != nil {
-		go watchNetworkChanges(inst, ctrl)
+		inst.startWatcher(ctrl)
 	}
 
 	if err := servers.startMeshListener(inst, authed, meshSvc, fmt.Sprintf(":%d", agentAPIPort)); err != nil {

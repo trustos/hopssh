@@ -29,9 +29,17 @@ type meshInstance struct {
 	// cleared on close.
 	dnsConfig *dnsConfig
 
-	// cancel stops the per-instance goroutines (heartbeat, renewal,
-	// network-change watcher) when the instance is closing down.
-	cancel context.CancelFunc
+	// parentCtx scopes every per-instance goroutine (heartbeat,
+	// renewal, network-change watcher) to the agent's lifetime.
+	// Assigned once in startMeshInstance.
+	parentCtx context.Context
+
+	// watcherCancel stops the currently-running watchNetworkChanges
+	// goroutine. Re-derived each time Nebula is (re)started so the
+	// watcher always holds a live *nebula.Control reference — a stale
+	// one would call RebindUDPServer/CloseAllTunnels on a closed
+	// instance, which the Nebula API doesn't contract against.
+	watcherCancel context.CancelFunc
 
 	// onRestart is invoked after a cert-renewal-driven Nebula restart.
 	// The caller wires this to rebind the instance's HTTP listener to
@@ -121,12 +129,36 @@ func (i *meshInstance) currentSvc() meshService {
 	return i.svc
 }
 
+// startWatcher spawns watchNetworkChanges under a fresh context
+// anchored on i.parentCtx. Any prior watcher is cancelled first so
+// the new one is the only live goroutine holding the current ctrl.
+// Called at initial startup and after every cert-renewal reload.
+func (i *meshInstance) startWatcher(ctrl *nebula.Control) {
+	if i.watcherCancel != nil {
+		i.watcherCancel()
+	}
+	parent := i.parentCtx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	i.watcherCancel = cancel
+	go watchNetworkChanges(ctx, i, ctrl)
+}
+
+// stopWatcher cancels the current watchNetworkChanges goroutine, if
+// any. Idempotent.
+func (i *meshInstance) stopWatcher() {
+	if i.watcherCancel != nil {
+		i.watcherCancel()
+		i.watcherCancel = nil
+	}
+}
+
 // close tears down the instance: stops goroutines, closes Nebula,
 // cleans up DNS. Idempotent. Safe to call from any goroutine.
 func (i *meshInstance) close() {
-	if i.cancel != nil {
-		i.cancel()
-	}
+	i.stopWatcher()
 	i.svcMu.Lock()
 	svc := i.svc
 	i.svc = nil
