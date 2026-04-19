@@ -113,20 +113,27 @@ func runClientJoin(args []string) {
 	fmt.Printf("\n  ✓ Joined network (%s)\n", jr.NebulaIP)
 	fmt.Printf("  ✓ DNS domain: .%s\n", jr.DNSDomain)
 
-	// Start cert renewal in background (certs are 24h, renew at 12h).
+	// Start embedded Nebula and stay running. Build a synthetic
+	// meshInstance so the per-instance renewal loop works against
+	// /etc/hop-client (not <configDir>/<name>).
+	inst := newMeshInstance(&Enrollment{
+		Name:     "hop-client",
+		NodeID:   jr.NodeID,
+		Endpoint: *endpoint,
+		TunMode:  "userspace",
+	})
+	inst.customDir = clientDir
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	go runCertRenewal(ctx, *endpoint, jr.NodeID, jr.AgentToken)
+	go runCertRenewal(ctx, inst)
 
-	// Start embedded Nebula and stay running.
 	configPath := filepath.Join(clientDir, "nebula.yaml")
 	svc, err := startNebula(configPath)
 	if err != nil {
 		log.Fatalf("Failed to start Nebula: %v", err)
 	}
-	nebulaMu.Lock()
-	currentNebula = svc
-	nebulaMu.Unlock()
+	inst.setSvc(svc)
 	defer svc.Close()
 
 	fmt.Println("  ✓ Connected to mesh")

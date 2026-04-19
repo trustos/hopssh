@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
@@ -28,51 +27,12 @@ type meshService interface {
 	NebulaControl() *nebula.Control
 }
 
-// nebulaControlLocked returns the current mesh's Nebula Control for
-// read-only inspection (peer state, host map), or nil if no mesh is
-// running. Caller must hold nebulaMu. Returns nil in the brief window
-// between Nebula shutdown and the reloadNebula callback swapping in
-// the next instance.
-func nebulaControlLocked() *nebula.Control {
-	if currentNebula == nil {
-		return nil
-	}
-	return currentNebula.NebulaControl()
-}
-
-// currentNebula is the running embedded Nebula instance.
-// Protected by nebulaMu for concurrent access from main and renewal goroutines.
-var (
-	currentNebula meshService
-	nebulaMu      sync.Mutex
-)
-
-// heartbeatTrigger is signaled from wake/network-change detection to
-// kick an out-of-cycle heartbeat so the dashboard sees state changes
-// within seconds instead of up to one heartbeat interval later.
-// Buffered size 1 + non-blocking send: if a signal is already pending,
-// additional signals are dropped (the pending one will fire exactly
-// one heartbeat, which is what we want — no pile-up on WiFi flap).
-var heartbeatTrigger = make(chan struct{}, 1)
-
-// signalHeartbeat asks runHeartbeat to fire an out-of-cycle heartbeat
-// immediately. Safe to call from any goroutine; never blocks.
-func signalHeartbeat() {
-	select {
-	case heartbeatTrigger <- struct{}{}:
-	default:
-	}
-}
-
-// onNebulaRestart is called after Nebula is successfully restarted (cert renewal).
-// Set by runServe() to recreate the mesh HTTP listener.
-var onNebulaRestart func(svc meshService)
-
-// activeDNSConfig holds the current split-DNS configuration (kernel TUN mode).
-// Set during Nebula startup (runServe or reloadNebula cold-start), cleaned up
-// on agent shutdown. Package-level so reloadNebula() can configure DNS when
-// starting Nebula for the first time after a cert-expired boot.
-var activeDNSConfig *dnsConfig
+// Per-instance Nebula state (currentNebula, heartbeatTrigger,
+// onNebulaRestart, activeDNSConfig) used to live here as package-level
+// globals back when one agent process held one enrollment. Multi-
+// network-per-agent (roadmap #29) promoted all of that to fields on
+// meshInstance — see instance.go. Keep this note so future readers
+// don't go looking for the old globals.
 
 // --- Userspace mode (gvisor netstack) ---
 
@@ -184,8 +144,11 @@ func (k *kernelTunMeshService) Close() {
 // rebind when the active interface or IP changes. This handles WiFi↔cellular
 // switches — without it, Nebula stays on a stale relay tunnel until the
 // connection times out (minutes).
-func watchNetworkChanges(ctrl *nebula.Control, endpoint string) {
-	host := extractHost(endpoint)
+//
+// Scoped to one meshInstance — each instance runs its own watcher
+// against its own Control, pokes its own heartbeat channel.
+func watchNetworkChanges(inst *meshInstance, ctrl *nebula.Control) {
+	host := extractHost(inst.endpoint())
 	if host == "" {
 		return
 	}
@@ -220,16 +183,16 @@ func watchNetworkChanges(ctrl *nebula.Control, endpoint string) {
 			if sleptAndWoke && !addrChanged {
 				reason = fmt.Sprintf("sleep/wake detected (tick gap %v)", tickGap.Round(time.Second))
 			}
-			log.Printf("[agent] %s detected (iface: %s→%s), rebinding Nebula", reason, lastIface, currentIface)
+			log.Printf("[agent %s] %s detected (iface: %s→%s), rebinding Nebula", inst.name(), reason, lastIface, currentIface)
 			ctrl.RebindUDPServer()
 			closed := ctrl.CloseAllTunnels(true)
 			if closed > 0 {
-				log.Printf("[agent] closed %d tunnels to force re-handshake on new network", closed)
+				log.Printf("[agent %s] closed %d tunnels to force re-handshake on new network", inst.name(), closed)
 			}
 			// Poke the heartbeat goroutine so the dashboard learns the
 			// node's real state within seconds instead of waiting up to
 			// one full heartbeat interval.
-			signalHeartbeat()
+			inst.signalHeartbeat()
 			lastIface = currentIface
 			lastAddrs = currentAddrs
 		}
@@ -289,8 +252,8 @@ func readMeshIPFromCert(nebulaConfigPath string) (string, error) {
 // happened as non-root. Kernel TUN uses a real OS network interface (utun)
 // with near-zero per-packet overhead. Userspace mode (gvisor netstack) adds
 // ~4ms latency per packet, which degrades VNC/Screen Sharing and similar workloads.
-func readTunMode() string {
-	data, err := os.ReadFile(filepath.Join(activeEnrollDir(), "tun-mode"))
+func readTunMode(inst *meshInstance) string {
+	data, err := os.ReadFile(filepath.Join(inst.dir(), "tun-mode"))
 	if err != nil {
 		if isPrivileged() {
 			return "kernel"
@@ -305,8 +268,8 @@ func readTunMode() string {
 	// where the agent was enrolled as a regular user but later installed as a
 	// root system service.
 	if mode == "userspace" && isPrivileged() {
-		log.Printf("[agent] upgrading to kernel TUN mode (running as root)")
-		upgradeTunMode()
+		log.Printf("[agent %s] upgrading to kernel TUN mode (running as root)", inst.name())
+		upgradeTunMode(inst)
 		return "kernel"
 	}
 
@@ -319,12 +282,12 @@ func readTunMode() string {
 // upgradeTunMode switches the persisted TUN mode from userspace to kernel
 // and updates nebula.yaml accordingly. Preserves all other config (including
 // which may update nebula.yaml via upgradeTunMode).
-func upgradeTunMode() {
-	dir := activeEnrollDir()
+func upgradeTunMode(inst *meshInstance) {
+	dir := inst.dir()
 	// Update the persisted tun-mode file.
 	tunModePath := filepath.Join(dir, "tun-mode")
 	if err := os.WriteFile(tunModePath, []byte("kernel"), 0644); err != nil {
-		log.Printf("[agent] WARNING: failed to update tun-mode file: %v", err)
+		log.Printf("[agent %s] WARNING: failed to update tun-mode file: %v", inst.name(), err)
 	}
 
 	// Update nebula.yaml: replace tun section only.

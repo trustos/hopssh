@@ -15,10 +15,10 @@ type dnsConfig struct {
 	ServerAddr string // e.g., "132.145.232.64:15300"
 }
 
-// readDNSConfig reads the persisted DNS configuration from the config directory.
+// readDNSConfig reads the persisted DNS configuration for one instance.
 // Returns nil if DNS is not configured (no domain file).
-func readDNSConfig() *dnsConfig {
-	dir := activeEnrollDir()
+func readDNSConfig(inst *meshInstance) *dnsConfig {
+	dir := inst.dir()
 	domain, err := os.ReadFile(filepath.Join(dir, "dns-domain"))
 	if err != nil {
 		return nil

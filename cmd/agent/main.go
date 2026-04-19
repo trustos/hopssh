@@ -17,7 +17,6 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -126,24 +125,22 @@ func runServe(args []string) {
 		log.Fatalf("Legacy config migration failed: %v", err)
 	}
 
-	// Phase A: one enrollment per agent process. Pick the first
-	// (and only) entry from the registry as the active one. Phase B
-	// will loop over all entries here and fan out per-instance
-	// goroutines.
 	reg, err := loadEnrollmentRegistry(configDir)
 	if err != nil {
 		log.Fatalf("Load enrollments: %v", err)
 	}
+	// Set activeEnrollment so CLI-style paths (readEndpointFromDisk
+	// fallbacks, legacy file defaults) continue to work against one
+	// "primary" enrollment. The per-instance runtime (below) does not
+	// depend on this global.
 	if reg.Len() > 0 {
 		setActiveEnrollment(reg.List()[0])
-		if reg.Len() > 1 {
-			log.Printf("[agent] NOTE: %d enrollments present; Phase A uses only %q. Multi-network fan-out ships in Phase B.", reg.Len(), activeEnrollment.Name)
-		}
 	}
 
-	// Derive flag defaults from the active enrollment's subdir (or
-	// configDir as a last resort for un-enrolled agents being started
-	// for debugging).
+	// Honor legacy flag overrides (--token-file, --endpoint-file, etc.)
+	// for un-enrolled debug runs. When enrollments exist, the per-
+	// instance loop below reads paths directly off the instance's
+	// subdir instead of these flags.
 	baseDir := activeEnrollDir()
 	if *tokenFile == "" {
 		*tokenFile = filepath.Join(baseDir, "token")
@@ -158,19 +155,8 @@ func runServe(args []string) {
 		*nebulaConfig = filepath.Join(baseDir, "nebula.yaml")
 	}
 
-	authToken := *token
-	if authToken == "" {
-		data, err := os.ReadFile(*tokenFile)
-		if err != nil {
-			log.Fatalf("Cannot read token file %s: %v", *tokenFile, err)
-		}
-		authToken = strings.TrimSpace(string(data))
-	}
-	if authToken == "" {
-		log.Fatal("No authentication token configured")
-	}
-
-	// Build HTTP handler once — it never changes across Nebula restarts.
+	// Build the HTTP mux once — handlers are stateless except for the
+	// per-instance auth token which gets wrapped per listener below.
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("POST /exec", handleExec)
@@ -182,150 +168,36 @@ func runServe(args []string) {
 	mux.HandleFunc("GET /debug/pprof/profile", netpprof.Profile)
 	mux.HandleFunc("GET /debug/pprof/symbol", netpprof.Symbol)
 	mux.HandleFunc("GET /debug/pprof/trace", netpprof.Trace)
-	authed := authMiddleware(authToken, mux)
 
-	// Read endpoint for config management and cert renewal.
-	var agentEndpoint string
-	if epData, err := os.ReadFile(*endpointFile); err == nil {
-		agentEndpoint = strings.TrimSpace(string(epData))
-	}
-
-	// Start cert renewal + heartbeat if endpoint + nodeID are available.
 	renewCtx, renewCancel := context.WithCancel(context.Background())
 	defer renewCancel()
-	if agentEndpoint != "" {
-		if idData, err := os.ReadFile(*nodeIDFile); err == nil {
-			nodeID := strings.TrimSpace(string(idData))
-			if nodeID != "" {
-				go runCertRenewal(renewCtx, agentEndpoint, nodeID, authToken)
-				go runHeartbeat(renewCtx, agentEndpoint, nodeID, authToken)
-				log.Printf("[agent] cert auto-renewal + heartbeat enabled (endpoint: %s)", agentEndpoint)
-			}
+
+	instances := newInstanceRegistry()
+	servers := newServerSet()
+	defer servers.shutdownAll()
+
+	// --listen overrides + no enrollment → OS-stack-only debug mode.
+	// Preserve the historical single-process behavior for running the
+	// agent against a manual --token for ad-hoc testing.
+	if *listenAddr != "" && reg.Len() == 0 {
+		if err := startDebugOSListener(servers, mux, *token, *tokenFile, *listenAddr); err != nil {
+			log.Fatalf("%v", err)
 		}
-	}
-
-	// serveMu protects srv for concurrent access from reload callback + shutdown.
-	var serveMu sync.Mutex
-	newServer := func() *http.Server {
-		return &http.Server{
-			Handler:           authed,
-			ReadTimeout:       30 * time.Second,
-			ReadHeaderTimeout: 10 * time.Second,
-			WriteTimeout:      0, // streaming responses for /exec and /shell
-		}
-	}
-	srv := newServer()
-
-	startOSListener := func() {
-		ln, err := net.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
-		if err != nil {
-			log.Fatalf("Listen :%d: %v", agentAPIPort, err)
-		}
-		log.Printf("hop-agent listening on %s (OS stack)", ln.Addr())
-		go func() {
-			if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("Serve: %v", err)
-			}
-		}()
-	}
-
-	if *listenAddr != "" {
-		// Explicit --listen override: use OS network stack directly.
-		ln, err := net.Listen("tcp", *listenAddr)
-		if err != nil {
-			log.Fatalf("Listen %s: %v", *listenAddr, err)
-		}
-		log.Printf("hop-agent listening on %s (OS stack override)", ln.Addr())
-		// Still start Nebula for outbound mesh connectivity.
-		if _, err := os.Stat(*nebulaConfig); err == nil {
-			if svc, err := startNebula(*nebulaConfig); err == nil {
-				nebulaMu.Lock()
-				currentNebula = svc
-				nebulaMu.Unlock()
-				log.Printf("[agent] Nebula mesh connected (outbound only)")
-			}
-		}
-		go func() {
-			if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("Serve: %v", err)
-			}
-		}()
-	} else if _, err := os.Stat(*nebulaConfig); err == nil {
-		// Start Nebula mesh. Auto-detect TUN mode from persisted config.
-		tunMode := readTunMode()
-		ensureP2PConfig(agentEndpoint)
-		meshSvc := startMesh(*nebulaConfig, tunMode)
-
-		// Register callback for Nebula restarts (cert renewal or cold-start
-		// after expired cert). This must be set in BOTH branches (mesh success
-		// AND OS-stack fallback) so the cold-start path in reloadNebula() can
-		// swap the HTTP listener from OS stack to mesh.
-		onNebulaRestart = func(newSvc meshService) {
-			serveMu.Lock()
-			defer serveMu.Unlock()
-
-			shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			srv.Shutdown(shutCtx)
-			shutCancel()
-
-			newLn, err := newSvc.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
-			if err != nil {
-				log.Printf("[agent] CRITICAL: cannot listen on new Nebula instance: %v", err)
-				return
-			}
-
-			srv = newServer()
-			go func() {
-				if err := srv.Serve(newLn); err != nil && err != http.ErrServerClosed {
-					log.Printf("[agent] Serve after Nebula restart: %v", err)
-				}
-			}()
-			log.Printf("[agent] HTTP server restarted on new Nebula mesh listener")
-		}
-
-		if meshSvc == nil {
-			// All Nebula modes failed — fall back to OS stack.
-			startOSListener()
-		} else {
-			nebulaMu.Lock()
-			currentNebula = meshSvc
-			nebulaMu.Unlock()
-			log.Printf("[agent] Nebula mesh connected (mode: %s)", tunMode)
-
-			// Configure split-DNS for mesh domain in kernel TUN mode.
-			if tunMode == "kernel" {
-				activeDNSConfig = readDNSConfig()
-				configureDNS(activeDNSConfig)
-			}
-
-			// Warm tunnels synchronously: lighthouse first, then peers from
-			// heartbeat. Both must complete before the mesh listener starts,
-			// otherwise Screen Sharing's quality probe fails on first connect.
-			warmTunnel(*nebulaConfig)
-			warmPeersFromHeartbeat(agentEndpoint)
-
-			// Watch for network changes (WiFi↔cellular) and rebind Nebula.
-			if ctrl := meshSvc.NebulaControl(); ctrl != nil {
-				go watchNetworkChanges(ctrl, agentEndpoint)
-			}
-
-			meshLn, err := meshSvc.Listen("tcp", fmt.Sprintf(":%d", agentAPIPort))
-			if err != nil {
-				log.Fatalf("Nebula mesh listen: %v", err)
-			}
-			log.Printf("hop-agent listening on :%d (Nebula mesh, %s TUN)", agentAPIPort, tunMode)
-
-			go func() {
-				if err := srv.Serve(meshLn); err != nil && err != http.ErrServerClosed {
-					log.Fatalf("Serve: %v", err)
-				}
-			}()
-
+	} else if reg.Len() == 0 {
+		// No enrollment and no explicit listen → serve on mesh-less OS
+		// stack at the default port so `hop-agent enroll` workflows that
+		// expect an already-running process still succeed.
+		log.Printf("[agent] no enrollments found, running on OS stack (enroll with 'hop-agent enroll')")
+		if err := startDebugOSListener(servers, mux, *token, *tokenFile, fmt.Sprintf(":%d", agentAPIPort)); err != nil {
+			log.Fatalf("%v", err)
 		}
 	} else {
-		// No Nebula config — listen on OS stack.
-		log.Printf("[agent] no Nebula config at %s, running on OS stack", *nebulaConfig)
-		startOSListener()
+		// The common case: start one Nebula instance per enrollment.
+		for _, e := range reg.List() {
+			inst := newMeshInstance(e)
+			instances.add(inst)
+			startMeshInstance(renewCtx, inst, servers, mux)
+		}
 	}
 
 	// Wait for Unix signals (SIGINT/SIGTERM) OR Windows SCM
@@ -345,22 +217,97 @@ func runServe(args []string) {
 
 	log.Println("Shutting down agent...")
 	renewCancel()
-	serveMu.Lock()
-	shutCtx, shutCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	srv.Shutdown(shutCtx)
-	shutCancel()
-	serveMu.Unlock()
+	servers.shutdownAll()
+	instances.closeAll()
+}
 
-	// Clean up DNS configuration.
-	cleanupDNS(activeDNSConfig)
+// startMeshInstance brings up Nebula + heartbeat + renewal + DNS for one
+// enrollment and wires a per-instance HTTP server onto its mesh listener.
+// Best-effort: on Nebula failure we fall back to an OS-stack listener
+// scoped to this instance so the renewal loop can still reach the
+// control plane and recover later.
+func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverSet, mux http.Handler) {
+	cfgPath := filepath.Join(inst.dir(), "nebula.yaml")
 
-	// Close Nebula.
-	nebulaMu.Lock()
-	if currentNebula != nil {
-		currentNebula.Close()
-		currentNebula = nil
+	authToken, err := readInstanceToken(inst)
+	if err != nil {
+		log.Fatalf("[agent %s] read token: %v", inst.name(), err)
 	}
-	nebulaMu.Unlock()
+	authed := authMiddleware(authToken, mux)
+
+	// Start cert renewal + heartbeat regardless of Nebula outcome —
+	// even an expired-cert agent needs to renew + re-sync.
+	if inst.endpoint() != "" && inst.nodeID() != "" {
+		go runCertRenewal(ctx, inst)
+		go runHeartbeat(ctx, inst)
+		log.Printf("[agent %s] cert auto-renewal + heartbeat enabled (endpoint: %s)", inst.name(), inst.endpoint())
+	}
+
+	// If nebula.yaml is missing, fall back to OS stack (rare — should
+	// only happen if enrollment is corrupt). Renewal might recover it.
+	if _, err := os.Stat(cfgPath); err != nil {
+		log.Printf("[agent %s] no Nebula config at %s, running on OS stack", inst.name(), cfgPath)
+		servers.startOSListener(inst, authed, fmt.Sprintf(":%d", agentAPIPort))
+		return
+	}
+
+	tunMode := readTunMode(inst)
+	ensureP2PConfig(inst)
+
+	inst.onRestart = func(newSvc meshService) {
+		if err := servers.rebindMesh(inst, authed, newSvc); err != nil {
+			log.Printf("[agent %s] CRITICAL: cannot listen on new Nebula instance: %v", inst.name(), err)
+		}
+	}
+
+	meshSvc := startMesh(cfgPath, tunMode)
+	if meshSvc == nil {
+		log.Printf("[agent %s] all Nebula modes failed — falling back to OS stack", inst.name())
+		servers.startOSListener(inst, authed, fmt.Sprintf(":%d", agentAPIPort))
+		return
+	}
+	inst.setSvc(meshSvc)
+	log.Printf("[agent %s] Nebula mesh connected (mode: %s)", inst.name(), tunMode)
+
+	// Configure split-DNS for this mesh's domain in kernel TUN mode.
+	if tunMode == "kernel" {
+		inst.dnsConfig = readDNSConfig(inst)
+		configureDNS(inst.dnsConfig)
+	}
+
+	// Warm tunnels synchronously: lighthouse first, then peers from
+	// heartbeat. Both must complete before the mesh listener starts,
+	// otherwise Screen Sharing's quality probe fails on first connect.
+	warmTunnel(cfgPath)
+	warmPeersFromHeartbeat(inst, inst.endpoint())
+
+	if ctrl := meshSvc.NebulaControl(); ctrl != nil {
+		go watchNetworkChanges(inst, ctrl)
+	}
+
+	if err := servers.startMeshListener(inst, authed, meshSvc, fmt.Sprintf(":%d", agentAPIPort)); err != nil {
+		log.Fatalf("[agent %s] Nebula mesh listen: %v", inst.name(), err)
+	}
+	log.Printf("[agent %s] listening on :%d (Nebula mesh, %s TUN)", inst.name(), agentAPIPort, tunMode)
+}
+
+// startDebugOSListener serves the mux directly on the OS stack using a
+// bearer token from --token or --token-file. Used only when no
+// enrollment exists — mainly for ad-hoc local testing.
+func startDebugOSListener(servers *serverSet, mux http.Handler, tokenFlag, tokenFilePath, listenAddr string) error {
+	authToken := tokenFlag
+	if authToken == "" && tokenFilePath != "" {
+		data, err := os.ReadFile(tokenFilePath)
+		if err != nil {
+			return fmt.Errorf("cannot read token file %s: %w", tokenFilePath, err)
+		}
+		authToken = strings.TrimSpace(string(data))
+	}
+	if authToken == "" {
+		return fmt.Errorf("no authentication token configured (pass --token or --token-file, or enroll first)")
+	}
+	authed := authMiddleware(authToken, mux)
+	return servers.startUnscopedOSListener(authed, listenAddr)
 }
 
 // startPMTUD is disabled — requires fork with PMTUD support.
@@ -399,8 +346,8 @@ func warmTunnel(configPath string) {
 
 // warmPeersFromHeartbeat sends a heartbeat to get online peer IPs, then
 // dials each one to establish Nebula tunnels before accepting connections.
-func warmPeersFromHeartbeat(endpoint string) {
-	dir := activeEnrollDir()
+func warmPeersFromHeartbeat(inst *meshInstance, endpoint string) {
+	dir := inst.dir()
 	nodeID, _ := os.ReadFile(filepath.Join(dir, "node-id"))
 	token, _ := os.ReadFile(filepath.Join(dir, "token"))
 	if len(nodeID) == 0 || len(token) == 0 {

@@ -445,7 +445,9 @@ func enrollFromBundle(path, endpoint string) {
 	if serverHost == "" {
 		serverHost = extractHost(ep)
 	}
-	writeNebulaConfig(enrollDir, bundleConfig.ServerIP, serverHost, bundleConfig.LighthousePort, enrollTunMode)
+	// Bundle path only supports first enrollment (checked above), so
+	// always use the primary listen port.
+	writeNebulaConfig(enrollDir, bundleConfig.ServerIP, serverHost, bundleConfig.LighthousePort, enrollTunMode, nebulacfg.ListenPort)
 	writeDNSConfig(enrollDir, bundleConfig.DNSDomain, serverHost, bundleConfig.LighthousePort)
 
 	if err := reg.Add(&Enrollment{
@@ -510,7 +512,14 @@ func installCerts(er *enrollResponse, endpoint string) {
 	if serverHost == "" {
 		serverHost = extractHost(endpoint)
 	}
-	writeNebulaConfig(enrollDir, er.ServerIP, serverHost, er.LighthousePort, enrollTunMode)
+	// First enrollment keeps the fixed Nebula listen port for NAT
+	// mapping stability; additional enrollments use port 0 (OS-assigned)
+	// since we can't bind two instances to the same UDP port.
+	listenPort := nebulacfg.ListenPort
+	if reg.Len() > 0 {
+		listenPort = 0
+	}
+	writeNebulaConfig(enrollDir, er.ServerIP, serverHost, er.LighthousePort, enrollTunMode, listenPort)
 	writeDNSConfig(enrollDir, er.DNSDomain, serverHost, er.LighthousePort)
 
 	if err := reg.Add(&Enrollment{
@@ -529,7 +538,7 @@ func installCerts(er *enrollResponse, endpoint string) {
 	fmt.Println("  ✓ Agent started")
 }
 
-func writeNebulaConfig(enrollDir, serverIP, serverHost string, lighthousePort int, tunMode string) {
+func writeNebulaConfig(enrollDir, serverIP, serverHost string, lighthousePort int, tunMode string, listenPort int) {
 	// Detect physical interface to prevent advertising overlay IPs.
 	physicalIface, err := nebulacfg.DetectPhysicalInterface(serverHost)
 	if err != nil {
@@ -619,7 +628,7 @@ firewall:
 		nebulacfg.PreferredRangesYAML,
 		serverIP, nebulacfg.UseRelays,
 		nebulacfg.Cipher,
-		nebulacfg.ListenPort,
+		listenPort,
 		nebulacfg.Routines,
 		nebulacfg.HandshakeTryInterval,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay,

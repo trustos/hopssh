@@ -29,7 +29,10 @@ import (
 // backoff (5s → 10s → 20s → ... → 2m cap) so agents recover within seconds
 // of a server redeploy. All intervals include ±10% jitter to prevent
 // thundering herd across agents.
-func runHeartbeat(ctx context.Context, endpoint, nodeID, agentToken string) {
+//
+// One goroutine is started per meshInstance; each runs independently
+// with its own heartbeat cadence, backoff state, and wake channel.
+func runHeartbeat(ctx context.Context, inst *meshInstance) {
 	const (
 		normalInterval = 60 * time.Second
 		initialRetry   = 5 * time.Second
@@ -37,7 +40,7 @@ func runHeartbeat(ctx context.Context, endpoint, nodeID, agentToken string) {
 	)
 
 	// Send initial heartbeat immediately.
-	failing := sendHeartbeat(endpoint, nodeID, agentToken) != nil
+	failing := sendHeartbeat(inst) != nil
 	retryInterval := initialRetry
 
 	next := normalInterval
@@ -53,12 +56,12 @@ func runHeartbeat(ctx context.Context, endpoint, nodeID, agentToken string) {
 	// wake-triggered out-of-cycle path so both obey the same
 	// backoff/recovery state machine.
 	fire := func() {
-		err := sendHeartbeat(endpoint, nodeID, agentToken)
+		err := sendHeartbeat(inst)
 		if err != nil {
 			if !failing {
 				failing = true
 				retryInterval = initialRetry
-				log.Printf("[heartbeat] failed, switching to fast retry: %v", err)
+				log.Printf("[heartbeat %s] failed, switching to fast retry: %v", inst.name(), err)
 			} else {
 				retryInterval *= 2
 				if retryInterval > maxRetry {
@@ -68,7 +71,7 @@ func runHeartbeat(ctx context.Context, endpoint, nodeID, agentToken string) {
 			timer.Reset(addJitter(retryInterval))
 		} else {
 			if failing {
-				log.Printf("[heartbeat] recovered after retry")
+				log.Printf("[heartbeat %s] recovered after retry", inst.name())
 				failing = false
 				retryInterval = initialRetry
 			}
@@ -93,33 +96,29 @@ func runHeartbeat(ctx context.Context, endpoint, nodeID, agentToken string) {
 			return
 		case <-timer.C:
 			fire()
-		case <-heartbeatTrigger:
-			log.Printf("[heartbeat] wake/network-change triggered out-of-cycle heartbeat")
+		case <-inst.heartbeatTrigger:
+			log.Printf("[heartbeat %s] wake/network-change triggered out-of-cycle heartbeat", inst.name())
 			drainTimer()
 			fire()
 		}
 	}
 }
 
-func sendHeartbeat(endpoint, nodeID, agentToken string) error {
+func sendHeartbeat(inst *meshInstance) error {
 	// Build the heartbeat body. Include peer counts + per-peer detail
 	// when Nebula control is available (both kernel-TUN and userspace
 	// modes expose it). Omit the peer fields when unavailable — the
 	// server preserves the last known good values via COALESCE rather
 	// than overwriting with zeros/empty.
 	//
-	// Multi-network-per-agent invariant (roadmap #29): one heartbeat
-	// POST represents one nodeID in one network. When that feature
-	// lands, the agent will fire N heartbeat goroutines, each posting
-	// independently. Keep this body schema singular.
+	// Multi-network-per-agent (roadmap #29): each instance fires its
+	// own POSTs independently with its own nodeID + token. Body schema
+	// stays singular; the control plane never sees cross-instance data.
 	reqBody := map[string]any{
-		"nodeId":       nodeID,
+		"nodeId":       inst.nodeID(),
 		"agentVersion": buildinfo.Version, // "vX.Y.Z" (tagged) or "vX.Y.Z-N-gSHORTSHA(-dirty)" (dev)
 	}
-	nebulaMu.Lock()
-	var ctrl = nebulaControlLocked()
-	nebulaMu.Unlock()
-	if direct, relayed, peers, ok := collectPeerState(ctrl); ok {
+	if direct, relayed, peers, ok := collectPeerState(inst.control()); ok {
 		reqBody["peersDirect"] = direct
 		reqBody["peersRelayed"] = relayed
 		if len(peers) > 0 {
@@ -130,12 +129,16 @@ func sendHeartbeat(endpoint, nodeID, agentToken string) error {
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequest("POST", endpoint+"/api/heartbeat", bytes.NewReader(reqBodyBytes))
+	authToken, err := readInstanceToken(inst)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequest("POST", inst.endpoint()+"/api/heartbeat", bytes.NewReader(reqBodyBytes))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+agentToken)
+	req.Header.Set("Authorization", "Bearer "+authToken)
 
 	client := &http.Client{Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
@@ -144,7 +147,13 @@ func sendHeartbeat(endpoint, nodeID, agentToken string) error {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
-		log.Fatal("[heartbeat] node has been deleted or token revoked — shutting down")
+		// With multi-enrollment we can no longer os.Exit on a single
+		// instance's revocation without taking down the other
+		// enrollments. Fail this POST loudly and let the outer retry
+		// loop back off. Operators will see "offline" on the
+		// dashboard and remove the node; the agent side's full
+		// cleanup ships with `hop-agent leave` (Phase D).
+		return fmt.Errorf("401: node deleted or token revoked for enrollment %q", inst.name())
 	}
 	if resp.StatusCode == http.StatusNoContent {
 		return nil
@@ -163,6 +172,17 @@ func sendHeartbeat(endpoint, nodeID, agentToken string) error {
 	return nil
 }
 
+// readInstanceToken reads the bearer token from the instance's subdir.
+// Cached token removal (re-enrollment) is rare; we re-read each time
+// rather than caching so credential rotation picks up automatically.
+func readInstanceToken(inst *meshInstance) (string, error) {
+	data, err := os.ReadFile(filepath.Join(inst.dir(), "token"))
+	if err != nil {
+		return "", fmt.Errorf("read token: %w", err)
+	}
+	return strings.TrimSpace(string(data)), nil
+}
+
 func warmPeers(peers []string) {
 	for _, ip := range peers {
 		d := net.Dialer{Timeout: time.Second}
@@ -175,15 +195,17 @@ func warmPeers(peers []string) {
 // runCertRenewal runs a background loop that renews the Nebula certificate
 // before it expires. Renews at 50% lifetime (12h for a 24h cert).
 // Exits the process if the node has been deleted (HTTP 401).
-func runCertRenewal(ctx context.Context, endpoint, nodeID, agentToken string) {
+//
+// One goroutine per meshInstance; each watches its own cert.
+func runCertRenewal(ctx context.Context, inst *meshInstance) {
 	for {
-		renewAt, err := timeUntilRenewal()
+		renewAt, err := timeUntilRenewal(inst)
 		if err != nil {
-			log.Printf("[renew] failed to determine renewal time: %v (retrying in 5m)", err)
+			log.Printf("[renew %s] failed to determine renewal time: %v (retrying in 5m)", inst.name(), err)
 			renewAt = 5 * time.Minute
 		}
 
-		log.Printf("[renew] next renewal in %s", renewAt.Truncate(time.Second))
+		log.Printf("[renew %s] next renewal in %s", inst.name(), renewAt.Truncate(time.Second))
 
 		select {
 		case <-ctx.Done():
@@ -191,8 +213,8 @@ func runCertRenewal(ctx context.Context, endpoint, nodeID, agentToken string) {
 		case <-time.After(renewAt):
 		}
 
-		if err := renewCert(endpoint, nodeID, agentToken); err != nil {
-			log.Printf("[renew] renewal failed: %v", err)
+		if err := renewCert(inst); err != nil {
+			log.Printf("[renew %s] renewal failed: %v", inst.name(), err)
 			// Retry with backoff: 1m, 2m, 4m, ..., capped at 30m, max 12 attempts.
 			backoff := time.Minute
 			for attempt := 0; attempt < 12; attempt++ {
@@ -201,8 +223,8 @@ func runCertRenewal(ctx context.Context, endpoint, nodeID, agentToken string) {
 					return
 				case <-time.After(backoff):
 				}
-				if err := renewCert(endpoint, nodeID, agentToken); err != nil {
-					log.Printf("[renew] retry %d failed: %v", attempt+1, err)
+				if err := renewCert(inst); err != nil {
+					log.Printf("[renew %s] retry %d failed: %v", inst.name(), attempt+1, err)
 					backoff *= 2
 					if backoff > 30*time.Minute {
 						backoff = 30 * time.Minute
@@ -217,8 +239,8 @@ func runCertRenewal(ctx context.Context, endpoint, nodeID, agentToken string) {
 
 // timeUntilRenewal reads the current cert and returns the duration until
 // renewal should happen (50% of remaining validity).
-func timeUntilRenewal() (time.Duration, error) {
-	certPEM, err := os.ReadFile(filepath.Join(activeEnrollDir(), "node.crt"))
+func timeUntilRenewal(inst *meshInstance) (time.Duration, error) {
+	certPEM, err := os.ReadFile(filepath.Join(inst.dir(), "node.crt"))
 	if err != nil {
 		return 0, fmt.Errorf("read cert: %w", err)
 	}
@@ -241,14 +263,18 @@ func timeUntilRenewal() (time.Duration, error) {
 }
 
 // renewCert calls the control plane's /api/renew endpoint to get a fresh cert.
-func renewCert(endpoint, nodeID, agentToken string) error {
-	reqBody := fmt.Sprintf(`{"nodeId":%q}`, nodeID)
-	req, err := http.NewRequest("POST", endpoint+"/api/renew", strings.NewReader(reqBody))
+func renewCert(inst *meshInstance) error {
+	reqBody := fmt.Sprintf(`{"nodeId":%q}`, inst.nodeID())
+	req, err := http.NewRequest("POST", inst.endpoint()+"/api/renew", strings.NewReader(reqBody))
+	if err != nil {
+		return err
+	}
+	authToken, err := readInstanceToken(inst)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+agentToken)
+	req.Header.Set("Authorization", "Bearer "+authToken)
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)
@@ -258,7 +284,9 @@ func renewCert(endpoint, nodeID, agentToken string) error {
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusUnauthorized {
-		log.Fatal("[renew] node has been deleted or token revoked — shutting down")
+		// Multi-enrollment: see the matching note in sendHeartbeat.
+		// One deleted node shouldn't take down the whole agent.
+		return fmt.Errorf("401: node deleted or token revoked for enrollment %q", inst.name())
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -280,9 +308,8 @@ func renewCert(endpoint, nodeID, agentToken string) error {
 	}
 
 	// Write new cert atomically (temp file + rename) to prevent partial reads.
-	dir := activeEnrollDir()
-	certPath := filepath.Join(dir, "node.crt")
-	keyPath := filepath.Join(dir, "node.key")
+	certPath := filepath.Join(inst.dir(), "node.crt")
+	keyPath := filepath.Join(inst.dir(), "node.key")
 
 	if err := atomicWrite(certPath, []byte(renewResp.NodeCert), 0644); err != nil {
 		return fmt.Errorf("write cert: %w", err)
@@ -293,15 +320,15 @@ func renewCert(endpoint, nodeID, agentToken string) error {
 
 	// Apply server-pushed Nebula config if present.
 	if renewResp.NebulaConfig != nil {
-		if err := applyNebulaConfigUpdate(renewResp.NebulaConfig); err != nil {
-			log.Printf("[renew] failed to apply config update: %v (continuing with old config)", err)
+		if err := applyNebulaConfigUpdate(inst, renewResp.NebulaConfig); err != nil {
+			log.Printf("[renew %s] failed to apply config update: %v (continuing with old config)", inst.name(), err)
 		}
 	}
 
 	// Signal Nebula to reload certs (and pick up any config changes).
-	reloadNebula()
+	reloadNebula(inst)
 
-	log.Printf("[renew] certificate renewed successfully")
+	log.Printf("[renew %s] certificate renewed successfully", inst.name())
 	return nil
 }
 
@@ -316,8 +343,8 @@ type nebulaConfigUpdate struct {
 }
 
 // applyNebulaConfigUpdate merges server-pushed settings into the local nebula.yaml.
-func applyNebulaConfigUpdate(update *nebulaConfigUpdate) error {
-	configPath := filepath.Join(activeEnrollDir(), "nebula.yaml")
+func applyNebulaConfigUpdate(inst *meshInstance, update *nebulaConfigUpdate) error {
+	configPath := filepath.Join(inst.dir(), "nebula.yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
@@ -413,8 +440,8 @@ func yamlMap(cfg map[string]interface{}, key string) map[string]interface{} {
 // - target_all_remotes (continuous relay→direct upgrade)
 // - local_allow_list with physical interface (prevents overlay-within-overlay)
 // - Fast punch timing
-func ensureP2PConfig(endpoint string) {
-	configPath := filepath.Join(activeEnrollDir(), "nebula.yaml")
+func ensureP2PConfig(inst *meshInstance) {
+	configPath := filepath.Join(inst.dir(), "nebula.yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return
@@ -427,13 +454,11 @@ func ensureP2PConfig(endpoint string) {
 
 	changed := false
 
-	// Fixed listen port for stable NAT mappings.
+	// Respect whatever listen.port was assigned at enrollment time —
+	// primary enrollment uses nebulacfg.ListenPort, additional
+	// enrollments use 0 (OS-assigned) to avoid collisions. Just scrub
+	// oversized socket buffers that caused bufferbloat pre-v0.7.
 	listen := yamlMap(cfg, "listen")
-	if port, ok := listen["port"]; !ok || port != nebulacfg.ListenPort {
-		listen["port"] = nebulacfg.ListenPort
-		changed = true
-	}
-	// Remove oversized socket buffers that cause bufferbloat.
 	if _, ok := listen["read_buffer"]; ok {
 		delete(listen, "read_buffer")
 		changed = true
@@ -509,7 +534,7 @@ func ensureP2PConfig(endpoint string) {
 	// This prevents Nebula from advertising overlay IPs (ZeroTier, etc.)
 	// while still allowing the lighthouse to learn our public IP from
 	// the UDP source address.
-	host := extractHost(endpoint)
+	host := extractHost(inst.endpoint())
 	if host != "" {
 		if iface, err := nebulacfg.DetectPhysicalInterface(host); err == nil {
 			lighthouse := yamlMap(cfg, "lighthouse")
@@ -559,60 +584,60 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 }
 
 // reloadNebula restarts the embedded Nebula instance to pick up new certs.
-// Supports both userspace and kernel TUN modes.
-func reloadNebula() {
-	nebulaMu.Lock()
+// Supports both userspace and kernel TUN modes. Scoped to one instance.
+func reloadNebula(inst *meshInstance) {
+	inst.svcMu.Lock()
 
-	configPath := filepath.Join(activeEnrollDir(), "nebula.yaml")
-	tunMode := readTunMode()
+	configPath := filepath.Join(inst.dir(), "nebula.yaml")
+	tunMode := readTunMode(inst)
 
-	if currentNebula == nil {
+	if inst.svc == nil {
 		// Nebula never started — e.g. cert was expired at boot. Try a fresh
 		// start now that we have a renewed cert. This is the fix for the
 		// "screen sharing broken after overnight sleep" bug: agent boots with
 		// expired cert → Nebula fails → falls back to OS stack → renewal
 		// gets fresh cert → this path starts Nebula for the first time.
-		nebulaMu.Unlock()
-		log.Printf("[renew] no embedded Nebula instance — attempting cold start with renewed cert")
+		inst.svcMu.Unlock()
+		log.Printf("[renew %s] no embedded Nebula instance — attempting cold start with renewed cert", inst.name())
 
 		newSvc := startMesh(configPath, tunMode)
 		if newSvc == nil {
-			log.Printf("[renew] Nebula cold start failed even after cert renewal")
+			log.Printf("[renew %s] Nebula cold start failed even after cert renewal", inst.name())
 			return
 		}
 
-		nebulaMu.Lock()
-		currentNebula = newSvc
-		nebulaMu.Unlock()
+		inst.setSvc(newSvc)
 
-		log.Printf("[renew] Nebula started after cert renewal (mode: %s)", tunMode)
+		log.Printf("[renew %s] Nebula started after cert renewal (mode: %s)", inst.name(), tunMode)
 
 		// Configure DNS (kernel TUN mode only).
 		if tunMode == "kernel" {
-			activeDNSConfig = readDNSConfig()
-			configureDNS(activeDNSConfig)
+			inst.dnsConfig = readDNSConfig(inst)
+			configureDNS(inst.dnsConfig)
 		}
 
 		// Warm tunnels so Screen Sharing HP mode works immediately.
 		warmTunnel(configPath)
-		endpoint := readEndpointFromDisk()
-		if endpoint != "" {
-			warmPeersFromHeartbeat(endpoint)
+		if endpoint := inst.endpoint(); endpoint != "" {
+			warmPeersFromHeartbeat(inst, endpoint)
 		}
 
 		// Start network-change watcher.
-		if ctrl := newSvc.NebulaControl(); ctrl != nil && endpoint != "" {
-			go watchNetworkChanges(ctrl, endpoint)
+		if ctrl := newSvc.NebulaControl(); ctrl != nil && inst.endpoint() != "" {
+			go watchNetworkChanges(inst, ctrl)
 		}
 
 		// Swap HTTP listener from OS stack to mesh.
-		if onNebulaRestart != nil {
-			onNebulaRestart(newSvc)
+		if inst.onRestart != nil {
+			inst.onRestart(newSvc)
 		}
 		return
 	}
 
-	currentNebula.Close()
+	oldSvc := inst.svc
+	inst.svc = nil
+	inst.svcMu.Unlock()
+	oldSvc.Close()
 
 	var newSvc meshService
 	var err error
@@ -623,30 +648,26 @@ func reloadNebula() {
 	}
 
 	if err != nil {
-		log.Printf("[renew] CRITICAL: failed to restart Nebula after cert renewal: %v", err)
-		log.Printf("[renew] agent will lose mesh connectivity when old cert expires")
-		currentNebula = nil
-		nebulaMu.Unlock()
+		log.Printf("[renew %s] CRITICAL: failed to restart Nebula after cert renewal: %v", inst.name(), err)
+		log.Printf("[renew %s] agent will lose mesh connectivity when old cert expires", inst.name())
 		return
 	}
 
-	currentNebula = newSvc
-	nebulaMu.Unlock()
+	inst.setSvc(newSvc)
 
-	log.Printf("[renew] Nebula restarted with new certificate (mode: %s)", tunMode)
+	log.Printf("[renew %s] Nebula restarted with new certificate (mode: %s)", inst.name(), tunMode)
 
 	// Notify the HTTP server to recreate its mesh listener.
-	// Called AFTER releasing nebulaMu to avoid deadlock.
-	if onNebulaRestart != nil {
-		onNebulaRestart(newSvc)
+	if inst.onRestart != nil {
+		inst.onRestart(newSvc)
 	}
 }
 
 // readEndpointFromDisk reads the control plane endpoint URL from the
 // persisted config (set during enrollment). Used by the cold-start path
 // in reloadNebula() where agentEndpoint (local to runServe) isn't available.
-func readEndpointFromDisk() string {
-	data, err := os.ReadFile(filepath.Join(activeEnrollDir(), "endpoint"))
+func readEndpointFromDisk(inst *meshInstance) string {
+	data, err := os.ReadFile(filepath.Join(inst.dir(), "endpoint"))
 	if err != nil {
 		return ""
 	}

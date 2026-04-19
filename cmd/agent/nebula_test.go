@@ -9,14 +9,20 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func TestUpgradeTunMode_UpdatesNebulaYAML(t *testing.T) {
-	// Create a temp config directory.
-	tmpDir := t.TempDir()
-	origConfigDir := configDir
-	configDir = tmpDir
-	defer func() { configDir = origConfigDir }()
+// testInstance builds a meshInstance backed by dir via customDir. Use
+// from tests that want to exercise instance-scoped file IO without
+// setting up a real enrollment layout.
+func testInstance(t *testing.T, name, dir string) *meshInstance {
+	t.Helper()
+	inst := newMeshInstance(&Enrollment{Name: name})
+	inst.customDir = dir
+	return inst
+}
 
-	// Write a userspace nebula.yaml.
+func TestUpgradeTunMode_UpdatesNebulaYAML(t *testing.T) {
+	tmpDir := t.TempDir()
+	inst := testInstance(t, "test", tmpDir)
+
 	nebulaYAML := `pki:
   ca: /etc/hop-agent/ca.crt
 lighthouse:
@@ -34,10 +40,8 @@ relay:
 	os.WriteFile(filepath.Join(tmpDir, "nebula.yaml"), []byte(nebulaYAML), 0644)
 	os.WriteFile(filepath.Join(tmpDir, "tun-mode"), []byte("userspace"), 0644)
 
-	// Run upgrade.
-	upgradeTunMode()
+	upgradeTunMode(inst)
 
-	// Verify tun-mode file updated.
 	data, err := os.ReadFile(filepath.Join(tmpDir, "tun-mode"))
 	if err != nil {
 		t.Fatalf("failed to read tun-mode: %v", err)
@@ -46,7 +50,6 @@ relay:
 		t.Fatalf("expected tun-mode=kernel, got %q", string(data))
 	}
 
-	// Verify nebula.yaml updated.
 	yamlData, err := os.ReadFile(filepath.Join(tmpDir, "nebula.yaml"))
 	if err != nil {
 		t.Fatalf("failed to read nebula.yaml: %v", err)
@@ -67,12 +70,10 @@ relay:
 	if tun["mtu"] != nebulacfg.TunMTU {
 		t.Fatalf("expected tun.mtu=%d, got %v", nebulacfg.TunMTU, tun["mtu"])
 	}
-	// user: true should be gone (replaced by dev+mtu).
 	if _, hasUser := tun["user"]; hasUser {
 		t.Fatal("tun.user should be removed after kernel upgrade")
 	}
 
-	// Verify other sections preserved.
 	lighthouse, ok := cfg["lighthouse"].(map[string]interface{})
 	if !ok {
 		t.Fatal("lighthouse section should be preserved")
@@ -91,17 +92,12 @@ relay:
 }
 
 func TestReadTunMode_FileNotFound_NonPrivileged(t *testing.T) {
-	tmpDir := t.TempDir()
-	origConfigDir := configDir
-	configDir = tmpDir
-	defer func() { configDir = origConfigDir }()
-
-	// No tun-mode file exists. Non-root → userspace.
-	// (We're running tests as non-root typically.)
 	if os.Getuid() == 0 {
 		t.Skip("test requires non-root")
 	}
-	mode := readTunMode()
+	inst := testInstance(t, "test", t.TempDir())
+
+	mode := readTunMode(inst)
 	if mode != "userspace" {
 		t.Fatalf("expected userspace for non-root with no file, got %q", mode)
 	}
@@ -109,13 +105,11 @@ func TestReadTunMode_FileNotFound_NonPrivileged(t *testing.T) {
 
 func TestReadTunMode_KernelFile(t *testing.T) {
 	tmpDir := t.TempDir()
-	origConfigDir := configDir
-	configDir = tmpDir
-	defer func() { configDir = origConfigDir }()
+	inst := testInstance(t, "test", tmpDir)
 
 	os.WriteFile(filepath.Join(tmpDir, "tun-mode"), []byte("kernel"), 0644)
 
-	mode := readTunMode()
+	mode := readTunMode(inst)
 	if mode != "kernel" {
 		t.Fatalf("expected kernel, got %q", mode)
 	}
@@ -125,16 +119,12 @@ func TestReadTunMode_UserspaceFile_NonPrivileged(t *testing.T) {
 	if os.Getuid() == 0 {
 		t.Skip("test requires non-root")
 	}
-
 	tmpDir := t.TempDir()
-	origConfigDir := configDir
-	configDir = tmpDir
-	defer func() { configDir = origConfigDir }()
+	inst := testInstance(t, "test", tmpDir)
 
 	os.WriteFile(filepath.Join(tmpDir, "tun-mode"), []byte("userspace"), 0644)
 
-	mode := readTunMode()
-	// Non-root + file says userspace → stays userspace (no upgrade).
+	mode := readTunMode(inst)
 	if mode != "userspace" {
 		t.Fatalf("expected userspace for non-root, got %q", mode)
 	}
@@ -142,14 +132,11 @@ func TestReadTunMode_UserspaceFile_NonPrivileged(t *testing.T) {
 
 func TestReadTunMode_InvalidContent(t *testing.T) {
 	tmpDir := t.TempDir()
-	origConfigDir := configDir
-	configDir = tmpDir
-	defer func() { configDir = origConfigDir }()
+	inst := testInstance(t, "test", tmpDir)
 
 	os.WriteFile(filepath.Join(tmpDir, "tun-mode"), []byte("garbage"), 0644)
 
-	mode := readTunMode()
-	// Invalid content should default to userspace.
+	mode := readTunMode(inst)
 	if mode != "userspace" {
 		t.Fatalf("expected userspace for invalid content, got %q", mode)
 	}
