@@ -133,10 +133,24 @@ func installAgentWindows() {
 	defer m.Disconnect()
 
 	if existing, err := m.OpenService(agentServiceName); err == nil {
+		// Idempotent: service already installed (common path on a
+		// second-enrollment). Restart so it re-reads enrollments.json
+		// instead of leaving the user to figure out sc.exe commands.
+		fmt.Printf("==> hop-agent service already installed, restarting to pick up new enrollment...\n")
+		_, _ = existing.Control(svc.Stop)
+		for i := 0; i < 20; i++ {
+			st, _ := existing.Query()
+			if st.State == svc.Stopped {
+				break
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+		if err := existing.Start(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: restart failed: %v\n", err)
+		}
 		existing.Close()
-		fmt.Fprintf(os.Stderr, "Error: service %q already exists.\n", agentServiceName)
-		fmt.Fprintf(os.Stderr, "Uninstall first:  hop-agent uninstall\n")
-		os.Exit(1)
+		fmt.Println("==> hop-agent restarted.")
+		return
 	}
 
 	// Pass through the currently-resolved config directory so the
