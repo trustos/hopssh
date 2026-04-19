@@ -119,18 +119,43 @@ func runServe(args []string) {
 	if *cfgDir != "" {
 		configDir = resolveConfigDir(*cfgDir)
 	}
-	// Derive defaults from configDir if not explicitly set.
+
+	// Migrate any pre-v0.10 flat layout into the new subdir layout
+	// before reading anything else. Idempotent + safe on fresh installs.
+	if _, err := migrateLegacyLayout(configDir); err != nil {
+		log.Fatalf("Legacy config migration failed: %v", err)
+	}
+
+	// Phase A: one enrollment per agent process. Pick the first
+	// (and only) entry from the registry as the active one. Phase B
+	// will loop over all entries here and fan out per-instance
+	// goroutines.
+	reg, err := loadEnrollmentRegistry(configDir)
+	if err != nil {
+		log.Fatalf("Load enrollments: %v", err)
+	}
+	if reg.Len() > 0 {
+		setActiveEnrollment(reg.List()[0])
+		if reg.Len() > 1 {
+			log.Printf("[agent] NOTE: %d enrollments present; Phase A uses only %q. Multi-network fan-out ships in Phase B.", reg.Len(), activeEnrollment.Name)
+		}
+	}
+
+	// Derive flag defaults from the active enrollment's subdir (or
+	// configDir as a last resort for un-enrolled agents being started
+	// for debugging).
+	baseDir := activeEnrollDir()
 	if *tokenFile == "" {
-		*tokenFile = filepath.Join(configDir, "token")
+		*tokenFile = filepath.Join(baseDir, "token")
 	}
 	if *endpointFile == "" {
-		*endpointFile = filepath.Join(configDir, "endpoint")
+		*endpointFile = filepath.Join(baseDir, "endpoint")
 	}
 	if *nodeIDFile == "" {
-		*nodeIDFile = filepath.Join(configDir, "node-id")
+		*nodeIDFile = filepath.Join(baseDir, "node-id")
 	}
 	if *nebulaConfig == "" {
-		*nebulaConfig = filepath.Join(configDir, "nebula.yaml")
+		*nebulaConfig = filepath.Join(baseDir, "nebula.yaml")
 	}
 
 	authToken := *token
@@ -375,8 +400,9 @@ func warmTunnel(configPath string) {
 // warmPeersFromHeartbeat sends a heartbeat to get online peer IPs, then
 // dials each one to establish Nebula tunnels before accepting connections.
 func warmPeersFromHeartbeat(endpoint string) {
-	nodeID, _ := os.ReadFile(filepath.Join(configDir, "node-id"))
-	token, _ := os.ReadFile(filepath.Join(configDir, "token"))
+	dir := activeEnrollDir()
+	nodeID, _ := os.ReadFile(filepath.Join(dir, "node-id"))
+	token, _ := os.ReadFile(filepath.Join(dir, "token"))
 	if len(nodeID) == 0 || len(token) == 0 {
 		return
 	}

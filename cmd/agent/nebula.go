@@ -290,7 +290,7 @@ func readMeshIPFromCert(nebulaConfigPath string) (string, error) {
 // with near-zero per-packet overhead. Userspace mode (gvisor netstack) adds
 // ~4ms latency per packet, which degrades VNC/Screen Sharing and similar workloads.
 func readTunMode() string {
-	data, err := os.ReadFile(filepath.Join(configDir, "tun-mode"))
+	data, err := os.ReadFile(filepath.Join(activeEnrollDir(), "tun-mode"))
 	if err != nil {
 		if isPrivileged() {
 			return "kernel"
@@ -320,14 +320,15 @@ func readTunMode() string {
 // and updates nebula.yaml accordingly. Preserves all other config (including
 // which may update nebula.yaml via upgradeTunMode).
 func upgradeTunMode() {
+	dir := activeEnrollDir()
 	// Update the persisted tun-mode file.
-	tunModePath := filepath.Join(configDir, "tun-mode")
+	tunModePath := filepath.Join(dir, "tun-mode")
 	if err := os.WriteFile(tunModePath, []byte("kernel"), 0644); err != nil {
 		log.Printf("[agent] WARNING: failed to update tun-mode file: %v", err)
 	}
 
 	// Update nebula.yaml: replace tun section only.
-	configPath := filepath.Join(configDir, "nebula.yaml")
+	configPath := filepath.Join(dir, "nebula.yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return

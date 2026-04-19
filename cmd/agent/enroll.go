@@ -34,8 +34,13 @@ func resolveConfigDir(override string) string {
 	if override != "" {
 		return override
 	}
-	// Backward compat: if system-wide install exists, use it.
+	// Backward compat: if system-wide install exists, use it. We accept
+	// either the legacy flat layout (node.crt at the root) or the
+	// v0.10+ registry layout (enrollments.json at the root).
 	if _, err := os.Stat("/etc/hop-agent/node.crt"); err == nil {
+		return "/etc/hop-agent"
+	}
+	if _, err := os.Stat("/etc/hop-agent/" + enrollmentsFile); err == nil {
 		return "/etc/hop-agent"
 	}
 	// Root → system path.
@@ -62,6 +67,10 @@ var skipService bool
 
 // enrollTunMode is set by --tun-mode flag during enrollment.
 var enrollTunMode = "userspace"
+
+// enrollName is the --name override for the enrollment being created.
+// Empty string means "auto-pick from DNS domain or CA fingerprint".
+var enrollName string
 
 type enrollResponse struct {
 	NodeID         string `json:"nodeId"`
@@ -91,6 +100,7 @@ func runEnroll(args []string) {
 	noService := fs.Bool("no-service", false, "Skip automatic service installation")
 	force := fs.Bool("force", false, "Re-enroll: stop service, remove old config, enroll fresh")
 	cfgDir := fs.String("config-dir", "", "Override config directory")
+	name := fs.String("name", "", "Local name for this enrollment (default: mesh DNS domain or CA fingerprint)")
 	fs.Parse(args)
 	skipService = *noService
 
@@ -111,26 +121,43 @@ func runEnroll(args []string) {
 		configDir = resolveConfigDir(*cfgDir)
 	}
 
-	// Handle re-enrollment with --force.
-	if *force {
-		fmt.Println("==> Re-enrolling (--force): cleaning up old config...")
-		// Stop existing service.
-		if runtime.GOOS == "darwin" {
-			exec.Command("launchctl", "unload", "/Library/LaunchDaemons/com.hopssh.agent.plist").Run()
-		} else {
-			exec.Command("systemctl", "stop", "hop-agent").Run()
-		}
-		// Safety: don't RemoveAll on paths that are too short.
-		if len(configDir) > 5 {
-			os.RemoveAll(configDir)
+	enrollName = strings.TrimSpace(*name)
+	if enrollName != "" {
+		if err := validateEnrollmentName(enrollName); err != nil {
+			log.Fatalf("Invalid --name: %v", err)
 		}
 	}
 
-	// Check if already enrolled — prevent accidental re-enrollment.
-	if _, err := os.Stat(filepath.Join(configDir, "node.crt")); err == nil {
-		fmt.Fprintf(os.Stderr, "Warning: This device is already enrolled (config exists at %s).\n", configDir)
-		fmt.Fprintf(os.Stderr, "To re-enroll, use --force:\n")
-		fmt.Fprintf(os.Stderr, "  sudo hop-agent enroll --force --endpoint <url>\n\n")
+	// Migrate any pre-v0.10 flat layout into the subdir layout before we
+	// read the registry. After this call, either the registry exists or
+	// the configDir is empty of our files.
+	if _, err := migrateLegacyLayout(configDir); err != nil {
+		log.Fatalf("Legacy config migration failed: %v", err)
+	}
+
+	reg, err := loadEnrollmentRegistry(configDir)
+	if err != nil {
+		log.Fatalf("Load enrollments: %v", err)
+	}
+
+	if *force {
+		if err := handleForce(reg, enrollName); err != nil {
+			log.Fatalf("%v", err)
+		}
+		// Force may have removed entries; reload so downstream logic
+		// sees the post-force registry.
+		reg, err = loadEnrollmentRegistry(configDir)
+		if err != nil {
+			log.Fatalf("Reload enrollments after --force: %v", err)
+		}
+	}
+
+	// If --name was given, pre-check collision so we fail before doing
+	// the network round-trip to the control plane.
+	if enrollName != "" && reg.Get(enrollName) != nil {
+		fmt.Fprintf(os.Stderr, "Enrollment %q already exists.\n", enrollName)
+		fmt.Fprintf(os.Stderr, "To replace it: hop-agent enroll --force --name %s --endpoint <url>\n", enrollName)
+		fmt.Fprintf(os.Stderr, "Or pick a different --name.\n")
 		os.Exit(1)
 	}
 
@@ -145,6 +172,84 @@ func runEnroll(args []string) {
 	default:
 		enrollDeviceFlow(*endpoint)
 	}
+}
+
+// handleForce implements the --force semantics against the new registry:
+//   - Empty registry → no-op.
+//   - --name targets one specific enrollment.
+//   - No --name + exactly one enrollment → wipe it.
+//   - No --name + multiple enrollments → error (ambiguous).
+func handleForce(reg *enrollmentRegistry, targetName string) error {
+	if reg.Len() == 0 {
+		return nil
+	}
+	stopAgentService()
+
+	if targetName != "" {
+		if reg.Get(targetName) == nil {
+			return nil
+		}
+		subdir := enrollmentDir(configDir, targetName)
+		if len(subdir) > 5 {
+			_ = os.RemoveAll(subdir)
+		}
+		return reg.Remove(targetName)
+	}
+
+	if reg.Len() == 1 {
+		only := reg.List()[0]
+		fmt.Println("==> Re-enrolling (--force): cleaning up old config...")
+		subdir := enrollmentDir(configDir, only.Name)
+		if len(subdir) > 5 {
+			_ = os.RemoveAll(subdir)
+		}
+		return reg.Remove(only.Name)
+	}
+
+	return fmt.Errorf("--force without --name is ambiguous: %d enrollments exist (%v). Specify --name <enrollment> to target one.", reg.Len(), reg.Names())
+}
+
+// stopAgentService stops the running agent service so --force can
+// safely wipe its config. Best-effort: errors (e.g. service not
+// installed) are swallowed.
+func stopAgentService() {
+	if runtime.GOOS == "darwin" {
+		exec.Command("launchctl", "unload", "/Library/LaunchDaemons/com.hopssh.agent.plist").Run()
+	} else {
+		exec.Command("systemctl", "stop", "hop-agent").Run()
+	}
+}
+
+// chooseEnrollmentName resolves the local name for a new enrollment.
+// Priority: explicit --name → preferred (DNS domain or CA fingerprint)
+// with -2/-3/… suffix if the preferred name collides with an existing
+// entry. Returns an error only for truly impossible cases.
+func chooseEnrollmentName(reg *enrollmentRegistry, explicit, preferred string) (string, error) {
+	if explicit != "" {
+		if err := validateEnrollmentName(explicit); err != nil {
+			return "", err
+		}
+		if reg.Get(explicit) != nil {
+			return "", fmt.Errorf("enrollment %q already exists", explicit)
+		}
+		return explicit, nil
+	}
+	if err := validateEnrollmentName(preferred); err != nil {
+		return "", fmt.Errorf("preferred enrollment name %q is not valid: %w", preferred, err)
+	}
+	if reg.Get(preferred) == nil {
+		return preferred, nil
+	}
+	for i := 2; i < 100; i++ {
+		candidate := fmt.Sprintf("%s-%d", preferred, i)
+		if validateEnrollmentName(candidate) != nil {
+			continue
+		}
+		if reg.Get(candidate) == nil {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("could not find a free enrollment name derived from %q", preferred)
 }
 
 // enrollDeviceFlow initiates the device authorization flow (RFC 8628).
@@ -250,7 +355,22 @@ func enrollWithToken(token, endpoint string) {
 }
 
 // enrollFromBundle installs from a pre-generated tarball.
+//
+// Bundles ship with a legacy flat layout (files at the top of
+// configDir). We extract in place, then fold the files into a
+// per-network subdir and register the enrollment. Only supported on
+// fresh installs (registry empty) in v0.10.0 — adding a second network
+// via bundle would require the bundle generator to know the target
+// subdir name, which isn't plumbed through the server.
 func enrollFromBundle(path, endpoint string) {
+	reg, err := loadEnrollmentRegistry(configDir)
+	if err != nil {
+		log.Fatalf("Load enrollments: %v", err)
+	}
+	if reg.Len() > 0 {
+		log.Fatalf("Bundle enrollment only supports fresh installs in v0.10.0 (existing enrollments: %v). Use token-based enrollment to add networks, or `hop-agent leave` first.", reg.Names())
+	}
+
 	fmt.Printf("Installing from bundle: %s\n", path)
 
 	// Extract tarball to / using exec.Command directly (no shell interpolation).
@@ -284,10 +404,40 @@ func enrollFromBundle(path, endpoint string) {
 		ep = endpoint
 	}
 
+	// Determine enrollment name from bundle metadata (DNS domain fallback CA fingerprint).
+	caCertPEM, err := os.ReadFile(filepath.Join(configDir, "ca.crt"))
+	if err != nil {
+		log.Fatalf("Read bundle ca.crt: %v", err)
+	}
+	fingerprint := caFingerprint(caCertPEM)
+	preferred := defaultEnrollmentName(bundleConfig.DNSDomain, fingerprint)
+	name, err := chooseEnrollmentName(reg, enrollName, preferred)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+
+	enrollDir := enrollmentDir(configDir, name)
+	if err := os.MkdirAll(enrollDir, 0700); err != nil {
+		log.Fatalf("Create enrollment dir %s: %v", enrollDir, err)
+	}
+
+	// Move the files the bundle delivered from the flat layout into the subdir.
+	bundledFiles := []string{"ca.crt", "node.crt", "node.key", "token", "config.json"}
+	for _, f := range bundledFiles {
+		src := filepath.Join(configDir, f)
+		dst := filepath.Join(enrollDir, f)
+		if _, err := os.Stat(src); err != nil {
+			continue // file wasn't in the bundle
+		}
+		if err := os.Rename(src, dst); err != nil {
+			log.Fatalf("Move %s → %s: %v", src, dst, err)
+		}
+	}
+
 	// Persist endpoint + nodeID for cert renewal.
-	writeFileSecure(filepath.Join(configDir, "endpoint"), []byte(ep), 0600)
+	writeFileSecure(filepath.Join(enrollDir, "endpoint"), []byte(ep), 0600)
 	if bundleConfig.NodeID != "" {
-		writeFileSecure(filepath.Join(configDir, "node-id"), []byte(bundleConfig.NodeID), 0600)
+		writeFileSecure(filepath.Join(enrollDir, "node-id"), []byte(bundleConfig.NodeID), 0600)
 	}
 
 	// Generate Nebula config from bundle data.
@@ -295,8 +445,20 @@ func enrollFromBundle(path, endpoint string) {
 	if serverHost == "" {
 		serverHost = extractHost(ep)
 	}
-	writeNebulaConfig(bundleConfig.ServerIP, serverHost, bundleConfig.LighthousePort, enrollTunMode)
-	writeDNSConfig(bundleConfig.DNSDomain, serverHost, bundleConfig.LighthousePort)
+	writeNebulaConfig(enrollDir, bundleConfig.ServerIP, serverHost, bundleConfig.LighthousePort, enrollTunMode)
+	writeDNSConfig(enrollDir, bundleConfig.DNSDomain, serverHost, bundleConfig.LighthousePort)
+
+	if err := reg.Add(&Enrollment{
+		Name:          name,
+		NodeID:        bundleConfig.NodeID,
+		Endpoint:      ep,
+		TunMode:       enrollTunMode,
+		CAFingerprint: fingerprint,
+		DNSDomain:     bundleConfig.DNSDomain,
+		EnrolledAt:    time.Now().UTC(),
+	}); err != nil {
+		log.Fatalf("Register enrollment: %v", err)
+	}
 
 	installService()
 	fmt.Println("  ✓ Agent started")
@@ -312,30 +474,62 @@ func readTokenFromStdin() string {
 }
 
 func installCerts(er *enrollResponse, endpoint string) {
-	os.MkdirAll(configDir, 0700)
-
-	writeFileSecure(filepath.Join(configDir, "ca.crt"), []byte(er.CACert), 0644)
-	writeFileSecure(filepath.Join(configDir, "node.crt"), []byte(er.NodeCert), 0644)
-	writeFileSecure(filepath.Join(configDir, "node.key"), []byte(er.NodeKey), 0600)
-	writeFileSecure(filepath.Join(configDir, "token"), []byte(er.AgentToken), 0600)
-	writeFileSecure(filepath.Join(configDir, "endpoint"), []byte(endpoint), 0600)
-	if er.NodeID != "" {
-		writeFileSecure(filepath.Join(configDir, "node-id"), []byte(er.NodeID), 0600)
+	if err := os.MkdirAll(configDir, 0700); err != nil {
+		log.Fatalf("Create config dir %s: %v", configDir, err)
 	}
 
-	fmt.Printf("\n  ✓ Enrolled (%s)\n", er.NebulaIP)
+	reg, err := loadEnrollmentRegistry(configDir)
+	if err != nil {
+		log.Fatalf("Load enrollments: %v", err)
+	}
+
+	fingerprint := caFingerprint([]byte(er.CACert))
+	preferred := defaultEnrollmentName(er.DNSDomain, fingerprint)
+	name, err := chooseEnrollmentName(reg, enrollName, preferred)
+	if err != nil {
+		log.Fatalf("%v", err)
+	}
+
+	enrollDir := enrollmentDir(configDir, name)
+	if err := os.MkdirAll(enrollDir, 0700); err != nil {
+		log.Fatalf("Create enrollment dir %s: %v", enrollDir, err)
+	}
+
+	writeFileSecure(filepath.Join(enrollDir, "ca.crt"), []byte(er.CACert), 0644)
+	writeFileSecure(filepath.Join(enrollDir, "node.crt"), []byte(er.NodeCert), 0644)
+	writeFileSecure(filepath.Join(enrollDir, "node.key"), []byte(er.NodeKey), 0600)
+	writeFileSecure(filepath.Join(enrollDir, "token"), []byte(er.AgentToken), 0600)
+	writeFileSecure(filepath.Join(enrollDir, "endpoint"), []byte(endpoint), 0600)
+	if er.NodeID != "" {
+		writeFileSecure(filepath.Join(enrollDir, "node-id"), []byte(er.NodeID), 0600)
+	}
+
+	fmt.Printf("\n  ✓ Enrolled %q (%s)\n", name, er.NebulaIP)
 
 	serverHost := er.LighthouseHost
 	if serverHost == "" {
 		serverHost = extractHost(endpoint)
 	}
-	writeNebulaConfig(er.ServerIP, serverHost, er.LighthousePort, enrollTunMode)
-	writeDNSConfig(er.DNSDomain, serverHost, er.LighthousePort)
+	writeNebulaConfig(enrollDir, er.ServerIP, serverHost, er.LighthousePort, enrollTunMode)
+	writeDNSConfig(enrollDir, er.DNSDomain, serverHost, er.LighthousePort)
+
+	if err := reg.Add(&Enrollment{
+		Name:          name,
+		NodeID:        er.NodeID,
+		Endpoint:      endpoint,
+		TunMode:       enrollTunMode,
+		CAFingerprint: fingerprint,
+		DNSDomain:     er.DNSDomain,
+		EnrolledAt:    time.Now().UTC(),
+	}); err != nil {
+		log.Fatalf("Register enrollment: %v", err)
+	}
+
 	installService()
 	fmt.Println("  ✓ Agent started")
 }
 
-func writeNebulaConfig(serverIP, serverHost string, lighthousePort int, tunMode string) {
+func writeNebulaConfig(enrollDir, serverIP, serverHost string, lighthousePort int, tunMode string) {
 	// Detect physical interface to prevent advertising overlay IPs.
 	physicalIface, err := nebulacfg.DetectPhysicalInterface(serverHost)
 	if err != nil {
@@ -350,6 +544,10 @@ func writeNebulaConfig(serverIP, serverHost string, lighthousePort int, tunMode 
 
 	tunConfig := "  user: true"
 	if tunMode == "kernel" {
+		// Each enrollment gets its own utun/wintun interface. macOS and
+		// WinTun both assign a unique device at create time; on Linux
+		// we use a per-enrollment name to avoid collisions when one
+		// agent is enrolled in N networks.
 		tunConfig = fmt.Sprintf("  dev: nebula1\n  mtu: %d", nebulacfg.TunMTU)
 	}
 
@@ -414,7 +612,7 @@ firewall:
     - port: any
       proto: icmp
       host: any
-`, configDir, configDir, configDir,
+`, enrollDir, enrollDir, enrollDir,
 		serverIP, serverHost, lighthousePort,
 		serverIP,
 		nebulacfg.LocalAllowListYAML(physicalIface),
@@ -428,17 +626,17 @@ firewall:
 		tunConfig,
 		agentAPIPort)
 
-	writeFileSecure(filepath.Join(configDir, "nebula.yaml"), []byte(nebulaConfig), 0644)
+	writeFileSecure(filepath.Join(enrollDir, "nebula.yaml"), []byte(nebulaConfig), 0644)
 
 	// Persist TUN mode so serve knows which mode to use.
-	writeFileSecure(filepath.Join(configDir, "tun-mode"), []byte(tunMode), 0644)
+	writeFileSecure(filepath.Join(enrollDir, "tun-mode"), []byte(tunMode), 0644)
 
 	fmt.Printf("  ✓ Nebula config written (lighthouse: %s via %s:%d, tun: %s)\n", serverIP, serverHost, lighthousePort, tunMode)
 }
 
 // writeDNSConfig persists DNS configuration so the agent can set up split-DNS
 // on serve. The DNS server runs on the control plane at lighthouseHost:dnsPort.
-func writeDNSConfig(dnsDomain, lighthouseHost string, lighthousePort int) {
+func writeDNSConfig(enrollDir, dnsDomain, lighthouseHost string, lighthousePort int) {
 	if dnsDomain == "" {
 		return
 	}
@@ -447,8 +645,8 @@ func writeDNSConfig(dnsDomain, lighthouseHost string, lighthousePort int) {
 	const baseDNSPort = 15300
 	dnsPort := baseDNSPort + (lighthousePort - baseLighthousePort)
 
-	writeFileSecure(filepath.Join(configDir, "dns-domain"), []byte(dnsDomain), 0644)
-	writeFileSecure(filepath.Join(configDir, "dns-server"), []byte(fmt.Sprintf("%s:%d", lighthouseHost, dnsPort)), 0644)
+	writeFileSecure(filepath.Join(enrollDir, "dns-domain"), []byte(dnsDomain), 0644)
+	writeFileSecure(filepath.Join(enrollDir, "dns-server"), []byte(fmt.Sprintf("%s:%d", lighthouseHost, dnsPort)), 0644)
 	fmt.Printf("  ✓ DNS config written (domain: .%s, server: %s:%d)\n", dnsDomain, lighthouseHost, dnsPort)
 }
 

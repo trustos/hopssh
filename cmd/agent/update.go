@@ -19,9 +19,11 @@ func runAgentUpdate(args []string) {
 	force := fs.Bool("force", false, "Update even if already at the latest version")
 	fs.Parse(args)
 
+	loadPrimaryEnrollment()
+
 	// Read endpoint from config if available.
 	endpoint := ""
-	if data, err := os.ReadFile(filepath.Join(configDir, "endpoint")); err == nil {
+	if data, err := os.ReadFile(filepath.Join(activeEnrollDir(), "endpoint")); err == nil {
 		endpoint = strings.TrimSpace(string(data))
 	}
 

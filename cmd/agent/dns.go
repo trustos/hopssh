@@ -18,11 +18,12 @@ type dnsConfig struct {
 // readDNSConfig reads the persisted DNS configuration from the config directory.
 // Returns nil if DNS is not configured (no domain file).
 func readDNSConfig() *dnsConfig {
-	domain, err := os.ReadFile(filepath.Join(configDir, "dns-domain"))
+	dir := activeEnrollDir()
+	domain, err := os.ReadFile(filepath.Join(dir, "dns-domain"))
 	if err != nil {
 		return nil
 	}
-	server, err := os.ReadFile(filepath.Join(configDir, "dns-server"))
+	server, err := os.ReadFile(filepath.Join(dir, "dns-server"))
 	if err != nil {
 		return nil
 	}

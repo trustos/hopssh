@@ -218,7 +218,7 @@ func runCertRenewal(ctx context.Context, endpoint, nodeID, agentToken string) {
 // timeUntilRenewal reads the current cert and returns the duration until
 // renewal should happen (50% of remaining validity).
 func timeUntilRenewal() (time.Duration, error) {
-	certPEM, err := os.ReadFile(filepath.Join(configDir, "node.crt"))
+	certPEM, err := os.ReadFile(filepath.Join(activeEnrollDir(), "node.crt"))
 	if err != nil {
 		return 0, fmt.Errorf("read cert: %w", err)
 	}
@@ -280,8 +280,9 @@ func renewCert(endpoint, nodeID, agentToken string) error {
 	}
 
 	// Write new cert atomically (temp file + rename) to prevent partial reads.
-	certPath := filepath.Join(configDir, "node.crt")
-	keyPath := filepath.Join(configDir, "node.key")
+	dir := activeEnrollDir()
+	certPath := filepath.Join(dir, "node.crt")
+	keyPath := filepath.Join(dir, "node.key")
 
 	if err := atomicWrite(certPath, []byte(renewResp.NodeCert), 0644); err != nil {
 		return fmt.Errorf("write cert: %w", err)
@@ -316,7 +317,7 @@ type nebulaConfigUpdate struct {
 
 // applyNebulaConfigUpdate merges server-pushed settings into the local nebula.yaml.
 func applyNebulaConfigUpdate(update *nebulaConfigUpdate) error {
-	configPath := filepath.Join(configDir, "nebula.yaml")
+	configPath := filepath.Join(activeEnrollDir(), "nebula.yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
@@ -413,7 +414,7 @@ func yamlMap(cfg map[string]interface{}, key string) map[string]interface{} {
 // - local_allow_list with physical interface (prevents overlay-within-overlay)
 // - Fast punch timing
 func ensureP2PConfig(endpoint string) {
-	configPath := filepath.Join(configDir, "nebula.yaml")
+	configPath := filepath.Join(activeEnrollDir(), "nebula.yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return
@@ -562,7 +563,7 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 func reloadNebula() {
 	nebulaMu.Lock()
 
-	configPath := filepath.Join(configDir, "nebula.yaml")
+	configPath := filepath.Join(activeEnrollDir(), "nebula.yaml")
 	tunMode := readTunMode()
 
 	if currentNebula == nil {
@@ -645,7 +646,7 @@ func reloadNebula() {
 // persisted config (set during enrollment). Used by the cold-start path
 // in reloadNebula() where agentEndpoint (local to runServe) isn't available.
 func readEndpointFromDisk() string {
-	data, err := os.ReadFile(filepath.Join(configDir, "endpoint"))
+	data, err := os.ReadFile(filepath.Join(activeEnrollDir(), "endpoint"))
 	if err != nil {
 		return ""
 	}

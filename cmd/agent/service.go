@@ -58,10 +58,13 @@ func runAgentInstall(args []string) {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
 	fs.Parse(args)
 
+	loadPrimaryEnrollment()
+
 	// Verify enrollment has been completed.
+	dir := activeEnrollDir()
 	requiredFiles := []string{"token", "endpoint", "node-id", "ca.crt", "node.crt"}
 	for _, f := range requiredFiles {
-		path := filepath.Join(configDir, f)
+		path := filepath.Join(dir, f)
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "Error: Enrollment not complete — %s not found.\n\n", path)
 			fmt.Fprintf(os.Stderr, "Run 'hop-agent enroll' first:\n")

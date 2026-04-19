@@ -13,8 +13,11 @@ import (
 )
 
 func runStatus(args []string) {
+	loadPrimaryEnrollment()
+
 	// Read cert for IP and expiry.
-	certPath := filepath.Join(configDir, "node.crt")
+	dir := activeEnrollDir()
+	certPath := filepath.Join(dir, "node.crt")
 	certPEM, err := os.ReadFile(certPath)
 	if err != nil {
 		fmt.Printf("Status:     not enrolled\n")
@@ -50,13 +53,13 @@ func runStatus(args []string) {
 
 	// Read endpoint.
 	endpoint := "unknown"
-	if data, err := os.ReadFile(filepath.Join(configDir, "endpoint")); err == nil {
+	if data, err := os.ReadFile(filepath.Join(dir, "endpoint")); err == nil {
 		endpoint = strings.TrimSpace(string(data))
 	}
 
 	// Read node ID.
 	nodeID := "unknown"
-	if data, err := os.ReadFile(filepath.Join(configDir, "node-id")); err == nil {
+	if data, err := os.ReadFile(filepath.Join(dir, "node-id")); err == nil {
 		nodeID = strings.TrimSpace(string(data))
 	}
 

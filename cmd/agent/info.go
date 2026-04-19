@@ -11,15 +11,18 @@ import (
 )
 
 func runInfo(args []string) {
+	loadPrimaryEnrollment()
+
 	hostname, _ := os.Hostname()
 
+	dir := activeEnrollDir()
 	nodeID := "not enrolled"
-	if data, err := os.ReadFile(filepath.Join(configDir, "node-id")); err == nil {
+	if data, err := os.ReadFile(filepath.Join(dir, "node-id")); err == nil {
 		nodeID = strings.TrimSpace(string(data))
 	}
 
 	endpoint := "not configured"
-	if data, err := os.ReadFile(filepath.Join(configDir, "endpoint")); err == nil {
+	if data, err := os.ReadFile(filepath.Join(dir, "endpoint")); err == nil {
 		endpoint = strings.TrimSpace(string(data))
 	}
 
