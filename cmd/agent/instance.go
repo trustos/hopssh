@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/slackhq/nebula"
 )
@@ -51,6 +52,30 @@ type meshInstance struct {
 	// Used by `hop-agent client` for its ephemeral `/etc/hop-client`
 	// layout.
 	customDir string
+
+	// reloadMu + lastReloadAt throttle automatic Nebula reloads
+	// triggered from watchNetworkChanges' "own utun dropped" recovery
+	// path. Without a floor, a reload that fails to bring the utun
+	// back (transient kernel state) would loop every tick (5 s).
+	reloadMu     sync.Mutex
+	lastReloadAt time.Time
+}
+
+// reloadCooldown is the minimum spacing between watcher-initiated
+// reloads. Exposed as a var so tests can shorten it.
+var reloadCooldown = 30 * time.Second
+
+// shouldAutoReload returns true if enough time has passed since the
+// last automatic reload (or none has happened). On success it stamps
+// lastReloadAt to "now" — callers may proceed to invoke reloadNebula.
+func (i *meshInstance) shouldAutoReload() bool {
+	i.reloadMu.Lock()
+	defer i.reloadMu.Unlock()
+	if !i.lastReloadAt.IsZero() && time.Since(i.lastReloadAt) < reloadCooldown {
+		return false
+	}
+	i.lastReloadAt = time.Now()
+	return true
 }
 
 // newMeshInstance constructs an instance for the given enrollment.

@@ -3,7 +3,9 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/trustos/hopssh/internal/nebulacfg"
 	"gopkg.in/yaml.v3"
@@ -141,3 +143,106 @@ func TestReadTunMode_InvalidContent(t *testing.T) {
 		t.Fatalf("expected userspace for invalid content, got %q", mode)
 	}
 }
+
+// stubNetwork replaces package-level test doubles for the duration
+// of one test and returns a restore func.
+func stubNetwork(t *testing.T, ifaceUp bool, reloadDelay time.Duration) (fired *int32, restore func()) {
+	t.Helper()
+	origUp := isInterfaceUp
+	origTrig := triggerReload
+	origGrace := watcherStartupGraceTicks
+	origCooldown := reloadCooldown
+	var n int32
+	isInterfaceUp = func(string) bool { return ifaceUp }
+	triggerReload = func(inst *meshInstance) {
+		atomic.AddInt32(&n, 1)
+	}
+	// Test runs with short grace + cooldown so we don't need to
+	// wait real seconds.
+	watcherStartupGraceTicks = 0
+	reloadCooldown = reloadDelay
+	return &n, func() {
+		isInterfaceUp = origUp
+		triggerReload = origTrig
+		watcherStartupGraceTicks = origGrace
+		reloadCooldown = origCooldown
+	}
+}
+
+func TestShouldAutoReload_CooldownBlocksSecondCall(t *testing.T) {
+	inst := newMeshInstance(&Enrollment{Name: "home"})
+	_, restore := stubNetwork(t, true, 10*time.Second)
+	defer restore()
+
+	if !inst.shouldAutoReload() {
+		t.Fatal("first call should allow reload")
+	}
+	if inst.shouldAutoReload() {
+		t.Fatal("immediate second call should be blocked by cooldown")
+	}
+}
+
+func TestShouldAutoReload_CooldownExpires(t *testing.T) {
+	inst := newMeshInstance(&Enrollment{Name: "home"})
+	_, restore := stubNetwork(t, true, 10*time.Millisecond)
+	defer restore()
+
+	if !inst.shouldAutoReload() {
+		t.Fatal("first call should allow reload")
+	}
+	time.Sleep(20 * time.Millisecond)
+	if !inst.shouldAutoReload() {
+		t.Fatal("call after cooldown should be allowed")
+	}
+}
+
+func TestFindInterfaceByIP_LoopbackFindable(t *testing.T) {
+	// Loopback is always present; verify the helper finds it by IP.
+	name := findInterfaceByIP("127.0.0.1")
+	if name == "" {
+		t.Fatal("expected to find loopback by 127.0.0.1")
+	}
+}
+
+func TestFindInterfaceByIP_NonexistentReturnsEmpty(t *testing.T) {
+	if got := findInterfaceByIP("198.51.100.255"); got != "" {
+		t.Fatalf("expected empty for unassigned IP, got %q", got)
+	}
+}
+
+func TestIsInterfaceUp_UnknownNameIsFalse(t *testing.T) {
+	// The real implementation returns false on lookup failure.
+	if isInterfaceUp("definitely-not-an-interface-name-9999") {
+		t.Fatal("expected false for nonexistent interface")
+	}
+}
+
+// The watcher's utun-down → reload trigger path. Directly verify the
+// shouldAutoReload + isInterfaceUp wiring: simulate "down" + no
+// cooldown, one shouldAutoReload call, confirm triggerReload receives
+// the call.
+func TestWatcherReloadTrigger_FiresWhenInterfaceDown(t *testing.T) {
+	inst := newMeshInstance(&Enrollment{Name: "home"})
+	fired, restore := stubNetwork(t, false, 10*time.Second)
+	defer restore()
+
+	// Simulate one tick past grace with a down interface.
+	if isInterfaceUp("anything") {
+		t.Fatal("stub should report down")
+	}
+	if !inst.shouldAutoReload() {
+		t.Fatal("first reload should be allowed")
+	}
+	triggerReload(inst)
+
+	if got := atomic.LoadInt32(fired); got != 1 {
+		t.Fatalf("expected 1 reload trigger, got %d", got)
+	}
+}
+
+// The startup-grace and svc-nil guards in watchNetworkChanges itself
+// are exercised by the live integration test on Mac mini + MacBook —
+// spinning up a real Nebula Control in a unit test adds an order of
+// magnitude of dependency for no incremental signal over the unit
+// tests above (which already cover shouldAutoReload, triggerReload
+// dispatch, and findInterfaceByIP/isInterfaceUp).

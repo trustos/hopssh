@@ -26,6 +26,11 @@ type meshService interface {
 	Listen(network, address string) (net.Listener, error)
 	Close()
 	NebulaControl() *nebula.Control
+	// DevName returns the OS-level interface name for kernel TUN mode
+	// (e.g. "utun10" on macOS, "hop-home" on Linux). Returns "" for
+	// userspace mode (gvisor has no OS interface). watchNetworkChanges
+	// uses this to detect when the local tunnel has dropped its UP flag.
+	DevName() string
 }
 
 // Per-instance Nebula state (currentNebula, heartbeatTrigger,
@@ -78,6 +83,9 @@ func (u *userspaceMeshService) Listen(network, address string) (net.Listener, er
 // mesh traffic.
 func (u *userspaceMeshService) NebulaControl() *nebula.Control { return u.ctrl }
 
+// DevName returns empty — userspace mode has no OS interface.
+func (u *userspaceMeshService) DevName() string { return "" }
+
 // Close shuts down the Nebula instance gracefully.
 func (u *userspaceMeshService) Close() {
 	log.Printf("[agent] stopping Nebula mesh connection (userspace)")
@@ -89,8 +97,9 @@ func (u *userspaceMeshService) Close() {
 // kernelTunMeshService wraps Nebula with a kernel TUN device.
 // The mesh IP is routable at the OS level (utun on macOS, tun on Linux).
 type kernelTunMeshService struct {
-	ctrl   *nebula.Control
-	meshIP string
+	ctrl    *nebula.Control
+	meshIP  string
+	devName string // OS interface name (e.g. "utun10", "hop-home")
 }
 
 // startNebulaKernelTun starts Nebula with a kernel TUN device.
@@ -117,8 +126,17 @@ func startNebulaKernelTun(configPath string) (*kernelTunMeshService, error) {
 		return nil, fmt.Errorf("read mesh IP from cert: %w", err)
 	}
 
-	log.Printf("[agent] kernel TUN interface created (mesh IP: %s)", meshIP)
-	return &kernelTunMeshService{ctrl: ctrl, meshIP: meshIP}, nil
+	// Discover the OS-level interface name by finding which interface
+	// got the mesh IP assigned. On macOS the kernel auto-assigns utunN
+	// (the tun.dev field in nebula.yaml is ignored), so we can't
+	// predict the name — we have to look it up.
+	devName := findInterfaceByIP(meshIP)
+	if devName == "" {
+		log.Printf("[agent] kernel TUN interface created (mesh IP: %s, name: unknown)", meshIP)
+	} else {
+		log.Printf("[agent] kernel TUN interface created (mesh IP: %s, name: %s)", meshIP, devName)
+	}
+	return &kernelTunMeshService{ctrl: ctrl, meshIP: meshIP, devName: devName}, nil
 }
 
 // Listen creates a TCP listener on the OS network stack bound to the mesh IP.
@@ -132,6 +150,10 @@ func (k *kernelTunMeshService) Listen(network, address string) (net.Listener, er
 }
 
 func (k *kernelTunMeshService) NebulaControl() *nebula.Control { return k.ctrl }
+
+// DevName returns the OS-level interface name (e.g. "utun10") owned
+// by this kernel-TUN service. Empty if discovery failed at startup.
+func (k *kernelTunMeshService) DevName() string { return k.devName }
 
 // Close shuts down the Nebula instance and destroys the TUN interface.
 func (k *kernelTunMeshService) Close() {
@@ -164,6 +186,8 @@ func watchNetworkChanges(ctx context.Context, inst *meshInstance, ctrl *nebula.C
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
+	tickCount := 0
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -171,6 +195,7 @@ func watchNetworkChanges(ctx context.Context, inst *meshInstance, ctrl *nebula.C
 		case <-ticker.C:
 		}
 
+		tickCount++
 		now := time.Now()
 
 		// Detect sleep/wake: if the ticker fires and the gap since the
@@ -206,8 +231,96 @@ func watchNetworkChanges(ctx context.Context, inst *meshInstance, ctrl *nebula.C
 			lastIface = currentIface
 			lastAddrs = currentAddrs
 		}
+
+		// Independent of addrChanged: detect when OUR OWN kernel-TUN
+		// device has dropped its UP flag. Rebind + CloseAllTunnels
+		// above can't recover this — the TUN device itself needs to
+		// be recreated, which only reloadNebula does.
+		//
+		// Skipped during startup grace (Nebula's TUN bring-up is not
+		// instantaneous) and in userspace mode (no OS interface).
+		if tickCount > watcherStartupGraceTicks {
+			svc := inst.currentSvc()
+			if svc != nil {
+				if devName := svc.DevName(); devName != "" && !isInterfaceUp(devName) {
+					if inst.shouldAutoReload() {
+						log.Printf("[agent %s] kernel TUN %s has lost UP flag; reloading Nebula to recover", inst.name(), devName)
+						triggerReload(inst)
+						// Our watcher's ctx will be cancelled by the reload
+						// (stopWatcher). Exit now; the new watcher reloadNebula
+						// spawns will take over against the fresh ctrl.
+						return
+					}
+					log.Printf("[agent %s] kernel TUN %s is DOWN but within reload cooldown; skipping", inst.name(), devName)
+				}
+			}
+		}
 	}
 }
+
+// findInterfaceByIP returns the name of the interface that has the
+// given IPv4 address assigned, or "" if none. Used to discover the
+// macOS-assigned utun name at startup (tun.dev is ignored on macOS).
+func findInterfaceByIP(ip string) string {
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range ifaces {
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var host string
+			switch v := addr.(type) {
+			case *net.IPNet:
+				host = v.IP.String()
+			case *net.IPAddr:
+				host = v.IP.String()
+			}
+			if host == ip {
+				return iface.Name
+			}
+		}
+	}
+	return ""
+}
+
+// isInterfaceUp reports whether the named interface currently has the
+// FlagUp bit set. Returns false on lookup error (e.g. interface
+// deleted) — the caller treats that the same as "down" for recovery
+// purposes.
+//
+// Exposed as a var so tests can stub this without a real OS interface.
+var isInterfaceUp = func(name string) bool {
+	iface, err := net.InterfaceByName(name)
+	if err != nil {
+		return false
+	}
+	return iface.Flags&net.FlagUp != 0
+}
+
+// triggerReload kicks off reloadNebula in its own goroutine. Exposed
+// as a var so tests can stub the side-effecting reload call without
+// having to bring up a real Nebula instance.
+//
+// Assigned in init() because a self-referential package-var initializer
+// (via reloadNebula → startWatcher → watchNetworkChanges → triggerReload)
+// would be a Go "initialization cycle" error.
+var triggerReload func(inst *meshInstance)
+
+func init() {
+	triggerReload = func(inst *meshInstance) {
+		go reloadNebula(inst)
+	}
+}
+
+// watcherStartupGraceTicks is the number of ticks the watcher ignores
+// the utun-UP check after (re)starting. Gives Nebula a window to bring
+// up the kernel TUN without us racing it with a reload. Exposed as a
+// var so tests can shrink it.
+var watcherStartupGraceTicks = 3
 
 // getLocalAddrs returns a string fingerprint of current local IPv4 addresses.
 func getLocalAddrs() string {
