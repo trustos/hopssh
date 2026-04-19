@@ -14,6 +14,7 @@
 - **Per-network subnet allocation** — Each network gets a unique /24 subnet. Node IPs allocated via MAX (monotonically increasing).
 - **Idle network reaper** — Unused Nebula instances are stopped automatically to conserve resources.
 - **Userspace Nebula** — Runs in userspace via gvisor netstack. No kernel TUN device required (optional kernel mode available).
+- **Multi-network per agent (v0.10+)** — A single `hop-agent` process joins N networks simultaneously with independent Nebula instances, certs, heartbeats, and split-DNS domains per network. ZeroTier-style "one daemon, many overlays". Cross-network isolation is cryptographic (each network has its own CA).
 
 ## Node Enrollment
 
@@ -87,19 +88,21 @@
 
 ## Agent (`hop-agent`)
 
-- **`enroll`** — Join a network (4 modes: device flow, token, stdin, bundle). Flags: `--endpoint`, `--tun-mode`, `--no-service`, `--force`, `--config-dir`.
-- **`serve`** — Run the agent service. Listens on port 41820 for control plane proxy connections.
-- **`install`** — Install as a system service (systemd on Linux, launchd on macOS, Windows SCM on Windows — LocalSystem with auto-restart).
+- **`enroll`** — Join a network (4 modes: device flow, token, stdin, bundle). Flags: `--endpoint`, `--name`, `--tun-mode`, `--no-service`, `--force`, `--config-dir`. Can be run multiple times to join additional networks; rejects same-network duplicates by `(endpoint, CA fingerprint)`.
+- **`serve`** — Run the agent service. Loops over all enrollments; one Nebula instance per network bound to its own mesh listener on port 41820.
+- **`leave`** — Remove one enrollment (`--network <name>`). Cleans up the subdir, platform DNS registration, and registry entry; restarts the service if other enrollments remain.
+- **`install`** — Install as a system service (systemd on Linux, launchd on macOS, Windows SCM on Windows — LocalSystem with auto-restart). Idempotent: re-running restarts the existing service.
 - **`uninstall`** — Remove the system service.
-- **`status`** — Show enrollment status, Nebula IP, cert expiry, groups, endpoint, node ID.
+- **`status`** — List all enrollments with Nebula IP, cert expiry, groups, endpoint, node ID, TUN mode. Optional `--network <name>` filter.
 - **`info`** — Show hostname, DNS name, OS/arch, node ID, endpoint, config location.
 - **`update`** — Check for and install updates (from GitHub releases or control plane).
 - **`restart`** — Restart the agent service.
 - **`stop`** — Stop the agent service.
 - **`version`** — Show version and build info.
 - **`help`** — Show help.
+- **Per-enrollment config layout** — `<configDir>/<enrollment-name>/` holds each membership's cert, key, token, Nebula yaml, DNS config. Top-level `enrollments.json` indexes them. Pre-v0.10 flat layouts auto-migrate on first launch.
 - **Non-root support** — Runs in user-level config with userspace TUN mode. No root required.
-- **Platform DNS configuration** — Auto-configures split DNS (systemd-resolved on Linux with per-link + drop-in fallback, scutil on macOS, NRPT via loopback forwarder on Windows).
+- **Platform DNS configuration** — Auto-configures split DNS per network: one `/etc/resolver/<domain>` file per domain on macOS; per-link DNS on each instance's Nebula interface (`hop-<name>`) on Linux, with a merged `/etc/systemd/resolved.conf.d/hopssh.conf` fallback; one loopback DNS proxy per enrollment on Windows (`127.53.0.1`, `127.53.0.2`, …) with one NRPT rule per domain.
 
 ## Server (`hop-server`)
 

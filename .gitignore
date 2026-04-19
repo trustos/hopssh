@@ -35,3 +35,7 @@ Thumbs.db
 *.swo
 *~
 server
+
+# E2E-session reference (host connection details — not secrets,
+# but session-scoped and machine-specific so never committed).
+.e2e-*
