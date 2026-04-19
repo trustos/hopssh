@@ -440,6 +440,8 @@ func yamlMap(cfg map[string]interface{}, key string) map[string]interface{} {
 // - target_all_remotes (continuous relay→direct upgrade)
 // - local_allow_list with physical interface (prevents overlay-within-overlay)
 // - Fast punch timing
+// - PKI paths match inst.dir() (fixes legacy flat-layout migrations
+//   where the yaml still references the pre-migration paths)
 func ensureP2PConfig(inst *meshInstance) {
 	configPath := filepath.Join(inst.dir(), "nebula.yaml")
 	data, err := os.ReadFile(configPath)
@@ -453,6 +455,30 @@ func ensureP2PConfig(inst *meshInstance) {
 	}
 
 	changed := false
+
+	// PKI paths: rewrite if they don't match the instance's subdir.
+	// Covers both fresh enrollments (already correct) and post-
+	// migration state where the yaml was moved but its pki block
+	// still points at the flat-layout paths.
+	pki := yamlMap(cfg, "pki")
+	wantCA := filepath.Join(inst.dir(), "ca.crt")
+	wantCert := filepath.Join(inst.dir(), "node.crt")
+	wantKey := filepath.Join(inst.dir(), "node.key")
+	if pki["ca"] != wantCA {
+		pki["ca"] = wantCA
+		changed = true
+	}
+	if pki["cert"] != wantCert {
+		pki["cert"] = wantCert
+		changed = true
+	}
+	if pki["key"] != wantKey {
+		pki["key"] = wantKey
+		changed = true
+	}
+	if changed {
+		cfg["pki"] = pki
+	}
 
 	// Respect whatever listen.port was assigned at enrollment time —
 	// primary enrollment uses nebulacfg.ListenPort, additional
