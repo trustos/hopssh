@@ -18,6 +18,7 @@ hopssh is a working encrypted mesh networking platform. Phase 1 (mesh core) is c
 - Teams with invite links, admin/member roles, network sharing
 - Audit logging, real-time WebSocket events, persistent activity log with search/filter/time-range, self-update
 - Per-node P2P / relay badge + per-peer drill-down table + network topology diagram (cytoscape)
+- Control plane + per-agent version surfaced in the dashboard with drift highlight
 - Docker, systemd, launchd, non-root agent, cross-platform releases
 - macOS batch syscalls (`sendmsg_x`/`recvmsg_x`) — 17% → 35-53% tunnel efficiency
 - macOS TUN batch reads, control-lane priority queue, TUN buffer caching, AES-GCM default

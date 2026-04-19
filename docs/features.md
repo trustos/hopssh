@@ -153,6 +153,7 @@
 - **Client-side offline derivation** (v0.9.12) — dashboard derives effective status from `lastSeenAt + 180 s`, so an already-open tab flips a node to "offline" ≤1 s after the threshold crosses without waiting for polling.
 - **Proxy traffic as liveness signal** (v0.9.12) — every successful shell / exec / port-forward / health proxy round-trip refreshes `last_seen_at` (throttled 30 s per node). Covers the case where the agent is serving mesh traffic but its heartbeat channel is broken.
 - **Responsive tables** (v0.9.14) — Nodes, Peers, DNS, Members, Audit, and Activity tables all use shadcn primitives with breakpoint-driven column hiding (no horizontal scroll at any viewport width).
+- **Version visibility** (v0.9.15) — Control plane version shown in the sidebar footer (fetched from `GET /version`); each node's self-reported `hop-agent` version shown in the Nodes table Version column. Drift between control plane and agent is highlighted in amber — makes it obvious when a rollout hasn't propagated or a self-update is stuck.
 
 ## Performance & Optimization
 

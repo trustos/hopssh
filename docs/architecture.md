@@ -192,6 +192,11 @@ audit_log (id, user_id, node_id, network_id, action, details, created_at)
               node.delete, network.create, dns.update
   └─ buffered write path: 2 s flush, 100-entry batch, drop-on-overflow
 
+nodes.agent_version TEXT (nullable, v0.9.15+)
+  └─ self-reported hop-agent build, carried on each heartbeat via the
+     existing COALESCE pattern; NULL preserves prior value.
+     Dashboard compares with control plane's /version and highlights drift.
+
 network_events (id, network_id, event_type, target_id, status, details, created_at)
   └─ persistent activity log — every WebSocket event is also appended here
   └─ event_types: node.enrolled, node.status, node.renamed, node.capabilities,
