@@ -613,7 +613,7 @@ func reloadNebula(inst *meshInstance) {
 		// Configure DNS (kernel TUN mode only).
 		if tunMode == "kernel" {
 			inst.dnsConfig = readDNSConfig(inst)
-			configureDNS(inst.dnsConfig)
+			configureDNS(inst, inst.dnsConfig)
 		}
 
 		// Warm tunnels so Screen Sharing HP mode works immediately.

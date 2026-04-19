@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,17 +21,35 @@ import (
 // split-DNS via global config (bypasses the per-link-non-53-port bug
 // in systemd-resolved seen on Ubuntu 25.10 / systemd 257+, also
 // reported against older versions in NetBird #3443).
-const dropInPath = "/etc/systemd/resolved.conf.d/hopssh.conf"
+//
+// Not a const so tests can point it at a temp file.
+var dropInPath = "/etc/systemd/resolved.conf.d/hopssh.conf"
+
+// dropInEntry is one instance's contribution to the merged drop-in.
+type dropInEntry struct {
+	domain string
+	addr   string // host or host:port
+}
+
+// dropInState tracks every active instance's drop-in contribution so
+// we can regenerate the merged `/etc/systemd/resolved.conf.d/hopssh.conf`
+// on add/remove. The merged file is the only writer — individual
+// instances never touch their own file.
+var dropInState = struct {
+	mu      sync.Mutex
+	entries map[string]dropInEntry // keyed by instance name
+}{entries: make(map[string]dropInEntry)}
 
 // platformConfigureDNS configures split-DNS on Linux.
 // Tries systemd-resolved per-link first (cheap, works on most systems
 // when port is standard). If that registers but the stub doesn't
-// forward (broken systemd-resolved case), falls back to a global
-// drop-in config that works reliably. If systemd-resolved is not
-// present at all, falls back to /etc/resolver/<domain> (rare distros).
-func platformConfigureDNS(domain, serverIP, port string) error {
+// forward (broken systemd-resolved case), falls back to a merged
+// global drop-in config that works reliably across all configured
+// instances. If systemd-resolved is not present at all, falls back to
+// /etc/resolver/<domain> (rare distros).
+func platformConfigureDNS(instanceName, domain, serverIP, port string) error {
 	if _, err := exec.LookPath("resolvectl"); err == nil {
-		if err := configureViaResolvectl(domain, serverIP, port); err == nil {
+		if err := configureViaResolvectl(instanceName, domain, serverIP, port); err == nil {
 			return nil
 		}
 	}
@@ -50,11 +70,8 @@ func platformConfigureDNS(domain, serverIP, port string) error {
 
 // configureViaResolvectl tries the per-link resolvectl approach first,
 // probes the stub to verify it actually forwards queries, and falls
-// back to a global drop-in config if the probe fails. This targets the
-// known broken case (systemd-resolved stub silently dropping `.domain`
-// queries when DNS server port is non-53) without regressing working
-// systems.
-func configureViaResolvectl(domain, serverIP, port string) error {
+// back to the merged drop-in config if the probe fails.
+func configureViaResolvectl(instanceName, domain, serverIP, port string) error {
 	iface := findNebulaInterface()
 	if iface == "" {
 		return fmt.Errorf("no Nebula interface found")
@@ -89,7 +106,7 @@ func configureViaResolvectl(domain, serverIP, port string) error {
 	// cleanly without conflicting per-link state.
 	_ = exec.Command("resolvectl", "revert", iface).Run()
 
-	if err := writeResolvedDropIn(domain, addr); err != nil {
+	if err := updateResolvedDropIn(instanceName, &dropInEntry{domain: domain, addr: addr}); err != nil {
 		return fmt.Errorf("write drop-in: %w", err)
 	}
 	// reload-or-restart is more portable than reload across systemd versions.
@@ -106,14 +123,54 @@ func configureViaResolvectl(domain, serverIP, port string) error {
 	return nil
 }
 
-// writeResolvedDropIn writes the systemd-resolved drop-in config that
-// registers our DNS server in the global scope with a domain route.
-func writeResolvedDropIn(domain, addr string) error {
+// updateResolvedDropIn mutates the in-memory drop-in state (add when
+// entry != nil, remove when entry == nil) and writes the merged file.
+// The merged file has one [Resolve] block listing every active
+// instance's DNS server + domain. Entries are sorted by instance name
+// for deterministic output — preventing spurious file churn when
+// multiple instances race to register.
+func updateResolvedDropIn(instanceName string, entry *dropInEntry) error {
+	dropInState.mu.Lock()
+	defer dropInState.mu.Unlock()
+
+	if entry == nil {
+		delete(dropInState.entries, instanceName)
+	} else {
+		dropInState.entries[instanceName] = *entry
+	}
+
+	if len(dropInState.entries) == 0 {
+		// Last instance cleaned up → remove the file.
+		if err := os.Remove(dropInPath); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+
 	dir := filepath.Dir(dropInPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	content := fmt.Sprintf("# Written by hop-agent. Safe to remove; regenerated on next enroll.\n[Resolve]\nDNS=%s\nDomains=~%s\n", addr, domain)
+
+	names := make([]string, 0, len(dropInState.entries))
+	for name := range dropInState.entries {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var dnsAddrs, domains []string
+	for _, name := range names {
+		e := dropInState.entries[name]
+		dnsAddrs = append(dnsAddrs, e.addr)
+		domains = append(domains, "~"+e.domain)
+	}
+
+	content := fmt.Sprintf(
+		"# Written by hop-agent. Merged across enrollments: %s. Safe to remove; regenerated on next enroll.\n[Resolve]\nDNS=%s\nDomains=%s\n",
+		strings.Join(names, ", "),
+		strings.Join(dnsAddrs, " "),
+		strings.Join(domains, " "),
+	)
 	return os.WriteFile(dropInPath, []byte(content), 0644)
 }
 
@@ -147,17 +204,24 @@ func stubForwardsQueries(domain string, timeout time.Duration) bool {
 	return false
 }
 
-// platformCleanupDNS removes DNS configuration on Linux. Handles both
-// the per-link registration and the drop-in config, since the agent
-// may have configured either path (or both across upgrades).
-func platformCleanupDNS(domain string) error {
-	// Remove drop-in config if present and reload systemd-resolved.
-	if _, err := os.Stat(dropInPath); err == nil {
-		_ = os.Remove(dropInPath)
-		_ = exec.Command("systemctl", "reload-or-restart", "systemd-resolved").Run()
+// platformCleanupDNS removes DNS configuration on Linux for one instance.
+// Handles both the per-link registration and this instance's slice of
+// the drop-in config, since the agent may have configured either path
+// (or both across upgrades).
+func platformCleanupDNS(instanceName, domain string) error {
+	// Pull this instance's drop-in entry out of the merged file and
+	// regenerate. If that was the last entry, the file gets removed.
+	if err := updateResolvedDropIn(instanceName, nil); err != nil {
+		return fmt.Errorf("update drop-in on cleanup: %w", err)
 	}
+	// Reload systemd-resolved so the stub picks up the regenerated
+	// (or absent) drop-in — best effort, safe to skip on distros
+	// without systemd.
+	_ = exec.Command("systemctl", "reload-or-restart", "systemd-resolved").Run()
 
-	// Revert per-link config if present.
+	// Revert per-link config if present. Note: with multi-instance
+	// kernel-TUN mode each instance has its own interface, so this
+	// only touches the one interface this instance set up.
 	if _, err := exec.LookPath("resolvectl"); err == nil {
 		if iface := findNebulaInterface(); iface != "" {
 			_ = exec.Command("resolvectl", "revert", iface).Run()

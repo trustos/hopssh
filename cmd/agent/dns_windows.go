@@ -14,15 +14,18 @@ import (
 // on a non-standard port (15300), so we can't register it directly —
 // Windows would query :53 and time out.
 //
-// Workaround: start a local DNS forwarder on 127.53.0.1:53 that relays
-// to the real upstream, then register the loopback IP in NRPT (port 53
-// is the NRPT default).
+// Workaround: start a local DNS forwarder on a dedicated loopback IP
+// (one per instance, in 127.53.0.0/24), then register that IP in NRPT
+// (port 53 is the NRPT default). Multi-instance-safe: each instance
+// gets its own loopback so queries for .<instance-domain> reach the
+// right upstream.
 //
-// Also cleans up any stale hopssh NRPT rules from previous runs to
-// avoid the accumulation we observed during validation (multiple
-// identical rules for .<domain>). Tag-based removal via the `Comment`
-// field — only hopssh-written rules get touched.
-func platformConfigureDNS(domain, serverIP, port string) error {
+// Also cleans up any stale hopssh NRPT rules for this domain from
+// previous runs to avoid the accumulation we observed during
+// validation (multiple identical rules for .<domain>). Tag-based
+// removal via the `Comment` field — only hopssh-written rules get
+// touched.
+func platformConfigureDNS(instanceName, domain, serverIP, port string) error {
 	// Upstream for the local forwarder. Always include the port —
 	// miekg/dns-Client expects <host>:<port>.
 	upstream := serverIP + ":53"
@@ -30,11 +33,13 @@ func platformConfigureDNS(domain, serverIP, port string) error {
 		upstream = fmt.Sprintf("%s:%s", serverIP, port)
 	}
 
-	// Remove any stale hopssh NRPT rules from previous runs BEFORE starting
-	// the proxy (so we don't stop-then-start the one we're about to use).
+	// Remove any stale hopssh NRPT rules for this domain from previous
+	// runs BEFORE starting the proxy (so we don't stop-then-start the
+	// one we're about to use).
 	_ = removeHopsshNRPTRules(domain)
 
-	if err := startWindowsDNSProxy(upstream); err != nil {
+	loopback, err := startWindowsDNSProxy(instanceName, upstream)
+	if err != nil {
 		return fmt.Errorf("start DNS proxy: %w", err)
 	}
 
@@ -43,23 +48,24 @@ func platformConfigureDNS(domain, serverIP, port string) error {
 	namespace := "." + domain
 	ps := fmt.Sprintf(
 		`Add-DnsClientNrptRule -Namespace "%s" -NameServers "%s" -Comment "hopssh mesh DNS"`,
-		namespace, WindowsDNSProxyIP,
+		namespace, loopback,
 	)
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", ps)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		// Tear down the proxy on NRPT registration failure so we don't leak
 		// the :53 listener.
-		stopWindowsDNSProxy()
+		stopWindowsDNSProxy(instanceName)
 		return fmt.Errorf("NRPT rule: %w (%s)", err, string(out))
 	}
 	return nil
 }
 
-// platformCleanupDNS removes hopssh's NRPT rules for the mesh domain
-// and stops the local DNS forwarder. Uses Comment-based targeting so
-// only hopssh-created rules are touched.
-func platformCleanupDNS(domain string) error {
-	stopWindowsDNSProxy()
+// platformCleanupDNS removes this instance's NRPT rule and stops its
+// local DNS forwarder. Uses Comment-based targeting so only
+// hopssh-created rules are touched; other instances' rules are left
+// intact.
+func platformCleanupDNS(instanceName, domain string) error {
+	stopWindowsDNSProxy(instanceName)
 	return removeHopsshNRPTRules(domain)
 }
 

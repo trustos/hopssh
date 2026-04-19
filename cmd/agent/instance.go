@@ -135,7 +135,7 @@ func (i *meshInstance) close() {
 		svc.Close()
 	}
 	if i.dnsConfig != nil {
-		cleanupDNS(i.dnsConfig)
+		cleanupDNS(i, i.dnsConfig)
 		i.dnsConfig = nil
 	}
 }

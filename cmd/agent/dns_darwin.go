@@ -9,8 +9,11 @@ import (
 )
 
 // platformConfigureDNS creates /etc/resolver/<domain> for macOS split-DNS.
-// macOS automatically routes queries for *.<domain> to the specified nameserver.
-func platformConfigureDNS(domain, serverIP, port string) error {
+// macOS automatically routes queries for *.<domain> to the specified
+// nameserver. One file per domain — already multi-instance safe.
+// instanceName is accepted for API uniformity with other platforms.
+func platformConfigureDNS(instanceName, domain, serverIP, port string) error {
+	_ = instanceName
 	resolverDir := "/etc/resolver"
 	if err := os.MkdirAll(resolverDir, 0755); err != nil {
 		return fmt.Errorf("create %s: %w", resolverDir, err)
@@ -25,7 +28,8 @@ func platformConfigureDNS(domain, serverIP, port string) error {
 }
 
 // platformCleanupDNS removes the /etc/resolver/<domain> file.
-func platformCleanupDNS(domain string) error {
+func platformCleanupDNS(instanceName, domain string) error {
+	_ = instanceName
 	path := filepath.Join("/etc/resolver", domain)
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err

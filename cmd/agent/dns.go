@@ -38,35 +38,39 @@ func readDNSConfig(inst *meshInstance) *dnsConfig {
 // configureDNS sets up OS-level split-DNS so queries for the mesh domain
 // (e.g., *.zero) are routed to the mesh DNS server. Only runs in kernel TUN mode
 // since userspace mode doesn't have an OS-level network interface.
-func configureDNS(cfg *dnsConfig) {
+//
+// Scoped to one meshInstance — multiple instances configure DNS
+// independently. Platform implementations handle aggregation where
+// needed (Windows per-domain loopback, Linux drop-in merger).
+func configureDNS(inst *meshInstance, cfg *dnsConfig) {
 	if cfg == nil {
 		return
 	}
 
 	host, port, err := net.SplitHostPort(cfg.ServerAddr)
 	if err != nil {
-		log.Printf("[dns] invalid server address %q: %v", cfg.ServerAddr, err)
+		log.Printf("[dns %s] invalid server address %q: %v", inst.name(), cfg.ServerAddr, err)
 		return
 	}
 
-	if err := platformConfigureDNS(cfg.Domain, host, port); err != nil {
-		log.Printf("[dns] WARNING: failed to configure split-DNS for .%s: %v", cfg.Domain, err)
-		log.Printf("[dns] manual setup: point DNS for .%s to %s", cfg.Domain, cfg.ServerAddr)
+	if err := platformConfigureDNS(inst.name(), cfg.Domain, host, port); err != nil {
+		log.Printf("[dns %s] WARNING: failed to configure split-DNS for .%s: %v", inst.name(), cfg.Domain, err)
+		log.Printf("[dns %s] manual setup: point DNS for .%s to %s", inst.name(), cfg.Domain, cfg.ServerAddr)
 		return
 	}
 
-	log.Printf("[dns] split-DNS configured: .%s → %s", cfg.Domain, cfg.ServerAddr)
+	log.Printf("[dns %s] split-DNS configured: .%s → %s", inst.name(), cfg.Domain, cfg.ServerAddr)
 }
 
 // cleanupDNS removes OS-level DNS configuration on shutdown.
-func cleanupDNS(cfg *dnsConfig) {
+func cleanupDNS(inst *meshInstance, cfg *dnsConfig) {
 	if cfg == nil {
 		return
 	}
-	if err := platformCleanupDNS(cfg.Domain); err != nil {
-		log.Printf("[dns] WARNING: failed to cleanup DNS for .%s: %v", cfg.Domain, err)
+	if err := platformCleanupDNS(inst.name(), cfg.Domain); err != nil {
+		log.Printf("[dns %s] WARNING: failed to cleanup DNS for .%s: %v", inst.name(), cfg.Domain, err)
 	} else {
-		log.Printf("[dns] split-DNS removed for .%s", cfg.Domain)
+		log.Printf("[dns %s] split-DNS removed for .%s", inst.name(), cfg.Domain)
 	}
 }
 

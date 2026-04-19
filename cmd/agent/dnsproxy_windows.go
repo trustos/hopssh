@@ -22,58 +22,78 @@ import (
 // needed). Windows DNS client queries the loopback on :53 → we forward
 // to the real upstream over its actual non-standard port.
 //
-// 127.53.0.1 is chosen to avoid collisions with systemd-resolved's
+// 127.53.0.0/24 is chosen to avoid collisions with systemd-resolved's
 // 127.0.0.53 convention on Linux, and with anything else a Windows
 // user might have on 127.0.0.1:53 (rare, but possible if they run a
-// local DNS server).
-const windowsDNSProxyAddr = "127.53.0.1:53"
-
-// WindowsDNSProxyIP is the loopback the proxy binds to. Used by NRPT
-// registration. Kept as a package var for visibility in logs/tests.
-var WindowsDNSProxyIP = "127.53.0.1"
+// local DNS server). One instance per IP, allocated sequentially.
 
 type windowsDNSProxy struct {
 	upstream string
+	loopback string // "127.53.0.N"
 	udp      *dns.Server
 	tcp      *dns.Server
 }
 
 var (
-	dnsProxyMu     sync.Mutex
-	activeDNSProxy *windowsDNSProxy
+	dnsProxyMu      sync.Mutex
+	activeDNSProxies = make(map[string]*windowsDNSProxy) // keyed by instance name
 )
 
-// startWindowsDNSProxy launches a local DNS forwarder bound to
-// windowsDNSProxyAddr that relays queries to the given upstream
-// (e.g., "132.145.232.64:15300"). Idempotent — calling it repeatedly
-// with the same upstream is a no-op; calling with a new upstream
-// rebinds.
-func startWindowsDNSProxy(upstream string) error {
+// allocateWindowsDNSLoopback returns a loopback IP in 127.53.0.0/24 for
+// the given instance. Deterministic per-instance: reuses the IP of any
+// existing proxy for this name, otherwise picks the next free slot.
+// Caller holds dnsProxyMu.
+func allocateWindowsDNSLoopbackLocked(instanceName string) (string, error) {
+	if existing, ok := activeDNSProxies[instanceName]; ok {
+		return existing.loopback, nil
+	}
+	used := make(map[string]bool, len(activeDNSProxies))
+	for _, p := range activeDNSProxies {
+		used[p.loopback] = true
+	}
+	for i := 1; i < 255; i++ {
+		candidate := fmt.Sprintf("127.53.0.%d", i)
+		if !used[candidate] {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("exhausted 127.53.0.0/24 loopback pool (254 instances?)")
+}
+
+// startWindowsDNSProxy launches a local DNS forwarder on a loopback
+// address allocated for instanceName. Returns the bound loopback IP so
+// the caller can register it in NRPT. Idempotent — calling with the
+// same instance + upstream is a no-op; calling with a different
+// upstream rebinds the existing proxy.
+func startWindowsDNSProxy(instanceName, upstream string) (string, error) {
 	dnsProxyMu.Lock()
 	defer dnsProxyMu.Unlock()
 
-	if activeDNSProxy != nil {
-		if activeDNSProxy.upstream == upstream {
-			return nil // already running with the same config
+	if existing, ok := activeDNSProxies[instanceName]; ok {
+		if existing.upstream == upstream {
+			return existing.loopback, nil
 		}
-		// Upstream changed (rare — cert renewal usually doesn't move DNS).
-		// Stop and start fresh.
-		activeDNSProxy.shutdown()
-		activeDNSProxy = nil
+		existing.shutdown()
+		delete(activeDNSProxies, instanceName)
 	}
 
-	p := &windowsDNSProxy{upstream: upstream}
+	loopback, err := allocateWindowsDNSLoopbackLocked(instanceName)
+	if err != nil {
+		return "", err
+	}
+	addr := loopback + ":53"
+	p := &windowsDNSProxy{upstream: upstream, loopback: loopback}
 
 	// UDP is the common path; TCP is needed for large responses (EDNS fallback).
 	p.udp = &dns.Server{
-		Addr:         windowsDNSProxyAddr,
+		Addr:         addr,
 		Net:          "udp",
 		Handler:      dns.HandlerFunc(p.handle),
 		ReadTimeout:  5 * time.Second,
 		WriteTimeout: 5 * time.Second,
 	}
 	p.tcp = &dns.Server{
-		Addr:         windowsDNSProxyAddr,
+		Addr:         addr,
 		Net:          "tcp",
 		Handler:      dns.HandlerFunc(p.handle),
 		ReadTimeout:  5 * time.Second,
@@ -98,26 +118,28 @@ func startWindowsDNSProxy(upstream string) error {
 
 	select {
 	case err := <-udpErr:
-		return fmt.Errorf("dns proxy UDP bind %s: %w", windowsDNSProxyAddr, err)
+		return "", fmt.Errorf("dns proxy UDP bind %s: %w", addr, err)
 	case err := <-tcpErr:
-		return fmt.Errorf("dns proxy TCP bind %s: %w", windowsDNSProxyAddr, err)
+		return "", fmt.Errorf("dns proxy TCP bind %s: %w", addr, err)
 	case <-time.After(500 * time.Millisecond):
 	}
 
-	activeDNSProxy = p
-	log.Printf("[dns-proxy] listening on %s (udp+tcp) → upstream %s", windowsDNSProxyAddr, upstream)
-	return nil
+	activeDNSProxies[instanceName] = p
+	log.Printf("[dns-proxy %s] listening on %s (udp+tcp) → upstream %s", instanceName, addr, upstream)
+	return loopback, nil
 }
 
-func stopWindowsDNSProxy() {
+// stopWindowsDNSProxy shuts down the proxy for one instance.
+func stopWindowsDNSProxy(instanceName string) {
 	dnsProxyMu.Lock()
 	defer dnsProxyMu.Unlock()
-	if activeDNSProxy == nil {
+	p, ok := activeDNSProxies[instanceName]
+	if !ok {
 		return
 	}
-	activeDNSProxy.shutdown()
-	activeDNSProxy = nil
-	log.Printf("[dns-proxy] stopped")
+	p.shutdown()
+	delete(activeDNSProxies, instanceName)
+	log.Printf("[dns-proxy %s] stopped", instanceName)
 }
 
 func (p *windowsDNSProxy) shutdown() {

@@ -272,7 +272,7 @@ func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverS
 	// Configure split-DNS for this mesh's domain in kernel TUN mode.
 	if tunMode == "kernel" {
 		inst.dnsConfig = readDNSConfig(inst)
-		configureDNS(inst.dnsConfig)
+		configureDNS(inst, inst.dnsConfig)
 	}
 
 	// Warm tunnels synchronously: lighthouse first, then peers from
