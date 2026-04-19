@@ -1,9 +1,16 @@
-# Multi-Network Per Agent — Gap Analysis (post v0.10.0 ship)
+# Multi-Network Per Agent — Gap Analysis (post v0.10 ship)
 
 *Recorded 2026-04-19 after shipping roadmap #29. Two parallel code-
 review passes (concurrency/lifecycle + edge cases/platform) plus a
 direct source check. This doc captures what's solid, what's a real
 bug to fix soon, and what's a latent risk to log + watch.*
+
+*Status: **v0.10.0** shipped the feature, **v0.10.1** fixed the
+critical watcher-lifecycle bugs (G1 + G2) plus three quick-win
+latents (L4, L5, L8), **v0.10.2** shipped the two remaining
+meaningful recovery paths (L1 partial-migration + L2 registry
+backup). The low-probability latents (L3, L6, L7, L9, L10) remain
+as documented backlog.*
 
 ---
 
@@ -12,17 +19,14 @@ bug to fix soon, and what's a latent risk to log + watch.*
 The happy path is solid — four hosts × two networks × sub-25 ms
 cross-mesh pings verified in Phase E. The refactor preserved every
 server-contract invariant (no schema / API change) and survived
-three real bugs found during live testing.
-
-However the review surfaced **two real bugs in the agent runtime
-that should be fixed before the next ops cycle** plus a set of
-latent risks worth logging for followup.
+three real bugs found during live testing. Three follow-up passes
+(v0.10.1, v0.10.2) closed the lifecycle and recovery gaps.
 
 ---
 
-## Definite bugs (fix ≤ next release)
+## Definite bugs — FIXED
 
-### G1 — `watchNetworkChanges` goroutine leak
+### G1 — `watchNetworkChanges` goroutine leak ✅ fixed v0.10.1 (`a28519e`)
 
 **Severity:** High. **Files:** `cmd/agent/instance.go:34`,
 `cmd/agent/nebula.go:150–`, `cmd/agent/main.go:288`,
@@ -51,7 +55,7 @@ undocumented — not something we should rely on.
 `reloadNebula` derive an instance-scoped context and assign it to
 `inst.cancel`.
 
-### G2 — Stale `*nebula.Control` after cert-renewal reload
+### G2 — Stale `*nebula.Control` after cert-renewal reload ✅ fixed v0.10.1 (`a28519e`)
 
 **Severity:** High. **Files:** `cmd/agent/renew.go:629–705`,
 `cmd/agent/main.go:288`.
@@ -72,7 +76,7 @@ cancel the old watcher's context and spawn a fresh
 
 ## Latent risks (log + revisit)
 
-### L1 — Partial-migration re-run lands in an empty registry
+### L1 — Partial-migration re-run lands in an empty registry ✅ fixed v0.10.2 (`fe12448`)
 
 If `migrateLegacyLayout` fails mid-loop (disk full after `ca.crt`
 moved but before `node.key`), the layout is half-flat, half-subdir.
@@ -89,7 +93,7 @@ moved subdir + re-enroll.
 **Mitigation idea:** detect half-migrated state (subdir exists but
 no `enrollments.json`) and either roll back or complete on retry.
 
-### L2 — Corrupt `enrollments.json` has no automatic recovery
+### L2 — Corrupt `enrollments.json` has no automatic recovery ✅ fixed v0.10.2 (`fe12448`)
 
 `loadEnrollmentRegistry` returns error on malformed JSON; every
 caller `log.Fatalf`s. No `.backup` is maintained. If the file is
@@ -121,7 +125,7 @@ checking after a cold reload that touches the dev name.
 **Mitigation idea:** when `ensureP2PConfig` rewrites the dev name,
 trigger an instance-scoped DNS reconfigure after Nebula restart.
 
-### L4 — Linux drop-in SIGKILL corruption
+### L4 — Linux drop-in SIGKILL corruption ✅ fixed v0.10.1 (`a28519e`)
 
 `updateResolvedDropIn` uses plain `os.WriteFile` (not
 `atomicWrite`). A SIGKILL at the wrong instant truncates the file;
@@ -133,7 +137,7 @@ is a re-run of `configureDNS` on next service restart.
 `os.WriteFile(…, …, 0644)` for `atomicWrite(…, …, 0644)` which
 already exists in `renew.go`.
 
-### L5 — HTTP server shutdown uses one timeout across all instances
+### L5 — HTTP server shutdown uses one timeout across all instances ✅ fixed v0.10.1 (`a28519e`)
 
 `serverSet.shutdownAll` creates a single 5 s context and calls
 `srv.Shutdown(ctx)` for each server in sequence. If instance 0 has
@@ -177,7 +181,7 @@ dashboard entry; still a papercut.
 pre-check before consuming a token. Out of scope for v0.10 because
 it requires a new server endpoint.
 
-### L8 — Windows reserved filenames as enrollment names
+### L8 — Windows reserved filenames as enrollment names ✅ fixed v0.10.1 (`a28519e`)
 
 `validateEnrollmentName` only rejects `enrollments.json`. A user
 who edits the file by hand to add `{"name": "con"}` (or `prn`,
@@ -248,39 +252,60 @@ extract to a temp dir, validate every entry stays under
 
 ---
 
-## Test coverage gaps (add when touching these areas)
+## Test coverage gaps
 
-1. Partial migration failure → boot → recovery.
-2. Corrupt `enrollments.json` → boot → clear error message (not
-   `log.Fatal`).
-3. `--force --name` with a supervisor auto-restart racing the
-   enroll.
-4. Concurrent two-instance leave during ongoing proxy connection.
-5. Windows NRPT rule accumulation across upgrade + leave.
-6. Linux per-link DNS survival after the first-boot `nebula1` →
-   `hop-<name>` rename.
+Addressed in v0.10.1 / v0.10.2:
+- ✅ Partial migration failure → boot → recovery (6 new scenarios
+  in `legacy_migrate_test.go`).
+- ✅ Corrupt `enrollments.json` → boot → fallback to backup
+  (4 new scenarios in `enrollments_test.go`).
+
+Still open (add when touching the surrounding code):
+- `--force --name` with a supervisor auto-restart racing the
+  enroll.
+- Concurrent two-instance leave during ongoing proxy connection.
+- Windows NRPT rule accumulation across upgrade + leave.
+- Linux per-link DNS survival after the first-boot `nebula1` →
+  `hop-<name>` rename.
 
 ---
 
-## Action plan
+## Release history
 
-**Do now (same day as v0.10.0 ship):**
-- Fix G1 + G2 (watchNetworkChanges goroutine leak + stale-ctrl),
-  tag as v0.10.1 once pushed.
+**v0.10.0** (`a189a2f..5551cd7`) — the feature itself. Phases A–E
+plus the three bug fixes caught during live multi-platform
+validation (ec7371b, 6e793d9, 6c7c45f) and the dup-network reject
+(840c455).
 
-**Next minor (v0.11.0):**
-- L4 (drop-in atomicWrite), L5 (per-instance shutdown timeout),
-  L8 (Windows reserved names in validator).
+**v0.10.1** (`a28519e`) — watcher lifecycle (G1, G2) + three
+quick-win latents (L4 drop-in atomicWrite, L5 per-instance HTTP
+shutdown timeout, L8 Windows reserved filenames).
 
-**Backlog / nice-to-have:**
-- L1 / L2 (migration + registry recovery), L9 (case-sensitivity),
-  L10 (tarball safety), L7 (pre-enroll network lookup — requires
-  server endpoint).
+**v0.10.2** (`fe12448`) — recovery paths (L1 half-migration
+detect-and-complete, L2 `enrollments.json.bak` backup +
+fallback load).
+
+**Remaining backlog (no fix planned):**
+- **L3** Linux per-link DNS on pre-rename interface. Verified
+  benign in Phase E; revisit if a user reports DNS drift after
+  a kernel-TUN enrollment upgrade.
+- **L6** `--force` + systemd `Restart=always` race. Theoretical
+  window; mitigate with an agent-wide file lock if a real incident
+  surfaces.
+- **L7** Dup-network check fires after the token is consumed.
+  Needs a new `GET /api/networks/<ca-fingerprint>` server
+  endpoint to fix properly. Defer until the pre-v0.11 feature
+  cycle.
+- **L9** Case-insensitive FS collision on manual `enrollments.
+  json` edits. Defensible only against malicious/hand-edited
+  state; not worth the complexity.
+- **L10** Bundle tarball path validation. Trust boundary is our
+  own control plane; defence-in-depth only.
 
 **Watch in prod:**
 - Agent goroutine count on long-running hosts (`.../debug/pprof/
-  goroutine`). If it grows monotonically over days, G1/G2 aren't
-  fully fixed.
+  goroutine`). If it stabilizes, G1/G2 fixes are holding; if it
+  grows monotonically, something else is leaking.
 - Dashboard per-node heartbeat age after cert renewals. If ages
   drift up on one instance of a dual-network agent, reloadNebula
   isn't keeping all instances' heartbeats warm.

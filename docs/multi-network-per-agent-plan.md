@@ -1,12 +1,22 @@
 # Multi-Network Per Agent — Planning Brief
 
-*Created: 2026-04-19. Status: planning seed for a fresh session.*
+*Created: 2026-04-19. **Status: historical — implemented. Shipped
+v0.10.0 with follow-up polish in v0.10.1 and v0.10.2.***
 
-This document is the entry point for planning roadmap item **#29 —
-Multi-network per agent**. It captures the problem, the known
-invariants, the singleton assumptions in the current agent, and the
-decisions a planner has to make before writing code. Hand this to the
-next session's planner along with the prompt at the bottom.
+**For the current state of the feature, see:**
+- `docs/multi-network-per-agent-execution.md` — phased execution
+  plan (Phases A–F) derived from this brief.
+- `docs/multi-network-gap-analysis.md` — post-ship review plus
+  the v0.10.1 / v0.10.2 fix-up list.
+- CLAUDE.md → Discovery Log → "Multi-network per agent" —
+  load-bearing findings from the refactor.
+
+This document is the original planning seed. It captures the
+problem, the known invariants, the singleton assumptions in the
+single-network agent, and the decisions a planner had to make
+before writing code. Kept for historical reference (the
+`groovy-mapping-umbrella` plan session consumed this + produced
+the execution doc).
 
 ## Problem statement
 

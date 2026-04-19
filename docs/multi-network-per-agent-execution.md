@@ -1,11 +1,20 @@
 # Multi-Network Per Agent — Execution Plan (Roadmap #29)
 
-*Created 2026-04-19. Target release: v0.10.0.*
+*Created 2026-04-19. **Status: historical — executed. Shipped as
+v0.10.0; polished in v0.10.1 (watcher lifecycle + 3 latents) and
+v0.10.2 (migration + registry recovery).***
 
-Companion to `docs/multi-network-per-agent-plan.md` (the seed brief).
-The brief motivates the feature and enumerates decisions D1–D8; this
-document picks the decisions, grounds them in code audit findings, and
-lays out the phased work with file-level detail.
+**For the current state of the feature, see:**
+- `docs/multi-network-gap-analysis.md` — post-ship review + what
+  was fixed when.
+- CLAUDE.md → Discovery Log → "Multi-network per agent" —
+  load-bearing findings from the refactor.
+
+Companion to `docs/multi-network-per-agent-plan.md` (the seed
+brief). The brief motivates the feature and enumerates decisions
+D1–D8; this document picks the decisions, grounds them in code
+audit findings, and lays out the phased work with file-level
+detail. Preserved as the contemporaneous execution record.
 
 ## Context
 
