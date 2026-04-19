@@ -212,7 +212,81 @@ In kernel TUN mode, the agent also configures **split-DNS** so that mesh hostnam
 ## Post-enrollment CLI
 
 ```bash
-hop-agent status    # Check connection, cert expiry, service state
+hop-agent status    # Check connection, cert expiry, service state (all enrollments)
 hop-agent info      # Node metadata, hostname, version
 hop-agent help      # All available commands
 ```
+
+## Joining a Second Network
+
+A single agent can be enrolled in multiple networks at the same time —
+the process manages one Nebula instance per enrollment, each with its
+own cert, certificate renewal, heartbeat cadence, split-DNS scope, and
+UDP listen port. Use `hop-agent enroll` a second time:
+
+```bash
+hop-agent enroll --endpoint http://second-control-plane:9473 --name work
+```
+
+The `--name` flag is optional; by default the enrollment is named
+after the mesh DNS domain (e.g., `zero`, `prod`), falling back to a
+short CA fingerprint if no DNS domain is configured.
+
+Per-enrollment config lives in `<configDir>/<name>/`:
+
+```
+~/.config/hopssh/
+├── enrollments.json      # registry (list of active enrollments)
+├── home/                 # one enrollment
+│   ├── ca.crt
+│   ├── node.crt
+│   ├── node.key
+│   ├── token
+│   ├── endpoint
+│   ├── node-id
+│   ├── nebula.yaml
+│   ├── tun-mode
+│   ├── dns-domain
+│   └── dns-server
+└── work/                 # another enrollment
+    └── ...
+```
+
+Agents upgrading from v0.9.x or earlier auto-migrate their single-
+network config into this subdir layout on first launch.
+
+### Multi-network operations
+
+```bash
+# List all enrollments:
+hop-agent status
+
+# Show one enrollment:
+hop-agent status --network home
+
+# Remove one enrollment (server-side record stays offline until an
+# admin deletes it from the dashboard):
+hop-agent leave --network work
+
+# Restart the agent process (picks up all enrollments):
+hop-agent restart
+```
+
+### Port allocation
+
+The first enrollment keeps Nebula's default UDP listen port (`4242`)
+for NAT mapping stability. Additional enrollments use port `0`
+(OS-assigned) to avoid collisions — document this for firewalled
+environments if you need to pin additional ports manually in
+`<configDir>/<name>/nebula.yaml`.
+
+### DNS per network
+
+Each enrollment's split-DNS is configured independently:
+
+- **macOS**: `/etc/resolver/<domain>` per network.
+- **Linux (systemd-resolved)**: per-link DNS on the Nebula interface
+  for each network, with a merged
+  `/etc/systemd/resolved.conf.d/hopssh.conf` fallback.
+- **Windows**: one DNS forwarder per enrollment on a dedicated
+  loopback IP in `127.53.0.0/24`, with one NRPT rule per domain.

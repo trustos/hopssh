@@ -70,10 +70,13 @@ func main() {
 			runAgentUpdate(os.Args[2:])
 			return
 		case "restart":
-			runRestart()
+			runRestart(os.Args[2:])
 			return
 		case "stop":
 			runStop()
+			return
+		case "leave":
+			runLeave(os.Args[2:])
 			return
 		case "client":
 			runClient(os.Args[2:])

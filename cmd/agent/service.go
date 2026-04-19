@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 const (
@@ -250,7 +251,14 @@ func uninstallAgentLaunchd() {
 	fmt.Println("==> hop-agent service uninstalled.")
 }
 
-func runRestart() {
+func runRestart(args []string) {
+	fs := flag.NewFlagSet("restart", flag.ExitOnError)
+	network := fs.String("network", "", "Informational: which enrollment prompted the restart (whole agent still restarts in v0.10.0)")
+	fs.Parse(args)
+	if n := strings.TrimSpace(*network); n != "" {
+		fmt.Printf("Note: v0.10.0 restarts the whole agent; --network %s is informational only.\n", n)
+	}
+
 	switch runtime.GOOS {
 	case "linux":
 		if _, err := exec.LookPath("systemctl"); err == nil {
