@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,7 +29,15 @@ type Enrollment struct {
 }
 
 // enrollmentsFile is the registry filename inside configDir.
-const enrollmentsFile = "enrollments.json"
+// enrollmentsBackupFile is the one-generation-behind copy written
+// after every successful save. If the main file ever parses as
+// corrupt (truncated mid-write on an atypical FS, post-crash state),
+// loadEnrollmentRegistry falls back to the backup so the agent keeps
+// booting instead of log.Fatal'ing on one bad file.
+const (
+	enrollmentsFile       = "enrollments.json"
+	enrollmentsBackupFile = "enrollments.json.bak"
+)
 
 // enrollmentRegistrySchema is the on-disk document wrapping the list.
 // Versioned so future format changes can migrate in place.
@@ -49,18 +59,56 @@ type enrollmentRegistry struct {
 // loadEnrollmentRegistry reads <configDir>/enrollments.json and returns
 // a registry. A missing file is not an error — returns an empty registry
 // pointed at the would-be path so subsequent Save() materializes it.
+//
+// If the main file exists but fails to parse (truncated write, version
+// mismatch from a future downgrade, FS corruption), we try the
+// one-save-behind backup at enrollments.json.bak and log loudly on
+// fallback. The backup is always slightly stale but strictly more
+// useful than exiting with Fatalf — the agent can still boot every
+// enrollment that was healthy one save ago.
 func loadEnrollmentRegistry(configDir string) (*enrollmentRegistry, error) {
 	path := filepath.Join(configDir, enrollmentsFile)
+	backupPath := filepath.Join(configDir, enrollmentsBackupFile)
 	r := &enrollmentRegistry{path: path}
 
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
+	enrollments, mainErr := readEnrollmentsFile(path)
+	if mainErr == nil {
+		r.enrollments = enrollments
 		return r, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("read %s: %w", path, err)
+	// Main file missing entirely (fresh install) is not an error.
+	if errors.Is(mainErr, os.ErrNotExist) {
+		// Backup without a main file is an odd state but still usable —
+		// a save rolled back and then removed the main? Safer to try it.
+		if _, statErr := os.Stat(backupPath); statErr == nil {
+			if enrollments, bakErr := readEnrollmentsFile(backupPath); bakErr == nil {
+				log.Printf("[enrollments] WARNING: %s missing, recovered from %s", path, backupPath)
+				r.enrollments = enrollments
+				return r, nil
+			}
+		}
+		return r, nil
 	}
 
+	// Main file present but corrupt → try backup.
+	if _, statErr := os.Stat(backupPath); statErr == nil {
+		if enrollments, bakErr := readEnrollmentsFile(backupPath); bakErr == nil {
+			log.Printf("[enrollments] WARNING: %s corrupt (%v); recovered from backup %s", path, mainErr, backupPath)
+			r.enrollments = enrollments
+			return r, nil
+		}
+	}
+	return nil, mainErr
+}
+
+// readEnrollmentsFile is the shared main+backup reader. Returns the
+// enrollments list on success, or a context-wrapped error on any
+// failure (missing, unreadable, malformed, unsupported version).
+func readEnrollmentsFile(path string) ([]*Enrollment, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
 	var doc enrollmentRegistrySchema
 	if err := json.Unmarshal(data, &doc); err != nil {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
@@ -68,11 +116,14 @@ func loadEnrollmentRegistry(configDir string) (*enrollmentRegistry, error) {
 	if doc.Version != enrollmentRegistryVersion {
 		return nil, fmt.Errorf("unsupported enrollments.json version %d (expected %d)", doc.Version, enrollmentRegistryVersion)
 	}
-	r.enrollments = doc.Enrollments
-	return r, nil
+	return doc.Enrollments, nil
 }
 
 // save atomically writes the registry to disk. Called under the mutex.
+// After a successful main write, we refresh the .bak sibling so the
+// next load has a one-save-behind fallback. Backup write errors are
+// logged but don't fail the save — the main file is the source of
+// truth and a missing backup just degrades recovery, not correctness.
 func (r *enrollmentRegistry) saveLocked() error {
 	doc := enrollmentRegistrySchema{
 		Version:     enrollmentRegistryVersion,
@@ -83,7 +134,14 @@ func (r *enrollmentRegistry) saveLocked() error {
 		return err
 	}
 	data = append(data, '\n')
-	return atomicWrite(r.path, data, 0600)
+	if err := atomicWrite(r.path, data, 0600); err != nil {
+		return err
+	}
+	backupPath := r.path + ".bak"
+	if err := atomicWrite(backupPath, data, 0600); err != nil {
+		log.Printf("[enrollments] WARNING: failed to refresh backup %s: %v (main save succeeded)", backupPath, err)
+	}
+	return nil
 }
 
 // List returns a snapshot of enrollments. Safe to iterate without the lock.

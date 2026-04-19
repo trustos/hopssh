@@ -216,6 +216,87 @@ func TestEnrollmentDir(t *testing.T) {
 	}
 }
 
+func TestEnrollmentRegistry_BackupWrittenOnSave(t *testing.T) {
+	dir := t.TempDir()
+	reg, err := loadEnrollmentRegistry(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Add(&Enrollment{Name: "home", NodeID: "abc"}); err != nil {
+		t.Fatal(err)
+	}
+	backupPath := filepath.Join(dir, enrollmentsBackupFile)
+	if _, err := os.Stat(backupPath); err != nil {
+		t.Fatalf("backup not written after Add: %v", err)
+	}
+	// Backup content should match main after a save.
+	mainBytes, _ := os.ReadFile(filepath.Join(dir, enrollmentsFile))
+	bakBytes, _ := os.ReadFile(backupPath)
+	if string(mainBytes) != string(bakBytes) {
+		t.Fatal("backup bytes differ from main immediately after save")
+	}
+}
+
+func TestEnrollmentRegistry_FallbackToBackupOnCorruptMain(t *testing.T) {
+	dir := t.TempDir()
+	reg, _ := loadEnrollmentRegistry(dir)
+	_ = reg.Add(&Enrollment{Name: "home", NodeID: "abc"})
+	_ = reg.Add(&Enrollment{Name: "work", NodeID: "def"})
+
+	// Truncate main, leave backup intact.
+	mainPath := filepath.Join(dir, enrollmentsFile)
+	if err := os.WriteFile(mainPath, []byte("{corrupt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	recovered, err := loadEnrollmentRegistry(dir)
+	if err != nil {
+		t.Fatalf("expected fallback to succeed, got err: %v", err)
+	}
+	if recovered.Len() != 2 {
+		t.Fatalf("expected 2 enrollments from backup, got %d", recovered.Len())
+	}
+	if recovered.Get("home") == nil || recovered.Get("work") == nil {
+		t.Fatal("recovered registry missing expected entries")
+	}
+}
+
+func TestEnrollmentRegistry_FallbackWhenMainMissingButBackupPresent(t *testing.T) {
+	dir := t.TempDir()
+	reg, _ := loadEnrollmentRegistry(dir)
+	_ = reg.Add(&Enrollment{Name: "home", NodeID: "abc"})
+
+	// Simulate main.go getting clobbered (manual rm, etc.) while backup survives.
+	if err := os.Remove(filepath.Join(dir, enrollmentsFile)); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := loadEnrollmentRegistry(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Len() != 1 || recovered.Get("home") == nil {
+		t.Fatalf("expected recovery from backup, got %d entries", recovered.Len())
+	}
+}
+
+func TestEnrollmentRegistry_BothCorruptReturnsMainError(t *testing.T) {
+	dir := t.TempDir()
+	reg, _ := loadEnrollmentRegistry(dir)
+	_ = reg.Add(&Enrollment{Name: "home"})
+
+	// Both files exist but both are corrupt.
+	if err := os.WriteFile(filepath.Join(dir, enrollmentsFile), []byte("garbage"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, enrollmentsBackupFile), []byte("also-garbage"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := loadEnrollmentRegistry(dir)
+	if err == nil {
+		t.Fatal("expected error when both main and backup are corrupt")
+	}
+}
+
 func TestExistingEnrollmentForNetwork(t *testing.T) {
 	dir := t.TempDir()
 	reg, err := loadEnrollmentRegistry(dir)

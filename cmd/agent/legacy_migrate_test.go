@@ -211,6 +211,157 @@ func TestMigrateLegacy_Idempotent(t *testing.T) {
 	}
 }
 
+// halfMigratedFixture simulates the state after a previous migration
+// moved some files into the subdir but crashed before writing
+// enrollments.json. top tells us which of the legacyMigratableFiles
+// remain at the top level ("still to move") vs. have already landed
+// in the subdir.
+func halfMigratedFixture(t *testing.T, dir, subdirName string, stillAtRoot map[string]bool) {
+	t.Helper()
+	subdir := dir + "/" + subdirName
+	if err := os.MkdirAll(subdir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	content := map[string]string{
+		"ca.crt":      "-----BEGIN CERTIFICATE-----\nFAKECA\n-----END CERTIFICATE-----\n",
+		"node.crt":    "-----BEGIN CERTIFICATE-----\nFAKENODE\n-----END CERTIFICATE-----\n",
+		"node.key":    "-----BEGIN PRIVATE KEY-----\nFAKEKEY\n-----END PRIVATE KEY-----\n",
+		"token":       "x",
+		"endpoint":    "https://hopssh.com",
+		"node-id":     "half-id",
+		"nebula.yaml": "pki: {}\n",
+		"tun-mode":    "kernel",
+		"dns-domain":  subdirName,
+	}
+	for name, body := range content {
+		loc := subdir
+		if stillAtRoot[name] {
+			loc = dir
+		}
+		if err := os.WriteFile(loc+"/"+name, []byte(body), 0600); err != nil {
+			t.Fatalf("write %s at %s: %v", name, loc, err)
+		}
+	}
+}
+
+func TestMigrateLegacy_CompletesHalfMigratedSubdir(t *testing.T) {
+	dir := t.TempDir()
+	// ca.crt + node.crt moved; everything else still at top level
+	// (simulates a mid-loop crash after a couple of renames).
+	halfMigratedFixture(t, dir, "home", map[string]bool{
+		"node.key":    true,
+		"token":       true,
+		"endpoint":    true,
+		"node-id":     true,
+		"nebula.yaml": true,
+		"tun-mode":    true,
+		"dns-domain":  true,
+	})
+
+	e, err := migrateLegacyLayout(dir)
+	if err != nil {
+		t.Fatalf("expected half-migration to complete, got: %v", err)
+	}
+	if e == nil || e.Name != "home" {
+		t.Fatalf("expected enrollment 'home', got %+v", e)
+	}
+	// Everything should be in the subdir now.
+	for _, f := range []string{"ca.crt", "node.crt", "node.key", "token", "endpoint", "node-id", "nebula.yaml", "tun-mode", "dns-domain"} {
+		if _, err := os.Stat(dir + "/home/" + f); err != nil {
+			t.Errorf("expected %s in subdir after completion: %v", f, err)
+		}
+		if _, err := os.Stat(dir + "/" + f); !os.IsNotExist(err) {
+			t.Errorf("expected %s removed from top level after completion, err=%v", f, err)
+		}
+	}
+	// Registry has the entry.
+	if _, err := os.Stat(dir + "/" + enrollmentsFile); err != nil {
+		t.Errorf("enrollments.json missing after completion: %v", err)
+	}
+}
+
+func TestMigrateLegacy_CompletesWhenSubdirFullyPopulated(t *testing.T) {
+	dir := t.TempDir()
+	// Everything already in subdir; only enrollments.json missing
+	// (simulates a crash right before the final save).
+	halfMigratedFixture(t, dir, "work", map[string]bool{})
+
+	e, err := migrateLegacyLayout(dir)
+	if err != nil || e == nil || e.Name != "work" {
+		t.Fatalf("expected completion for fully-populated subdir, got e=%v err=%v", e, err)
+	}
+	if _, err := os.Stat(dir + "/" + enrollmentsFile); err != nil {
+		t.Errorf("enrollments.json missing: %v", err)
+	}
+}
+
+func TestMigrateLegacy_DuplicateFilePrefersSubdir(t *testing.T) {
+	dir := t.TempDir()
+	halfMigratedFixture(t, dir, "home", map[string]bool{})
+	// Add a stale node-id at the top level that differs from the subdir's.
+	if err := os.WriteFile(dir+"/node-id", []byte("stale-id"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	e, err := migrateLegacyLayout(dir)
+	if err != nil || e == nil {
+		t.Fatalf("expected migration to complete, got err=%v", err)
+	}
+	if e.NodeID != "half-id" {
+		t.Fatalf("expected subdir's node-id to win, got %q", e.NodeID)
+	}
+	if _, err := os.Stat(dir + "/node-id"); !os.IsNotExist(err) {
+		t.Errorf("stale top-level node-id should be cleaned up, err=%v", err)
+	}
+}
+
+func TestMigrateLegacy_AmbiguousMultipleHalfMigratedSubdirs(t *testing.T) {
+	dir := t.TempDir()
+	// Two subdirs each with node.crt — operator must disambiguate.
+	halfMigratedFixture(t, dir, "home", map[string]bool{})
+	halfMigratedFixture(t, dir, "work", map[string]bool{})
+
+	_, err := migrateLegacyLayout(dir)
+	if err == nil {
+		t.Fatal("expected error on multiple half-migrated subdirs")
+	}
+	// Sanity: both subdirs + no enrollments.json.
+	if _, err := os.Stat(dir + "/" + enrollmentsFile); !os.IsNotExist(err) {
+		t.Errorf("enrollments.json should NOT be written on ambiguous state")
+	}
+}
+
+func TestMigrateLegacy_BothLegacyAtRootAndHalfMigratedSubdirIsError(t *testing.T) {
+	dir := t.TempDir()
+	// Legacy files AT root AND a populated subdir — refuse.
+	legacyFixture(t, dir, "home")
+	halfMigratedFixture(t, dir, "other", map[string]bool{})
+
+	_, err := migrateLegacyLayout(dir)
+	if err == nil {
+		t.Fatal("expected error when both top-level legacy and subdir exist")
+	}
+}
+
+func TestMigrateLegacy_IgnoresNonEnrollmentSubdirs(t *testing.T) {
+	dir := t.TempDir()
+	// A subdir that doesn't look like an enrollment name shouldn't be
+	// picked up as half-migrated, even if it happens to contain a
+	// node.crt (defensive — a user might have unrelated files).
+	if err := os.MkdirAll(dir+"/UPPERCASE", 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dir+"/UPPERCASE/node.crt", []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	e, err := migrateLegacyLayout(dir)
+	if err != nil {
+		t.Fatalf("expected fresh-install no-op, got err=%v", err)
+	}
+	if e != nil {
+		t.Fatalf("expected nil enrollment, got %+v", e)
+	}
+}
+
 func TestMigrateLegacy_RegistryReflectsMigration(t *testing.T) {
 	dir := t.TempDir()
 	legacyFixture(t, dir, "prod")
