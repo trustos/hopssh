@@ -220,6 +220,24 @@ func stopAgentService() {
 	}
 }
 
+// existingEnrollmentForNetwork returns any enrollment in the registry
+// that targets the same network as (endpoint, caFingerprint). The
+// (endpoint, CA-fingerprint) pair uniquely identifies a network on a
+// given control plane — two enrollments in the same network would
+// produce duplicate nodes on the dashboard with overlapping mesh IPs
+// and no functional benefit. Callers reject the enrollment attempt.
+func existingEnrollmentForNetwork(reg *enrollmentRegistry, endpoint, caFingerprint string) *Enrollment {
+	if caFingerprint == "" {
+		return nil
+	}
+	for _, e := range reg.List() {
+		if e.Endpoint == endpoint && e.CAFingerprint == caFingerprint {
+			return e
+		}
+	}
+	return nil
+}
+
 // chooseEnrollmentName resolves the local name for a new enrollment.
 // Priority: explicit --name → preferred (DNS domain or CA fingerprint)
 // with -2/-3/… suffix if the preferred name collides with an existing
@@ -410,6 +428,12 @@ func enrollFromBundle(path, endpoint string) {
 		log.Fatalf("Read bundle ca.crt: %v", err)
 	}
 	fingerprint := caFingerprint(caCertPEM)
+
+	if existing := existingEnrollmentForNetwork(reg, ep, fingerprint); existing != nil {
+		log.Fatalf("This bundle is for a network this device is already enrolled in as %q.\nRemove it first: hop-agent leave --network %s",
+			existing.Name, existing.Name)
+	}
+
 	preferred := defaultEnrollmentName(bundleConfig.DNSDomain, fingerprint)
 	name, err := chooseEnrollmentName(reg, enrollName, preferred)
 	if err != nil {
@@ -486,6 +510,12 @@ func installCerts(er *enrollResponse, endpoint string) {
 	}
 
 	fingerprint := caFingerprint([]byte(er.CACert))
+
+	if existing := existingEnrollmentForNetwork(reg, endpoint, fingerprint); existing != nil {
+		log.Fatalf("This device is already enrolled in this network as %q (node %s).\nThe server already issued a cert for the rejected enrollment — delete that node from the dashboard to clean up.\nTo replace the existing enrollment: hop-agent enroll --force --name %s --endpoint %s\nTo remove it entirely: hop-agent leave --network %s",
+			existing.Name, existing.NodeID, existing.Name, endpoint, existing.Name)
+	}
+
 	preferred := defaultEnrollmentName(er.DNSDomain, fingerprint)
 	name, err := chooseEnrollmentName(reg, enrollName, preferred)
 	if err != nil {

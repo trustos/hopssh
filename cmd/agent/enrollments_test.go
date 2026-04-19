@@ -215,3 +215,31 @@ func TestEnrollmentDir(t *testing.T) {
 		t.Errorf("got %q", got)
 	}
 }
+
+func TestExistingEnrollmentForNetwork(t *testing.T) {
+	dir := t.TempDir()
+	reg, err := loadEnrollmentRegistry(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = reg.Add(&Enrollment{Name: "home", Endpoint: "https://hopssh.com", CAFingerprint: "aaaa1111"})
+	_ = reg.Add(&Enrollment{Name: "work", Endpoint: "https://hopssh.com", CAFingerprint: "bbbb2222"})
+
+	// Same endpoint + same fingerprint → match (caught as duplicate).
+	if got := existingEnrollmentForNetwork(reg, "https://hopssh.com", "aaaa1111"); got == nil || got.Name != "home" {
+		t.Errorf("expected match on home, got %v", got)
+	}
+	// Different fingerprint on same endpoint → no match (different network).
+	if got := existingEnrollmentForNetwork(reg, "https://hopssh.com", "cccc3333"); got != nil {
+		t.Errorf("expected no match, got %v", got)
+	}
+	// Different endpoint with matching fingerprint → no match (different control plane).
+	if got := existingEnrollmentForNetwork(reg, "https://other.example.com", "aaaa1111"); got != nil {
+		t.Errorf("expected no match across control planes, got %v", got)
+	}
+	// Empty fingerprint → never matches (defensive — legacy migrations
+	// might produce entries without fingerprint if ca.crt was absent).
+	if got := existingEnrollmentForNetwork(reg, "https://hopssh.com", ""); got != nil {
+		t.Errorf("expected no match on empty fingerprint, got %v", got)
+	}
+}
