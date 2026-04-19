@@ -1,0 +1,62 @@
+=== Linux VM dual-enrollment VERIFIED ===
+Service:    active (systemd)
+Config:     /etc/hop-agent
+Enrollments (2):
+  • home
+      Endpoint:   https://hopssh.com
+      Node ID:    cac21556-c40d-4354-89d2-68fdb55356be
+      DNS:        .home
+      Nebula IP:  10.42.1.8/24
+      Cert:       valid (expires in 23h17m0s)
+      Groups:     node
+      TUN mode:   kernel
+
+  • work
+      Endpoint:   https://hopssh.com
+      Node ID:    df14e0fa-159e-4c48-ae37-4fb8d925a1c4
+      DNS:        .work
+      Nebula IP:  10.42.2.4/24
+      Cert:       valid (expires in 23h56m0s)
+      Groups:     node
+      TUN mode:   kernel
+
+-- ip addr mesh --
+hop-home         UNKNOWN        10.42.1.8/24 
+hop-work         UNKNOWN        10.42.2.4/24 
+
+-- drop-in --
+# Written by hop-agent. Merged across enrollments: home, work. Safe to remove; regenerated on next enroll.
+[Resolve]
+DNS=132.145.232.64:15300 132.145.232.64:15301
+Domains=~home ~work
+
+-- resolvectl status --
+Link 5 (hop-home)
+    Current Scopes: none
+         Protocols: -DefaultRoute -LLMNR -mDNS -DNSOverTLS DNSSEC=no/unsupported
+     Default Route: no
+
+Link 6 (hop-work)
+    Current Scopes: none
+         Protocols: -DefaultRoute -LLMNR -mDNS -DNSOverTLS DNSSEC=no/unsupported
+     Default Route: no
+
+-- nebula.yaml tun blocks --
+tun:
+    dev: hop-home
+    mtu: 2800
+
+tun:
+    dev: hop-work
+    mtu: 2800
+
+-- ping three peers --
+-- 10.42.2.2 --
+3 packets transmitted, 3 received, 0% packet loss, time 2028ms
+rtt min/avg/max/mdev = 0.889/1.560/2.063/0.494 ms
+-- 10.42.1.7 --
+3 packets transmitted, 3 received, 0% packet loss, time 2005ms
+rtt min/avg/max/mdev = 6.932/44.243/85.115/32.017 ms
+-- 10.42.2.3 --
+3 packets transmitted, 3 received, 0% packet loss, time 2003ms
+rtt min/avg/max/mdev = 5.834/46.809/89.784/34.301 ms

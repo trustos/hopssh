@@ -1,0 +1,51 @@
+=== MacBook dual-enrollment VERIFIED ===
+Service:    running (launchd)
+Config:     /etc/hop-agent
+Enrollments (2):
+  • work
+      Endpoint:   https://hopssh.com
+      Node ID:    106ea212-2bc4-4631-83dc-c0fb108aaa99
+      DNS:        .work
+      Nebula IP:  10.42.2.2/24
+      Cert:       valid (expires in 23h36m0s)
+      Groups:     node
+      TUN mode:   kernel
+
+  • home
+      Endpoint:   https://hopssh.com
+      Node ID:    874409e8-96d9-4913-8101-3d87f09bb29e
+      DNS:        .home
+      Nebula IP:  10.42.1.11/24
+      Cert:       valid (expires in 23h59m0s)
+      Groups:     node
+      TUN mode:   kernel
+
+-- /etc/resolver --
+home
+work
+
+-- utun interfaces --
+utun0: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 2800
+	inet 10.42.2.2 --> 10.42.2.2 netmask 0xffffff00
+utun11: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 2800
+	inet 10.42.1.11 --> 10.42.1.11 netmask 0xffffff00
+
+-- cross-mesh pings --
+-- 10.42.1.7 --
+3 packets transmitted, 3 packets received, 0.0% packet loss
+round-trip min/avg/max/stddev = 6.986/10.433/12.359/2.443 ms
+-- 10.42.1.8 --
+3 packets transmitted, 3 packets received, 0.0% packet loss
+round-trip min/avg/max/stddev = 1.942/5.222/11.440/4.399 ms
+-- 10.42.1.10 --
+3 packets transmitted, 3 packets received, 0.0% packet loss
+round-trip min/avg/max/stddev = 4.178/6.877/10.760/2.814 ms
+-- 10.42.2.3 --
+3 packets transmitted, 3 packets received, 0.0% packet loss
+round-trip min/avg/max/stddev = 16.866/46.724/83.534/27.658 ms
+-- 10.42.2.4 --
+3 packets transmitted, 3 packets received, 0.0% packet loss
+round-trip min/avg/max/stddev = 1.136/4.436/10.522/4.308 ms
+-- 10.42.2.7 --
+3 packets transmitted, 3 packets received, 0.0% packet loss
+round-trip min/avg/max/stddev = 2.172/24.737/65.379/28.796 ms

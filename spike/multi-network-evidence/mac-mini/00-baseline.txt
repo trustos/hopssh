@@ -1,0 +1,50 @@
+=== BEFORE v0.10 deploy — Mac mini baseline (2026-04-19T07:41:16Z) ===
+
+-- /usr/local/bin/hop-agent version --
+hop-agent v0.9.17 (731567cd651a2a2b4fc209851c7020b0c0f0d667)
+
+-- sudo hop-agent status --
+Service:    running (launchd)
+Nebula IP:  10.42.1.7/24
+Endpoint:   https://hopssh.com
+Node ID:    01275a88-966b-4df0-b4b9-389fb0ccf198
+Cert:       valid (expires in 19h12m0s)
+Groups:     node
+Config:     /etc/hop-agent
+
+-- ls /etc/hop-agent --
+total 80
+drwx------  12 root  wheel   384 Apr 19 09:06 .
+drwxr-xr-x  88 root  wheel  2816 Apr 14 11:10 ..
+-rw-r--r--   1 root  wheel   243 Apr 14 11:10 ca.crt
+-rw-r--r--   1 root  wheel     4 Apr 14 11:10 dns-domain
+-rw-r--r--   1 root  wheel    20 Apr 14 11:10 dns-server
+-rw-------   1 root  wheel    18 Apr 14 11:10 endpoint
+-rw-r--r--@  1 root  wheel  1138 Apr 19 09:06 nebula.yaml
+-rw-------   1 root  wheel    36 Apr 14 11:10 node-id
+-rw-r--r--@  1 root  wheel   312 Apr 19 05:53 node.crt
+-rw-------@  1 root  wheel   127 Apr 19 05:53 node.key
+-rw-------   1 root  wheel    64 Apr 14 11:10 token
+-rw-r--r--   1 root  wheel     6 Apr 14 11:10 tun-mode
+
+-- /etc/resolver --
+total 8
+drwxr-xr-x   3 root  wheel    96 Apr 19 09:06 .
+drwxr-xr-x  88 root  wheel  2816 Apr 14 11:10 ..
+-rw-r--r--@  1 root  wheel    37 Apr 19 09:06 home
+
+-- launchctl list com.hopssh.agent --
+{
+	"StandardOutPath" = "/var/log/hop-agent.log";
+	"LimitLoadToSessionType" = "System";
+	"StandardErrorPath" = "/var/log/hop-agent.log";
+	"Label" = "com.hopssh.agent";
+	"OnDemand" = false;
+	"LastExitStatus" = 0;
+	"PID" = 77024;
+	"Program" = "/usr/local/bin/hop-agent";
+	"ProgramArguments" = (
+		"/usr/local/bin/hop-agent";
+		"serve";
+	);
+};

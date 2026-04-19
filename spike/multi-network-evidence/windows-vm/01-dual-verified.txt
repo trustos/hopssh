@@ -1,0 +1,49 @@
+** WARNING: connection is not using a post-quantum key exchange algorithm.
+** This session may be vulnerable to "store now, decrypt later" attacks.
+** The server may need to be upgraded. See https://openssh.com/pq.html
+Service:    running (sc.exe)
+Config:     C:\Users\Yavor\.config\hopssh
+Enrollments (2):
+  • home
+      Endpoint:   https://hopssh.com
+      Node ID:    fa32ac3c-7de1-42e3-a7f4-c599f6e36510
+      DNS:        .home
+      Nebula IP:  10.42.1.10/24
+      Cert:       valid (expires in 21h34m0s)
+      Groups:     node
+      TUN mode:   kernel
+
+  • work
+      Endpoint:   https://hopssh.com
+      Node ID:    79f5e7bb-1e70-43f7-adbe-391252c9ae8b
+      DNS:        .work
+      Nebula IP:  10.42.2.7/24
+      Cert:       valid (expires in 23h57m0s)
+      Groups:     node
+      TUN mode:   kernel
+--- 
+
+
+Namespace   : {.work}
+NameServers : 127.53.0.2
+
+Namespace   : {.home}
+NameServers : 127.53.0.1
+
+
+
+--- 
+  TCP    127.53.0.1:53          0.0.0.0:0              LISTENING
+  TCP    127.53.0.2:53          0.0.0.0:0              LISTENING
+  UDP    127.53.0.1:53          *:*                    
+  UDP    127.53.0.2:53          *:*                    
+--- 
+Reply from 10.42.2.2: bytes=32 time=1ms TTL=64
+Reply from 10.42.2.2: bytes=32 time=3ms TTL=64
+Reply from 10.42.2.2: bytes=32 time=3ms TTL=64
+    Packets: Sent = 3, Received = 3, Lost = 0 (0% loss),
+--- 
+Reply from 10.42.1.8: bytes=32 time=17ms TTL=64
+Reply from 10.42.1.8: bytes=32 time=4ms TTL=64
+Reply from 10.42.1.8: bytes=32 time=3ms TTL=64
+    Packets: Sent = 3, Received = 3, Lost = 0 (0% loss),

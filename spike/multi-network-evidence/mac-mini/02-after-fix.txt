@@ -1,0 +1,40 @@
+=== AFTER v0.10 fix — Mac mini (2026-04-19T07:43:35Z) ===
+
+Service:    running (launchd)
+Config:     /etc/hop-agent
+Enrollments (1):
+  • home
+      Endpoint:   https://hopssh.com
+      Node ID:    01275a88-966b-4df0-b4b9-389fb0ccf198
+      DNS:        .home
+      Nebula IP:  10.42.1.7/24
+      Cert:       valid (expires in 19h10m0s)
+      Groups:     node
+      TUN mode:   kernel
+
+-- /etc/hop-agent/home/nebula.yaml (pki block) --
+pki:
+    ca: /etc/hop-agent/home/ca.crt
+    cert: /etc/hop-agent/home/node.crt
+    key: /etc/hop-agent/home/node.key
+
+-- /etc/resolver --
+total 8
+drwxr-xr-x   3 root  wheel    96 Apr 19 10:43 .
+drwxr-xr-x  88 root  wheel  2816 Apr 14 11:10 ..
+-rw-r--r--@  1 root  wheel    37 Apr 19 10:43 home
+
+-- scutil --dns (Resolver #2 = mesh) --
+resolver #9
+  domain   : home
+  nameserver[0] : 132.145.232.64
+  port     : 15300
+  flags    : Request A records
+  reach    : 0x00000002 (Reachable)
+
+-- ping 10.42.1.8 --
+64 bytes from 10.42.1.8: icmp_seq=2 ttl=64 time=9.796 ms
+
+--- 10.42.1.8 ping statistics ---
+3 packets transmitted, 3 packets received, 0.0% packet loss
+round-trip min/avg/max/stddev = 9.796/12.511/15.393/2.288 ms

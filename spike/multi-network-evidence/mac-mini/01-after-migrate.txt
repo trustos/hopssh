@@ -1,0 +1,92 @@
+=== AFTER v0.10 deploy — Mac mini (2026-04-19T07:41:35Z) ===
+
+-- hop-agent version --
+hop-agent v0.9.15-6-ga5b16f8-dirty (a5b16f8)
+
+-- sudo hop-agent status --
+Service:    running (launchd)
+Config:     /etc/hop-agent
+Enrollments (1):
+  • home
+      Endpoint:   https://hopssh.com
+      Node ID:    01275a88-966b-4df0-b4b9-389fb0ccf198
+      DNS:        .home
+      Nebula IP:  10.42.1.7/24
+      Cert:       valid (expires in 19h12m0s)
+      Groups:     node
+      TUN mode:   kernel
+
+-- sudo cat /etc/hop-agent/enrollments.json --
+{
+  "version": 1,
+  "enrollments": [
+    {
+      "name": "home",
+      "nodeId": "01275a88-966b-4df0-b4b9-389fb0ccf198",
+      "endpoint": "https://hopssh.com",
+      "tunMode": "kernel",
+      "caFingerprint": "b262a384fa9d",
+      "dnsDomain": "home",
+      "enrolledAt": "2026-04-19T07:41:27.350051Z"
+    }
+  ]
+}
+
+-- sudo ls /etc/hop-agent --
+total 8
+drwx------   4 root  wheel   128 Apr 19 10:41 .
+drwxr-xr-x  88 root  wheel  2816 Apr 14 11:10 ..
+-rw-------@  1 root  wheel   316 Apr 19 10:41 enrollments.json
+drwx------@ 12 root  wheel   384 Apr 19 10:41 home
+
+-- sudo ls /etc/hop-agent/home --
+total 80
+drwx------@ 12 root  wheel   384 Apr 19 10:41 .
+drwx------   4 root  wheel   128 Apr 19 10:41 ..
+-rw-r--r--@  1 root  wheel   243 Apr 14 11:10 ca.crt
+-rw-r--r--@  1 root  wheel     4 Apr 14 11:10 dns-domain
+-rw-r--r--@  1 root  wheel    20 Apr 14 11:10 dns-server
+-rw-------@  1 root  wheel    18 Apr 14 11:10 endpoint
+-rw-r--r--@  1 root  wheel  1138 Apr 19 10:41 nebula.yaml
+-rw-------@  1 root  wheel    36 Apr 14 11:10 node-id
+-rw-r--r--@  1 root  wheel   312 Apr 19 05:53 node.crt
+-rw-------@  1 root  wheel   127 Apr 19 05:53 node.key
+-rw-------@  1 root  wheel    64 Apr 14 11:10 token
+-rw-r--r--@  1 root  wheel     6 Apr 14 11:10 tun-mode
+
+-- /etc/resolver --
+total 0
+drwxr-xr-x   2 root  wheel    64 Apr 19 10:41 .
+drwxr-xr-x  88 root  wheel  2816 Apr 14 11:10 ..
+
+-- /var/log/hop-agent.log (last 30 lines) --
+time="2026-04-19T10:41:23+03:00" level=info msg="Attempt to relay through hosts" localIndex=1413697339 relays="[10.42.1.1]" remoteIndex=0 vpnAddrs="[10.42.1.6]"
+time="2026-04-19T10:41:23+03:00" level=info msg="Send handshake via relay" localIndex=1413697339 relay=10.42.1.1 remoteIndex=0 vpnAddrs="[10.42.1.6]"
+time="2026-04-19T10:41:23+03:00" level=info msg="Attempt to relay through hosts" localIndex=1413697339 relays="[10.42.1.1]" remoteIndex=0 vpnAddrs="[10.42.1.6]"
+time="2026-04-19T10:41:23+03:00" level=info msg="Send handshake via relay" localIndex=1413697339 relay=10.42.1.1 remoteIndex=0 vpnAddrs="[10.42.1.6]"
+time="2026-04-19T10:41:24+03:00" level=info msg="Attempt to relay through hosts" localIndex=1413697339 relays="[10.42.1.1]" remoteIndex=0 vpnAddrs="[10.42.1.6]"
+time="2026-04-19T10:41:24+03:00" level=info msg="Send handshake via relay" localIndex=1413697339 relay=10.42.1.1 remoteIndex=0 vpnAddrs="[10.42.1.6]"
+time="2026-04-19T10:41:24+03:00" level=info msg="Attempt to relay through hosts" localIndex=1413697339 relays="[10.42.1.1]" remoteIndex=0 vpnAddrs="[10.42.1.6]"
+time="2026-04-19T10:41:24+03:00" level=info msg="Send handshake via relay" localIndex=1413697339 relay=10.42.1.1 remoteIndex=0 vpnAddrs="[10.42.1.6]"
+time="2026-04-19T10:41:24+03:00" level=info msg="Attempt to relay through hosts" localIndex=1413697339 relays="[10.42.1.1]" remoteIndex=0 vpnAddrs="[10.42.1.6]"
+time="2026-04-19T10:41:24+03:00" level=info msg="Send handshake via relay" localIndex=1413697339 relay=10.42.1.1 remoteIndex=0 vpnAddrs="[10.42.1.6]"
+time="2026-04-19T10:41:24+03:00" level=info msg="Attempt to relay through hosts" localIndex=1413697339 relays="[10.42.1.1]" remoteIndex=0 vpnAddrs="[10.42.1.6]"
+time="2026-04-19T10:41:24+03:00" level=info msg="Send handshake via relay" localIndex=1413697339 relay=10.42.1.1 remoteIndex=0 vpnAddrs="[10.42.1.6]"
+time="2026-04-19T10:41:24+03:00" level=info msg="Handshake timed out" durationNs=1351702375 handshake="map[stage:1 style:ix_psk0]" initiatorIndex=1413697339 localIndex=1413697339 remoteIndex=0 udpAddrs="[192.168.23.18:4242 46.10.240.91:7064]" vpnAddrs="[10.42.1.6]"
+time="2026-04-19T10:41:24+03:00" level=info msg="Handshake message sent" handshake="map[stage:1 style:ix_psk0]" initiatorIndex=3346171695 localIndex=3346171695 remoteIndex=0 udpAddrs="[192.168.23.18:4242 46.10.240.91:7064]" vpnAddrs="[10.42.1.6]"
+time="2026-04-19T10:41:24+03:00" level=info msg="Attempt to relay through hosts" localIndex=3346171695 relays="[10.42.1.1]" remoteIndex=0 vpnAddrs="[10.42.1.6]"
+time="2026-04-19T10:41:24+03:00" level=info msg="Send handshake via relay" localIndex=3346171695 relay=10.42.1.1 remoteIndex=0 vpnAddrs="[10.42.1.6]"
+2026/04/19 10:41:24 Shutting down agent...
+2026/04/19 10:41:24 [dns] split-DNS removed for .home
+2026/04/19 10:41:24 [agent] stopping Nebula mesh connection (kernel TUN)
+time="2026-04-19T10:41:24+03:00" level=info msg=Goodbye
+2026/04/19 10:41:27 [migrate] detected legacy config layout at /etc/hop-agent — migrating to per-network subdir
+2026/04/19 10:41:27 [migrate] legacy config migrated → enrollment "home" at /etc/hop-agent/home
+2026/04/19 10:41:27 [agent home] cert auto-renewal + heartbeat enabled (endpoint: https://hopssh.com)
+2026/04/19 10:41:27 [renew home] next renewal in 9h51m19s
+2026/04/19 10:41:27 [agent] local_allow_list set to interface en0
+2026/04/19 10:41:27 [agent] P2P config updated (port: 4242, target_all_remotes: true)
+2026/04/19 10:41:27 [agent] WARNING: kernel TUN failed: start nebula (kernel TUN): Could not load client cert (map[]): unable to read pki.key file /etc/hop-agent/node.key: open /etc/hop-agent/node.key: no such file or directory (falling back to userspace)
+2026/04/19 10:41:27 [agent] WARNING: Nebula userspace failed: start nebula: Could not load client cert (map[]): unable to read pki.key file /etc/hop-agent/node.key: open /etc/hop-agent/node.key: no such file or directory (falling back to OS stack)
+2026/04/19 10:41:27 [agent home] all Nebula modes failed — falling back to OS stack
+2026/04/19 10:41:27 [agent home] listening on [::]:41820 (OS stack)

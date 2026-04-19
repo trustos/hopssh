@@ -1,0 +1,49 @@
+=== Mac mini dual-enrollment VERIFIED (2026-04-19T07:47:58Z) ===
+
+Service:    running (launchd)
+Config:     /etc/hop-agent
+Enrollments (2):
+  • home
+      Endpoint:   https://hopssh.com
+      Node ID:    01275a88-966b-4df0-b4b9-389fb0ccf198
+      DNS:        .home
+      Nebula IP:  10.42.1.7/24
+      Cert:       valid (expires in 19h5m0s)
+      Groups:     node
+      TUN mode:   kernel
+
+  • work
+      Endpoint:   https://hopssh.com
+      Node ID:    c5b740d4-421b-44bb-b9c1-c24be8e08d27
+      DNS:        .work
+      Nebula IP:  10.42.2.3/24
+      Cert:       valid (expires in 23h56m0s)
+      Groups:     node
+      TUN mode:   kernel
+
+-- /etc/resolver --
+total 16
+drwxr-xr-x   4 root  wheel   128 Apr 19 10:44 .
+drwxr-xr-x  88 root  wheel  2816 Apr 14 11:10 ..
+-rw-r--r--@  1 root  wheel    37 Apr 19 10:44 home
+-rw-r--r--@  1 root  wheel    37 Apr 19 10:44 work
+
+-- utun10 (home) + utun11 (work) --
+utun10: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 2800
+	inet 10.42.1.7 --> 10.42.1.7 netmask 0xffffff00
+utun11: flags=8051<UP,POINTOPOINT,RUNNING,MULTICAST> mtu 2800
+	inet 10.42.2.3 --> 10.42.2.3 netmask 0xffffff00
+
+-- ping work peer (MacBook 10.42.2.2) --
+64 bytes from 10.42.2.2: icmp_seq=3 ttl=64 time=22.820 ms
+
+--- 10.42.2.2 ping statistics ---
+4 packets transmitted, 4 packets received, 0.0% packet loss
+round-trip min/avg/max/stddev = 4.613/10.829/22.820/7.217 ms
+
+-- ping home peer (Linux VM 10.42.1.8) --
+64 bytes from 10.42.1.8: icmp_seq=3 ttl=64 time=9.946 ms
+
+--- 10.42.1.8 ping statistics ---
+4 packets transmitted, 4 packets received, 0.0% packet loss
+round-trip min/avg/max/stddev = 9.946/37.772/87.970/31.845 ms

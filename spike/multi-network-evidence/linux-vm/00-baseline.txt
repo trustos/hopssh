@@ -1,0 +1,30 @@
+=== Linux VM baseline BEFORE v0.10 ===
+-- version --
+hop-agent dev (unknown)
+
+-- status --
+Status:     not enrolled
+Config:     /home/trustos/.config/hopssh
+
+Run 'hop-agent enroll --endpoint <url>' to join a network.
+
+-- ls /etc/hop-agent --
+total 56
+drwx------   2 root root  4096 Apr 19 07:10 .
+drwxr-xr-x 153 root root 12288 Apr 18 07:47 ..
+-rw-r--r--   1 root root   243 Apr 17 13:44 ca.crt
+-rw-r--r--   1 root root     4 Apr 17 13:44 dns-domain
+-rw-r--r--   1 root root    20 Apr 17 13:44 dns-server
+-rw-------   1 root root    18 Apr 17 13:44 endpoint
+-rw-r--r--   1 root root  1041 Apr 19 07:10 nebula.yaml
+-rw-------   1 root root    36 Apr 17 13:44 node-id
+-rw-r--r--   1 root root   312 Apr 19 07:10 node.crt
+-rw-------   1 root root   127 Apr 19 07:10 node.key
+-rw-------   1 root root    64 Apr 17 13:44 token
+-rw-r--r--   1 root root     6 Apr 17 13:44 tun-mode
+
+-- /etc/systemd/resolved.conf.d/hopssh.conf --
+# Written by hop-agent. Safe to remove; regenerated on next enroll.
+[Resolve]
+DNS=132.145.232.64:15300
+Domains=~home
