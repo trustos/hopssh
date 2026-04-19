@@ -538,6 +538,20 @@ func installCerts(er *enrollResponse, endpoint string) {
 	fmt.Println("  ✓ Agent started")
 }
 
+// meshIfaceName returns the per-enrollment TUN interface name for
+// kernel mode. Linux IFNAMSIZ is 16 (15 printable chars + NUL); the
+// "hop-" prefix leaves 11 chars for the enrollment name, which we
+// truncate if longer. macOS ignores the dev field (kernel assigns
+// utunN), but we still write a distinct value for clarity in logs.
+func meshIfaceName(enrollmentName string) string {
+	const prefix = "hop-"
+	const max = 15
+	if len(prefix)+len(enrollmentName) <= max {
+		return prefix + enrollmentName
+	}
+	return prefix + enrollmentName[:max-len(prefix)]
+}
+
 func writeNebulaConfig(enrollDir, serverIP, serverHost string, lighthousePort int, tunMode string, listenPort int) {
 	// Detect physical interface to prevent advertising overlay IPs.
 	physicalIface, err := nebulacfg.DetectPhysicalInterface(serverHost)
@@ -555,9 +569,10 @@ func writeNebulaConfig(enrollDir, serverIP, serverHost string, lighthousePort in
 	if tunMode == "kernel" {
 		// Each enrollment gets its own utun/wintun interface. macOS and
 		// WinTun both assign a unique device at create time; on Linux
-		// we use a per-enrollment name to avoid collisions when one
-		// agent is enrolled in N networks.
-		tunConfig = fmt.Sprintf("  dev: nebula1\n  mtu: %d", nebulacfg.TunMTU)
+		// we need a unique dev name per enrollment to avoid the kernel
+		// rejecting the second instance as duplicate.
+		iface := meshIfaceName(filepath.Base(enrollDir))
+		tunConfig = fmt.Sprintf("  dev: %s\n  mtu: %d", iface, nebulacfg.TunMTU)
 	}
 
 	nebulaConfig := fmt.Sprintf(`pki:

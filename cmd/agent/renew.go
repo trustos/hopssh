@@ -527,11 +527,26 @@ func ensureP2PConfig(inst *meshInstance) {
 		changed = true
 	}
 
-	// Update MTU to match the configured optimal value.
+	// Normalize kernel-TUN dev name to hop-<enrollment>. Required on
+	// Linux to avoid collisions when two instances run in the same
+	// process (kernel rejects duplicate IFNAME). macOS ignores the
+	// field (utun auto-assigned) but we still keep it consistent for
+	// log readability.
 	if tun, ok := cfg["tun"].(map[string]interface{}); ok {
 		if mtu, hasMTU := tun["mtu"]; hasMTU {
 			if mtuInt, ok := mtu.(int); ok && mtuInt != nebulacfg.TunMTU {
 				tun["mtu"] = nebulacfg.TunMTU
+				cfg["tun"] = tun
+				changed = true
+			}
+		}
+		// Only rewrite dev when the tun block actually has a dev key
+		// (kernel mode) — userspace installs use `user: true` and no
+		// dev field, which stays untouched.
+		if _, hasDev := tun["dev"]; hasDev {
+			want := meshIfaceName(inst.name())
+			if tun["dev"] != want {
+				tun["dev"] = want
 				cfg["tun"] = tun
 				changed = true
 			}

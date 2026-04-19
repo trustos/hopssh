@@ -71,10 +71,23 @@ func platformConfigureDNS(instanceName, domain, serverIP, port string) error {
 // configureViaResolvectl tries the per-link resolvectl approach first,
 // probes the stub to verify it actually forwards queries, and falls
 // back to the merged drop-in config if the probe fails.
+//
+// The Nebula interface name is derived from the instance name
+// (meshIfaceName) so N enrollments register their DNS on N distinct
+// interfaces. Fallback to findNebulaInterface() covers legacy
+// single-network configs where the interface may still be named
+// nebula1 from a prior boot (the rewrite in ensureP2PConfig normalizes
+// on next restart).
 func configureViaResolvectl(instanceName, domain, serverIP, port string) error {
-	iface := findNebulaInterface()
-	if iface == "" {
-		return fmt.Errorf("no Nebula interface found")
+	iface := meshIfaceName(instanceName)
+	if _, err := os.Stat("/sys/class/net/" + iface); err != nil {
+		// Interface under expected name doesn't exist yet — fall back
+		// to "first match" detection for pre-rewrite agents.
+		if alt := findNebulaInterface(); alt != "" {
+			iface = alt
+		} else {
+			return fmt.Errorf("no Nebula interface found (looked for %s)", iface)
+		}
 	}
 
 	addr := serverIP
