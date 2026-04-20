@@ -16,6 +16,14 @@ import (
 // P2P is still preferred when hole punching succeeds (controlled by punchy settings).
 const UseRelays = true
 
+// PortmapEnabled controls whether the agent tries UPnP/NAT-PMP/PCP at
+// startup to obtain a public port mapping on the home router. Essential
+// for direct P2P across asymmetric CGNAT (one peer on home router, one
+// on cellular with no port-mapping). Disable only if the router
+// misbehaves (sends bad UPnP responses, blacklists our mapping, etc.);
+// can be overridden per-enrollment via nebula.yaml's `portmap.enabled`.
+const PortmapEnabled = true
+
 // PunchBack enables responsive hole punching: when a peer tries to punch
 // through to us, we punch back. Improves NAT traversal success rate.
 const PunchBack = true

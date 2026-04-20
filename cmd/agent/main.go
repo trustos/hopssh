@@ -23,6 +23,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/slackhq/nebula/cert"
 	"github.com/trustos/hopssh/internal/buildinfo"
+	"github.com/trustos/hopssh/internal/nebulacfg"
 
 	netpprof "net/http/pprof"
 )
@@ -287,6 +288,10 @@ func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverS
 
 	if ctrl := meshSvc.NebulaControl(); ctrl != nil {
 		inst.startWatcher(ctrl)
+	}
+
+	if nebulacfg.PortmapEnabled {
+		inst.startPortmap(ctx, uint16(nebulacfg.ListenPort))
 	}
 
 	if err := servers.startMeshListener(inst, authed, meshSvc, fmt.Sprintf(":%d", agentAPIPort)); err != nil {

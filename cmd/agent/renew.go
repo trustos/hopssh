@@ -668,6 +668,11 @@ func reloadNebula(inst *meshInstance) {
 			inst.startWatcher(ctrl)
 		}
 
+		// Re-inject any live portmap mapping into the fresh lighthouse's
+		// advertise_addrs (cold-start path: portmap wasn't running yet
+		// so this is effectively a no-op, but kept for symmetry).
+		inst.reinjectPortmapAddr()
+
 		// Swap HTTP listener from OS stack to mesh.
 		if inst.onRestart != nil {
 			inst.onRestart(newSvc)
@@ -703,6 +708,12 @@ func reloadNebula(inst *meshInstance) {
 	if ctrl := newSvc.NebulaControl(); ctrl != nil && inst.endpoint() != "" {
 		inst.startWatcher(ctrl)
 	}
+
+	// Re-inject any live portmap mapping into the new lighthouse's
+	// advertise_addrs (the fresh Control starts with only config-file
+	// addrs; without this, peers stop seeing our public endpoint until
+	// the mapping next refreshes, which can be up to an hour).
+	inst.reinjectPortmapAddr()
 
 	log.Printf("[renew %s] Nebula restarted with new certificate (mode: %s)", inst.name(), tunMode)
 

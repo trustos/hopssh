@@ -1,0 +1,91 @@
+--- a/github.com/slackhq/nebula/lighthouse.go
++++ b/github.com/slackhq/nebula/lighthouse.go
+@@ -160,6 +160,59 @@
+ 	return *lh.advertiseAddrs.Load()
+ }
+ 
++// AddAdvertiseAddr adds a dynamically-discovered public endpoint (e.g. a
++// UPnP/NAT-PMP port mapping on the home router) to the set of addresses
++// we advertise to the lighthouse. Safe for concurrent use. De-dupes.
++// The next SendUpdate tick (default 10 s) propagates to peers.
++//
++// Added by hopssh patch 11.
++func (lh *LightHouse) AddAdvertiseAddr(addr netip.AddrPort) {
++	if !addr.IsValid() {
++		return
++	}
++	for {
++		cur := lh.advertiseAddrs.Load()
++		for _, a := range *cur {
++			if a == addr {
++				return
++			}
++		}
++		next := make([]netip.AddrPort, 0, len(*cur)+1)
++		next = append(next, *cur...)
++		next = append(next, addr)
++		if lh.advertiseAddrs.CompareAndSwap(cur, &next) {
++			lh.l.WithField("addr", addr).Info("lighthouse: added dynamic advertise_addr")
++			return
++		}
++	}
++}
++
++// RemoveAdvertiseAddr is the inverse of AddAdvertiseAddr. No-op if the
++// address isn't present.
++//
++// Added by hopssh patch 11.
++func (lh *LightHouse) RemoveAdvertiseAddr(addr netip.AddrPort) {
++	for {
++		cur := lh.advertiseAddrs.Load()
++		next := make([]netip.AddrPort, 0, len(*cur))
++		changed := false
++		for _, a := range *cur {
++			if a == addr {
++				changed = true
++				continue
++			}
++			next = append(next, a)
++		}
++		if !changed {
++			return
++		}
++		if lh.advertiseAddrs.CompareAndSwap(cur, &next) {
++			lh.l.WithField("addr", addr).Info("lighthouse: removed dynamic advertise_addr")
++			return
++		}
++	}
++}
++
+ func (lh *LightHouse) GetRelaysForMe() []netip.Addr {
+ 	return *lh.relaysForMe.Load()
+ }
+--- a/github.com/slackhq/nebula/control.go
++++ b/github.com/slackhq/nebula/control.go
+@@ -316,4 +316,26 @@
+ 		hosts = append(hosts, copyHostInfo(hostinfo, pr))
+ 	})
+ 	return hosts
++}
++
++// AddAdvertiseAddr publishes a dynamically-discovered public endpoint
++// (e.g. UPnP/NAT-PMP) via the lighthouse. Used by the hopssh portmap
++// subsystem. Safe for concurrent use; de-dupes.
++//
++// Added by hopssh patch 11.
++func (c *Control) AddAdvertiseAddr(addr netip.AddrPort) {
++	if c == nil || c.f == nil || c.f.lightHouse == nil {
++		return
++	}
++	c.f.lightHouse.AddAdvertiseAddr(addr)
+ }
++
++// RemoveAdvertiseAddr is the inverse of AddAdvertiseAddr.
++//
++// Added by hopssh patch 11.
++func (c *Control) RemoveAdvertiseAddr(addr netip.AddrPort) {
++	if c == nil || c.f == nil || c.f.lightHouse == nil {
++		return
++	}
++	c.f.lightHouse.RemoveAdvertiseAddr(addr)
++}

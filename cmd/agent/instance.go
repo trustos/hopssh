@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"log"
+	"net/netip"
 	"sync"
 	"time"
 
 	"github.com/slackhq/nebula"
+	"github.com/trustos/hopssh/internal/portmap"
 )
 
 // meshInstance is one live Nebula membership owned by the agent. A
@@ -59,6 +61,12 @@ type meshInstance struct {
 	// back (transient kernel state) would loop every tick (5 s).
 	reloadMu     sync.Mutex
 	lastReloadAt time.Time
+
+	// portmap is the UPnP/NAT-PMP/PCP port-mapping coordinator for this
+	// instance. Nil if portmap is disabled or no protocol succeeded.
+	// Lives for the full instance lifetime; survives Nebula restarts
+	// (the mapping targets the stable listen port, not a specific Control).
+	portmap *portmap.Manager
 }
 
 // reloadCooldown is the minimum spacing between watcher-initiated
@@ -180,10 +188,70 @@ func (i *meshInstance) stopWatcher() {
 	}
 }
 
+// startPortmap brings up the port-mapping coordinator for this instance.
+// Idempotent; safe to call multiple times (subsequent calls no-op). Must
+// be called AFTER the first setSvc so the OnChange callback can reach
+// the live *nebula.Control.
+//
+// When a public mapping lands, the callback injects it into the current
+// Control's lighthouse.advertise_addrs via the patch-11 API. If Nebula
+// later restarts (cert renewal), reinjectPortmapAddr re-adds the mapping
+// to the new Control.
+func (i *meshInstance) startPortmap(ctx context.Context, listenPort uint16) {
+	if i.portmap != nil {
+		return
+	}
+	pm := portmap.New(nil, listenPort)
+	pm.OnChange(func(old, cur netip.AddrPort) {
+		ctrl := i.control()
+		if ctrl == nil {
+			return
+		}
+		if old.IsValid() {
+			ctrl.RemoveAdvertiseAddr(old)
+		}
+		if cur.IsValid() {
+			ctrl.AddAdvertiseAddr(cur)
+		}
+	})
+	if err := pm.Start(ctx); err != nil {
+		log.Printf("[agent %s] portmap: start: %v", i.name(), err)
+		return
+	}
+	i.portmap = pm
+}
+
+// reinjectPortmapAddr re-adds the current portmap mapping to a freshly-
+// started Nebula Control (called after cert-renewal reload). No-op if
+// no mapping exists.
+func (i *meshInstance) reinjectPortmapAddr() {
+	if i.portmap == nil {
+		return
+	}
+	cur := i.portmap.Current()
+	if !cur.IsValid() {
+		return
+	}
+	if ctrl := i.control(); ctrl != nil {
+		ctrl.AddAdvertiseAddr(cur)
+	}
+}
+
+// stopPortmap tears down the portmap coordinator, best-effort-unmapping
+// on the router. Idempotent.
+func (i *meshInstance) stopPortmap() {
+	if i.portmap == nil {
+		return
+	}
+	i.portmap.Stop()
+	i.portmap = nil
+}
+
 // close tears down the instance: stops goroutines, closes Nebula,
 // cleans up DNS. Idempotent. Safe to call from any goroutine.
 func (i *meshInstance) close() {
 	i.stopWatcher()
+	i.stopPortmap()
 	i.svcMu.Lock()
 	svc := i.svc
 	i.svc = nil

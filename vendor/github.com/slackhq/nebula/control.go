@@ -317,3 +317,25 @@ func listHostMapIndexes(hl controlHostLister) []ControlHostInfo {
 	})
 	return hosts
 }
+
+// AddAdvertiseAddr publishes a dynamically-discovered public endpoint
+// (e.g. UPnP/NAT-PMP) via the lighthouse. Used by the hopssh portmap
+// subsystem. Safe for concurrent use; de-dupes.
+//
+// Added by hopssh patch 11.
+func (c *Control) AddAdvertiseAddr(addr netip.AddrPort) {
+	if c == nil || c.f == nil || c.f.lightHouse == nil {
+		return
+	}
+	c.f.lightHouse.AddAdvertiseAddr(addr)
+}
+
+// RemoveAdvertiseAddr is the inverse of AddAdvertiseAddr.
+//
+// Added by hopssh patch 11.
+func (c *Control) RemoveAdvertiseAddr(addr netip.AddrPort) {
+	if c == nil || c.f == nil || c.f.lightHouse == nil {
+		return
+	}
+	c.f.lightHouse.RemoveAdvertiseAddr(addr)
+}
