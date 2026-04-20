@@ -184,22 +184,65 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Return online peer mesh IPs so the agent can pre-warm tunnels.
+	// Also surface peer-relay-capable nodes so agents can extend their
+	// `relay.relays` list (Pillar 3) and signal whether THIS node has
+	// the "relay" capability so it can set `am_relay: true`.
 	peers, _ := h.Nodes.ListForNetwork(node.NetworkID)
 	var peerIPs []string
+	var relayIPs []string
+	amRelay := false
 	now := time.Now().Unix()
 	for _, p := range peers {
-		if p.ID == node.ID || p.NebulaIP == "" {
+		caps := parseCapabilitiesForRenew(p.Capabilities)
+		if p.ID == node.ID {
+			amRelay = caps["relay"]
 			continue
 		}
-		if p.LastSeenAt != nil && now-*p.LastSeenAt < 600 {
-			ip := strings.TrimSuffix(p.NebulaIP, "/24")
-			peerIPs = append(peerIPs, ip)
+		if p.NebulaIP == "" {
+			continue
+		}
+		if p.LastSeenAt == nil || now-*p.LastSeenAt >= 600 {
+			continue
+		}
+		ip := strings.TrimSuffix(p.NebulaIP, "/24")
+		peerIPs = append(peerIPs, ip)
+		if caps["relay"] {
+			relayIPs = append(relayIPs, ip)
 		}
 	}
 
+	resp := map[string]interface{}{}
 	if len(peerIPs) > 0 {
-		writeJSON(w, map[string]interface{}{"peers": peerIPs})
-	} else {
-		w.WriteHeader(http.StatusNoContent)
+		resp["peers"] = peerIPs
 	}
+	if len(relayIPs) > 0 {
+		resp["relays"] = relayIPs
+	}
+	if amRelay {
+		resp["amRelay"] = true
+	}
+	if len(resp) == 0 {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, resp)
+}
+
+// parseCapabilitiesForRenew unmarshals the JSON-array capability blob
+// stored on Node into a set, defaulting to empty on parse failure.
+// Local helper so renew.go doesn't need to import the parseCapabilities
+// in types.go (which returns []string for serialization).
+func parseCapabilitiesForRenew(capsJSON string) map[string]bool {
+	out := map[string]bool{}
+	if capsJSON == "" {
+		return out
+	}
+	var arr []string
+	if err := json.Unmarshal([]byte(capsJSON), &arr); err != nil {
+		return out
+	}
+	for _, c := range arr {
+		out[c] = true
+	}
+	return out
 }

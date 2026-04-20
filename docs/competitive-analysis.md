@@ -20,8 +20,10 @@
 | Overlay protocol | Nebula (Noise, Curve25519) | Nebula | WireGuard | Custom (ChaCha20-Poly1305) |
 | E2E encryption | Yes | Yes | Yes | Yes |
 | P2P with hole punching | Yes (Nebula punchy) | Yes | Yes | Yes |
-| NAT-PMP / UPnP-IGD port mapping | **Yes — NAT-PMP v0.10.3+, UPnP v0.10.4+** — own implementation, zero deps | No | Yes (`net/portmapper`) | No |
+| NAT-PMP + PCP + UPnP-IGD port mapping | **Yes — NAT-PMP v0.10.3+, UPnP v0.10.4+, PCP v0.10.5+** — own implementation, zero deps | No | Yes (`net/portmapper`) | No |
 | P2P across home-router + cellular CGNAT | **Yes (v0.10.3+)** — empirically verified, 35-43 ms RTT | No (relay only) | Yes | No (relay only) |
+| User-contributed peer relays | **Yes (v0.10.5+)** — capability toggle on any node | Yes (customer-hosted relays, manual config) | No (DERP is Tailscale-operated) | Roots can be self-deployed (no UI) |
+| Birthday-paradox burst probing primitive | **Yes (v0.10.5+, in `internal/burstsock`)** | No | Yes (in `magicsock`) | Unknown |
 | Relay fallback | Yes (lighthouse relay, UDP) | Yes (customer-hosted relays) | Yes (DERP, TCP/443) | Yes (roots, TCP) |
 | Per-network CA / crypto isolation | Yes (separate CA per network) | Yes | No (single tailnet) | No (single network key) |
 | Adaptive MTU (DPLPMTUD) | No (planned) | No | No (experimental) | No |

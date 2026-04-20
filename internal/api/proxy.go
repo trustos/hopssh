@@ -1119,10 +1119,10 @@ func (h *ProxyHandler) UpdateCapabilities(w http.ResponseWriter, r *http.Request
 	}
 
 	// Validate capabilities.
-	valid := map[string]bool{"terminal": true, "health": true, "forward": true}
+	valid := map[string]bool{"terminal": true, "health": true, "forward": true, "relay": true}
 	for _, c := range body.Capabilities {
 		if !valid[c] {
-			http.Error(w, "invalid capability: "+c+". Valid: terminal, health, forward", http.StatusBadRequest)
+			http.Error(w, "invalid capability: "+c+". Valid: terminal, health, forward, relay", http.StatusBadRequest)
 			return
 		}
 	}

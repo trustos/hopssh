@@ -107,15 +107,17 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	clients := m.clients
 	if clients == nil {
-		// Build production defaults. NAT-PMP is fastest when it works
-		// (single UDP round-trip to the gateway); UPnP is a fallback
-		// for routers that don't speak NAT-PMP. We probe both in
-		// parallel — the coordinator keeps the first one to return.
-		// PCP comes in a later PR (RFC 6887, NAT-PMP successor).
+		// Production defaults — three protocols probed in parallel; the
+		// coordinator keeps the first that returns. NAT-PMP and PCP
+		// share UDP 5351 on the gateway and have similar latency
+		// characteristics; UPnP discovers via SSDP multicast (slower
+		// but covers more routers). Combined coverage approaches 100%
+		// of consumer routers that allow ANY port-mapping protocol.
 		gw, gwErr := DiscoverGateway()
 		clients = []Client{}
 		if gwErr == nil {
 			clients = append(clients, NewNATPMP(gw))
+			clients = append(clients, NewPCP(gw))
 		}
 		clients = append(clients, NewUPnP())
 		if len(clients) == 0 {

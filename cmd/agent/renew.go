@@ -162,12 +162,20 @@ func sendHeartbeat(inst *meshInstance) error {
 		return fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	// Warm peer tunnels from heartbeat response.
+	// Warm peer tunnels from heartbeat response. Also ingest peer-relay
+	// info (Pillar 3) — `amRelay` flips this node into relay mode,
+	// `relays` is the list of OTHER nodes the agent should add to its
+	// `relay.relays` set so it can use them as fallback paths.
 	var body struct {
-		Peers []string `json:"peers"`
+		Peers   []string `json:"peers"`
+		Relays  []string `json:"relays"`
+		AmRelay bool     `json:"amRelay"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil && len(body.Peers) > 0 {
-		go warmPeers(body.Peers)
+	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
+		if len(body.Peers) > 0 {
+			go warmPeers(body.Peers)
+		}
+		_ = saveRelayState(inst, body.AmRelay, body.Relays)
 	}
 	return nil
 }
@@ -601,6 +609,33 @@ func ensureP2PConfig(inst *meshInstance) {
 		}
 	}
 
+	// Apply cached peer-relay state (Pillar 3): if the dashboard has
+	// flagged this node as a relay, write `relay.am_relay: true`; if
+	// other relay-capable peers exist, extend `relay.relays` with them.
+	// `loadRelayState` returns nil if no cache exists yet (default
+	// behavior — no relay role, only the lighthouse as relay).
+	if state, _ := loadRelayState(inst); state != nil {
+		relay := yamlMap(cfg, "relay")
+
+		curAmRelay, _ := relay["am_relay"].(bool)
+		if curAmRelay != state.AmRelay {
+			relay["am_relay"] = state.AmRelay
+			changed = true
+		}
+
+		// Merge cached peer-relay IPs into relay.relays without
+		// dropping the lighthouse(s) the enrollment originally listed.
+		if len(state.Relays) > 0 {
+			merged := mergeRelayList(relay["relays"], state.Relays)
+			if !relayListEqual(relay["relays"], merged) {
+				relay["relays"] = merged
+				changed = true
+			}
+		}
+
+		cfg["relay"] = relay
+	}
+
 	if !changed {
 		return
 	}
@@ -615,6 +650,72 @@ func ensureP2PConfig(inst *meshInstance) {
 		return
 	}
 	log.Printf("[agent] P2P config updated (port: %d, target_all_remotes: true)", nebulacfg.ListenPort)
+}
+
+// mergeRelayList combines the existing `relay.relays` list (whatever
+// shape yaml.Unmarshal produced) with peer-relay IPs from cached
+// state. Output is a sorted, deduped []interface{} compatible with
+// yaml.Marshal — peer IPs are added IF NOT already present, original
+// entries (the lighthouse) are preserved.
+func mergeRelayList(existing any, peerRelays []string) []any {
+	seen := map[string]bool{}
+	out := []any{}
+	switch list := existing.(type) {
+	case []any:
+		for _, item := range list {
+			if s, ok := item.(string); ok && s != "" && !seen[s] {
+				seen[s] = true
+				out = append(out, s)
+			}
+		}
+	case []string:
+		for _, s := range list {
+			if s != "" && !seen[s] {
+				seen[s] = true
+				out = append(out, s)
+			}
+		}
+	}
+	for _, ip := range peerRelays {
+		if ip == "" || seen[ip] {
+			continue
+		}
+		seen[ip] = true
+		out = append(out, ip)
+	}
+	return out
+}
+
+// relayListEqual compares two yaml-shaped relay lists for equality,
+// treating string and any-string interchangeably.
+func relayListEqual(a, b any) bool {
+	as := relayListAsStrings(a)
+	bs := relayListAsStrings(b)
+	if len(as) != len(bs) {
+		return false
+	}
+	for i := range as {
+		if as[i] != bs[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func relayListAsStrings(v any) []string {
+	switch list := v.(type) {
+	case []any:
+		out := make([]string, 0, len(list))
+		for _, x := range list {
+			if s, ok := x.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	case []string:
+		return list
+	}
+	return nil
 }
 
 // addJitter applies ±10% random jitter to a duration to spread agent load.
