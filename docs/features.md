@@ -47,7 +47,7 @@
 - **Node rename** — Rename a node from the dashboard. DNS records update automatically.
 - **Node delete** — Remove a node and its certificates.
 - **Capability control** — Toggle terminal, health, and forward capabilities per node from the dashboard.
-- **Connection type per node** — Colored badge (P2P / Mixed / Relayed) next to each node's status. Agent reports peer counts (direct vs relay-routed) via heartbeat; server derives the `connectivity` string. Tooltip shows counts + "reported X min ago."
+- **Connection type per node** — Colored badge (P2P / Mixed / Relayed) next to each node's status. Agent reports peer counts (direct vs relay-routed) via heartbeat; server derives the `connectivity` string. Tooltip shows counts + "reported X min ago." Counts dedupe by peer mesh IP and prefer the *direct* path when both direct and relay sessions coexist (v0.10.6+) so transient mid-transition states don't render as permanent "Mixed".
 - **Real-time status** — Node online/offline transitions pushed via WebSocket. Dashboard also derives offline status client-side from `lastSeenAt + 180 s` stale threshold — an open tab flips a node to "offline" within <1 s of the threshold crossing without waiting for the next poll.
 - **Proxy traffic = liveness** — Successful shell / exec / port-forward / HTTP-proxy interactions refresh the node's `last_seen_at` (30 s per-node throttle). A node whose outbound heartbeat is broken stays marked online as long as user traffic reaches it.
 - **Offline UI cues** — Terminal pane shows a red banner + tab dot when its session's node is offline OR the WebSocket is reconnecting/failed. Port-forward rows show a "node offline" pill + muted styling when the target is stale.
