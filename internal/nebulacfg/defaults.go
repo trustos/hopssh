@@ -48,17 +48,38 @@ const ListenPort = 4242
 
 // TunMTU is the MTU for the Nebula TUN interface in kernel mode.
 //
-// 1280 matches Tailscale / WireGuard's default. Originally 2800 (tuned
-// for WiFi LAN where Apple's hardware handles fragmentation efficiently
-// and a smaller packet count per screen frame helped) — but on cellular
-// 2800-byte Nebula packets fragment at the carrier's ~1500 MTU, and a
-// single fragment loss costs the entire packet. Empirically (2026-04-21)
-// dropped hopssh downlink throughput to 8 Mbps over cellular vs
-// Tailscale's 51 Mbps on the IDENTICAL path. 1280 sized to fit our
-// Nebula header overhead inside any plausible underlay MTU without
-// fragmentation. WiFi-LAN throughput penalty is minor; cellular gain
-// is 6x. Net win across the user base.
-const TunMTU = 1280
+// 1420 — empirical sweet spot from a 2026-04-21 bisection on real
+// cellular (Mac mini ↔ MacBook Pro, Yettel BG, direct-P2P verified):
+//
+//   MTU  | downlink | uplink  | retr DL | macOS HP screen-share
+//   ------+----------+---------+---------+----------------------------
+//   2800 | 7.8 Mb/s | 1.5 Mb/s|     191 | warning + retry → works
+//   1440 |  42 Mb/s | 6.8 Mb/s|    1052 | starts cleanly, usable
+//   1420 |  49 Mb/s | 8.3 Mb/s|     321 | warning + retry → works ✓
+//   1380 |  41 Mb/s | 6.8 Mb/s|    1026 | login screen freezes
+//   1280 |  52 Mb/s | 9.0 Mb/s|    9199 | black screen, no warning
+//
+// Why 1420 wins:
+//   - Matches Tailscale's downlink throughput on the same cellular
+//     path (~50 Mb/s) — 6.3× the 2800 baseline that was fragmenting.
+//   - 28× fewer retransmits than 1280 (321 vs 9199) — closer to the
+//     path's true capacity, less wasted air-time.
+//   - Stays above the MTU heuristic that macOS HP Screen Sharing uses
+//     on raw userspace utun (no IS_VPN flag). 1380 trips the heuristic
+//     and HP fails (login screen freezes); 1420 stays clear of it and
+//     HP works with the documented retry-once pattern.
+//
+// Outer-packet math: 1420 (utun) + 16 (Nebula header) + 16 (AEAD tag)
+// + 8 (UDP header) + 20 (IP header) = 1480 bytes total IP packet.
+// Fits inside 1500-byte standard Internet MTU with 20 bytes of slack
+// for any carrier-side header overhead (PPPoE, GTP-U, etc.).
+//
+// The fundamental fix for HP independent of MTU is
+// `NEPacketTunnelProvider` (Apple Dev ID, signed app, weeks of work)
+// so avconferenced gets explicit VPN classification via the IS_VPN
+// xflag + NetworkExtension agents instead of guessing from MTU.
+// TunMTU final value — see comment block below for the bisection.
+const TunMTU = 1420
 
 // HandshakeTryInterval is the retry interval for Noise handshake attempts.
 // Default 100ms wastes time if the lighthouse responds faster. 20ms ensures

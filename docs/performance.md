@@ -28,16 +28,18 @@ Nebula's actual overhead above raw LAN is ~3ms per packet.
 
 Nebula is faster when P2P works. P2P now also works in the asymmetric carrier-NAT case (home router + cellular peer) via the v0.10.3 NAT-PMP port-mapping pipeline (`internal/portmap/` + vendor patch 11) — empirically 35-43 ms direct RTT on Mac mini ↔ MacBook cellular, down from 100% loss / relay fallback. Bidirectional carrier-NAT (both peers cellular) still relays; relay overhead remains 9ms (125ms relay vs 106ms P2P) — bottleneck is network path, not processing.
 
-**Cellular throughput parity with Tailscale (v0.10.8, 2026-04-21):** Pre-v0.10.8 the default `TunMTU=2800` was a hidden bottleneck on cellular paths — 2800-byte Nebula packets fragmented at the carrier's ~1500 MTU and any fragment loss cost the entire packet. Lowering to `TunMTU=1280` (Tailscale/WireGuard's default) on the same direct-P2P cellular path:
+**Cellular throughput parity with Tailscale + Screen-Sharing HP retained (v0.10.9, 2026-04-21):** The original `TunMTU=2800` was a hidden bottleneck on cellular paths — 2800-byte Nebula packets fragmented at the carrier's ~1500 MTU and any fragment loss cost the entire packet. The Tailscale/WireGuard-style 1280 fixed throughput (8 → 52 Mb/s downlink) but broke macOS Screen Sharing HP mode entirely (avconferenced declines HP on a raw userspace utun when MTU drops below a threshold around 1400). A bisection on the same direct-P2P cellular path landed on **1420** — within Tailscale variance on throughput AND keeps HP working:
 
-| | hopssh MTU 2800 | hopssh MTU 1280 | tailscale |
-|---|---|---|---|
-| Downlink sender | 8.78 Mbps | **59.6 Mbps** | 58.9 Mbps |
-| Downlink receiver | 7.83 Mbps | **52.0 Mbps** | 51.3 Mbps |
-| Uplink sender | 1.99 Mbps | **9.44 Mbps** | 2.67 Mbps |
-| Ping RTT mean | 42 ms | **33 ms** | — |
+| MTU | Downlink RX | Uplink RX | DL retransmits | macOS Screen-Share HP |
+|---|---|---|---|---|
+| 2800 (orig) | 7.8 Mbps | 1.5 Mbps | 191 | warning + retry, works |
+| 1440 | 42 Mbps | 6.8 Mbps | 1052 | works first try |
+| **1420** ✓ | **49 Mbps** | **8.3 Mbps** | **321** | **warning + retry, works** |
+| 1380 | 41 Mbps | 6.8 Mbps | 1026 | login screen freezes |
+| 1280 | 52 Mbps | 9.0 Mbps | 9199 | black screen, no warning |
+| Tailscale (1280) | 51 Mbps | 2.2 Mbps | 4266 | works (NE-managed utun) |
 
-Net: 6-7× throughput improvement on cellular, parity with Tailscale (slightly ahead on this measurement). 2800 may still be optimal for WiFi LAN in isolation, but a per-path MTU is future work; the global default must be safe across paths.
+Net: 6.3× throughput improvement on cellular, parity with Tailscale, AND HP screen-share still usable. 28× fewer retransmits than 1280 (321 vs 9199) — closer to the path's true capacity, less wasted air-time. The fundamental fix for HP independent of MTU is `NEPacketTunnelProvider` (Apple Dev ID + signed bundle); per-network MTU knob would let WiFi-LAN-only nets opt up to 2800.
 
 **Throughput (2026-04-15, iperf3, Mac mini ↔ MacBook, WiFi LAN, Apple Silicon):**
 
