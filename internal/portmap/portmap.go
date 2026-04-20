@@ -107,14 +107,21 @@ func (m *Manager) Start(ctx context.Context) error {
 
 	clients := m.clients
 	if clients == nil {
-		// Build production defaults. PR#1 ships NAT-PMP only; subsequent
-		// PRs add PCP and UPnP to this list.
-		gw, err := DiscoverGateway()
-		if err != nil {
-			m.mu.Unlock()
-			return fmt.Errorf("portmap: %w", err)
+		// Build production defaults. NAT-PMP is fastest when it works
+		// (single UDP round-trip to the gateway); UPnP is a fallback
+		// for routers that don't speak NAT-PMP. We probe both in
+		// parallel — the coordinator keeps the first one to return.
+		// PCP comes in a later PR (RFC 6887, NAT-PMP successor).
+		gw, gwErr := DiscoverGateway()
+		clients = []Client{}
+		if gwErr == nil {
+			clients = append(clients, NewNATPMP(gw))
 		}
-		clients = []Client{NewNATPMP(gw)}
+		clients = append(clients, NewUPnP())
+		if len(clients) == 0 {
+			m.mu.Unlock()
+			return fmt.Errorf("portmap: no clients available (gw discovery: %w)", gwErr)
+		}
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
