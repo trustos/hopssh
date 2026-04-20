@@ -47,9 +47,18 @@ const RespondDelay = "500ms"
 const ListenPort = 4242
 
 // TunMTU is the MTU for the Nebula TUN interface in kernel mode.
-// 2800 optimally fills 2 IP fragments (2×1500) and halves the packet
-// count per screen frame vs 1440. Benchmarked at 13.7ms avg vs 16.2ms.
-const TunMTU = 2800
+//
+// 1280 matches Tailscale / WireGuard's default. Originally 2800 (tuned
+// for WiFi LAN where Apple's hardware handles fragmentation efficiently
+// and a smaller packet count per screen frame helped) — but on cellular
+// 2800-byte Nebula packets fragment at the carrier's ~1500 MTU, and a
+// single fragment loss costs the entire packet. Empirically (2026-04-21)
+// dropped hopssh downlink throughput to 8 Mbps over cellular vs
+// Tailscale's 51 Mbps on the IDENTICAL path. 1280 sized to fit our
+// Nebula header overhead inside any plausible underlay MTU without
+// fragmentation. WiFi-LAN throughput penalty is minor; cellular gain
+// is 6x. Net win across the user base.
+const TunMTU = 1280
 
 // HandshakeTryInterval is the retry interval for Noise handshake attempts.
 // Default 100ms wastes time if the lighthouse responds faster. 20ms ensures

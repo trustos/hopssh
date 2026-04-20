@@ -28,6 +28,17 @@ Nebula's actual overhead above raw LAN is ~3ms per packet.
 
 Nebula is faster when P2P works. P2P now also works in the asymmetric carrier-NAT case (home router + cellular peer) via the v0.10.3 NAT-PMP port-mapping pipeline (`internal/portmap/` + vendor patch 11) — empirically 35-43 ms direct RTT on Mac mini ↔ MacBook cellular, down from 100% loss / relay fallback. Bidirectional carrier-NAT (both peers cellular) still relays; relay overhead remains 9ms (125ms relay vs 106ms P2P) — bottleneck is network path, not processing.
 
+**Cellular throughput parity with Tailscale (v0.10.8, 2026-04-21):** Pre-v0.10.8 the default `TunMTU=2800` was a hidden bottleneck on cellular paths — 2800-byte Nebula packets fragmented at the carrier's ~1500 MTU and any fragment loss cost the entire packet. Lowering to `TunMTU=1280` (Tailscale/WireGuard's default) on the same direct-P2P cellular path:
+
+| | hopssh MTU 2800 | hopssh MTU 1280 | tailscale |
+|---|---|---|---|
+| Downlink sender | 8.78 Mbps | **59.6 Mbps** | 58.9 Mbps |
+| Downlink receiver | 7.83 Mbps | **52.0 Mbps** | 51.3 Mbps |
+| Uplink sender | 1.99 Mbps | **9.44 Mbps** | 2.67 Mbps |
+| Ping RTT mean | 42 ms | **33 ms** | — |
+
+Net: 6-7× throughput improvement on cellular, parity with Tailscale (slightly ahead on this measurement). 2800 may still be optimal for WiFi LAN in isolation, but a per-path MTU is future work; the global default must be safe across paths.
+
 **Throughput (2026-04-15, iperf3, Mac mini ↔ MacBook, WiFi LAN, Apple Silicon):**
 
 | Test | Throughput | Latency (avg) | Latency (max) | Packet loss |
