@@ -168,6 +168,108 @@ func TestEnrollmentRegistry_FileFormat(t *testing.T) {
 	}
 }
 
+func TestEnrollmentRegistry_NextAvailableListenPort_Empty(t *testing.T) {
+	dir := t.TempDir()
+	reg, _ := loadEnrollmentRegistry(dir)
+	got := reg.NextAvailableListenPort(4242)
+	if got != 4242 {
+		t.Fatalf("empty registry should return base port; got %d", got)
+	}
+}
+
+func TestEnrollmentRegistry_NextAvailableListenPort_Sequential(t *testing.T) {
+	dir := t.TempDir()
+	reg, _ := loadEnrollmentRegistry(dir)
+	if err := reg.Add(&Enrollment{Name: "home", ListenPort: 4242}); err != nil {
+		t.Fatal(err)
+	}
+	if got := reg.NextAvailableListenPort(4242); got != 4243 {
+		t.Errorf("after 4242, want 4243, got %d", got)
+	}
+	if err := reg.Add(&Enrollment{Name: "work", ListenPort: 4243}); err != nil {
+		t.Fatal(err)
+	}
+	if got := reg.NextAvailableListenPort(4242); got != 4244 {
+		t.Errorf("after 4242+4243, want 4244, got %d", got)
+	}
+}
+
+func TestEnrollmentRegistry_NextAvailableListenPort_FillsHole(t *testing.T) {
+	dir := t.TempDir()
+	reg, _ := loadEnrollmentRegistry(dir)
+	// Simulate user enrolled then removed the middle one — the hole at
+	// 4243 should be reusable on the next enroll.
+	_ = reg.Add(&Enrollment{Name: "home", ListenPort: 4242})
+	_ = reg.Add(&Enrollment{Name: "lab", ListenPort: 4244})
+	if got := reg.NextAvailableListenPort(4242); got != 4243 {
+		t.Errorf("with hole at 4243, want 4243, got %d", got)
+	}
+}
+
+func TestEnrollmentRegistry_NextAvailableListenPort_IgnoresZero(t *testing.T) {
+	dir := t.TempDir()
+	reg, _ := loadEnrollmentRegistry(dir)
+	// ListenPort=0 means "not yet assigned" — it shouldn't reserve 4242.
+	_ = reg.Add(&Enrollment{Name: "legacy"})
+	if got := reg.NextAvailableListenPort(4242); got != 4242 {
+		t.Errorf("zero ListenPort shouldn't block 4242; got %d", got)
+	}
+}
+
+func TestEnrollmentRegistry_AssignMissingListenPorts(t *testing.T) {
+	dir := t.TempDir()
+	reg, _ := loadEnrollmentRegistry(dir)
+	_ = reg.Add(&Enrollment{Name: "legacy1"})
+	_ = reg.Add(&Enrollment{Name: "legacy2"})
+	_ = reg.Add(&Enrollment{Name: "modern", ListenPort: 4242}) // already assigned
+
+	updated, err := reg.AssignMissingListenPorts(4242)
+	if err != nil {
+		t.Fatalf("AssignMissingListenPorts: %v", err)
+	}
+	if updated != 2 {
+		t.Errorf("updated count: got %d want 2", updated)
+	}
+
+	// All ports must be unique and >= base.
+	seen := map[int]bool{}
+	for _, e := range reg.List() {
+		if e.ListenPort < 4242 {
+			t.Errorf("%s ListenPort=%d below base", e.Name, e.ListenPort)
+		}
+		if seen[e.ListenPort] {
+			t.Errorf("duplicate port %d on enrollment %s", e.ListenPort, e.Name)
+		}
+		seen[e.ListenPort] = true
+	}
+
+	// Persisted to disk: reload and re-check.
+	reg2, err := loadEnrollmentRegistry(dir)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	for _, e := range reg2.List() {
+		if e.ListenPort == 0 {
+			t.Errorf("after reload, %s still has ListenPort=0", e.Name)
+		}
+	}
+}
+
+func TestEnrollmentRegistry_AssignMissingListenPorts_Idempotent(t *testing.T) {
+	dir := t.TempDir()
+	reg, _ := loadEnrollmentRegistry(dir)
+	_ = reg.Add(&Enrollment{Name: "home"})
+
+	first, err := reg.AssignMissingListenPorts(4242)
+	if err != nil || first != 1 {
+		t.Fatalf("first call: updated=%d err=%v", first, err)
+	}
+	second, err := reg.AssignMissingListenPorts(4242)
+	if err != nil || second != 0 {
+		t.Errorf("second call should be no-op; updated=%d err=%v", second, err)
+	}
+}
+
 func TestValidateEnrollmentName(t *testing.T) {
 	valid := []string{"a", "home", "work-prod", "abc123", "zero", strings.Repeat("a", 32)}
 	for _, name := range valid {
