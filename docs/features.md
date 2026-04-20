@@ -14,7 +14,8 @@
 - **Per-network subnet allocation** — Each network gets a unique /24 subnet. Node IPs allocated via MAX (monotonically increasing).
 - **Idle network reaper** — Unused Nebula instances are stopped automatically to conserve resources.
 - **Userspace Nebula** — Runs in userspace via gvisor netstack. No kernel TUN device required (optional kernel mode available).
-- **Multi-network per agent (v0.10+)** — A single `hop-agent` process joins N networks simultaneously with independent Nebula instances, certs, heartbeats, and split-DNS domains per network. ZeroTier-style "one daemon, many overlays". Cross-network isolation is cryptographic (each network has its own CA).
+- **Multi-network per agent (v0.10+)** — A single `hop-agent` process joins N networks simultaneously with independent Nebula instances, certs, heartbeats, and split-DNS domains per network. ZeroTier-style "one daemon, many overlays". Cross-network isolation is cryptographic (each network has its own CA). Each enrollment binds Nebula to a unique UDP listen port (4242, 4243, …) so multi-network hosts don't race for the same port.
+- **NAT-PMP port mapping (v0.10.3+)** — On startup, each enrollment asks the local home router (via NAT-PMP, RFC 6886) to forward a public UDP port to its Nebula listen port. The resulting `public_ip:public_port` is injected into the lighthouse's `advertise_addrs` (vendor patch 11). Peers — including those behind random-port symmetric CGNAT (cellular) — can then reach this node directly instead of falling back to relay. Verified end-to-end: cellular-CGNAT MacBook ↔ home-router Mac mini achieves 35-43 ms direct P2P RTT, where it previously fell back to relay (200+ ms). UPnP-IGD and PCP support coming in subsequent releases.
 
 ## Node Enrollment
 

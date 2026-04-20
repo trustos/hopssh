@@ -43,7 +43,7 @@ Encrypted mesh networking with P2P, relay fallback, built-in DNS, and a web term
 
 - **One Nebula instance per network.** Each network has its own CA, lighthouse, relay, and DNS. Cryptographic isolation is enforced by separate CAs — nodes from different networks cannot handshake.
 - **Control plane IS the lighthouse+relay.** No separate infrastructure. The single binary runs everything.
-- **P2P primary, relay fallback.** ~92% of connections succeed as direct P2P via UDP hole punching. The remaining ~8% (symmetric NAT, strict firewalls) fall back to relay through the lighthouse.
+- **P2P primary, relay fallback.** Most connections succeed as direct P2P. Two paths to direct P2P: (1) classic UDP hole punching for cone-NAT pairs; (2) **NAT-PMP port mapping (v0.10.3+)** for asymmetric setups where one peer is behind a UPnP/NAT-PMP-capable home router and the other is behind random-port symmetric CGNAT (cellular). The home peer asks its router to forward a public UDP port; the resulting endpoint is injected into the lighthouse's `advertise_addrs` (vendor patch 11); the cellular peer reaches it directly. Only bidirectional random-port symmetric NAT (both peers cellular) currently falls back to relay — birthday-paradox port prediction is planned (roadmap N4).
 - **Agents embed Nebula.** Single binary, no separate Nebula daemon. Connects persistently to the lighthouse.
 - **Browser access through control plane.** Web terminal proxies through the control plane's mesh connection. Browsers can't join Nebula directly.
 

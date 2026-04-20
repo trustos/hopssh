@@ -22,10 +22,11 @@ Nebula's actual overhead above raw LAN is ~3ms per packet.
 | LAN P2P (WiFi) | 14ms avg, 0% loss | 17ms avg | **Nebula** |
 | WAN P2P (mobile hotspot) | 106ms avg, 0% loss | 222ms avg | **Nebula** |
 | WAN relay (symmetric NAT) | 125ms avg | ~200ms | **Nebula** |
-| P2P on carrier NAT | Fails (symmetric NAT) | Usually succeeds | ZeroTier |
+| P2P on carrier NAT (asymmetric: home + cellular) | **35-43ms direct (v0.10.3+)** via NAT-PMP | Comparable | **Tied — was Tailscale-only before v0.10.3** |
+| P2P on carrier NAT (bidirectional cellular) | Falls back to relay | Falls back to relay | Industry-wide unsolved (birthday-paradox planned, roadmap N4) |
 | Network roam (WiFi↔cellular) | Auto, <5 seconds | Auto | Tie |
 
-Nebula is faster when P2P works but fails to establish P2P on carrier-grade NAT (symmetric NAT). Relay overhead is only 9ms (125ms relay vs 106ms P2P) — the bottleneck is network path, not processing.
+Nebula is faster when P2P works. P2P now also works in the asymmetric carrier-NAT case (home router + cellular peer) via the v0.10.3 NAT-PMP port-mapping pipeline (`internal/portmap/` + vendor patch 11) — empirically 35-43 ms direct RTT on Mac mini ↔ MacBook cellular, down from 100% loss / relay fallback. Bidirectional carrier-NAT (both peers cellular) still relays; relay overhead remains 9ms (125ms relay vs 106ms P2P) — bottleneck is network path, not processing.
 
 **Throughput (2026-04-15, iperf3, Mac mini ↔ MacBook, WiFi LAN, Apple Silicon):**
 

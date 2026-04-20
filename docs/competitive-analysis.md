@@ -20,6 +20,8 @@
 | Overlay protocol | Nebula (Noise, Curve25519) | Nebula | WireGuard | Custom (ChaCha20-Poly1305) |
 | E2E encryption | Yes | Yes | Yes | Yes |
 | P2P with hole punching | Yes (Nebula punchy) | Yes | Yes | Yes |
+| NAT-PMP / UPnP port mapping | **Yes (v0.10.3+, RFC 6886)** — own implementation, zero deps | No | Yes (`net/portmapper`) | No |
+| P2P across home-router + cellular CGNAT | **Yes (v0.10.3+)** — empirically verified, 35-43 ms RTT | No (relay only) | Yes | No (relay only) |
 | Relay fallback | Yes (lighthouse relay, UDP) | Yes (customer-hosted relays) | Yes (DERP, TCP/443) | Yes (roots, TCP) |
 | Per-network CA / crypto isolation | Yes (separate CA per network) | Yes | No (single tailnet) | No (single network key) |
 | Adaptive MTU (DPLPMTUD) | No (planned) | No | No (experimental) | No |

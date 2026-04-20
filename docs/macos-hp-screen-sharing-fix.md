@@ -1,225 +1,201 @@
-# macOS Screen Sharing High-Performance: first-click fix
+# macOS Screen Sharing High-Performance: first-click bug
 
-## Problem
+> **Status (2026-04-20): SUPERSEDED.** The SC-registration fix plan
+> originally in this doc was investigated across three implementation
+> iterations and proven empirically infeasible. Authoritative entry
+> lives in `CLAUDE.md` Discovery Log → "macOS Platform" (2026-04-20).
+> This file now captures the **honest root cause** and the **realistic
+> workaround options**. Do not re-attempt SC-based approaches.
 
-After `hop-agent restart` (or any utun reset) on macOS, the next
-Screen Sharing Connect click to a peer fails with:
+## Symptom
+
+After `hop-agent restart` (or any other utun reset) on macOS, the next
+Screen Sharing Connect click to a peer with High Performance mode
+enabled fails with:
 
 > This Mac was unable to start a High Performance connection to
 > "<peer>". Change the screen sharing type to standard and try again.
 
-A second click ~10 s later succeeds. High-Performance mode works
-normally in steady state — the failure is specifically the first
-click after the client's tunnel has just come up.
+A retry ~10 seconds later succeeds. Steady-state HP works fine; the
+failure is specifically the first click after the utun has just come
+up.
 
-## Root cause (empirically isolated)
+## Root cause (verified 2026-04-20)
 
-macOS `avconferenced` classifies network interfaces for its HP
-video-pipeline setup using SystemConfiguration's Service registry
-(`SCDynamicStore` + `SCPreferences`). When the peer's IP falls on an
-interface that is **not** registered as a Network Service,
-avconferenced takes a cold-start path where the first encrypted video
-RTP packet from the peer takes ~5 s to arrive. The client's internal
-RTCP watchdog aborts at 3 strikes (~5 s) — ~125 ms before SRTP
-init completes — and the session is torn down before any video
-frame has been received.
+The bug lives at **Network.framework**, not SystemConfiguration.
 
-Evidence (from the failing attempt):
-- Audio RTCP round-trips in <200 ms on the cold attempt → the tunnel
-  itself is carrying traffic in both directions fine.
-- Video stream's `RTPTransport_ReinitializeStream` fires at
-  **5,238 ms** after stream init on cold, vs **136 ms** on warm.
-- `VCMediaStream checkRTCPPacketTimeoutAgainstTime: Last RTCP packet
-  receive time: nan` fires 4 times on video (audio is unaffected).
-- `mediaStreamError delegate called. errorType 3 errorCode -1` is
-  the user-facing abort.
+Log evidence captured during a failing attempt on the MacBook, with a
+fresh `hop-agent restart` and a fresh avconferenced:
 
-The differentiator between hopssh's utun (fails) and Tailscale's
-utun (works) is **not** the interface flags — both are identical
-`POINTOPOINT, no BROADCAST, no ether`. It is the SystemConfiguration
-registration. Tailscale's `NEPacketTunnelProvider` registers its
-utun as a full macOS Network Service; a plain `/dev/utun` opened by
-a root daemon without SC registration is not in `scutil --nwi`,
-and avconferenced's classifier falls through to the cold path.
+```
+symptomsd:  -[NWInterface initWithInterfaceName:]
+            nw_interface_create_with_name(utun11) failed
+            nw_interface_create_with_name(utun0) failed
 
-Verified empirically:
-- hopssh raw utun: **0 / 3** HP first-click success
-- ZeroTier feth: 2 / 3
-- Tailscale NetworkExtension: 3 / 3
-- hopssh utun + **manual scutil SC Service injection: 2 / 2** ✓
+avconferenced:  -[VCTransportSessionSocket
+                 initializeInterfaceTypeWithSocket:]:384
+                 Not setting unexpected transport type 0
 
-## Fix
+avconferenced:  state[... localInterfaceType=(null)
+                remoteInterfaceType=(null) ...]
 
-From the macOS hop-agent (root, running via LaunchDaemon), register
-a full Network Service entry for each enrolled network's utun via
-`SystemConfiguration.framework`. No NetworkExtension bundle,
-no developer entitlement, no feth driver — the public SC APIs are
-callable from a root daemon.
+avconferenced:  _RTPTransport_ReinitializeStream  (audio first)
+                checkRTCPPacketTimeoutAgainstTime: nan   (1st)
+                ...nan... (2nd) (3rd) (4th)
+                _RTPTransport_ReinitializeStream  (video, 5 s later)
+```
 
-## Minimum SCDynamicStore / SCPreferences keys (proven sufficient)
+avconferenced uses the **`nw_interface_*` family** from
+Network.framework to classify a socket's local interface type. For our
+userspace utun (opened via `AF_SYSTEM` + `UTUN_CONTROL_NAME`), that
+call returns `nil`. avconferenced logs `localInterfaceType=(null)` and
+falls through to a cold-start path where the first encrypted video
+RTP packet takes ~5 s to arrive — longer than the internal RTCP
+watchdog (4 strikes), which aborts the session before SRTP init
+completes.
 
-Per enrollment (one Service per network):
+### Why `nw_interface_create_with_name` fails for our utun
 
-| Key | Value |
-|---|---|
-| `Setup:/Network/Service/<UUID>` | `{ UserDefinedName: hopssh-<network-name> }` |
-| `Setup:/Network/Service/<UUID>/Interface` | `{ Type: Ethernet, DeviceName: <utunN>, Hardware: Ethernet, UserDefinedName: hopssh-<network-name> }` |
-| `Setup:/Network/Service/<UUID>/IPv4` | `{ ConfigMethod: Manual, Addresses: [<mesh-ip>], SubnetMasks: [<mask>], Router: <mesh-ip> }` |
-| `State:/Network/Service/<UUID>/IPv4` | `{ Addresses: [<mesh-ip>], DestAddresses: [<mesh-ip>], Router: <mesh-ip>, InterfaceName: <utunN>, ServerAddress: 127.0.0.1 }` |
-| `Setup:/Network/Global/IPv4.ServiceOrder` | append `<UUID>` (read-modify-write) |
+`ifconfig -v` reveals the kernel-level delta between Tailscale's utun
+(which works 3/3 for HP) and ours:
 
-Skipped vs Tailscale:
-- `Setup:/Network/Service/<UUID>/VPN` (NEProviderBundleIdentifier +
-  code-sign DesignatedRequirement) — we cannot match this without
-  an NE bundle, and the empirical test confirmed it is **not
-  required** for the HP fix.
-- `State:/Network/Service/<UUID>/DNS` — hopssh already does DNS via
-  `/etc/resolver/*`; not needed for HP.
-
-## Code changes
-
-All Darwin-only; no change on Linux or Windows.
-
-| File | Action | Notes |
+| field | Tailscale utun12 | hopssh utun (any) |
 |---|---|---|
-| `cmd/agent/scnetwork_darwin.go` | **NEW** | CGo against `SystemConfiguration.framework`. Exports `scRegister(name, iface, ipv4, mask string, uuid string) error` and `scUnregister(uuid string) error`. Handles: SCPreferences lock/unlock, SCDynamicStore connect, apply, commit, ServiceOrder read-modify-write. |
-| `cmd/agent/scnetwork_other.go` | **NEW** | Build-tag `!darwin`. `scRegister` / `scUnregister` no-op returning nil. |
-| `cmd/agent/enrollments.go` | **MODIFY** | Add `ScNetworkServiceUUID string` to enrollment struct. Generate via `uuid.New()` on first save; persist in `enrollments.json` so it's stable across agent restarts. |
-| `cmd/agent/instance.go` | **MODIFY** | In `meshInstance.close()`: after stopping Nebula, call `scUnregister(enr.ScNetworkServiceUUID)`. |
-| `cmd/agent/nebula.go` | **MODIFY** | After `kernelTunMeshService.Start()` and IP assignment: call `scRegister(name=enr.NetworkName, iface=inst.ifname, ipv4=enr.NodeIP, mask=enr.NetworkMask, uuid=enr.ScNetworkServiceUUID)`. |
-| `cmd/agent/renew.go` | **MODIFY** | In `reloadNebula` hot-restart path: `scUnregister` before closing old svc; `scRegister` with (potentially new) iface name after new svc starts. |
-| `cmd/agent/leave.go` | **MODIFY** | After agent service is stopped: call `scUnregister(uuid)` to clean up the persistent `Setup:` entries. |
+| `xflags` | `4010004<NOAUTONX, IS_VPN, INBAND_WAKE_PKT>` | `4000004<NOAUTONX, INBAND_WAKE_PKT>` — **no IS_VPN** |
+| Skywalk NetIf agent | registered | **absent** |
+| Skywalk FlowSwitch agent | registered | **absent** |
+| NetworkExtension VPN agent | registered | **absent** |
 
-## Lifecycle
+The `IS_VPN` extended flag and the three kernel interface agents are
+set automatically by `NEPacketTunnelProvider` during tunnel bring-up.
+They are NOT settable from a userspace root daemon:
 
-```
-startMeshInstance:
-  Nebula.Start → utun up → IP assigned → scRegister(name, iface, ip, mask, uuid)
+- `IFXF_IS_VPN` (0x00010000) requires the private `SIOCSIFXFLAGS`
+  ioctl, which is gated in the kernel by the
+  `com.apple.developer.networking.networkextension` entitlement.
+- Skywalk agent registration is a closed subsystem
+  ([newosxbook.com Darwin Networking chapter]) — no public API, no
+  private-but-callable API.
 
-reloadNebula (cert rotation hot-restart):
-  scUnregister(uuid) → close old svc → start new svc → scRegister(name, NEW iface, ip, mask, uuid)
+### Why the SC-registration approach doesn't help
 
-meshInstance.close / hop-agent leave:
-  stop Nebula → scUnregister(uuid)
-```
+avconferenced doesn't read `SCDynamicStore` Setup/State keys to
+classify interfaces. It calls Network.framework's `nw_interface_*`
+APIs, which read directly from networkd / kernel interface agent
+state. Writing SC keys (even perfectly matching Tailscale's live
+shape with `PrimaryRank: Never`, `ServiceIndex: 100`, etc.) has zero
+effect on `nw_interface_create_with_name`'s outcome.
 
-The `uuid` persists in `enrollments.json` so re-registration after
-an agent restart re-uses the same Service UUID — idempotent, no
-stale entries. `scRegister` should be idempotent too: if the Setup
-entry for `uuid` already exists, update values rather than insert.
+Three iterations were implemented and empirically failed:
 
-## Testing protocol
+1. **SCPreferences writes** (v0.10.3-dirty pass 1) — keys landed in
+   the prefs file but configd doesn't propagate services not in the
+   current location's Set; HP stayed broken.
+2. **SCDynamicStore direct writes** (pass 2) — replicated the manual
+   `scutil set` path; also writing `Setup:.../IPv4` with
+   `ConfigMethod: Manual + Router=<self-IP>` broke mesh routing
+   (configd reconfigured the utun as a /24 broadcast subnet).
+   Regression fixed by dropping the Setup IPv4 key; HP still broken.
+3. **Minimal keyset matching Tailscale's live shape verbatim**
+   (pass 3) — Service + Interface + top-level State + State IPv4 +
+   ServiceOrder all present. HP **identically** broken.
 
-Manual end-to-end on the Mac mini ↔ MacBook pair:
+The `SCNetworkInterfaceForceConfigurationRefresh()` public API was
+also tested as a Hail Mary — `SCNetworkInterfaceCopyAll()` doesn't
+return our utun, so there's no `SCNetworkInterfaceRef` to call
+refresh on.
 
-1. `make dev-deploy` to push binaries to both Macs.
-2. On MacBook: `sudo hop-agent restart`.
-3. Verify `scutil --nwi` shows the hopssh utun in the interface list
-   with `Router` set to the mesh IP.
-4. Click Connect in Screen Sharing to the peer's hopssh IP. Expect
-   HP first-click success (no error dialog). Repeat 3 times to
-   confirm stability.
-5. `hop-agent leave` a test enrollment; verify `scutil --nwi` no
-   longer shows that utun and all `Setup:/Network/Service/<UUID>`
-   entries are removed.
-6. Full multi-network case: enroll on two networks, restart agent,
-   verify both utuns appear in `scutil --nwi` with their respective
-   service UUIDs. Each independently fixable / leavable.
+### Why this is universal across userspace macOS VPNs
 
-Unit-testable pieces:
-- UUID generation / persistence round-trip in `enrollments.json`.
-- `scRegister` / `scUnregister` idempotency against a mocked SC
-  session.
+Every userspace VPN daemon that opens `/dev/utun` without NE faces
+the identical limitation:
 
-## Edge cases and risks
+| Project | Interface | HP first-click status |
+|---|---|---|
+| hopssh (this project) | /dev/utun | 0/3 (documented) |
+| wireguard-go | /dev/utun | 0/3 (inferred, same code path) |
+| Tunnelblick / OpenVPN | /dev/utun | 0/3 (inferred) |
+| strongSwan | /dev/utun | 0/3 (inferred) |
+| NetBird | /dev/utun | 0/3 (inferred) |
+| ZeroTier | **feth** (fake Ethernet, L2) | ~2/3 (architecture workaround) |
+| Tailscale | **NEPacketTunnelProvider** | 3/3 (NE bundle) |
 
-- **SCPreferences commit failures**: the framework can fail mid-
-  transaction (rare; usually SIP / permissions / disk errors). On
-  failure, log + continue — the agent must still boot and run
-  Nebula. A failed SC registration degrades HP first-click to the
-  known-broken state; everything else works.
-- **`reloadNebula` new interface name**: `utun10 → utun11` kind of
-  change. Update Setup's `Interface.DeviceName` and State's
-  `InterfaceName` in the atomic re-register. Test with a forced
-  cert-rotation path.
-- **Stale Setup entries from a crashed agent**: on startup, before
-  registering, scan `Setup:/Network/Service/*` for UUIDs owned by
-  us (presence of `UserDefinedName` starting with `hopssh-`) that
-  are no longer in any enrollment — remove them. This handles crash
-  recovery.
-- **Out-of-band user deletion**: user runs `sudo scutil` and removes
-  our entries. Next heartbeat / network-change tick in
-  `watchNetworkChanges` should re-register (add a lightweight "is
-  my state still in SC?" check on ticker).
-- **User reboots**: `State:` entries are wiped on reboot, `Setup:`
-  entries survive. On first startup after reboot, re-create State
-  and ensure the Setup entry + ServiceOrder are present; update if
-  iface name differs.
-- **Multi-network**: one Service + UUID per enrollment. `scRegister`
-  is called N times; `ServiceOrder` read-modify-write needs to be
-  atomic across concurrent registrations (mutex inside
-  `scnetwork_darwin.go`).
+## Realistic workaround options
 
-## Out of scope
+### A. User-facing mitigation (no code): retry after 10 seconds
 
-- IPv6 Service entry (nice-to-have; add after shipping the v1 fix).
-- `/VPN` Setup entry with `NEProviderBundleIdentifier` — requires a
-  System Extension bundle + Apple Developer ID. Deferred.
-- Linux and Windows — they do not exhibit this bug; their Nebula
-  setup is routed differently.
-- Migrating to NetworkExtension-based transport entirely. Proven
-  cheaper-fix-first; the NE path remains a future option.
+The ~10-second window where a retry succeeds is empirically observed
+but unexplained in any public docs. Possible causes: kernel interface
+enumeration latency, avconferenced's internal backoff timer, or
+configd notification propagation delay. **Document this as "known
+limitation, retry HP after 10 s"** in user-facing docs.
 
-## Effort estimate
+Cost: zero code. Works for all existing users. Ship today.
 
-**1 - 2 days** for the core Darwin implementation + deploy and
-verify on both Macs. No dependency on new Go modules; `SystemConfiguration.framework`
-is a standard macOS framework available via CGo.
+### B. `feth` interface via Nebula vendor patch (partial fix)
 
+ZeroTier uses `feth` (fake Ethernet pair) instead of utun and gets
+~2/3 HP success per the original empirical study. `feth` presents as
+a layer-2 Ethernet interface, which `nw_interface_create_with_name`
+accepts (it doesn't need the IS_VPN kernel flag because it classifies
+as `wired`).
 
+Effort:
+- Vendor patch on Nebula's `tun_darwin.go` to open `feth`
+  (`SIOCSIFCREATE2` with kind="feth") instead of utun
+- Handle layer-2 framing (Nebula operates at L3 — need to bridge)
+- Manage feth pair + assign MAC + routing
+- Roughly 200-400 lines; risk of subtle correctness bugs around
+  multicast, ARP, MTU
 
+Trade-off: gains HP first-click reliability; adds L2 complexity and
+Nebula vendor diff. Still not 3/3.
 
+### C. NEPacketTunnelProvider — the "right" fix (large effort)
 
+Ship a proper macOS GUI app bundle that contains an
+`NEPacketTunnelProvider` system extension. This is how Tailscale
+achieves 3/3 HP success.
 
+Requirements:
+- Apple Developer ID (annual cost; legal entity)
+- NE entitlement request from Apple (typically granted for VPN apps
+  on review)
+- Swift/ObjC container app + NE extension target
+- Code signing infrastructure + notarization
+- Major refactor: agent becomes an NE extension's packet handler
+  instead of a root LaunchDaemon daemon (IPC via XPC)
+- Months of work including Apple's review process
 
+Future strategic option, not a current session's scope.
 
+## Testing protocol (for future workaround attempts)
 
+If someone attempts option B or C, the verification protocol is:
 
+1. `sudo hop-agent restart` on the client Mac (fresh utun).
+2. Wait 10 s for tunnel warm-up.
+3. Connect via Screen Sharing → `<peer-mesh-IP>` with HP enabled.
+4. Expected with fix: first-click succeeds (no error dialog). Repeat
+   3 times to confirm stability.
+5. Compare against baseline: without fix, 0/3 on this machine +
+   network combination.
+6. Verify `ifconfig -v <iface>` shows `IS_VPN` in `xflags` OR (for
+   feth) `en-type` classification.
+7. Verify `sudo log show --last 2m --predicate 'process ==
+   "avconferenced"' | grep "transport type"` does NOT show `Not
+   setting unexpected transport type 0` during the connection
+   attempt.
 
+## References
 
-
-
-
-Implement the macOS HP Screen Sharing first-click fix per
-docs/macos-hp-screen-sharing-fix.md.
-
-Start by reading:
-- docs/macos-hp-screen-sharing-fix.md  (the plan itself)
-- CLAUDE.md                            (coding principles, Discovery Log)
-
-Before writing code, propose an implementation plan via ExitPlanMode.
-Call out exact file edits and any open questions about SCPreferences /
-SCDynamicStore CGo conventions.
-
-Implementation constraints:
-- Darwin-only (build tags: scnetwork_darwin.go + scnetwork_other.go).
-- CGo against SystemConfiguration.framework.
-- Reuse the parentCtx / stopWatcher / startWatcher lifecycle pattern
-  already in cmd/agent/instance.go + cmd/agent/renew.go from the
-  v0.10.1 goroutine-leak fix; scnetwork registration/unregistration
-  hooks into the same places.
-- Persist the Service UUID per enrollment in enrollments.json so
-  it's stable across agent restarts; enrollments.json.bak pattern
-  from v0.10.2 already in place.
-- Idempotent register: if a Setup entry with our UUID already exists,
-  update it in place rather than insert.
-- Atomic ServiceOrder update (read-modify-write under SCPreferences
-  lock).
-
-Verify end-to-end on the paired hosts per the plan's test protocol.
-Hosts are in .e2e-connections.md:
-  MacBook:  ssh -i ~/.ssh/id_ed25519 yavortenev@192.168.23.18
-  Mac mini: the current working dir host; mesh IP 10.42.1.7
-
-Deploy with `make dev-deploy`. Expect HP first-click to go from 0/3
-before the fix to ~3/3 after (matching Tailscale's NE baseline).
+- CLAUDE.md → Discovery Log → macOS Platform (2026-04-20 entry,
+  authoritative)
+- `apple-oss-distributions/xnu` bsd/sys/sockio_private.h
+  (SIOCGIFXFLAGS = `_IOWR('i', 206, struct ifreq)`; SIOCSIFXFLAGS
+  not present in public kernel source)
+- [newosxbook.com Darwin Networking chapter] (Skywalk subsystem)
+- [ZeroTier: How ZeroTier Eliminated Kernel Extensions on macOS]
+  (https://www.zerotier.com/news/how-zerotier-eliminated-kernel-extensions-on-macos/)
+- [Apple Developer Docs: NEPacketTunnelProvider]
+  (https://developer.apple.com/documentation/networkextension/nepackettunnelprovider)
