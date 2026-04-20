@@ -21,18 +21,32 @@ type PeerDetail struct {
 const maxPeersPerReport = 100
 
 // collectPeerState queries Nebula's hostmap and summarizes the agent's
-// current peers:
+// current peers, ONE entry per unique VPN address even when Nebula's
+// hostmap holds multiple HostInfo records for the same peer (which
+// happens during the transition from relay to direct: the old relay-
+// routed session lingers in the hostmap while the new direct session
+// is established, and Nebula's connection_manager prunes the stale
+// one ~90 s later).
 //
-//   - direct:  peer has a valid CurrentRemote AND no CurrentRelaysToMe
-//     (UDP direct / hole-punched P2P).
-//   - relayed: peer is reached via at least one relay (CurrentRelaysToMe
-//     non-empty). This is the lighthouse-as-relay path used when hole
-//     punching fails (symmetric NAT, CGNAT, restrictive firewalls).
-//   - peers:   per-peer detail, one entry per classified host above.
+// Classification per peer (after merging all HostInfos that share a
+// VpnAddr):
+//
+//   - direct:  ANY HostInfo for that peer has a valid CurrentRemote
+//     (UDP direct / hole-punched P2P). Direct wins over relay because
+//     Nebula prefers the direct path for actual data — the relay
+//     entry in this case is a soon-to-be-pruned ghost, not the
+//     active path.
+//
+//   - relayed: NO HostInfo has a valid CurrentRemote, but at least
+//     one has CurrentRelaysToMe non-empty (the lighthouse-as-relay
+//     path used when hole punching fails: symmetric NAT, CGNAT,
+//     restrictive firewalls).
+//
+//   - peers:   per-peer detail, one entry per classified peer.
 //     Capped at maxPeersPerReport.
 //
-// Peers with neither a valid CurrentRemote nor any relay are skipped —
-// stale hostmap entries where no connection is currently established.
+// Peers with neither a valid CurrentRemote nor any relay across all
+// HostInfo records are skipped — pure ghosts.
 //
 // ok is false when ctrl is nil (mesh not started, or agent starting
 // up) — callers omit peer fields from the heartbeat in that case so
@@ -43,7 +57,19 @@ func collectPeerState(ctrl *nebula.Control) (direct, relayed int, peers []PeerDe
 		return 0, 0, nil, false
 	}
 	hosts := ctrl.ListHostmapHosts(false)
-	peers = make([]PeerDetail, 0, len(hosts))
+
+	// Merge all HostInfos that share a VpnAddr, preferring the entry
+	// with a valid CurrentRemote. Iteration order from ListHostmapHosts
+	// is undefined (map range), so we MUST process all HostInfos for a
+	// peer before classifying — can't short-circuit on first hit.
+	type merged struct {
+		direct     bool           // true if any HostInfo has a valid CurrentRemote
+		hasRelay   bool           // true if any has CurrentRelaysToMe (informational)
+		remoteAddr string         // populated when direct (first valid CurrentRemote we saw)
+	}
+	byPeer := make(map[string]*merged, len(hosts))
+	order := make([]string, 0, len(hosts)) // preserve first-seen order for stable output
+
 	for _, h := range hosts {
 		var vpnAddr string
 		if len(h.VpnAddrs) > 0 {
@@ -52,17 +78,38 @@ func collectPeerState(ctrl *nebula.Control) (direct, relayed int, peers []PeerDe
 		if vpnAddr == "" {
 			continue
 		}
+		entry, exists := byPeer[vpnAddr]
+		if !exists {
+			entry = &merged{}
+			byPeer[vpnAddr] = entry
+			order = append(order, vpnAddr)
+		}
+		if h.CurrentRemote.IsValid() && !entry.direct {
+			entry.direct = true
+			entry.remoteAddr = h.CurrentRemote.String()
+		}
+		if len(h.CurrentRelaysToMe) > 0 {
+			entry.hasRelay = true
+		}
+	}
+
+	peers = make([]PeerDetail, 0, len(byPeer))
+	for _, vpnAddr := range order {
+		entry := byPeer[vpnAddr]
 		switch {
-		case len(h.CurrentRelaysToMe) > 0:
-			relayed++
-			peers = append(peers, PeerDetail{VpnAddr: vpnAddr, Direct: false})
-		case h.CurrentRemote.IsValid():
+		case entry.direct:
 			direct++
 			peers = append(peers, PeerDetail{
 				VpnAddr:    vpnAddr,
 				Direct:     true,
-				RemoteAddr: h.CurrentRemote.String(),
+				RemoteAddr: entry.remoteAddr,
 			})
+		case entry.hasRelay:
+			relayed++
+			peers = append(peers, PeerDetail{VpnAddr: vpnAddr, Direct: false})
+		default:
+			// Pure ghost — no remote address, no relay. Skip.
+			continue
 		}
 		if len(peers) >= maxPeersPerReport {
 			break
