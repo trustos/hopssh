@@ -480,11 +480,19 @@ func ensureP2PConfig(inst *meshInstance) {
 		cfg["pki"] = pki
 	}
 
-	// Respect whatever listen.port was assigned at enrollment time —
-	// primary enrollment uses nebulacfg.ListenPort, additional
-	// enrollments use 0 (OS-assigned) to avoid collisions. Just scrub
-	// oversized socket buffers that caused bufferbloat pre-v0.7.
+	// Listen port is per-enrollment (assigned at enroll time, persisted
+	// in Enrollment.ListenPort). Self-heal nebula.yaml if the on-disk
+	// listen.port has drifted (legacy enrollments used port 0 = random;
+	// the migrate step assigned a stable port and updated yaml, but a
+	// later config write or hand-edit could re-introduce drift).
 	listen := yamlMap(cfg, "listen")
+	if inst.enrollment != nil && inst.enrollment.ListenPort > 0 {
+		curPort, _ := listen["port"].(int)
+		if curPort != inst.enrollment.ListenPort {
+			listen["port"] = inst.enrollment.ListenPort
+			changed = true
+		}
+	}
 	if _, ok := listen["read_buffer"]; ok {
 		delete(listen, "read_buffer")
 		changed = true

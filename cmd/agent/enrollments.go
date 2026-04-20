@@ -25,7 +25,12 @@ type Enrollment struct {
 	TunMode       string    `json:"tunMode"`                 // "kernel" or "userspace"
 	CAFingerprint string    `json:"caFingerprint,omitempty"` // sha256 of ca.crt bytes (hex), used as fallback name
 	DNSDomain     string    `json:"dnsDomain,omitempty"`     // e.g. "home"; empty if the network has no mesh DNS
-	EnrolledAt    time.Time `json:"enrolledAt"`
+	// ListenPort is the per-enrollment Nebula UDP listen port. Each
+	// enrollment needs a unique port so multiple Nebula instances can
+	// coexist (4242, 4243, 4244, …). 0 means "not yet assigned" — the
+	// boot path migrates these to the next available port and persists.
+	ListenPort int       `json:"listenPort,omitempty"`
+	EnrolledAt time.Time `json:"enrolledAt"`
 }
 
 // enrollmentsFile is the registry filename inside configDir.
@@ -158,6 +163,55 @@ func (r *enrollmentRegistry) Len() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.enrollments)
+}
+
+// NextAvailableListenPort returns a port not currently used by any
+// enrollment in the registry, starting from base and scanning upward.
+// Used at enroll time to assign unique per-enrollment Nebula UDP ports
+// so multiple enrollments can coexist (the OS only lets one socket
+// bind a given port at a time).
+func (r *enrollmentRegistry) NextAvailableListenPort(base int) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.nextAvailableListenPortLocked(base)
+}
+
+func (r *enrollmentRegistry) nextAvailableListenPortLocked(base int) int {
+	used := make(map[int]bool, len(r.enrollments))
+	for _, e := range r.enrollments {
+		if e.ListenPort > 0 {
+			used[e.ListenPort] = true
+		}
+	}
+	for p := base; p < 65535; p++ {
+		if !used[p] {
+			return p
+		}
+	}
+	return 0 // shouldn't happen with realistic enrollment counts
+}
+
+// AssignMissingListenPorts walks the registry, assigns a unique port
+// (starting at base) to any enrollment missing one, and persists.
+// Returns the count of enrollments updated. Idempotent.
+func (r *enrollmentRegistry) AssignMissingListenPorts(base int) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	updated := 0
+	for _, e := range r.enrollments {
+		if e.ListenPort > 0 {
+			continue
+		}
+		e.ListenPort = r.nextAvailableListenPortLocked(base)
+		updated++
+	}
+	if updated == 0 {
+		return 0, nil
+	}
+	if err := r.saveLocked(); err != nil {
+		return 0, err
+	}
+	return updated, nil
 }
 
 // Get returns the enrollment with the given name, or nil.

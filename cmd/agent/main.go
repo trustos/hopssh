@@ -24,6 +24,7 @@ import (
 	"github.com/slackhq/nebula/cert"
 	"github.com/trustos/hopssh/internal/buildinfo"
 	"github.com/trustos/hopssh/internal/nebulacfg"
+	"gopkg.in/yaml.v3"
 
 	netpprof "net/http/pprof"
 )
@@ -196,6 +197,13 @@ func runServe(args []string) {
 			log.Fatalf("%v", err)
 		}
 	} else {
+		// Migrate legacy enrollments missing a per-enrollment listen
+		// port. Pre-v0.10.3 enrollments shared port 4242 (with the
+		// non-primary one falling back to a random ephemeral port at
+		// runtime, breaking NAT mappings on every restart). Assign
+		// each a unique deterministic port + persist + heal nebula.yaml.
+		migrateListenPorts(reg)
+
 		// The common case: start one Nebula instance per enrollment.
 		for _, e := range reg.List() {
 			inst := newMeshInstance(e)
@@ -223,6 +231,69 @@ func runServe(args []string) {
 	renewCancel()
 	servers.shutdownAll()
 	instances.closeAll()
+}
+
+// migrateListenPorts handles two related issues introduced before
+// per-enrollment listen ports landed:
+//
+//  1. Pre-existing enrollments lack the ListenPort field — assign each
+//     a unique port starting at nebulacfg.ListenPort + persist.
+//  2. The on-disk nebula.yaml may carry the legacy port (4242 for the
+//     primary, 0 for the rest) — overwrite listen.port to match the
+//     newly-assigned ListenPort.
+//
+// Without this fix, multiple enrollments race for the same UDP port
+// at boot and the loser falls back to a random ephemeral port (port 0)
+// — which breaks NAT-PMP mapping reuse, breaks lighthouse host updates
+// across restarts, and leaves the slow path unable to establish tunnels.
+func migrateListenPorts(reg *enrollmentRegistry) {
+	updated, err := reg.AssignMissingListenPorts(nebulacfg.ListenPort)
+	if err != nil {
+		log.Printf("[migrate] WARNING: failed to assign listen ports: %v", err)
+		return
+	}
+	if updated > 0 {
+		log.Printf("[migrate] assigned listen ports to %d legacy enrollment(s)", updated)
+	}
+	for _, e := range reg.List() {
+		if err := healListenPortYAML(e); err != nil {
+			log.Printf("[migrate %s] WARNING: heal listen.port: %v", e.Name, err)
+		}
+	}
+}
+
+// healListenPortYAML rewrites listen.port in this enrollment's
+// nebula.yaml if it doesn't match the persisted ListenPort.
+// Idempotent — no-op if already in sync.
+func healListenPortYAML(e *Enrollment) error {
+	cfgPath := filepath.Join(enrollmentDir(configDir, e.Name), "nebula.yaml")
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		return err
+	}
+	var cfg map[string]any
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return err
+	}
+	listen, _ := cfg["listen"].(map[string]any)
+	if listen == nil {
+		listen = map[string]any{"host": "0.0.0.0"}
+	}
+	curPort, _ := listen["port"].(int)
+	if curPort == e.ListenPort {
+		return nil
+	}
+	listen["port"] = e.ListenPort
+	cfg["listen"] = listen
+	out, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(cfgPath, out, 0644); err != nil {
+		return err
+	}
+	log.Printf("[migrate %s] nebula.yaml listen.port updated %d → %d", e.Name, curPort, e.ListenPort)
+	return nil
 }
 
 // startMeshInstance brings up Nebula + heartbeat + renewal + DNS for one
@@ -291,7 +362,11 @@ func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverS
 	}
 
 	if nebulacfg.PortmapEnabled {
-		inst.startPortmap(ctx, uint16(nebulacfg.ListenPort))
+		port := inst.enrollment.ListenPort
+		if port == 0 {
+			port = nebulacfg.ListenPort // fallback for pre-migration runs
+		}
+		inst.startPortmap(ctx, uint16(port))
 	}
 
 	if err := servers.startMeshListener(inst, authed, meshSvc, fmt.Sprintf(":%d", agentAPIPort)); err != nil {

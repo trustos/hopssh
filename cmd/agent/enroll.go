@@ -471,7 +471,8 @@ func enrollFromBundle(path, endpoint string) {
 	}
 	// Bundle path only supports first enrollment (checked above), so
 	// always use the primary listen port.
-	writeNebulaConfig(enrollDir, bundleConfig.ServerIP, serverHost, bundleConfig.LighthousePort, enrollTunMode, nebulacfg.ListenPort)
+	bundleListenPort := nebulacfg.ListenPort
+	writeNebulaConfig(enrollDir, bundleConfig.ServerIP, serverHost, bundleConfig.LighthousePort, enrollTunMode, bundleListenPort)
 	writeDNSConfig(enrollDir, bundleConfig.DNSDomain, serverHost, bundleConfig.LighthousePort)
 
 	if err := reg.Add(&Enrollment{
@@ -481,6 +482,7 @@ func enrollFromBundle(path, endpoint string) {
 		TunMode:       enrollTunMode,
 		CAFingerprint: fingerprint,
 		DNSDomain:     bundleConfig.DNSDomain,
+		ListenPort:    bundleListenPort,
 		EnrolledAt:    time.Now().UTC(),
 	}); err != nil {
 		log.Fatalf("Register enrollment: %v", err)
@@ -542,13 +544,11 @@ func installCerts(er *enrollResponse, endpoint string) {
 	if serverHost == "" {
 		serverHost = extractHost(endpoint)
 	}
-	// First enrollment keeps the fixed Nebula listen port for NAT
-	// mapping stability; additional enrollments use port 0 (OS-assigned)
-	// since we can't bind two instances to the same UDP port.
-	listenPort := nebulacfg.ListenPort
-	if reg.Len() > 0 {
-		listenPort = 0
-	}
+	// Each enrollment gets a unique, deterministic Nebula UDP listen
+	// port (4242, 4243, 4244, ...) so multiple enrollments can coexist
+	// AND survive restarts with stable NAT mappings (port 0 = random,
+	// which breaks portmap and CGNAT outbound flow caching).
+	listenPort := reg.NextAvailableListenPort(nebulacfg.ListenPort)
 	writeNebulaConfig(enrollDir, er.ServerIP, serverHost, er.LighthousePort, enrollTunMode, listenPort)
 	writeDNSConfig(enrollDir, er.DNSDomain, serverHost, er.LighthousePort)
 
@@ -559,6 +559,7 @@ func installCerts(er *enrollResponse, endpoint string) {
 		TunMode:       enrollTunMode,
 		CAFingerprint: fingerprint,
 		DNSDomain:     er.DNSDomain,
+		ListenPort:    listenPort,
 		EnrolledAt:    time.Now().UTC(),
 	}); err != nil {
 		log.Fatalf("Register enrollment: %v", err)
