@@ -1,9 +1,16 @@
-# Binaries
-hop-agent
-hop-server
-agent
+# Binaries (anchored — bare `agent` / `server` would also match the
+# cmd/agent/ and cmd/server/ source directories and silently drop any
+# newly-added file under them).
+/hop-agent
+/hop-server
+/agent
+/server
 spike/quic/quic-spike
 spike/quic/quic-spike-arm64
+spike/relay-vs-tailscale-evidence/tools/tcp-rtt-probe/tcp-rtt-probe
+spike/relay-vs-tailscale-evidence/0*-*.log
+spike/relay-vs-tailscale-evidence/0*-*.pcap
+spike/relay-vs-tailscale-evidence/0*-*.mp4
 *.exe
 
 # Vendor (generated via `make vendor` — includes patched dependencies)
@@ -34,7 +41,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
-server
 
 # E2E-session reference (host connection details — not secrets,
 # but session-scoped and machine-specific so never committed).
