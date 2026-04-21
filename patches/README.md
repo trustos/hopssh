@@ -17,6 +17,8 @@ Each patch is numbered for ordering; they apply cleanly in sequence.
 | 08 | `conn-flush-interface.patch` | Adds `Flush() error` to `udp.Conn` interface. Clean API extension; platforms without batch support implement it as a no-op. | API |
 | 09 | `priority-queue-darwin.patch` | 2-lane control/data priority queue in the `sendmsg_x` send path. Control packets (handshakes, lighthouse, test, close) jump ahead of data packets; data lane preserves within-flow FIFO ordering. | Perf (Darwin) |
 | 10 | `priority-queue-tests.patch` | Tests for patch 09. | Test |
+| 11 | `portmap-advertise-addr.patch` | Lets `internal/portmap/` inject the public `IP:port` from NAT-PMP/UPnP/PCP into the lighthouse's advertise_addrs set at runtime. Enables direct P2P across asymmetric carrier NAT (home router + cellular peer). | Feature (NAT) |
+| 12 | `pipeline-listenin-darwin.patch` | Splits `listenIn` into a reader goroutine (`recvmsg_x` on the TUN fd) and a worker-flusher goroutine (`consumeInsidePacket` + `sendmsg_x`), linked by a 2-slot channel pipeline. Overlaps the two blocking syscalls — profile showed 71% of CPU was in `Syscall6`. 2.7× WiFi LAN downlink improvement (137 → 343 Mb/s), now at Tailscale parity. | Perf (Darwin) |
 
 ## Upstreamable patches
 
@@ -58,4 +60,4 @@ priority story.
 
 | # | File | Why dropped |
 |---|---|---|
-| 11 | `sndbuf-env-knob.patch` | `HOPSSH_UDP_SNDBUF` env var for overriding macOS `SO_SNDBUF`. Tested 4KB → 512KB: all sizes produce identical p50/p95/p99 latency. The knob was never useful, defaulted off, and documented as "don't use this." Dropped to reduce maintenance surface. |
+| — | `sndbuf-env-knob.patch` | `HOPSSH_UDP_SNDBUF` env var for overriding macOS `SO_SNDBUF`. Tested 4KB → 512KB: all sizes produce identical p50/p95/p99 latency. The knob was never useful, defaulted off, and documented as "don't use this." Dropped to reduce maintenance surface. (The `11` slot is now used by `portmap-advertise-addr.patch`.) |

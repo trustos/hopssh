@@ -53,6 +53,15 @@ Tunnel overhead: 70% throughput reduction, +5.6ms latency. The throughput gap is
 
 **Competitive position:** 217 Mbps is 2-4x what ZeroTier users typically report (50-100 Mbps). Sufficient for all selfhoster use cases (SSH, web UIs, Jellyfin, NAS, Screen Sharing). The remaining gap to raw LAN is a macOS kernel limitation (no sendmmsg/recvmmsg) — not fixable in userspace.
 
+**WiFi LAN pipelined listenIn — Tailscale parity (v0.10.10, 2026-04-21):** Profile on the single-goroutine batch path from patch 07 showed 71% of CPU was inside `Syscall6` (sendmsg_x dominated the loop). Splitting `listenIn` into a reader goroutine (blocks in `recvmsg_x`) and a worker-flusher goroutine (processes + blocks in `sendmsg_x`) with channel-carried double-buffered slots lets those two blocking syscalls overlap. Patch 12 added `inBatch`, `listenInWorker`, and a 2-slot pipeline to `vendor/github.com/slackhq/nebula/interface.go`. Same iperf3 harness (Mac mini ↔ MacBook on home WiFi, 4 streams, direct-P2P verified):
+
+| Direction | v0.10.9 (single-goroutine) | v0.10.10 (pipelined) | Tailscale |
+|---|---|---|---|
+| Downlink (Mac mini ← MBP) | 126–137 Mb/s | **343 Mb/s** | 346–411 Mb/s |
+| Uplink (Mac mini → MBP) | 172 Mb/s | 174 Mb/s | 199 Mb/s |
+
+2.7× downlink improvement, at Tailscale parity. Uplink unchanged (was already near parity; the remaining delta is on the inbound `listenOut` path, not yet pipelined). No NEPacketTunnelProvider required — this is all raw userspace utun. No regressions: cellular DL stays at 49 Mb/s (MTU 1420), Screen Sharing HP still works with the retry-once pattern, direct-P2P RTT still 4–5 ms.
+
 ### CPU Profile Under Screen Sharing Load (30s, pprof)
 
 | CPU% | Function | Category |

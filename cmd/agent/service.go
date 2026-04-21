@@ -47,6 +47,8 @@ const agentLaunchdPlist = `<?xml version="1.0" encoding="UTF-8"?>
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ExitTimeOut</key>
+  <integer>30</integer>
   <key>StandardOutPath</key>
   <string>/var/log/hop-agent.log</string>
   <key>StandardErrorPath</key>
@@ -180,6 +182,8 @@ func installAgentLaunchdUser() {
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>ExitTimeOut</key>
+  <integer>30</integer>
   <key>StandardOutPath</key>
   <string>%s</string>
   <key>StandardErrorPath</key>

@@ -1,0 +1,161 @@
+--- a/github.com/slackhq/nebula/interface.go	2026-04-21 02:27:39
++++ b/github.com/slackhq/nebula/interface.go	2026-04-21 02:28:06
+@@ -295,64 +295,125 @@
+ 
+ const listenInBatchSize = 32
+ 
+-func (f *Interface) listenIn(reader io.ReadWriteCloser, i int) {
++// inBatch is one slot of pre-allocated packet buffers passed between
++// the reader and worker goroutines via channels. The slot is owned
++// by exactly one goroutine at any moment; ownership is transferred
++// over channels (never mutated under shared access).
++type inBatch struct {
++	packets [][]byte
++	n       int // number of valid packets in this batch (0..len(packets))
++}
++
++// listenInWorker drains batches from inflight, processes each packet
++// through consumeInsidePacket, then performs a single Flush() on the
++// UDP writer. Returns processed slots to the free channel so the
++// reader can refill them.
++//
++// Pipeline (hopssh patch 12 — split from monolithic listenIn):
++//
++//   reader goroutine:
++//       <-free → ReadBatch(slot) (blocks in recvmsg_x) → inflight<-slot → loop
++//   worker goroutine:
++//       <-inflight → process + queue UDP writes → Flush() (blocks in
++//       sendmsg_x) → free<-slot → loop
++//
++// While reader is blocked in recvmsg_x, worker can be in sendmsg_x or
++// processing the previous batch. Profile data showed 71% of CPU was
++// inside Syscall6 (sendmsg_x dominates); this overlap is the win.
++func (f *Interface) listenInWorker(inflight, free chan *inBatch, i int) {
+ 	runtime.LockOSThread()
+ 
+-	packet := make([]byte, mtu)
+ 	out := make([]byte, mtu)
+ 	fwPacket := &firewall.Packet{}
+ 	nb := make([]byte, 12, 12)
+-
+ 	conntrackCache := firewall.NewConntrackCacheTicker(f.conntrackCacheTimeout)
+ 
+-	br, useBatch := reader.(batchReader)
+-	var packets [][]byte
+-	if useBatch {
+-		packets = make([][]byte, listenInBatchSize)
+-		for j := range packets {
+-			packets[j] = make([]byte, mtu)
++	for batch := range inflight {
++		for j := 0; j < batch.n; j++ {
++			f.consumeInsidePacket(batch.packets[j], fwPacket, nb, out, i, conntrackCache.Get(f.l))
+ 		}
++		// Flush queued UDP sends from this batch in one sendmsg_x syscall.
++		if err := f.writers[i].Flush(); err != nil {
++			f.l.WithError(err).Debug("Flush failed")
++		}
++		// Return slot to reader for refill.
++		free <- batch
+ 	}
++}
+ 
+-	for {
+-		if useBatch {
+-			// Reset slices to full capacity so ReadBatch can resize them.
+-			for j := range packets {
+-				packets[j] = packets[j][:cap(packets[j])]
+-			}
++func (f *Interface) listenIn(reader io.ReadWriteCloser, i int) {
++	runtime.LockOSThread()
+ 
+-			n, err := br.ReadBatch(packets)
++	br, useBatch := reader.(batchReader)
++
++	// Non-batch path (kernel TUN, FreeBSD, etc.) — keep the original
++	// single-goroutine flow. The pipeline below is darwin-batch-only
++	// because that's where the patch-09 profile showed Syscall6 = 71%.
++	if !useBatch {
++		packet := make([]byte, mtu)
++		out := make([]byte, mtu)
++		fwPacket := &firewall.Packet{}
++		nb := make([]byte, 12, 12)
++		conntrackCache := firewall.NewConntrackCacheTicker(f.conntrackCacheTimeout)
++		for {
++			n, err := reader.Read(packet)
+ 			if err != nil {
+ 				if (errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, io.EOF)) && f.closed.Load() {
+ 					return
+ 				}
+-				// EAGAIN from raw recvmsg_x (shouldn't happen since first read is
+-				// blocking via os.File, but guard anyway): just retry.
+-				if errors.Is(err, syscall.EAGAIN) {
+-					continue
+-				}
+-				f.l.WithError(err).Error("Error while reading outbound packet batch")
++				f.l.WithError(err).Error("Error while reading outbound packet")
+ 				os.Exit(2)
+ 			}
+-			for j := 0; j < n; j++ {
+-				f.consumeInsidePacket(packets[j], fwPacket, nb, out, i, conntrackCache.Get(f.l))
+-			}
+-			// Flush queued UDP sends from this batch in one sendmsg_x syscall.
+-			if err := f.writers[i].Flush(); err != nil {
+-				f.l.WithError(err).Debug("Flush failed")
+-			}
+-			continue
++			f.consumeInsidePacket(packet[:n], fwPacket, nb, out, i, conntrackCache.Get(f.l))
+ 		}
++	}
+ 
+-		n, err := reader.Read(packet)
++	// Pipeline path: 2 buffered slots so reader can fill the next slot
++	// while the worker is processing the current one. Both channels are
++	// sized to hold all slots at once so the init loop below can push
++	// without blocking (no one is reading yet). At steady state, there
++	// are always N slots split between the two channels — if worker is
++	// blocked on Flush, reader is blocked waiting for free slot, which
++	// is the intended back-pressure.
++	const numSlots = 2
++	inflight := make(chan *inBatch, numSlots)
++	free := make(chan *inBatch, numSlots)
++
++	// Pre-allocate all slots, hand them to "free" so reader can grab
++	// any to start.
++	for k := 0; k < numSlots; k++ {
++		slot := &inBatch{packets: make([][]byte, listenInBatchSize)}
++		for j := range slot.packets {
++			slot.packets[j] = make([]byte, mtu)
++		}
++		free <- slot
++	}
++
++	go f.listenInWorker(inflight, free, i)
++
++	for {
++		batch := <-free
++		// Reset slices to full capacity so ReadBatch can resize them.
++		for j := range batch.packets {
++			batch.packets[j] = batch.packets[j][:cap(batch.packets[j])]
++		}
++
++		n, err := br.ReadBatch(batch.packets)
+ 		if err != nil {
+ 			if (errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, io.EOF)) && f.closed.Load() {
++				close(inflight)
+ 				return
+ 			}
+-			f.l.WithError(err).Error("Error while reading outbound packet")
++			if errors.Is(err, syscall.EAGAIN) {
++				// Return slot, retry.
++				free <- batch
++				continue
++			}
++			f.l.WithError(err).Error("Error while reading outbound packet batch")
+ 			os.Exit(2)
+ 		}
+-		f.consumeInsidePacket(packet[:n], fwPacket, nb, out, i, conntrackCache.Get(f.l))
++		batch.n = n
++		inflight <- batch
+ 	}
+ }
+ 
