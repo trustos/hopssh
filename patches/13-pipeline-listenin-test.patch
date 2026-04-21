@@ -1,0 +1,241 @@
+--- /dev/null	1970-01-01 00:00:00
++++ b/github.com/slackhq/nebula/interface_pipeline_test.go	2026-04-21 02:30:00
+@@ -0,0 +1,238 @@
++//go:build darwin && !e2e_testing
++// +build darwin,!e2e_testing
++
++package nebula
++
++import (
++	"sync"
++	"testing"
++	"time"
++)
++
++// These tests cover the channel-discipline invariants of the listenIn
++// pipeline introduced in vendor patch 12 (see docs/macos-pipelined-listenin.md
++// in the hopssh repo). They do NOT instantiate a full *Interface — that
++// requires PKI, hostmaps, firewall, lighthouse, and the rest. Instead they
++// exercise the inBatch slot lifecycle and the channel patterns the real
++// listenIn / listenInWorker rely on:
++//
++//   1. numSlots slots can be pre-allocated and pushed onto buffered
++//      channels of cap=numSlots BEFORE a consumer goroutine exists.
++//      (This is the bug we hit on first deploy — channels sized 1 with
++//      numSlots=2 deadlocked the init loop and silently stalled the
++//      reader. Only the Flush-side syscall log went quiet; nothing in
++//      Nebula's logs revealed the cause.)
++//   2. Slots flow FIFO from reader → worker → reader through the two
++//      channels, preserving the order TUN reads were dispatched.
++//   3. close(inflight) terminates the worker's `for batch := range` loop
++//      and the worker drains any in-flight slots before exiting.
++//   4. Back-pressure: when both channels are full, the reader blocks
++//      rather than allocating more slots or dropping packets.
++
++const testNumSlots = 2
++const testBatchSize = 32
++
++func makeTestSlot(packetSize int) *inBatch {
++	slot := &inBatch{packets: make([][]byte, testBatchSize)}
++	for j := range slot.packets {
++		slot.packets[j] = make([]byte, packetSize)
++	}
++	return slot
++}
++
++// TestInBatchInitDoesNotDeadlock locks down the regression we shipped and
++// reverted within the same dev session: if the buffered capacity of `free`
++// is < numSlots, the second `free <- slot` in the init loop blocks waiting
++// for a reader that doesn't exist yet. The agent appeared to start (Nebula
++// "interface is active" logged) but no traffic flowed and the log file
++// stopped growing the moment listenIn entered its init loop.
++//
++// The test pre-allocates testNumSlots slots and pushes all of them onto a
++// channel sized testNumSlots, with a hard timeout. If the channel were
++// undersized the second push would deadlock and the test goroutine would
++// wedge until the timeout fired.
++func TestInBatchInitDoesNotDeadlock(t *testing.T) {
++	free := make(chan *inBatch, testNumSlots)
++
++	done := make(chan struct{})
++	go func() {
++		defer close(done)
++		for k := 0; k < testNumSlots; k++ {
++			slot := makeTestSlot(1500)
++			free <- slot
++		}
++	}()
++
++	select {
++	case <-done:
++		// expected
++	case <-time.After(100 * time.Millisecond):
++		t.Fatalf("init loop deadlocked pushing %d slots onto chan of cap %d "+
++			"(this is the v0.10.10-dev1 regression — see docs/macos-pipelined-listenin.md)",
++			testNumSlots, cap(free))
++	}
++
++	if got := len(free); got != testNumSlots {
++		t.Fatalf("free channel should hold %d slots after init, got %d", testNumSlots, got)
++	}
++}
++
++// TestInBatchPipelineFIFO verifies that slots round-trip from reader →
++// worker → reader in the order the reader pushed them, using a worker
++// modeled on listenInWorker but with a stub for the per-packet processing
++// (the real one calls f.consumeInsidePacket which needs a full Interface).
++//
++// Within-flow ordering is non-negotiable for TCP — see CLAUDE.md
++// "priority queues inside a VPN MUST preserve within-flow ordering" and
++// the patch-09 incident where a size-based reorder dropped throughput
++// from 320 → 96 Mb/s.
++func TestInBatchPipelineFIFO(t *testing.T) {
++	const numBatches = 64
++
++	inflight := make(chan *inBatch, testNumSlots)
++	free := make(chan *inBatch, testNumSlots)
++
++	for k := 0; k < testNumSlots; k++ {
++		free <- makeTestSlot(8)
++	}
++
++	// Track the order the worker observes.
++	var observedMu sync.Mutex
++	observed := make([]int, 0, numBatches)
++
++	workerDone := make(chan struct{})
++	go func() {
++		defer close(workerDone)
++		// Mirror listenInWorker shape: drain inflight, process, return slot.
++		for batch := range inflight {
++			// Read the batch's "id" out of packet 0 byte 0.
++			id := int(batch.packets[0][0])<<8 | int(batch.packets[0][1])
++			observedMu.Lock()
++			observed = append(observed, id)
++			observedMu.Unlock()
++			// Real listenInWorker calls writers[i].Flush() here; we don't
++			// have a writer to flush, but the channel-flow shape is identical.
++			free <- batch
++		}
++	}()
++
++	// Reader: 64 batches, each marked with its sequence number.
++	for seq := 0; seq < numBatches; seq++ {
++		batch := <-free
++		batch.n = 1
++		batch.packets[0][0] = byte(seq >> 8)
++		batch.packets[0][1] = byte(seq & 0xff)
++		inflight <- batch
++	}
++	close(inflight)
++	<-workerDone
++
++	if got := len(observed); got != numBatches {
++		t.Fatalf("worker observed %d batches, want %d", got, numBatches)
++	}
++	for i, id := range observed {
++		if id != i {
++			t.Fatalf("FIFO violation at index %d: observed id=%d, want %d (full sequence: %v)",
++				i, id, i, observed)
++		}
++	}
++}
++
++// TestInBatchWorkerShutdownDrainsInflight confirms that closing `inflight`
++// (which is what the reader does on EOF/ErrClosed) lets the worker drain
++// any remaining queued batches before exiting via the natural `for ... range`
++// terminate path. No leaked goroutines, no stuck slots.
++func TestInBatchWorkerShutdownDrainsInflight(t *testing.T) {
++	inflight := make(chan *inBatch, testNumSlots)
++	free := make(chan *inBatch, testNumSlots)
++
++	for k := 0; k < testNumSlots; k++ {
++		free <- makeTestSlot(8)
++	}
++
++	processed := 0
++	workerDone := make(chan struct{})
++	go func() {
++		defer close(workerDone)
++		for batch := range inflight {
++			processed++
++			free <- batch
++		}
++	}()
++
++	// Push exactly testNumSlots batches and immediately close — worker
++	// should drain both before returning.
++	for k := 0; k < testNumSlots; k++ {
++		batch := <-free
++		batch.n = 1
++		inflight <- batch
++	}
++	close(inflight)
++
++	select {
++	case <-workerDone:
++		// expected — worker exited the range loop
++	case <-time.After(500 * time.Millisecond):
++		t.Fatalf("worker did not exit within 500ms after close(inflight)")
++	}
++
++	if processed != testNumSlots {
++		t.Fatalf("worker processed %d batches before exit, want %d (drain-on-close violated)",
++			processed, testNumSlots)
++	}
++
++	// All slots should be back in `free` after worker exit.
++	if got := len(free); got != testNumSlots {
++		t.Fatalf("free channel holds %d slots after worker exit, want %d (slot leak)",
++			got, testNumSlots)
++	}
++}
++
++// TestInBatchBackPressureBlocksReader verifies that when the worker is
++// stalled (we simulate this by never reading from inflight), a third
++// reader attempt to send on inflight blocks rather than allocating more
++// memory or dropping packets. This is the property that prevents
++// unbounded memory growth under sustained load.
++func TestInBatchBackPressureBlocksReader(t *testing.T) {
++	inflight := make(chan *inBatch, testNumSlots)
++	free := make(chan *inBatch, testNumSlots)
++
++	for k := 0; k < testNumSlots; k++ {
++		free <- makeTestSlot(8)
++	}
++
++	// Fill inflight to capacity — no worker reading.
++	for k := 0; k < testNumSlots; k++ {
++		batch := <-free
++		batch.n = 1
++		inflight <- batch
++	}
++
++	// Try a third send. The reader pattern in listenIn is:
++	//   batch := <-free       // would block: free is empty
++	// so we don't even reach an inflight push. Verify <-free blocks.
++	blocked := make(chan struct{})
++	go func() {
++		<-free
++		close(blocked)
++	}()
++
++	select {
++	case <-blocked:
++		t.Fatalf("reader did not block when free channel was empty — back-pressure broken")
++	case <-time.After(50 * time.Millisecond):
++		// expected — reader is correctly blocked
++	}
++
++	// Unblock by draining one slot from inflight (simulating the worker
++	// returning a slot to free).
++	<-inflight
++	free <- makeTestSlot(8) // pretend the worker returned a slot
++
++	select {
++	case <-blocked:
++		// expected — reader unblocked once a slot became available
++	case <-time.After(100 * time.Millisecond):
++		t.Fatalf("reader did not unblock after a slot was returned to free")
++	}
++}

@@ -473,12 +473,19 @@ See [roadmap.md](roadmap.md) for detailed scaling thresholds.
 
 ---
 
-## Nebula Vendor Patch
+## Nebula Vendor Patches
 
-We apply a 1-line patch to `vendor/github.com/slackhq/nebula/interface.go` to fix `os.Exit(2)` on
-service shutdown (issue [#1031](https://github.com/slackhq/nebula/issues/1031)). The fix adds
-`io.ErrClosedPipe` to the error guard so userspace Nebula instances close gracefully.
+We maintain a numbered series of patches on top of `slackhq/nebula`, applied
+in order by `make patch-vendor` (called automatically by `make vendor`). The
+canonical inventory lives in [`patches/README.md`](../patches/README.md);
+this section just summarizes the architectural shape.
 
-- **Patch**: `patches/nebula-1031-graceful-shutdown.patch`
-- **Apply**: `make vendor` (automatic)
-- **Monitor**: `scripts/check-nebula-patch.sh` (checks if upstream PR [#1375](https://github.com/slackhq/nebula/pull/1375) has merged)
+- **Bug fixes (01, 02)** — `os.Exit(2)` on userspace shutdown ([#1031](https://github.com/slackhq/nebula/issues/1031), upstream PR [#1375](https://github.com/slackhq/nebula/pull/1375)) and a nil-pointer panic in the handshake test-reply path. Upstreamable.
+- **Allocation hygiene (03)** — caches the Darwin TUN read buffer (~9 KB/packet allocation eliminated).
+- **Darwin batch syscalls (04, 06, 07, 08, 12)** — `sendmsg_x` / `recvmsg_x` for UDP and the utun fd, glue to drive them from `listenIn`, and a clean `Flush()` extension to the `udp.Conn` interface. Patch 12 splits `listenIn` into a 2-goroutine pipeline (reader + worker-flusher) that overlaps the two blocking syscalls — see [`docs/macos-pipelined-listenin.md`](macos-pipelined-listenin.md) for the full rationale, profile, and benchmark.
+- **Priority queue (09, 10)** — 2-lane control/data queue in the `sendmsg_x` send path so handshakes/lighthouse traffic can preempt bulk data without reordering within a single TCP flow.
+- **NAT-PMP advertise (11)** — runtime injection of the public `IP:port` from `internal/portmap/` into the lighthouse's `advertise_addrs`, enabling direct P2P across asymmetric carrier NAT.
+
+- **Apply**: `make vendor` (automatic on first checkout) or `make patch-vendor` (re-apply after re-vendoring).
+- **Monitor**: `scripts/check-nebula-patch.sh` watches upstream for the bug-fix PRs landing.
+- **Test patches (05, 10)** ship with their corresponding feature patches and run via the standard `go test ./vendor/...` path on Darwin.
