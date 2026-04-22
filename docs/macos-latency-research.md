@@ -230,3 +230,187 @@ to Tailscale. The remaining ~90% is the NE architecture, and the
 right way to recover that is to ship our own NE bundle when the iOS
 client work begins. For non-NE userspace utun, hopssh is already at
 or near the best-case latency that's achievable.
+
+---
+
+# Final research pass — is there ANY way to close the residual gap?
+
+Date: 2026-04-23. Two parallel deep-research passes (one on Apple
+private APIs / non-Go techniques, one on Go runtime internals + Go
+1.25/1.26 netpoller). Question: now that we've shipped batched
+syscalls + 2-goroutine pipelines + QOS_CLASS_USER_INTERACTIVE and
+sit at 24.5 ms vs Tailscale's 16 ms, **is there any path to close
+the remaining ~8 ms in raw userspace utun?**
+
+## Honest verdict
+
+**No, not fully — and probably not even half of it — without
+NEPacketTunnelProvider, without burning 100 % of one CPU core
+continuously, or without taking entitlement risks Apple actively
+discourages.**
+
+The structural cost is the round-trip per packet:
+`recvmsg_x` returns → kernel→userspace transition (~1–2 µs) →
+Go netpoller `kevent` returns → `findRunnable` picks goroutine →
+goroutine schedules onto P → packet processes → `sendmsg_x` queue
+→ userspace→kernel transition. Tailscale's NE bundle gets a
+shared-memory ring + Mach-port wakeup that collapses that round-trip
+to roughly one in-process function call. Public benchmarks: every
+non-NE userspace VPN on macOS that's been measured (wireguard-go,
+NetBird-as-userspace, Mullvad-as-daemon, Cloudflare WARP non-NE) sits
+in the 25–40 ms RTT band. Tailscale's NE 16 ms is the outlier.
+
+## What's left worth trying — ordered by realism
+
+### Tier A — small but real, low risk (combined ceiling: ~1–2 ms)
+
+**1. Lock-free SPSC ring buffer to replace channels in the
+listenIn / listenOut pipelines.**
+- Mechanism: each `chan send` from the reader to the worker
+  currently goes `chan.go::chansend` → `proc.go::goready` →
+  `proc.go::wakep` → `os_darwin.go::semawakeup` → `pthread_cond_signal`.
+  The 26 % of CPU we measured in `pthread_cond_wait`/`signal` is
+  largely this path. Replacing the 2-slot buffered channel with a
+  Single-Producer-Single-Consumer atomic ring buffer eliminates
+  the cond signal: the reader does an atomic store + memory barrier;
+  the worker spins briefly on an atomic load before parking via a
+  bounded sleep.
+- Estimated gain: per the Go-runtime research agent's calculation,
+  ~2 µs → ~400 ns per slot handoff, × 4 handoffs per RTT = ~6.4 µs
+  saved. That's **0.5–1.0 ms across the full RTT including all the
+  cache + scheduler effects** if the agent's order-of-magnitude is
+  right. Within WiFi noise; would need 500+ ping samples to confirm
+  statistically.
+- Effort: medium. SPSC ring + bounded park-wait + back-pressure
+  semantics matching what we have today. Can't be a vendor patch
+  cleanly because it changes the channel API surface in
+  `vendor/.../udp/udp_darwin.go` (pipeline) and
+  `vendor/.../interface.go` (pipeline).
+- Risk: low IF we keep the bounded sleep so worker doesn't spin
+  forever when there's no traffic.
+
+**2. `GODEBUG=netpollWaitLatency=N` knob.**
+- Reality check: the Go-runtime research agent searched the Go 1.25
+  AND 1.26 source — **this knob doesn't exist.** I had it in the
+  earlier doc as a TODO; that was hopeful. There's no public Go
+  runtime knob to tune the netpoller wakeup coalescing window. Cross
+  it off the list.
+
+**3. Apply QoS class on the `udp.StdConn` send-side mutex contender
+threads too.**
+- The CPU profile showed 11.9 % in `pthread_cond_signal` paired
+  with 14.3 % in `pthread_cond_wait`. The QoS we already shipped
+  applies to the four LockOSThread'd packet goroutines but the
+  goroutines that contend on `sendMu` (handshakeManager, lighthouse,
+  cert-renewer when they call `WriteTo`) inherit the process default
+  QoS. Bumping THEM might shave a fraction off the wake-the-flusher
+  path. Estimated gain: <0.5 ms; speculative.
+- Effort: trivial — same `applyOSThreadHints()` call from a few
+  more sites if they call `runtime.LockOSThread`. Most don't.
+  Probably not worth pursuing on its own.
+
+### Tier B — speculative or high-risk, not recommended
+
+**4. `THREAD_TIME_CONSTRAINT_POLICY` (audio-thread-class real-time
+scheduling).**
+- Mechanism: `thread_policy_set(thread, THREAD_TIME_CONSTRAINT_POLICY,
+  ...)` puts the thread on the same scheduling tier as audio render
+  threads. Wake latency drops from "scheduler tail" to "microsecond
+  guaranteed."
+- Estimated gain: 1–3 ms if it works, but Apple explicitly says this
+  is for workloads with HARD real-time deadlines (audio frame
+  rendering, USB isochronous transfer). VPN packets have soft
+  deadlines. Misuse can degrade unrelated audio/video workloads under
+  load.
+- Effort: low (4 lines of CGO).
+- Risk: HIGH per Apple's own guidance + zero precedent in any
+  documented userspace VPN.
+- Verdict: Don't ship default-on. We could expose it as `HOPSSH_QOS=realtime`
+  for advanced users who explicitly want it — same opt-in pattern as
+  the existing env var.
+
+**5. `SIGIO` / `O_ASYNC` signal-driven I/O.**
+- Mechanism: kernel sends SIGIO when fd is readable; signal handler
+  wakes a goroutine via channel.
+- Estimated gain: speculative. No public macOS benchmarks. Signal
+  handler reentrancy with Go runtime is ill-documented.
+- Effort: low.
+- Risk: medium. Could interact badly with Go's own signal handling.
+- Verdict: 1-day exploration max, skip if nothing measurable shows up.
+
+**6. macOS `feth` (fake Ethernet) instead of utun.**
+- Mechanism: ZeroTier uses this. Layer-2 tap pair instead of
+  Layer-3 utun. Different kernel path through the bridge layer.
+- Estimated gain: NO published latency comparison. ZeroTier did it
+  primarily to escape kext deprecation, not for latency.
+- Effort: very high — Nebula's TUN abstraction would need rewriting
+  for L2 framing.
+- Verdict: not worth investigating without a measured upside hint.
+
+**7. Mach IPC + shared-memory ring (DriverKit network stack).**
+- Mechanism: only path to NE-equivalent kernel/userspace memory
+  sharing without kext. DriverKit network support is documented as
+  immature; no shipping non-NE VPN uses it.
+- Effort: very high; uncertain API stability.
+- Verdict: not viable today.
+
+### Tier C — would close the gap but at unacceptable cost
+
+**8. Busy-poll architecture — one OS thread spinning on
+non-blocking `recvmsg_x` forever.**
+- Mechanism: replace the `recvmsg_x → kqueue wake` pattern with a
+  pure spin loop. Wake latency: microseconds. Cache stays hot.
+- Estimated gain: probably matches NE within 1–2 ms.
+- Cost: **100 % of one CPU core, continuously, even at idle.** On a
+  laptop this means battery drain (~10 W extra), thermal pressure,
+  and the user notices. Adoption non-starter.
+- Verdict: documented for completeness; don't ship.
+
+**9. NEPacketTunnelProvider** — already covered. Closes the gap to
+~16 ms. Weeks of work + Apple Dev ID + signed bundle. Planned
+alongside iOS client work.
+
+## Recommended next steps (if you want to try)
+
+If you want one more meaningful experiment in raw userspace utun, the
+honest single-best bet is:
+
+**Tier A item 1 — replace the 2-slot buffered channels in patches 12
+and 17 with a lock-free SPSC ring.** Estimated 0.5–1.0 ms RTT
+improvement, low risk if implemented carefully (bounded park-wait, no
+busy-spin when idle), self-contained vendor-patch change. Whether it's
+worth ~1 day of careful implementation + testing for ~0.5–1 ms RTT is
+a product judgment call.
+
+If you instead want to "stop here, NE is the real answer,"
+that's also defensible. We've taken hopssh from 33 ms to 24.5 ms via
+QoS, beat Tailscale on throughput in both directions, and shipped
+the gain to all macOS users via v0.10.15. The remaining ~8 ms gap is
+genuinely structural to non-NE userspace utun.
+
+## What we're definitively NOT doing
+
+- Burning 100 % of a CPU core (Tier C 8) — adoption-killer.
+- `THREAD_TIME_CONSTRAINT_POLICY` default-on (Tier B 4) — Apple
+  guidance violation; would only ship as opt-in env var if anyone
+  asks for it.
+- DriverKit network bypass (Tier B 7) — immature, no precedent.
+- Kernel extensions — Apple-deprecated.
+- `feth` rewrite (Tier B 6) — no measured latency upside.
+
+## The bottom line — exec summary
+
+We are at the **practical ceiling for raw-userspace-utun on macOS.**
+Every plausible technique either gives a ~0.5 ms gain at meaningful
+implementation cost (lock-free ring), gives a possibly-larger gain at
+unacceptable risk to user systems (TIME_CONSTRAINT, busy-poll), or
+requires the NE bundle we've already deferred to the iOS client work.
+
+**The honest answer to "is there ANY way to close the gap":**
+- For 0.5–1 ms more — yes, lock-free ring buffer is the realistic option.
+- For 5+ ms more — no, not without NE.
+
+Adoption-wise we're already in a good place: 24.5 ms RTT puts us
+substantially ahead of every other userspace VPN on macOS. The only
+thing that beats us is Tailscale's NE bundle — and that's a
+weeks-of-work apple-developer-program problem, not an algorithmic one.
