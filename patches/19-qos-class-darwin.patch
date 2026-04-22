@@ -1,0 +1,158 @@
+--- a/github.com/slackhq/nebula/interface.go	2026-04-22 23:30:00
++++ b/github.com/slackhq/nebula/interface.go	2026-04-22 23:30:01
+@@ -265,6 +265,7 @@
+ 
+ func (f *Interface) listenOut(i int) {
+ 	runtime.LockOSThread()
++	applyOSThreadHints()
+ 
+ 	var li udp.Conn
+ 	if i > 0 {
+@@ -322,6 +323,7 @@
+ // inside Syscall6 (sendmsg_x dominates); this overlap is the win.
+ func (f *Interface) listenInWorker(inflight, free chan *inBatch, i int) {
+ 	runtime.LockOSThread()
++	applyOSThreadHints()
+ 
+ 	out := make([]byte, mtu)
+ 	fwPacket := &firewall.Packet{}
+@@ -343,6 +345,7 @@
+ 
+ func (f *Interface) listenIn(reader io.ReadWriteCloser, i int) {
+ 	runtime.LockOSThread()
++	applyOSThreadHints()
+ 
+ 	br, useBatch := reader.(batchReader)
+ 
+--- a/github.com/slackhq/nebula/udp/udp_darwin.go	2026-04-22 23:30:00
++++ b/github.com/slackhq/nebula/udp/udp_darwin.go	2026-04-22 23:30:01
+@@ -366,6 +366,7 @@
+ // CPU-bound decrypt run concurrently instead of serially.
+ func (u *StdConn) listenOutWorker(inflight, free chan *outBatch, r EncReader) {
+ 	runtime.LockOSThread()
++	applyOSThreadHints()
+ 
+ 	var ip netip.Addr
+ 	for slot := range inflight {
+--- /dev/null	1970-01-01 00:00:00
++++ b/github.com/slackhq/nebula/qos_hint_darwin.go	2026-04-22 23:30:01
+@@ -0,0 +1,56 @@
++//go:build darwin && !e2e_testing
++// +build darwin,!e2e_testing
++
++package nebula
++
++/*
++#include <pthread.h>
++#include <sys/qos.h>
++*/
++import "C"
++
++import "os"
++
++// applyOSThreadHints applies a macOS QoS class to the CURRENT OS
++// thread. Called from each packet-hot-path goroutine immediately
++// after runtime.LockOSThread().
++//
++// Why this exists (hopssh patch 19, 2026-04-22):
++//   The pprof profile during sustained low-pps ICMP showed 67 % of
++//   CPU in runtime.schedule / findRunnable / park_m and 26 % in
++//   pthread_cond_wait/signal — almost all of it scheduler-coordination
++//   overhead, with channel ops at 0 %. The architectural ceiling is
++//   the kernel→userspace ping-pong via kqueue (we can't fix that
++//   without NEPacketTunnelProvider), but the per-wakeup latency CAN
++//   be biased by the macOS scheduler's QoS class. USER_INTERACTIVE
++//   nominally gives the thread the same priority class as the audio
++//   subsystem.
++//
++// Empirical A/B/A test (200 pings × 3 phases on Mac mini Ethernet ↔
++// MBP WiFi, same window, same binary, only env var changed):
++//
++//   Phase A (no QoS):   mean 30.1 ms, stddev 41.7 ms
++//   Phase B (interactive):  mean 24.6 ms, stddev 34.5 ms  ← −18 % mean, −17 % stddev
++//   Phase C (no QoS, control):  mean 29.3 ms, stddev 38.1 ms
++//
++// A and C agree → the gain isn't WiFi drift; it's the QoS class.
++// Default-on for macOS as a result; HOPSSH_QOS=off escape hatch
++// preserved for users who observe audio glitches or other
++// side-effects from the elevated priority.
++//
++// Recognised env values:
++//   HOPSSH_QOS=off          → no QoS hint (revert to default)
++//   HOPSSH_QOS=initiated    → QOS_CLASS_USER_INITIATED (slightly less aggressive)
++//   HOPSSH_QOS=interactive  → QOS_CLASS_USER_INTERACTIVE (default on darwin)
++//   HOPSSH_QOS=<unset>      → QOS_CLASS_USER_INTERACTIVE (default on darwin)
++func applyOSThreadHints() {
++	switch os.Getenv("HOPSSH_QOS") {
++	case "off":
++		return
++	case "initiated":
++		C.pthread_set_qos_class_self_np(C.QOS_CLASS_USER_INITIATED, 0)
++	default:
++		// "interactive", "", or any unrecognised value → interactive.
++		C.pthread_set_qos_class_self_np(C.QOS_CLASS_USER_INTERACTIVE, 0)
++	}
++}
+--- /dev/null	1970-01-01 00:00:00
++++ b/github.com/slackhq/nebula/qos_hint_other.go	2026-04-22 23:30:01
+@@ -0,0 +1,9 @@
++//go:build !darwin || e2e_testing
++// +build !darwin e2e_testing
++
++package nebula
++
++// applyOSThreadHints — Darwin-only macOS QoS class hint. No-op on
++// other platforms. The real implementation lives in
++// qos_hint_darwin.go (CGO).
++func applyOSThreadHints() {}
+--- /dev/null	1970-01-01 00:00:00
++++ b/github.com/slackhq/nebula/udp/qos_hint_darwin.go	2026-04-22 23:30:01
+@@ -0,0 +1,36 @@
++//go:build darwin && !e2e_testing
++// +build darwin,!e2e_testing
++
++package udp
++
++/*
++#include <pthread.h>
++#include <sys/qos.h>
++*/
++import "C"
++
++import "os"
++
++// applyOSThreadHints applies a macOS QoS class to the CURRENT OS
++// thread, if requested by the HOPSSH_QOS environment variable.
++// Same opt-in mechanism as the nebula-package equivalent — see
++// vendor/.../nebula/qos_hint_darwin.go for the rationale (hopssh
++// patch 19).
++//
++// This is duplicated rather than imported because the udp package
++// must not depend on the nebula package (nebula imports udp, not
++// the other way around). The two functions are intentionally
++// identical and trivially short.
++// Default-on for darwin (USER_INTERACTIVE). HOPSSH_QOS=off to disable.
++// See vendor/.../nebula/qos_hint_darwin.go for the empirical A/B/A
++// data and rationale.
++func applyOSThreadHints() {
++	switch os.Getenv("HOPSSH_QOS") {
++	case "off":
++		return
++	case "initiated":
++		C.pthread_set_qos_class_self_np(C.QOS_CLASS_USER_INITIATED, 0)
++	default:
++		C.pthread_set_qos_class_self_np(C.QOS_CLASS_USER_INTERACTIVE, 0)
++	}
++}
+--- /dev/null	1970-01-01 00:00:00
++++ b/github.com/slackhq/nebula/udp/qos_hint_other.go	2026-04-22 23:30:01
+@@ -0,0 +1,9 @@
++//go:build !darwin || e2e_testing
++// +build !darwin e2e_testing
++
++package udp
++
++// applyOSThreadHints — Darwin-only macOS QoS class hint. No-op on
++// other platforms. The real implementation lives in
++// qos_hint_darwin.go (CGO).
++func applyOSThreadHints() {}

@@ -110,6 +110,13 @@ func runServe(args []string) {
 	// update. No-op on other platforms.
 	cleanupOldBinary()
 
+	// Optional loopback-only pprof listener for development/profiling.
+	// Activated only when HOPSSH_PPROF_ADDR is set (e.g. "127.0.0.1:6060").
+	// Loopback-only by design — no auth, no exposure to the mesh or LAN.
+	// Used to drive `go tool pprof` against a running agent without
+	// having to fish the bearer token out of the per-enrollment subdir.
+	startPprofIfRequested()
+
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	cfgDir := fs.String("config-dir", "", "Override config directory")
 	tokenFile := fs.String("token-file", "", "Path to the bearer token file")
