@@ -414,3 +414,170 @@ Adoption-wise we're already in a good place: 24.5 ms RTT puts us
 substantially ahead of every other userspace VPN on macOS. The only
 thing that beats us is Tailscale's NE bundle — and that's a
 weeks-of-work apple-developer-program problem, not an algorithmic one.
+
+---
+
+# Tier A and Tier B — empirical results (2026-04-23)
+
+After the analysis above, we built and measured both Tier A
+(lock-free SPSC ring) and Tier B (`THREAD_TIME_CONSTRAINT_POLICY`)
+under real WiFi LAN conditions. Both **failed to show a measurable
+RTT improvement** beyond the existing v0.10.15 baseline (QOS_CLASS_USER_INTERACTIVE
+on the four LockOSThread'd packet goroutines). Code from both was
+reverted from the working tree without commit. This section documents
+what we learned so we don't repeat the experiments later.
+
+## Tier A — lock-free SPSC ring (built, tested, reverted)
+
+**What we built:** `inBatchRing` and `outBatchRing` types — atomic
+`head`/`tail`, fixed-size slot array with bitmask indexing, fast path
+purely atomic, slow path parks on a buffered `chan struct{}` cap-1
+wake signal. Drop-in replacement for the 2-slot buffered channels in
+patches 12 (listenIn) and 17 (listenOut). 9 unit tests under `-race`:
+init-no-deadlock, FIFO over 1000 cross-goroutine ops, drain-on-close,
+back-pressure, slot-count sanity.
+
+**Gated by `HOPSSH_PIPELINE=ring` env var** so the same binary could
+A/B test ring vs channels without rebuild.
+
+**Measurement (200 pings × 3 phases, same WiFi window):**
+
+| Phase | Config | Mean RTT | Stddev |
+|---|---|---|---|
+| A | channel (baseline) | 77.5 ms | 98.7 ms |
+| B | ring (HOPSSH_PIPELINE=ring) | 40.5 ms | 59.4 ms |
+| C | channel (control) | 24.3 ms | 33.8 ms |
+
+**Why we reverted:** A and C should agree (both = channel baseline)
+but they differed by 53 ms — WiFi conditions improved monotonically
+across the test window. Phase B at 40 ms could have been a small ring
+gain (vs interpolated A/C average of 51 ms) or pure WiFi drift; the
+data couldn't distinguish. **Best-case interpretation: ring matches
+production** (Phase C = no-env-var production state, returned at 24
+ms which was at-or-below ring's 40 ms in the same window). Combined
+with the analytical reason this had to be small (lock-free ring
+removes only the `hchan.lock` mutex acquisition ~100–300 ns per
+handoff, not the `pthread_cond_signal` wake-the-parked-consumer cost
+which is the real expensive bit), shipping wasn't justified.
+
+**Lesson — analytical:** the 26 % CPU we measured in
+`pthread_cond_wait`/`signal` from the channel-path profile is the
+cost of waking a parked consumer on each batch handoff. **Any
+park-then-wake design pays this cost**, regardless of whether the
+queue is a Go channel or a lock-free ring. The original research
+estimate of "0.5–1 ms RTT win from ring" was over-stated because it
+assumed avoiding `pthread_cond_signal` — which only busy-poll
+(Tier C 8) actually achieves. Lock-free ring genuinely saves ~1–2 µs
+per RTT (the mutex-acquisition cost), which is below WiFi noise.
+
+**Lesson — methodological:** for sub-1 ms gains in our setup, three
+200-ping phases over ~5 minutes is **not** enough — WiFi drift
+between the first and last phase routinely exceeds the effect we're
+trying to measure. Future similar measurements should either:
+1. Run a tighter alternating ABABAB protocol (40-ping blocks, 5×
+   each side), or
+2. Use a ground-truth wired link, or
+3. Wait for 1+ hour of stable WiFi before the experiment, or
+4. Don't bother — accept that gains < 2 ms in the channel-noise band
+   are unmeasurable in this environment.
+
+## Tier B — THREAD_TIME_CONSTRAINT_POLICY (built, tested, reverted)
+
+**What we built:** added a `realtime` case to
+`vendor/.../qos_hint_darwin.go` (CGO) that calls
+`thread_policy_set(mach_thread_self(), THREAD_TIME_CONSTRAINT_POLICY)`
+with `period=10ms, computation=500µs, constraint=1ms,
+preemptible=1`. Same opt-in pattern as the existing
+`HOPSSH_QOS=interactive` (which is the production default since
+v0.10.14).
+
+**Gated by `HOPSSH_QOS=realtime` env var** for same-binary A/B test.
+
+**Measurement (200 pings × 3 phases, same WiFi window):**
+
+| Phase | Config | Mean RTT | Stddev | Max |
+|---|---|---|---|---|
+| A | interactive (default) | 25.5 ms | 33.2 ms | 170 ms |
+| B | realtime (THREAD_TIME_CONSTRAINT_POLICY) | 25.5 ms | 34.2 ms | 179 ms |
+| C | interactive (control) | 32.1 ms | 39.0 ms | 206 ms |
+
+**Why we reverted:** B mean = A mean exactly (25.5 ms). A vs C drift
+of 6.6 ms means the noise band is ±~3 ms. Phase B is between A and C
+but indistinguishable from "no effect." Any real gain is at most
+~3 ms — at the optimistic end of the original 1–3 ms research
+estimate, but not separable from noise in a single-session
+measurement. **No regression** — realtime didn't make anything worse.
+**No clear win either** — and Apple explicitly reserves
+`THREAD_TIME_CONSTRAINT_POLICY` for hard-real-time workloads
+(audio render, USB isochronous), with documented risk of degrading
+unrelated audio/video workloads under load. Carrying the maintenance
+cost (CGO, mach API, code-review surface) for an unmeasurable gain
+in a sketchy use-case wasn't worth it.
+
+**Lesson — Apple platform:** `THREAD_TIME_CONSTRAINT_POLICY` is
+*technically* accessible to non-NE userspace processes via
+`mach_thread_self()` + `thread_policy_set()`, no entitlement
+required. The CGO implementation is small (~30 lines) and worked
+without issue on Apple Silicon. The reason not to ship isn't
+technical — it's that the empirical gain is in the noise, and the
+"don't use this for non-real-time work" guidance from Apple has
+adoption / support implications if a user reports audio glitches
+they suspect us of.
+
+**Lesson — analytical:** the structural ceiling really IS the
+kernel↔userspace round-trip via kqueue, as the pprof profile of the
+channel-path-with-USER_INTERACTIVE-QoS suggested. Bumping the
+scheduling tier higher than `USER_INTERACTIVE` doesn't shorten the
+round-trip itself — the syscall transition still happens, the
+netpoller still wakes a goroutine, the goroutine still has to be
+scheduled onto a P. Realtime priority just biases the scheduler
+slightly faster among goroutines competing for a P, and at low pps
+there's no scheduler queue contention to bias.
+
+## Combined verdict
+
+We have now **empirically exhausted Tier A and Tier B** from the
+research doc above. Neither delivered measurable improvement over
+the v0.10.15 baseline (24.5 ms mean RTT, with QOS_CLASS_USER_INTERACTIVE
+default-on). The remaining ~8 ms gap to Tailscale's NE bundle
+(16 ms mean) is **structural to raw userspace utun on macOS** and
+not closable in pure userspace without one of:
+
+- **NEPacketTunnelProvider** (Tier C 9) — closes the gap to ~16 ms.
+  Apple Dev ID + signed bundle + weeks of work. Planned alongside
+  iOS client work.
+- **Busy-poll** (Tier C 8) — closes most of the gap, costs ~10 W
+  extra battery on a laptop. Adoption non-starter.
+
+For non-NE userspace utun, **hopssh is at the practical latency
+ceiling** for the platform. Further research in this direction is
+not justified by the empirical data.
+
+## What we keep going forward
+
+- **`HOPSSH_QOS=interactive`** (default-on, patch 19, v0.10.14+) —
+  **the only intervention that actually produced measurable RTT
+  improvement** (33 → 25 ms mean, −18 %; A/B/A confirmed). This is
+  what end-user agents pick up via self-update from the v0.10.15
+  control plane.
+- **`HOPSSH_QOS=off`** — escape hatch for users who observe issues
+  with the elevated priority.
+- **`HOPSSH_QOS=initiated`** — slightly less aggressive QoS class
+  for users who want a middle ground.
+- **`HOPSSH_PPROF_ADDR=127.0.0.1:6060`** (cmd/agent/pprof.go) — the
+  loopback-only pprof listener used during this investigation; lives
+  in the codebase for any future profiling work.
+
+## What we explicitly removed (and why)
+
+- **Lock-free SPSC ring** (Tier A) — analytically the gain was
+  smaller than the original research estimate (only saves the mutex
+  acquisition, not the cond signal); empirically not separable from
+  WiFi noise; no measured value.
+- **`HOPSSH_QOS=realtime`** / `THREAD_TIME_CONSTRAINT_POLICY`
+  (Tier B) — empirical gain at the noise floor; Apple discourages
+  non-real-time use; carrying CGO maintenance for an unmeasurable
+  feature with implicit risk wasn't justified.
+
+Both are recoverable from the conversation history and this doc if
+anyone wants to revisit under different measurement conditions.
