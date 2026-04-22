@@ -11,9 +11,16 @@ export const NODE_STALE_THRESHOLD_SEC = 180;
  * `effectiveStatus()` in `internal/api/types.go` so a fresh page load
  * and a tab that's been open for 10 minutes show the same thing.
  *
- * Only nodes with server-reported status === "online" flip to offline
- * based on staleness; permanent states (pending, enrolled, offline)
- * pass through unchanged.
+ * Possible return values:
+ *   - "online"   — heartbeat fresh, peer state OK.
+ *   - "degraded" — heartbeat fresh but node has zero peers despite
+ *                   other nodes being available; signals a portmap/NAT
+ *                   failure that the plain-HTTPS heartbeat can't
+ *                   detect. Server computes this (needs cross-node
+ *                   context); client passes it through. Decays to
+ *                   "offline" when heartbeat itself goes stale.
+ *   - "offline"  — heartbeat stale past NODE_STALE_THRESHOLD_SEC.
+ *   - "pending" / "enrolled" — enrollment lifecycle states, untouched.
  *
  * @param node       the node (only `status` and `lastSeenAt` are needed)
  * @param nowSeconds current UNIX-epoch seconds — use the reactive `now`
@@ -24,7 +31,7 @@ export function displayStatus(
 	node: Pick<NodeResponse, 'status' | 'lastSeenAt'>,
 	nowSeconds: number,
 ): string {
-	if (node.status !== 'online' || !node.lastSeenAt) {
+	if ((node.status !== 'online' && node.status !== 'degraded') || !node.lastSeenAt) {
 		return node.status;
 	}
 	if (nowSeconds - node.lastSeenAt > NODE_STALE_THRESHOLD_SEC) {

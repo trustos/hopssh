@@ -45,6 +45,21 @@ const nodeStaleThreshold = 3 * 60 // 3 minutes in seconds
 // the literal.
 const NodeStaleThresholdSeconds = nodeStaleThreshold
 
+// nodeDegradedGraceSeconds is how long a node must have been running
+// before it can be flagged as "degraded" (heartbeat-only, no peers).
+// Fresh agents need a grace window to discover peers via the lighthouse
+// — marking them degraded at t=0 would flap every enrollment. 5 minutes
+// covers a reasonable warm-up on any platform including cold-start
+// cellular.
+const nodeDegradedGraceSeconds = 5 * 60
+
+// nodeDegradedPeersStaleSeconds is the maximum age of a `peers_reported_at`
+// timestamp that we still consider authoritative. Older than this and
+// we assume the agent hasn't successfully reported peer state recently
+// (even if its heartbeat is still being received) — insufficient signal
+// to mark degraded; stay "online".
+const nodeDegradedPeersStaleSeconds = 2 * 60
+
 // jsonDetails serialises a small payload for persisted network events.
 // Returns nil if the payload is empty or serialization fails — callers
 // pass the returned value straight through to NetworkEventStore.Record,
@@ -72,6 +87,87 @@ func effectiveStatus(status string, lastSeenAt *int64) string {
 		return "offline"
 	}
 	return status
+}
+
+// isDegraded reports whether an online node should be shown as
+// "degraded" — heartbeat is fresh but the node has no mesh
+// connectivity. This signals a portmap/NAT-traversal failure, firewall
+// change, or interface routing problem that the heartbeat channel
+// (plain HTTPS to the control plane) doesn't exercise.
+//
+// Rules — ALL must hold:
+//   - Status is "online" AND heartbeat fresh (effectiveStatus gates us).
+//   - Node is not a lighthouse (they don't report peers about themselves).
+//   - Node has been around longer than the grace window — fresh agents
+//     have seconds of legitimate no-peer state while the lighthouse
+//     propagates endpoints.
+//   - Peer state was reported recently (agent is still alive enough to
+//     push it) AND both peer counters are zero.
+//   - The network has >1 other non-lighthouse nodes — a single-node
+//     network has 0 peers legitimately; no one to connect to.
+//
+// peersInNetwork is the count of OTHER online non-lighthouse nodes on
+// the same network (i.e. potential peer targets for THIS node). The
+// caller computes it from the full node list since this function runs
+// per-node without cross-node access.
+func isDegraded(
+	status string,
+	nodeType string,
+	createdAt int64,
+	peersReportedAt *int64,
+	peersDirect *int64,
+	peersRelayed *int64,
+	peersInNetwork int,
+) bool {
+	if status != "online" {
+		return false
+	}
+	if nodeType == "lighthouse" {
+		return false
+	}
+	if peersInNetwork < 1 {
+		return false // we are alone; "0 peers" is not a failure
+	}
+	now := time.Now().Unix()
+	if now-createdAt < int64(nodeDegradedGraceSeconds) {
+		return false // still within warm-up grace
+	}
+	if peersReportedAt == nil {
+		return false // never reported peer state — could be old agent
+	}
+	if now-*peersReportedAt > int64(nodeDegradedPeersStaleSeconds) {
+		return false // peer report is stale; insufficient signal
+	}
+	var d, r int64
+	if peersDirect != nil {
+		d = *peersDirect
+	}
+	if peersRelayed != nil {
+		r = *peersRelayed
+	}
+	return d == 0 && r == 0
+}
+
+// countPotentialPeers returns the number of OTHER non-lighthouse nodes
+// (excluding the one at excludeID) whose effectiveStatus is "online".
+// Used to pass `peersInNetwork` into isDegraded so a single-node
+// network isn't labelled degraded when a node legitimately has no
+// peers to reach.
+func countPotentialPeers[T any](nodes []T, excludeID string, accessor func(T) (id, nodeType, status string, lastSeenAt *int64)) int {
+	count := 0
+	for _, n := range nodes {
+		id, nodeType, status, lastSeenAt := accessor(n)
+		if id == excludeID {
+			continue
+		}
+		if nodeType == "lighthouse" {
+			continue
+		}
+		if effectiveStatus(status, lastSeenAt) == "online" {
+			count++
+		}
+	}
+	return count
 }
 
 // parseCapabilities converts a JSON capabilities string to a slice.

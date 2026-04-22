@@ -263,8 +263,23 @@ func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 	nodes, _ := h.Nodes.ListForNetwork(networkID)
 
 	// Map to safe DTO — never expose AgentToken, EnrollmentToken, or keys.
+	//
+	// Per-node we first compute effectiveStatus (offline if heartbeat
+	// stale). If the node is still "online" we consider degrading it to
+	// "degraded" when it has no peers despite other nodes being
+	// available to reach — this catches the portmap/NAT-traversal
+	// failure mode where the heartbeat succeeds but the mesh does not.
 	nodeResponses := make([]NodeResponse, 0, len(nodes))
 	for _, n := range nodes {
+		status := effectiveStatus(n.Status, n.LastSeenAt)
+		if status == "online" {
+			peersInNetwork := countPotentialPeers(nodes, n.ID, func(o *db.Node) (string, string, string, *int64) {
+				return o.ID, o.NodeType, o.Status, o.LastSeenAt
+			})
+			if isDegraded(status, n.NodeType, n.CreatedAt, n.PeersReportedAt, n.PeersDirect, n.PeersRelayed, peersInNetwork) {
+				status = "degraded"
+			}
+		}
 		nodeResponses = append(nodeResponses, NodeResponse{
 			ID:              n.ID,
 			NetworkID:       n.NetworkID,
@@ -277,7 +292,7 @@ func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 			ExposedPorts:    n.ExposedPorts,
 			DNSName:         n.DNSName,
 			Capabilities:    parseCapabilities(n.Capabilities),
-			Status:          effectiveStatus(n.Status, n.LastSeenAt),
+			Status:          status,
 			LastSeenAt:      n.LastSeenAt,
 			CreatedAt:       n.CreatedAt,
 			PeersDirect:     n.PeersDirect,

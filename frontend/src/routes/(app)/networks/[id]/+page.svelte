@@ -513,6 +513,11 @@
 	function statusColor(status: string) {
 		switch (status) {
 			case 'online': return 'bg-primary animate-hop-pulse';
+			// Degraded = heartbeat fine but no mesh peers — usually a
+			// portmap/NAT failure on the agent's side. Orange pulse
+			// distinguishes it from both healthy-online (green) and
+			// enrollment states (yellow).
+			case 'degraded': return 'bg-orange-500 animate-pulse';
 			case 'enrolled': return 'bg-yellow-500';
 			case 'offline': return 'bg-gray-400 dark:bg-gray-600';
 			case 'pending': return 'bg-yellow-500/50 animate-pulse';

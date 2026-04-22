@@ -23,6 +23,9 @@
 	function nodeColour(n: NodeResponse, nowSec: number): string {
 		if (n.nodeType === 'lighthouse') return '#64748b'; // slate-500
 		const status = displayStatus(n, nowSec);
+		// Degraded = heartbeat fine, no mesh peers (portmap/NAT broken).
+		// Distinct orange distinguishes from offline-gray and online-green.
+		if (status === 'degraded') return '#f97316'; // orange-500
 		if (status !== 'online') return '#9ca3af'; // gray-400
 		switch (n.connectivity) {
 			case 'direct':  return '#10b981'; // emerald-500

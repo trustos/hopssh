@@ -180,7 +180,7 @@ func watchNetworkChanges(ctx context.Context, inst *meshInstance, ctrl *nebula.C
 	}
 
 	lastIface, _ := nebulacfg.DetectPhysicalInterface(host)
-	lastAddrs := getLocalAddrs()
+	lastAddrs := getLocalAddrs(lastIface)
 	lastTick := time.Now()
 
 	ticker := time.NewTicker(5 * time.Second)
@@ -209,7 +209,7 @@ func watchNetworkChanges(ctx context.Context, inst *meshInstance, ctrl *nebula.C
 		lastTick = now
 
 		currentIface, _ := nebulacfg.DetectPhysicalInterface(host)
-		currentAddrs := getLocalAddrs()
+		currentAddrs := getLocalAddrs(currentIface)
 
 		addrChanged := currentIface != lastIface || currentAddrs != lastAddrs
 
@@ -223,6 +223,16 @@ func watchNetworkChanges(ctx context.Context, inst *meshInstance, ctrl *nebula.C
 			closed := ctrl.CloseAllTunnels(true)
 			if closed > 0 {
 				log.Printf("[agent %s] closed %d tunnels to force re-handshake on new network", inst.name(), closed)
+			}
+			// Re-run the portmap probe. A network change may mean:
+			//   (a) we moved to a router that supports a different
+			//       mapping protocol, so the current winner is dead;
+			//   (b) our old router reassigned our external IP;
+			//   (c) we're now on cellular with no portmap at all.
+			// In all three cases holding the stale mapping produces a
+			// lighthouse advertise_addr that peers can't reach.
+			if inst.portmap != nil {
+				inst.portmap.ReProbe()
 			}
 			// Poke the heartbeat goroutine so the dashboard learns the
 			// node's real state within seconds instead of waiting up to
@@ -322,24 +332,60 @@ func init() {
 // var so tests can shrink it.
 var watcherStartupGraceTicks = 3
 
-// getLocalAddrs returns a string fingerprint of current local IPv4 addresses.
-func getLocalAddrs() string {
-	ifaces, err := net.Interfaces()
+// getLocalAddrs returns a string fingerprint of the physical interface's
+// IPv4 state. Intentionally narrow: we want to detect a REAL network
+// change (WiFi↔cellular swap, DHCP renewal, Ethernet unplug) and ignore
+// irrelevant churn.
+//
+// Why only the physical interface's IPv4:
+//
+//   - macOS laptops accumulate transient utun interfaces from
+//     conferencing/VPN apps (Zoom, Slack, Teams, work VPN, etc.).
+//     Each comes up with an IPv6 link-local (`fe80::.../64`) that can
+//     flap whenever the app is backgrounded, a call ends, or the
+//     route monitor re-enumerates. Counting those as "network change"
+//     caused ~40 spurious rebinds per day on a developer laptop vs
+//     ~10 on a desktop — each rebind tears every Nebula tunnel AND
+//     triggers macOS `SCDynamicStore` notifications which Chrome's
+//     NetworkChangeNotifier reads as a reason to flush its socket
+//     pool, manifesting as ERR_NETWORK_CHANGED in the browser.
+//   - IPv6 link-local/SLAAC addresses on our primary WiFi/Ethernet
+//     interface also churn (temporary privacy addresses rotate),
+//     without any real routing change. Drop those too.
+//   - We pass the physical interface in as a parameter so the caller
+//     can use the same DetectPhysicalInterface result it already
+//     computed for the iface-change check — one system call, not two.
+func getLocalAddrs(physicalIface string) string {
+	if physicalIface == "" {
+		// DetectPhysicalInterface failed this tick. Return a sentinel
+		// that tracks the failure state rather than "all addresses",
+		// so we don't react to IPv6 churn during brief connectivity
+		// hiccups. The iface-change branch above already covers the
+		// "" → en0 recovery.
+		return ""
+	}
+	iface, err := net.InterfaceByName(physicalIface)
+	if err != nil {
+		return ""
+	}
+	if iface.Flags&net.FlagUp == 0 {
+		return ""
+	}
+	addrs, err := iface.Addrs()
 	if err != nil {
 		return ""
 	}
 	var s string
-	for _, iface := range ifaces {
-		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+	for _, addr := range addrs {
+		ipNet, ok := addr.(*net.IPNet)
+		if !ok {
 			continue
 		}
-		addrs, err := iface.Addrs()
-		if err != nil {
+		ip4 := ipNet.IP.To4()
+		if ip4 == nil {
 			continue
 		}
-		for _, addr := range addrs {
-			s += addr.String() + ","
-		}
+		s += ip4.String() + "/" + ipNet.Mask.String() + ","
 	}
 	return s
 }

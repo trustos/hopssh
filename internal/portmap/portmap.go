@@ -47,11 +47,23 @@ type Manager struct {
 	probeTimeout time.Duration
 	clients      []Client // if nil, defaults are built in Start()
 
+	// retryBackoff is the sequence of sleep durations between probe
+	// retries when no protocol has succeeded yet. After the sequence is
+	// exhausted the last value is repeated indefinitely (ceiling).
+	// Exposed for tests to shrink.
+	retryBackoff []time.Duration
+
 	mu      sync.Mutex
 	winner  Client
 	current netip.AddrPort
 	ttl     time.Duration
 	onChng  ChangeHandler
+
+	// reprobe is a buffered signal channel. External callers (the
+	// network-change watcher) drop a value to request an immediate
+	// re-probe — woken goroutine drains it. Buffered 1 so multiple
+	// concurrent signals collapse into one probe.
+	reprobe chan struct{}
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -67,6 +79,32 @@ func New(l *logrus.Logger, internalPort uint16) *Manager {
 		l:            l,
 		internalPort: internalPort,
 		probeTimeout: 3 * time.Second,
+		// Exponential-ish backoff capped at 5 min. The initial probe
+		// may fail transiently (laptop just woken up, router still
+		// bringing up UPnP, DHCP not finished). Subsequent retries
+		// pick up once the router is actually reachable. Without this
+		// an MBP observed in prod kept portmap=dead for 24 h after a
+		// single startup-time failure.
+		retryBackoff: []time.Duration{
+			30 * time.Second,
+			1 * time.Minute,
+			2 * time.Minute,
+			5 * time.Minute,
+		},
+		reprobe: make(chan struct{}, 1),
+	}
+}
+
+// ReProbe asks the background goroutine to drop the current mapping (if
+// any) and re-run the protocol probe. Non-blocking: if a re-probe is
+// already queued, the call collapses into the pending one. Safe to call
+// from any goroutine. Used by the agent's network-change watcher so a
+// WiFi↔cellular swap or sleep/wake cycle forces portmap to rediscover
+// protocol availability and the router's external IP:port.
+func (m *Manager) ReProbe() {
+	select {
+	case m.reprobe <- struct{}{}:
+	default:
 	}
 }
 
@@ -163,16 +201,59 @@ func (m *Manager) Stop() {
 func (m *Manager) run(ctx context.Context, clients []Client) {
 	defer close(m.done)
 
-	winner, addr, ttl := m.probe(ctx, clients)
-	if winner == nil {
-		m.l.Info("portmap: no protocol available; falling back to hole-punching only")
-		<-ctx.Done()
-		return
-	}
+	for {
+		winner, addr, ttl := m.probe(ctx, clients)
+		if winner != nil {
+			m.onProbeSuccess(winner, addr, ttl)
+			// refreshLoop returns when ctx is cancelled OR a re-probe
+			// signal is observed. In the re-probe case we fall through
+			// the outer loop and probe again from scratch.
+			stopped := m.refreshLoop(ctx, winner)
+			if stopped {
+				return
+			}
+			// Re-probe requested: clear current winner so refresh
+			// stops relying on it, then loop back to probe().
+			m.clearWinner()
+			continue
+		}
 
+		// No protocol succeeded this round. Sleep a backoff and retry.
+		// Previously (pre-v0.10.11) the goroutine parked on <-ctx.Done()
+		// here forever — one transient probe failure at startup
+		// permanently silenced portmap. Retry indefinitely instead.
+		m.l.Info("portmap: no protocol available; falling back to hole-punching only (will retry)")
+		if !m.sleepOrReprobe(ctx, m.retryAttemptDelay(0)) {
+			return
+		}
+
+		for attempt := 1; ; attempt++ {
+			winner, addr, ttl := m.probe(ctx, clients)
+			if winner != nil {
+				m.l.WithField("attempt", attempt).Info("portmap: probe succeeded after retry")
+				m.onProbeSuccess(winner, addr, ttl)
+				if stopped := m.refreshLoop(ctx, winner); stopped {
+					return
+				}
+				m.clearWinner()
+				break
+			}
+			if ctx.Err() != nil {
+				return
+			}
+			if !m.sleepOrReprobe(ctx, m.retryAttemptDelay(attempt)) {
+				return
+			}
+		}
+	}
+}
+
+// onProbeSuccess records a winning probe result and invokes the change
+// handler (lighthouse advertise_addr injection).
+func (m *Manager) onProbeSuccess(winner Client, addr netip.AddrPort, ttl time.Duration) {
 	m.mu.Lock()
-	m.winner = winner
 	prev := m.current
+	m.winner = winner
 	m.current = addr
 	m.ttl = ttl
 	handler := m.onChng
@@ -187,8 +268,45 @@ func (m *Manager) run(ctx context.Context, clients []Client) {
 	if handler != nil {
 		handler(prev, addr)
 	}
+}
 
-	m.refreshLoop(ctx, winner)
+// clearWinner drops the cached winner + current mapping. Called when a
+// re-probe is requested so a stale mapping doesn't linger if the new
+// probe chooses a different protocol or address.
+func (m *Manager) clearWinner() {
+	m.mu.Lock()
+	m.winner = nil
+	m.current = netip.AddrPort{}
+	m.ttl = 0
+	m.mu.Unlock()
+}
+
+// retryAttemptDelay returns the backoff for the Nth failed attempt.
+// Attempts beyond len(retryBackoff)-1 all use the last (capped) value.
+func (m *Manager) retryAttemptDelay(attempt int) time.Duration {
+	if len(m.retryBackoff) == 0 {
+		return 30 * time.Second
+	}
+	if attempt >= len(m.retryBackoff) {
+		return m.retryBackoff[len(m.retryBackoff)-1]
+	}
+	return m.retryBackoff[attempt]
+}
+
+// sleepOrReprobe blocks until the delay elapses, a re-probe is signaled,
+// or the context is cancelled. Returns true if the caller should
+// continue (delay elapsed OR re-probe signaled); false if ctx cancelled.
+func (m *Manager) sleepOrReprobe(ctx context.Context, delay time.Duration) bool {
+	t := time.NewTimer(delay)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	case <-m.reprobe:
+		return true
+	}
 }
 
 // probe returns the first client that succeeds, or (nil, zero, 0) if
@@ -225,7 +343,14 @@ func (m *Manager) probe(ctx context.Context, clients []Client) (Client, netip.Ad
 	}
 }
 
-func (m *Manager) refreshLoop(ctx context.Context, winner Client) {
+// refreshLoop keeps the mapping alive. Returns true if the loop
+// exited because ctx was cancelled (caller should return immediately).
+// Returns false if a re-probe was requested OR refresh has failed for
+// too long — caller should drop the current winner and re-run probe().
+func (m *Manager) refreshLoop(ctx context.Context, winner Client) bool {
+	const refreshFailureLimit = 3
+	refreshFailures := 0
+
 	for {
 		m.mu.Lock()
 		ttl := m.ttl
@@ -239,18 +364,30 @@ func (m *Manager) refreshLoop(ctx context.Context, winner Client) {
 		}
 		select {
 		case <-ctx.Done():
-			return
+			return true
 		case <-time.After(sleep):
+		case <-m.reprobe:
+			m.l.Info("portmap: re-probe requested, dropping current mapping")
+			return false
 		}
 
 		rctx, rcancel := context.WithTimeout(ctx, m.probeTimeout)
 		addr, newTTL, err := winner.Map(rctx, m.internalPort)
 		rcancel()
 		if err != nil {
-			m.l.WithError(err).WithField("protocol", winner.Name()).
+			refreshFailures++
+			m.l.WithError(err).
+				WithField("protocol", winner.Name()).
+				WithField("consecutive_failures", refreshFailures).
 				Warn("portmap: refresh failed; holding last mapping")
+			if refreshFailures >= refreshFailureLimit {
+				m.l.WithField("protocol", winner.Name()).
+					Info("portmap: refresh failed repeatedly, re-probing from scratch")
+				return false
+			}
 			continue
 		}
+		refreshFailures = 0
 
 		m.mu.Lock()
 		prev := m.current

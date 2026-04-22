@@ -1014,8 +1014,18 @@ func (h *ProxyHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Map to safe DTO — never expose AgentToken, EnrollmentToken, or keys.
+	// Same degraded-status derivation as in networks.go ListNodes.
 	result := make([]NodeResponse, 0, len(nodes))
 	for _, n := range nodes {
+		status := effectiveStatus(n.Status, n.LastSeenAt)
+		if status == "online" {
+			peersInNetwork := countPotentialPeers(nodes, n.ID, func(o *db.Node) (string, string, string, *int64) {
+				return o.ID, o.NodeType, o.Status, o.LastSeenAt
+			})
+			if isDegraded(status, n.NodeType, n.CreatedAt, n.PeersReportedAt, n.PeersDirect, n.PeersRelayed, peersInNetwork) {
+				status = "degraded"
+			}
+		}
 		result = append(result, NodeResponse{
 			ID:              n.ID,
 			NetworkID:       n.NetworkID,
@@ -1028,7 +1038,7 @@ func (h *ProxyHandler) ListNodes(w http.ResponseWriter, r *http.Request) {
 			ExposedPorts:    n.ExposedPorts,
 			DNSName:         n.DNSName,
 			Capabilities:    parseCapabilities(n.Capabilities),
-			Status:          effectiveStatus(n.Status, n.LastSeenAt),
+			Status:          status,
 			LastSeenAt:      n.LastSeenAt,
 			CreatedAt:       n.CreatedAt,
 			PeersDirect:     n.PeersDirect,
