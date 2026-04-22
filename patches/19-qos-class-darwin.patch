@@ -36,9 +36,9 @@
  	for slot := range inflight {
 --- /dev/null	1970-01-01 00:00:00
 +++ b/github.com/slackhq/nebula/qos_hint_darwin.go	2026-04-22 23:30:01
-@@ -0,0 +1,56 @@
-+//go:build darwin && !e2e_testing
-+// +build darwin,!e2e_testing
+@@ -0,0 +1,63 @@
++//go:build darwin && cgo && !e2e_testing
++// +build darwin,cgo,!e2e_testing
 +
 +package nebula
 +
@@ -77,6 +77,13 @@
 +// preserved for users who observe audio glitches or other
 +// side-effects from the elevated priority.
 +//
++// Build-tag note (added v0.10.15): the constraint requires `cgo` so
++// that CI cross-compiles with CGO_ENABLED=0 silently fall through to
++// the no-op stub in qos_hint_other.go instead of failing with
++// "undefined: applyOSThreadHints". To put the QoS gain into the
++// CI-released darwin binary, the release.yml workflow runs darwin
++// builds on macos-latest with CGO_ENABLED=1.
++//
 +// Recognised env values:
 +//   HOPSSH_QOS=off          → no QoS hint (revert to default)
 +//   HOPSSH_QOS=initiated    → QOS_CLASS_USER_INITIATED (slightly less aggressive)
@@ -95,21 +102,29 @@
 +}
 --- /dev/null	1970-01-01 00:00:00
 +++ b/github.com/slackhq/nebula/qos_hint_other.go	2026-04-22 23:30:01
-@@ -0,0 +1,9 @@
-+//go:build !darwin || e2e_testing
-+// +build !darwin e2e_testing
+@@ -0,0 +1,17 @@
++//go:build !darwin || !cgo || e2e_testing
++// +build !darwin !cgo e2e_testing
 +
 +package nebula
 +
-+// applyOSThreadHints — Darwin-only macOS QoS class hint. No-op on
-+// other platforms. The real implementation lives in
-+// qos_hint_darwin.go (CGO).
++// applyOSThreadHints — no-op stub used when CGO is unavailable
++// (non-darwin platforms, darwin builds with CGO_ENABLED=0 such as a
++// CI cross-compile from Linux, or e2e_testing). The real CGO
++// implementation lives in qos_hint_darwin.go and only compiles when
++// darwin && cgo && !e2e_testing.
++//
++// CI implication: a CI cross-compile with CGO_ENABLED=0 builds the
++// darwin binary with this stub and the binary will NOT carry the
++// −17 % RTT QoS gain. To put the gain into the released binary, CI
++// must build darwin on a macos-latest runner with CGO_ENABLED=1 —
++// see .github/workflows/release.yml.
 +func applyOSThreadHints() {}
 --- /dev/null	1970-01-01 00:00:00
 +++ b/github.com/slackhq/nebula/udp/qos_hint_darwin.go	2026-04-22 23:30:01
-@@ -0,0 +1,36 @@
-+//go:build darwin && !e2e_testing
-+// +build darwin,!e2e_testing
+@@ -0,0 +1,39 @@
++//go:build darwin && cgo && !e2e_testing
++// +build darwin,cgo,!e2e_testing
 +
 +package udp
 +
@@ -125,15 +140,18 @@
 +// thread, if requested by the HOPSSH_QOS environment variable.
 +// Same opt-in mechanism as the nebula-package equivalent — see
 +// vendor/.../nebula/qos_hint_darwin.go for the rationale (hopssh
-+// patch 19).
++// patch 19) and the empirical A/B/A data.
 +//
 +// This is duplicated rather than imported because the udp package
 +// must not depend on the nebula package (nebula imports udp, not
 +// the other way around). The two functions are intentionally
 +// identical and trivially short.
++//
 +// Default-on for darwin (USER_INTERACTIVE). HOPSSH_QOS=off to disable.
-+// See vendor/.../nebula/qos_hint_darwin.go for the empirical A/B/A
-+// data and rationale.
++//
++// Build constraint requires `cgo` so CI cross-compiles with
++// CGO_ENABLED=0 fall through to the stub in qos_hint_other.go
++// instead of failing with "undefined: applyOSThreadHints".
 +func applyOSThreadHints() {
 +	switch os.Getenv("HOPSSH_QOS") {
 +	case "off":
@@ -147,12 +165,12 @@
 --- /dev/null	1970-01-01 00:00:00
 +++ b/github.com/slackhq/nebula/udp/qos_hint_other.go	2026-04-22 23:30:01
 @@ -0,0 +1,9 @@
-+//go:build !darwin || e2e_testing
-+// +build !darwin e2e_testing
++//go:build !darwin || !cgo || e2e_testing
++// +build !darwin !cgo e2e_testing
 +
 +package udp
 +
-+// applyOSThreadHints — Darwin-only macOS QoS class hint. No-op on
-+// other platforms. The real implementation lives in
-+// qos_hint_darwin.go (CGO).
++// applyOSThreadHints — no-op stub used when CGO is unavailable
++// (non-darwin OR darwin+CGO_ENABLED=0 OR e2e_testing). See the
++// nebula-package equivalent for the full rationale and CI implication.
 +func applyOSThreadHints() {}

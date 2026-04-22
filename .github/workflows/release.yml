@@ -33,22 +33,43 @@ jobs:
 
   build:
     needs: frontend
-    runs-on: ubuntu-latest
+    # Per-target runner selection: darwin builds on macos-latest with
+    # CGO_ENABLED=1 so vendor patch 19's pthread_set_qos_class_self_np
+    # CGO calls are actually included in the released binary (the
+    # released binary is what end-user macOS agents pick up via self-
+    # update from the control plane, so this is the only path that
+    # delivers the −17 % RTT win in production). Linux + Windows stay
+    # on ubuntu-latest with CGO_ENABLED=0 — they have no CGO code in
+    # the agent and cross-compile cleanly.
+    runs-on: ${{ matrix.runner }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - goos: linux
             goarch: amd64
+            runner: ubuntu-latest
+            cgo: '0'
           - goos: linux
             goarch: arm64
+            runner: ubuntu-latest
+            cgo: '0'
           - goos: darwin
             goarch: amd64
+            runner: macos-latest
+            cgo: '1'
           - goos: darwin
             goarch: arm64
+            runner: macos-latest
+            cgo: '1'
           - goos: windows
             goarch: amd64
+            runner: ubuntu-latest
+            cgo: '0'
           - goos: windows
             goarch: arm64
+            runner: ubuntu-latest
+            cgo: '0'
     steps:
       - uses: actions/checkout@v4
 
@@ -70,22 +91,24 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.cgo }}
         run: |
           EXT=""
           if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
           LDFLAGS="-s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=${{ github.ref_name }} -X github.com/trustos/hopssh/internal/buildinfo.Commit=${{ github.sha }}"
-          CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="$LDFLAGS" \
+          go build -mod=vendor -trimpath -ldflags="$LDFLAGS" \
             -o hop-agent-${GOOS}-${GOARCH}${EXT} ./cmd/agent
 
       - name: Build server
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: ${{ matrix.cgo }}
         run: |
           EXT=""
           if [ "$GOOS" = "windows" ]; then EXT=".exe"; fi
           LDFLAGS="-s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=${{ github.ref_name }} -X github.com/trustos/hopssh/internal/buildinfo.Commit=${{ github.sha }}"
-          CGO_ENABLED=0 go build -mod=vendor -trimpath -ldflags="$LDFLAGS" \
+          go build -mod=vendor -trimpath -ldflags="$LDFLAGS" \
             -o hop-server-${GOOS}-${GOARCH}${EXT} ./cmd/server
 
       - name: Upload artifacts
