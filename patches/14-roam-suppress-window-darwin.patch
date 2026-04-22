@@ -1,0 +1,22 @@
+--- a/github.com/slackhq/nebula/hostmap.go	2026-04-22 15:38:50
++++ b/github.com/slackhq/nebula/hostmap.go	2026-04-22 15:33:00
+@@ -29,8 +29,17 @@
+ const MaxHostInfosPerVpnIp = 5
+ 
+ // How long we should prevent roaming back to the previous IP.
+-// This helps prevent flapping due to packets already in flight
+-const RoamingSuppressSeconds = 2
++// This helps prevent flapping due to packets already in flight.
++//
++// hopssh patch 14 (2026-04-22): bumped 2 → 10. Under hairpin-NAT a
++// peer is reachable via both its LAN address and its NAT-PMP-reflected
++// public address simultaneously. With the 2-second window, alternating
++// inbound packets caused the hostmap entry to flip every ~2s,
++// dropping in-flight UDP each time and producing visibly choppy
++// screen-share. 10s is short enough that a real WiFi→cellular roam
++// still recovers quickly, long enough to block the typical alternation
++// window.
++const RoamingSuppressSeconds = 10
+ 
+ const (
+ 	Requested = iota

@@ -1,0 +1,102 @@
+--- /dev/null	1970-01-01 00:00:00
++++ b/github.com/slackhq/nebula/hostmap_roam_test.go	2026-04-22 15:33:00
+@@ -0,0 +1,99 @@
++//go:build darwin && !e2e_testing
++// +build darwin,!e2e_testing
++
++package nebula
++
++import (
++	"net/netip"
++	"testing"
++)
++
++// These tests cover the v0.10.12 roam-stability fixes (hopssh
++// patches 14 + 15 — see docs/macos-host-roam-stability.md).
++//
++// We don't construct a full *Interface here — handleHostRoaming
++// depends on lightHouse, hostMap, logger, etc., which would all need
++// stubbing. Instead we test the two surgical pieces that are
++// purely-functional and form the load-bearing parts of the fix:
++//
++//   1. RoamingSuppressSeconds constant must be ≥ 5 (the original 2 was
++//      too narrow to dampen 2-address alternation; 10 is the new value).
++//   2. isAddrInRanges(addr, prefixes) must classify addresses
++//      correctly — this is the helper handleHostRoaming consults to
++//      decide "is the current/candidate remote in preferred_ranges?"
++//
++// The end-to-end behavior (no roam-flap on hairpin-NAT setups) is
++// verified by deploying to real Macs and watching log output for
++// "Host roamed" entries during a sustained iperf3 + screen-share
++// session — see plan file Verification section.
++
++// TestRoamingSuppressSeconds_AtLeast5 — regression guard for v0.10.12.
++// If a future Nebula upstream merge reverts the constant to 2 (or any
++// value < 5), this test fails loudly so we know to re-apply patch 14.
++// The 5s floor is the minimum that defeats the typical 2-address
++// alternation period observed in production.
++func TestRoamingSuppressSeconds_AtLeast5(t *testing.T) {
++	if RoamingSuppressSeconds < 5 {
++		t.Fatalf("RoamingSuppressSeconds = %d; must be ≥ 5 to defeat 2-address hairpin-NAT alternation (hopssh patch 14)",
++			RoamingSuppressSeconds)
++	}
++}
++
++// TestIsAddrInRanges covers the helper that handleHostRoaming uses to
++// decide whether the current and candidate remotes are in
++// preferred_ranges. Wrong classification here would either suppress
++// legitimate roams (false positive) or flap on hairpin NAT
++// (false negative — the bug we're fixing).
++func TestIsAddrInRanges(t *testing.T) {
++	// hopssh's standard preferred_ranges (from
++	// internal/nebulacfg/defaults.go:PreferredRangesYAML).
++	preferred := []netip.Prefix{
++		netip.MustParsePrefix("192.168.0.0/16"),
++		netip.MustParsePrefix("172.16.0.0/12"),
++		netip.MustParsePrefix("10.0.0.0/8"),
++	}
++
++	cases := []struct {
++		name string
++		addr netip.Addr
++		want bool
++	}{
++		{"home LAN address — preferred", netip.MustParseAddr("192.168.23.18"), true},
++		{"home LAN broadcast — preferred", netip.MustParseAddr("192.168.255.255"), true},
++		{"docker bridge — preferred", netip.MustParseAddr("172.17.0.1"), true},
++		{"office LAN — preferred", netip.MustParseAddr("10.42.1.7"), true},
++		{"public NAT-reflected addr — NOT preferred", netip.MustParseAddr("46.10.240.91"), false},
++		{"google DNS — NOT preferred", netip.MustParseAddr("8.8.8.8"), false},
++		{"172.32.0.1 — outside the /12, NOT preferred", netip.MustParseAddr("172.32.0.1"), false},
++		{"link-local — NOT in our preferred set", netip.MustParseAddr("169.254.1.1"), false},
++		{"invalid addr — false", netip.Addr{}, false},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			got := isAddrInRanges(tc.addr, preferred)
++			if got != tc.want {
++				t.Fatalf("isAddrInRanges(%s) = %v, want %v", tc.addr, got, tc.want)
++			}
++		})
++	}
++}
++
++// TestIsAddrInRanges_EmptyRanges — when no preferred_ranges are
++// configured, the function returns false for any address. This is the
++// "feature off" path: handleHostRoaming falls back to the original
++// time-window suppression behaviour.
++func TestIsAddrInRanges_EmptyRanges(t *testing.T) {
++	cases := []netip.Addr{
++		netip.MustParseAddr("192.168.1.1"),
++		netip.MustParseAddr("8.8.8.8"),
++		netip.MustParseAddr("10.0.0.1"),
++	}
++	for _, addr := range cases {
++		if isAddrInRanges(addr, nil) {
++			t.Fatalf("isAddrInRanges(%s, nil) = true, want false", addr)
++		}
++		if isAddrInRanges(addr, []netip.Prefix{}) {
++			t.Fatalf("isAddrInRanges(%s, []) = true, want false", addr)
++		}
++	}
++}

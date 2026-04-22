@@ -1,0 +1,75 @@
+--- a/github.com/slackhq/nebula/outside.go	2026-04-22 15:38:18
++++ b/github.com/slackhq/nebula/outside.go	2026-04-22 15:37:12
+@@ -248,6 +248,49 @@
+ 			return
+ 		}
+ 
++		// hopssh patch 15 (2026-04-22): preferred_ranges-aware data-plane roaming.
++		//
++		// Without this, two paths to the same peer (LAN + NAT-PMP-reflected
++		// public, both viable via hairpin NAT) cause the hostmap to flip
++		// on every alternating packet, even with the 10s suppression window
++		// from patch 14 (the suppression only blocks re-flip to the
++		// IMMEDIATE-prior addr; with 2 alternating addrs both qualify as
++		// "not the prior" outside a tight window).
++		//
++		// Rules:
++		//   1. Current remote is in preferred_ranges, candidate is NOT
++		//      → ignore (we're on LAN, ignore public reflection).
++		//   2. Current remote is NOT in preferred_ranges, candidate IS
++		//      → roam immediately (LAN beats public; bypass time window).
++		//   3. Otherwise (both preferred, or both unpreferred)
++		//      → fall through to the time-window suppression below.
++		//
++		// Upstream Nebula already has this preference at handshake time
++		// (HostMap.SetRemoteIfPreferred / TryPromoteBest), but not in the
++		// data-plane roaming path — so once two paths are both reachable,
++		// the data plane keeps reverting to whatever sent the last packet.
++		preferredRanges := f.hostMap.GetPreferredRanges()
++		if len(preferredRanges) > 0 {
++			currentPreferred := isAddrInRanges(hostinfo.remote.Addr(), preferredRanges)
++			candidatePreferred := isAddrInRanges(via.UdpAddr.Addr(), preferredRanges)
++			if currentPreferred && !candidatePreferred {
++				if f.l.Level >= logrus.DebugLevel {
++					hostinfo.logger(f.l).WithField("udpAddr", hostinfo.remote).WithField("newAddr", via.UdpAddr).
++						Debug("Ignoring roam to non-preferred remote (current remote is in preferred_ranges)")
++				}
++				return
++			}
++			if !currentPreferred && candidatePreferred {
++				hostinfo.logger(f.l).WithField("udpAddr", hostinfo.remote).WithField("newAddr", via.UdpAddr).
++					Info("Host roamed to preferred-range remote (bypassing suppression window).")
++				hostinfo.lastRoam = time.Now()
++				hostinfo.lastRoamRemote = hostinfo.remote
++				hostinfo.SetRemote(via.UdpAddr)
++				return
++			}
++			// both preferred or both unpreferred → fall through
++		}
++
+ 		if !hostinfo.lastRoam.IsZero() && via.UdpAddr == hostinfo.lastRoamRemote && time.Since(hostinfo.lastRoam) < RoamingSuppressSeconds*time.Second {
+ 			if f.l.Level >= logrus.DebugLevel {
+ 				hostinfo.logger(f.l).WithField("udpAddr", hostinfo.remote).WithField("newAddr", via.UdpAddr).
+@@ -265,6 +308,22 @@
+ 
+ }
+ 
++// isAddrInRanges reports whether addr is contained in any of the
++// preferred_ranges prefixes. Helper for handleHostRoaming so the
++// per-packet path doesn't allocate. Exported via lower-case for tests
++// in the same package only.
++func isAddrInRanges(addr netip.Addr, ranges []netip.Prefix) bool {
++	if !addr.IsValid() {
++		return false
++	}
++	for _, r := range ranges {
++		if r.Contains(addr) {
++			return true
++		}
++	}
++	return false
++}
++
+ // handleEncrypted returns true if a packet should be processed, false otherwise
+ func (f *Interface) handleEncrypted(ci *ConnectionState, via ViaSender, h *header.H) bool {
+ 	// If connectionstate does not exist, send a recv error, if possible, to encourage a fast reconnect
