@@ -1,0 +1,185 @@
+--- a/github.com/slackhq/nebula/udp/udp_darwin.go	2026-04-22 22:28:42
++++ b/github.com/slackhq/nebula/udp/udp_darwin.go	2026-04-22 22:27:48
+@@ -8,6 +8,7 @@
+ 	"fmt"
+ 	"net"
+ 	"net/netip"
++	"runtime"
+ 	"sync"
+ 	"syscall"
+ 	"unsafe"
+@@ -238,41 +239,152 @@
+ 	}
+ }
+ 
+-func (u *StdConn) ListenOut(r EncReader) {
+-	msgs, buffers, names := u.PrepareRawMessages(u.batch)
+-	read := u.ReadMulti
++// outBatch is one slot of pre-allocated recvmsg_x buffers passed
++// between the reader and worker goroutines via channels (hopssh
++// patch 17). The slot is owned by exactly one goroutine at any
++// moment — ownership transfers over channels, never under shared
++// access. Mirrors the inBatch design from patch 12 on the outbound
++// side.
++//
++// Each slot owns its own msgs/buffers/names triplet so the kernel's
++// recvmsg_x can write into one slot while the worker reads from
++// another. msgs[i].Iov.Base and msgs[i].Name are pointers INTO this
++// slot's buffers/names — set up once in PrepareRawMessages, never
++// reassigned.
++type outBatch struct {
++	msgs    []msghdrX
++	buffers [][]byte
++	names   [][]byte
++	n       int // number of valid packets (0..len(msgs))
++}
++
++// listenOutPipelineSlots is the number of recvmsg_x batches that can
++// be in flight between the reader and worker. Two is enough to overlap
++// the reader's recvmsg_x block with the worker's process+flush. More
++// would just add latency under back-pressure without further
++// throughput gain.
++const listenOutPipelineSlots = 2
++
++func (u *StdConn) ListenOut(r EncReader) {
++	// Single-packet path (batch=1, e.g. an OS that doesn't support
++	// recvmsg_x or a deliberate single-call config). Same shape as
++	// upstream — recvmsg per packet, callback per packet, flush per
++	// packet. No pipeline because there's nothing to overlap when
++	// there's only ever one packet "in flight" per syscall round.
+ 	if u.batch == 1 {
+-		read = u.ReadSingle
++		msgs, buffers, names := u.PrepareRawMessages(u.batch)
++		var ip netip.Addr
++		for {
++			n, err := u.ReadSingle(msgs)
++			if err != nil {
++				u.l.WithError(err).Debug("udp socket is closed, exiting read loop")
++				return
++			}
++			for i := 0; i < n; i++ {
++				if u.isV4 {
++					ip, _ = netip.AddrFromSlice(names[i][4:8])
++				} else {
++					ip, _ = netip.AddrFromSlice(names[i][8:24])
++				}
++				r(netip.AddrPortFrom(ip.Unmap(), binary.BigEndian.Uint16(names[i][2:4])), buffers[i][:msgs[i].Datalen])
++			}
++			if err := u.Flush(); err != nil {
++				u.l.WithError(err).Debug("flush after listenOut batch failed")
++			}
++			for i := 0; i < n; i++ {
++				msgs[i].Namelen = uint32(unix.SizeofSockaddrInet6)
++			}
++		}
+ 	}
+ 
+-	var ip netip.Addr
++	// Pipeline path: split into reader (recvmsg_x) and worker
++	// (callback + Flush), connected by a 2-slot channel ring. Mirrors
++	// patch 12's listenIn architecture and applies the same lessons:
++	//
++	//   - Both channels are sized = numSlots so the init loop can
++	//     hand all slots to `free` BEFORE the worker exists, without
++	//     deadlocking. (The v0.10.10-dev1 regression: cap(free)=1
++	//     with numSlots=2 silently stalled the reader on second push.)
++	//   - One reader + one worker preserves FIFO order at both batch
++	//     and per-packet level. TCP retransmit-on-reorder lesson from
++	//     patch-09 still applies — reordering inbound TCP segments
++	//     here would tank throughput just like reordering outbound did.
++	//   - Caller-driven flush, not timer-based. Worker calls Flush()
++	//     after processing each batch; that handles handshake replies
++	//     and relay forwards queued during processing, same as before.
++	//   - Reader is the only goroutine that closes inflight (on
++	//     unrecoverable read error). Worker exits naturally when its
++	//     `for batch := range inflight` loop drains.
++	inflight := make(chan *outBatch, listenOutPipelineSlots)
++	free := make(chan *outBatch, listenOutPipelineSlots)
++
++	for k := 0; k < listenOutPipelineSlots; k++ {
++		msgs, buffers, names := u.PrepareRawMessages(u.batch)
++		free <- &outBatch{msgs: msgs, buffers: buffers, names: names}
++	}
++
++	go u.listenOutWorker(inflight, free, r)
++
+ 	for {
+-		n, err := read(msgs)
++		slot := <-free
++		// Reset Namelen for all entries — recvmsg writes the actual
++		// length used and the next call needs the full buffer size
++		// available again. (Datalen is overwritten by the kernel; no
++		// reset needed.)
++		for i := range slot.msgs {
++			slot.msgs[i].Namelen = uint32(unix.SizeofSockaddrInet6)
++		}
++
++		n, err := u.ReadMulti(slot.msgs)
+ 		if err != nil {
+ 			u.l.WithError(err).Debug("udp socket is closed, exiting read loop")
++			close(inflight)
+ 			return
+ 		}
++		slot.n = n
++		inflight <- slot
++	}
++}
+ 
+-		for i := 0; i < n; i++ {
+-			if u.isV4 {
+-				ip, _ = netip.AddrFromSlice(names[i][4:8])
+-			} else {
+-				ip, _ = netip.AddrFromSlice(names[i][8:24])
+-			}
+-			r(netip.AddrPortFrom(ip.Unmap(), binary.BigEndian.Uint16(names[i][2:4])), buffers[i][:msgs[i].Datalen])
+-		}
++// listenOutWorker drains slots from inflight, invokes the
++// EncReader callback for each packet (decrypt + TUN write happens
++// inside the callback via readOutsidePackets), then performs a
++// single Flush() to push any reply packets queued during processing
++// (handshake replies, relay forwards). Returns the slot to `free`
++// so the reader can refill it.
++//
++// Pipeline (hopssh patch 17 — symmetric to patch 12):
++//
++//	reader goroutine:
++//	    <-free → ReadMulti(slot) (blocks in recvmsg_x) → inflight<-slot
++//	worker goroutine:
++//	    <-inflight → callback × n → Flush() (sendmsg_x) → free<-slot
++//
++// Overlap: while reader is parked in recvmsg_x waiting for the
++// kernel to deliver the next batch, worker is decrypting and
++// TUN-writing the previous batch. Both blocking syscalls plus the
++// CPU-bound decrypt run concurrently instead of serially.
++func (u *StdConn) listenOutWorker(inflight, free chan *outBatch, r EncReader) {
++	runtime.LockOSThread()
+ 
+-		// Flush any WriteTo responses queued during this batch (handshake
+-		// replies, relay forwards, etc.). Without this, responses sit in the
+-		// send queue until listenIn's Flush runs — but the TUN path may never
+-		// fire (e.g., handshake has no TUN packet) and handshakes time out.
++	var ip netip.Addr
++	for slot := range inflight {
++		for i := 0; i < slot.n; i++ {
++			if u.isV4 {
++				ip, _ = netip.AddrFromSlice(slot.names[i][4:8])
++			} else {
++				ip, _ = netip.AddrFromSlice(slot.names[i][8:24])
++			}
++			r(netip.AddrPortFrom(ip.Unmap(), binary.BigEndian.Uint16(slot.names[i][2:4])), slot.buffers[i][:slot.msgs[i].Datalen])
++		}
++		// Flush any WriteTo responses queued during this batch
++		// (handshake replies, relay forwards). Without this, replies
++		// sit in the send queue indefinitely if no TUN-side traffic
++		// flows — handshakes time out.
+ 		if err := u.Flush(); err != nil {
+ 			u.l.WithError(err).Debug("flush after listenOut batch failed")
+ 		}
+-
+-		for i := 0; i < n; i++ {
+-			msgs[i].Namelen = uint32(unix.SizeofSockaddrInet6)
+-		}
++		free <- slot
+ 	}
+ }
+ 

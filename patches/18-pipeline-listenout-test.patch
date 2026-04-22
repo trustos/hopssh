@@ -1,0 +1,256 @@
+--- /dev/null	1970-01-01 00:00:00
++++ b/github.com/slackhq/nebula/udp/udp_darwin_listenout_pipeline_test.go	2026-04-22 22:28:00
+@@ -0,0 +1,253 @@
++//go:build darwin && !e2e_testing
++// +build darwin,!e2e_testing
++
++package udp
++
++import (
++	"net/netip"
++	"sync"
++	"testing"
++	"time"
++)
++
++// These tests cover the channel-discipline invariants of the
++// listenOut pipeline introduced in vendor patch 17 (symmetric to
++// patch 12's listenIn pipeline). They do NOT instantiate a full
++// *StdConn — that requires an open UDP socket and a bound IP. Instead
++// they exercise the outBatch slot lifecycle and the channel patterns
++// the real ListenOut / listenOutWorker rely on.
++//
++// Invariants under test:
++//   1. listenOutPipelineSlots slots can be pre-allocated and pushed
++//      onto a buffered channel of cap=listenOutPipelineSlots BEFORE
++//      a consumer goroutine exists. Regression-protects the same
++//      class of bug we hit in v0.10.10-dev1 on the inbound pipeline
++//      (cap=1 with numSlots=2 silently stalled the reader).
++//   2. Slots flow FIFO from reader → worker → reader through the two
++//      channels, preserving inbound batch order. TCP retransmits if
++//      reordered.
++//   3. close(inflight) terminates the worker's `for batch := range`
++//      loop and the worker drains any in-flight slots before exiting.
++//   4. Back-pressure: when both channels are full (worker stalled),
++//      reader blocks rather than allocating more slots or dropping
++//      batches.
++
++const testListenOutBatchSize = 32
++
++func makeTestOutBatch() *outBatch {
++	msgs := make([]msghdrX, testListenOutBatchSize)
++	buffers := make([][]byte, testListenOutBatchSize)
++	names := make([][]byte, testListenOutBatchSize)
++	for i := range msgs {
++		buffers[i] = make([]byte, MTU)
++		names[i] = make([]byte, 28) // SizeofSockaddrInet6
++	}
++	return &outBatch{msgs: msgs, buffers: buffers, names: names}
++}
++
++// TestOutBatchInitDoesNotDeadlock — regression guard. The init loop
++// in ListenOut pushes listenOutPipelineSlots slots onto `free` before
++// the worker exists. If `free` is sized < listenOutPipelineSlots the
++// second push blocks forever waiting for a reader, the agent goes
++// silent on inbound, and only the heartbeat HTTPS channel keeps
++// working — exactly the "online but unreachable" failure mode we
++// already learned about on the outbound side.
++func TestOutBatchInitDoesNotDeadlock(t *testing.T) {
++	free := make(chan *outBatch, listenOutPipelineSlots)
++
++	done := make(chan struct{})
++	go func() {
++		defer close(done)
++		for k := 0; k < listenOutPipelineSlots; k++ {
++			free <- makeTestOutBatch()
++		}
++	}()
++
++	select {
++	case <-done:
++		// expected
++	case <-time.After(100 * time.Millisecond):
++		t.Fatalf("init loop deadlocked pushing %d slots onto chan of cap %d "+
++			"(would silently stall ListenOut — same class of bug as the v0.10.10-dev1 inbound regression)",
++			listenOutPipelineSlots, cap(free))
++	}
++
++	if got := len(free); got != listenOutPipelineSlots {
++		t.Fatalf("free channel should hold %d slots after init, got %d", listenOutPipelineSlots, got)
++	}
++}
++
++// TestOutBatchPipelineFIFO — slots round-trip from reader → worker
++// → reader in FIFO order. We model the pipeline with a worker stub
++// that records the batch IDs it observes; reader pushes batches with
++// ascending IDs; assert the worker observed them in order.
++//
++// Per-packet ordering INSIDE a batch is preserved by the worker's
++// `for i := 0; i < slot.n; i++` loop (deterministic array iteration);
++// per-batch ordering is preserved by the FIFO Go channel.
++func TestOutBatchPipelineFIFO(t *testing.T) {
++	const numBatches = 64
++
++	inflight := make(chan *outBatch, listenOutPipelineSlots)
++	free := make(chan *outBatch, listenOutPipelineSlots)
++
++	for k := 0; k < listenOutPipelineSlots; k++ {
++		free <- makeTestOutBatch()
++	}
++
++	var observedMu sync.Mutex
++	observed := make([]int, 0, numBatches)
++
++	workerDone := make(chan struct{})
++	go func() {
++		defer close(workerDone)
++		for batch := range inflight {
++			id := int(batch.buffers[0][0])<<8 | int(batch.buffers[0][1])
++			observedMu.Lock()
++			observed = append(observed, id)
++			observedMu.Unlock()
++			free <- batch
++		}
++	}()
++
++	for seq := 0; seq < numBatches; seq++ {
++		batch := <-free
++		batch.n = 1
++		batch.buffers[0][0] = byte(seq >> 8)
++		batch.buffers[0][1] = byte(seq & 0xff)
++		inflight <- batch
++	}
++	close(inflight)
++	<-workerDone
++
++	if got := len(observed); got != numBatches {
++		t.Fatalf("worker observed %d batches, want %d", got, numBatches)
++	}
++	for i, id := range observed {
++		if id != i {
++			t.Fatalf("FIFO violation at index %d: observed id=%d, want %d (full sequence: %v)",
++				i, id, i, observed)
++		}
++	}
++}
++
++// TestOutBatchWorkerShutdownDrainsInflight — closing inflight
++// (which the reader does on EOF / socket-closed) must let the
++// worker drain remaining queued slots before exiting via the
++// natural `for ... range` terminate path. No leaked goroutines, no
++// stuck slots.
++func TestOutBatchWorkerShutdownDrainsInflight(t *testing.T) {
++	inflight := make(chan *outBatch, listenOutPipelineSlots)
++	free := make(chan *outBatch, listenOutPipelineSlots)
++
++	for k := 0; k < listenOutPipelineSlots; k++ {
++		free <- makeTestOutBatch()
++	}
++
++	processed := 0
++	workerDone := make(chan struct{})
++	go func() {
++		defer close(workerDone)
++		for batch := range inflight {
++			processed++
++			free <- batch
++		}
++	}()
++
++	for k := 0; k < listenOutPipelineSlots; k++ {
++		batch := <-free
++		batch.n = 1
++		inflight <- batch
++	}
++	close(inflight)
++
++	select {
++	case <-workerDone:
++	case <-time.After(500 * time.Millisecond):
++		t.Fatalf("worker did not exit within 500ms after close(inflight)")
++	}
++
++	if processed != listenOutPipelineSlots {
++		t.Fatalf("worker processed %d batches before exit, want %d (drain-on-close violated)",
++			processed, listenOutPipelineSlots)
++	}
++
++	if got := len(free); got != listenOutPipelineSlots {
++		t.Fatalf("free channel holds %d slots after worker exit, want %d (slot leak)",
++			got, listenOutPipelineSlots)
++	}
++}
++
++// TestOutBatchBackPressureBlocksReader — when the worker is stalled
++// (we simulate by never reading inflight), the reader must block on
++// <-free rather than allocating more memory or dropping batches.
++// This is what prevents unbounded queueing when the receive rate
++// outpaces decrypt+TUN-write throughput.
++func TestOutBatchBackPressureBlocksReader(t *testing.T) {
++	inflight := make(chan *outBatch, listenOutPipelineSlots)
++	free := make(chan *outBatch, listenOutPipelineSlots)
++
++	for k := 0; k < listenOutPipelineSlots; k++ {
++		free <- makeTestOutBatch()
++	}
++
++	// Fill inflight to capacity — worker NOT consuming.
++	for k := 0; k < listenOutPipelineSlots; k++ {
++		batch := <-free
++		batch.n = 1
++		inflight <- batch
++	}
++
++	// Reader's next attempt is `<-free`; free is empty so it must
++	// block. Don't run actual ReadMulti here — we're testing the
++	// channel arithmetic, not the syscall.
++	blocked := make(chan struct{})
++	go func() {
++		<-free
++		close(blocked)
++	}()
++
++	select {
++	case <-blocked:
++		t.Fatalf("reader did not block when free channel was empty — back-pressure broken")
++	case <-time.After(50 * time.Millisecond):
++		// expected
++	}
++
++	// Drain one slot from inflight and return it to free, simulating
++	// the worker finishing a batch.
++	<-inflight
++	free <- makeTestOutBatch()
++
++	select {
++	case <-blocked:
++		// expected — reader unblocked once a slot returned to free
++	case <-time.After(100 * time.Millisecond):
++		t.Fatalf("reader did not unblock after a slot was returned to free")
++	}
++}
++
++// TestListenOutPipelineSlots_Sane — the slot count is a deliberate
++// design choice: 2 is enough to overlap reader-block with
++// worker-process. Higher would just add latency under back-pressure
++// without further throughput gain. Guard against an accidental
++// future change to 1 (which would reintroduce the original
++// single-goroutine serialization) or to a large number (which would
++// cause buffer-bloat under sustained ingress).
++func TestListenOutPipelineSlots_Sane(t *testing.T) {
++	if listenOutPipelineSlots < 2 {
++		t.Fatalf("listenOutPipelineSlots = %d; pipeline needs ≥ 2 slots to overlap reader-block with worker-process",
++			listenOutPipelineSlots)
++	}
++	if listenOutPipelineSlots > 8 {
++		t.Fatalf("listenOutPipelineSlots = %d; > 8 risks buffer-bloat under sustained ingress (memory: numSlots × batch × MTU)",
++			listenOutPipelineSlots)
++	}
++}
++
++// _unusedKeepImports keeps the netip import live even if a future
++// refactor removes the only direct usage from this file. The test
++// helpers don't currently call netip but the production pipeline
++// does (via the worker reading addr from names[i]); the test file
++// historically had reasons to use it.
++var _unusedKeepImports = netip.AddrPort{}
