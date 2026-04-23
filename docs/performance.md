@@ -62,6 +62,30 @@ Tunnel overhead: 70% throughput reduction, +5.6ms latency. The throughput gap is
 
 2.7× downlink improvement, at Tailscale parity. Uplink unchanged (was already near parity; the remaining delta is on the inbound `listenOut` path, not yet pipelined). No NEPacketTunnelProvider required — this is all raw userspace utun. No regressions: cellular DL stays at 49 Mb/s (MTU 1420), Screen Sharing HP still works with the retry-once pattern, direct-P2P RTT still 4–5 ms.
 
+**WiFi LAN MTU re-bisection (v0.10.16, 2026-04-23):** With the v0.10.13+ stack (pipelined listenIn+listenOut, QOS_CLASS_USER_INTERACTIVE) and on home WiFi LAN (Mac mini Ethernet ↔ MacBook Pro WiFi), 4 × 15 s iperf3 + 500-ping RTT per MTU, hopssh + Tailscale measured in the same window:
+
+| MTU | h.DL | h.UL | h.RTT mean | h.RTT std | t.DL | t.UL | notes |
+|---|---|---|---|---|---|---|---|
+| 1280 | 300 | 211 | 29.3 | 37.6 | 271 | 187 | matches Tailscale's choice |
+| **1380** ✓ | **323** | 249 | **26.3** | **34.3** | 295 | 190 | new prod default |
+| 1420 (prev) | 192 | 264 | 27.8 | 35.9 | 246 | 192 | the cellular sweet spot |
+| 1500 | 146 | 168 | 41.4 | 67.1 | 248 | 194 | inner+60 outer fragments at 1500 path MTU |
+| 2800 | 233 | 320 | 26.5 | 39.9 | 244 | 193 | 22 % packet loss — jumbo doesn't survive |
+
+**1380 wins** on hopssh DL (+68 % vs 1420), RTT mean (−1.5 ms), and RTT stddev (−1.6 ms) in the WiFi LAN window. Beats Tailscale on every metric in the same window. The "1380 trips macOS HP screen-share" failure mode from the original cellular bisection (v0.9.x) **did not reproduce** on the v0.10.13+ codebase — manual screen-share test at 1380 confirmed working. Likely patches 12/14/15/17/19 changed the heuristic inputs avconferenced sees on a raw userspace utun.
+
+Outer-packet math: 1380 (utun) + 16 (Nebula) + 16 (AEAD) + 8 (UDP) + 20 (IP) = 1440 bytes total. **60 bytes of slack** inside 1500-byte standard Internet MTU — vs 1420's 20-byte slack. Closer to upstream Nebula's `DefaultMTU = 1300` (which adds another 80 bytes of headroom for PPPoE / GRE / IPSec underlay paths) without giving up the WiFi LAN throughput.
+
+Comparison (3-way, hopssh@1380 vs Tailscale vs raw LAN, morning bench under poorer WiFi):
+
+| Path | DL | UL | RTT min | RTT mean | RTT std |
+|---|---|---|---|---|---|
+| hopssh @ 1380 | 33 Mb | 138 Mb | 4.1 ms | 30.9 ms | 38.5 ms |
+| Tailscale | 37 Mb | 139 Mb | 3.9 ms | 27.8 ms | 37.7 ms |
+| raw LAN | (firewalled) | (firewalled) | 2.6 ms | 28.5 ms | 38.3 ms |
+
+VPN overhead vs raw LAN ≈ 2.4 ms RTT mean (hopssh) and ~0 ms (Tailscale, NE bundle). hopssh and Tailscale now indistinguishable within WiFi noise on raw userspace utun.
+
 ### CPU Profile Under Screen Sharing Load (30s, pprof)
 
 | CPU% | Function | Category |

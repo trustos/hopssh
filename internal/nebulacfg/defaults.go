@@ -48,38 +48,62 @@ const ListenPort = 4242
 
 // TunMTU is the MTU for the Nebula TUN interface in kernel mode.
 //
-// 1420 — empirical sweet spot from a 2026-04-21 bisection on real
-// cellular (Mac mini ↔ MacBook Pro, Yettel BG, direct-P2P verified):
+// History (chronological):
 //
-//   MTU  | downlink | uplink  | retr DL | macOS HP screen-share
-//   ------+----------+---------+---------+----------------------------
-//   2800 | 7.8 Mb/s | 1.5 Mb/s|     191 | warning + retry → works
-//   1440 |  42 Mb/s | 6.8 Mb/s|    1052 | starts cleanly, usable
-//   1420 |  49 Mb/s | 8.3 Mb/s|     321 | warning + retry → works ✓
-//   1380 |  41 Mb/s | 6.8 Mb/s|    1026 | login screen freezes
-//   1280 |  52 Mb/s | 9.0 Mb/s|    9199 | black screen, no warning
+//  2026-04-21 — bisection on real cellular (Mac mini ↔ MacBook Pro,
+//  Yettel BG, direct-P2P) chose 1420:
 //
-// Why 1420 wins:
-//   - Matches Tailscale's downlink throughput on the same cellular
-//     path (~50 Mb/s) — 6.3× the 2800 baseline that was fragmenting.
-//   - 28× fewer retransmits than 1280 (321 vs 9199) — closer to the
-//     path's true capacity, less wasted air-time.
-//   - Stays above the MTU heuristic that macOS HP Screen Sharing uses
-//     on raw userspace utun (no IS_VPN flag). 1380 trips the heuristic
-//     and HP fails (login screen freezes); 1420 stays clear of it and
-//     HP works with the documented retry-once pattern.
+//    MTU  | DL Mb/s | UL Mb/s | retr DL | macOS HP screen-share
+//    -----+---------+---------+---------+----------------------------
+//    2800 |    7.8  |    1.5  |    191  | warning + retry → works
+//    1440 |   42    |    6.8  |   1052  | starts cleanly, usable
+//    1420 |   49    |    8.3  |    321  | warning + retry → works ✓ (was prod)
+//    1380 |   41    |    6.8  |   1026  | login screen freezes (back then)
+//    1280 |   52    |    9.0  |   9199  | black screen, no warning
 //
-// Outer-packet math: 1420 (utun) + 16 (Nebula header) + 16 (AEAD tag)
-// + 8 (UDP header) + 20 (IP header) = 1480 bytes total IP packet.
-// Fits inside 1500-byte standard Internet MTU with 20 bytes of slack
-// for any carrier-side header overhead (PPPoE, GTP-U, etc.).
+//  2026-04-23 — re-bisection on home WiFi LAN (Mac mini Ethernet ↔
+//  MacBook Pro WiFi) under different conditions, with the
+//  v0.10.13+ stack (pipelined listenIn+listenOut, QOS_CLASS_USER_INTERACTIVE).
+//  4 × 15 s iperf3 + 500-ping RTT per MTU, hopssh + Tailscale measured
+//  in the same window:
+//
+//    MTU  | h.DL Mb | h.UL Mb | h.RTT mean | h.RTT std
+//    -----+---------+---------+------------+----------
+//    1280 |   300   |   211   |   29.3 ms  |  37.6 ms
+//    1380 |   323   |   249   |   26.3 ms  |  34.3 ms  ← winner across DL, RTT mean, stddev
+//    1420 |   192   |   264   |   27.8 ms  |  35.9 ms
+//    1500 |   146   |   168   |   41.4 ms  |  67.1 ms  (1500+60 outer fragments)
+//    2800 |   233   |   320   |   26.5 ms  |  39.9 ms  (22% packet loss)
+//
+//  3-way (hopssh@1380 vs Tailscale vs raw LAN) under the bad-WiFi
+//  morning that followed: hopssh and Tailscale tied within noise on
+//  every metric (DL 33 vs 37, UL 138 vs 139, RTT 30.9 vs 27.8 ms).
+//  Manual screen-share test at 1380 confirmed working — the
+//  "1380 tripped HP screen-share" failure mode from the original
+//  cellular bisection did not reproduce on the v0.10.13+ codebase
+//  (likely because patches 12/14/15/17/19 changed the heuristic
+//  inputs avconferenced sees).
+//
+// Why 1380 wins now:
+//   - Best aggregate WiFi LAN performer on the v0.10.13+ stack.
+//   - Closer to upstream Nebula's `DefaultMTU = 1300` (60 bytes more
+//     headroom than 1420 for outer-packet overhead on PPPoE / GRE /
+//     IPSec underlay paths).
+//   - Outer packet at 1380 inner = 1440 bytes (60-byte headers).
+//     Fits inside 1500-byte standard Internet MTU with 60 bytes of
+//     slack — comfortably more than 1420's 20-byte slack.
+//   - macOS HP screen-share confirmed working at 1380 with the
+//     current codebase.
+//
+// If you hit cellular path issues (high retransmits, 6 Mb/s plateau)
+// you may want to lower to 1300 (Nebula default) which adds another
+// 80 bytes of underlay headroom but loses ~10 % WiFi LAN throughput.
 //
 // The fundamental fix for HP independent of MTU is
 // `NEPacketTunnelProvider` (Apple Dev ID, signed app, weeks of work)
 // so avconferenced gets explicit VPN classification via the IS_VPN
 // xflag + NetworkExtension agents instead of guessing from MTU.
-// TunMTU final value — see comment block below for the bisection.
-const TunMTU = 1420
+const TunMTU = 1380
 
 // HandshakeTryInterval is the retry interval for Noise handshake attempts.
 // Default 100ms wastes time if the lighthouse responds faster. 20ms ensures
