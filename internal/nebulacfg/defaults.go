@@ -78,32 +78,63 @@ const ListenPort = 4242
 //  3-way (hopssh@1380 vs Tailscale vs raw LAN) under the bad-WiFi
 //  morning that followed: hopssh and Tailscale tied within noise on
 //  every metric (DL 33 vs 37, UL 138 vs 139, RTT 30.9 vs 27.8 ms).
-//  Manual screen-share test at 1380 confirmed working — the
-//  "1380 tripped HP screen-share" failure mode from the original
-//  cellular bisection did not reproduce on the v0.10.13+ codebase
-//  (likely because patches 12/14/15/17/19 changed the heuristic
-//  inputs avconferenced sees).
+//  Manual screen-share test at 1380 reported "looks ok I guess" —
+//  hedged confirmation that turned out to be wrong (see below).
 //
-// Why 1380 wins now:
-//   - Best aggregate WiFi LAN performer on the v0.10.13+ stack.
-//   - Closer to upstream Nebula's `DefaultMTU = 1300` (60 bytes more
-//     headroom than 1420 for outer-packet overhead on PPPoE / GRE /
-//     IPSec underlay paths).
-//   - Outer packet at 1380 inner = 1440 bytes (60-byte headers).
-//     Fits inside 1500-byte standard Internet MTU with 60 bytes of
-//     slack — comfortably more than 1420's 20-byte slack.
-//   - macOS HP screen-share confirmed working at 1380 with the
-//     current codebase.
+//  2026-04-24 — empirical A/B with avconferenced log capture at both
+//  MTUs (200-line log diff captured during failing-then-working
+//  attempts):
 //
-// If you hit cellular path issues (high retransmits, 6 Mb/s plateau)
-// you may want to lower to 1300 (Nebula default) which adds another
-// 80 bytes of underlay headroom but loses ~10 % WiFi LAN throughput.
+//    Signature                           |  1380   |  1420
+//    ------------------------------------+---------+---------
+//    localInterfaceType                  | (null)  | (null)
+//    remoteInterfaceType                 | (null)  | (null)
+//    "Not setting unexpected transport"  |  4×     |  4×
+//    vcMediaStreamRecommendedMTU         |   0     |   0
+//    "Last RTCP packet receive time:nan" |  4×     |  4×
+//    Screen Sharing → "gets standard"    |  yes    |  yes
+//
+//  HP MODE DOES NOT ENGAGE AT EITHER MTU. avconferenced classifies
+//  our raw userspace utun as "no recognized transport" because we
+//  lack the IFXF_IS_VPN xflag + Skywalk/NetworkExtension agents
+//  that NEPacketTunnelProvider would set. MTU is irrelevant to that
+//  decision — it's not even read (vcMediaStreamRecommendedMTU = 0
+//  on both runs). Both runs fall back to Standard mode (RFB over
+//  TCP) regardless.
+//
+//  The real difference between 1380 and 1420 in practice is
+//  STANDARD-MODE jitter tolerance: at 1380 each RFB framebuffer
+//  chunk fragments into more inner-MTU packets, more chances for
+//  TCP to stall on jittery WiFi, the user's screen-share session
+//  "doesn't come through." At 1420 the chunks fit in fewer packets,
+//  the session works. Throughput co-variate sweep (iperf3, raw UDP,
+//  doesn't care about per-packet jitter) chose 1380 — but iperf3
+//  was the wrong test for the actual workload.
+//
+// Why 1420 wins for actual workload:
+//   - Standard mode (RFB over TCP) is reliable on jittery WiFi —
+//     fewer packets per RFB chunk, fewer chances for one to stall.
+//   - Within Tailscale variance on cellular throughput (49 vs ~50
+//     Mb/s) — measured in the original 2026-04-21 bisection.
+//   - 28× fewer retransmits than 1280 on cellular (per the original
+//     bisection table above).
+//   - Outer packet at 1420 = 1480 bytes; fits 1500-byte MTU with
+//     20 bytes of slack for carrier-side header overhead. Tighter
+//     than 1380's 60-byte slack but still safe on every public
+//     Internet path measured.
+//
+// If you hit cellular path issues (very high retransmits, throughput
+// plateau, MTU discovery problems on the underlay) you can lower to
+// 1300 (Nebula default) which adds another 120 bytes of underlay
+// headroom but loses ~10 % WiFi LAN throughput.
 //
 // The fundamental fix for HP independent of MTU is
 // `NEPacketTunnelProvider` (Apple Dev ID, signed app, weeks of work)
 // so avconferenced gets explicit VPN classification via the IS_VPN
-// xflag + NetworkExtension agents instead of guessing from MTU.
-const TunMTU = 1380
+// xflag + NetworkExtension agents. With raw userspace utun, HP mode
+// is structurally not engaged — the best we can do is make Standard
+// mode reliable, which 1420 does.
+const TunMTU = 1420
 
 // HandshakeTryInterval is the retry interval for Noise handshake attempts.
 // Default 100ms wastes time if the lighthouse responds faster. 20ms ensures

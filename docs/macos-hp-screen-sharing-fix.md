@@ -199,3 +199,58 @@ If someone attempts option B or C, the verification protocol is:
   (https://www.zerotier.com/news/how-zerotier-eliminated-kernel-extensions-on-macos/)
 - [Apple Developer Docs: NEPacketTunnelProvider]
   (https://developer.apple.com/documentation/networkextension/nepackettunnelprovider)
+
+---
+
+## Update 2026-04-24 — MTU is NOT the HP discriminator (empirical A/B)
+
+Captured `sudo log stream --predicate 'process == "avconferenced" OR
+process == "screensharingd" OR process == "ScreenSharing"'` on the
+MBP (client) AND Mac mini (server) during deliberate HP attempts at
+both `TunMTU=1380` (the v0.10.16/.17 default) and `TunMTU=1420`
+(reverted in v0.10.18). User reported: "HP works at 1420, doesn't at
+1380." Goal of the capture: see if the avconferenced classification
+path actually flips on MTU.
+
+**Empirical signature side-by-side:**
+
+| Signature                                 | MTU 1380 | MTU 1420 |
+|---|---|---|
+| `localInterfaceType`                      | `(null)` | `(null)` |
+| `remoteInterfaceType`                     | `(null)` | `(null)` |
+| `Not setting unexpected transport type 0` | 4× | 4× |
+| `vcMediaStreamRecommendedMTU`             | `0`      | `0`      |
+| `Last RTCP packet receive time:nan`       | 4× | 4× |
+| Screen Sharing → `gets standard mode`     | yes (3×) | yes (2×) |
+
+**HP mode does NOT engage at either MTU.** Both fall back to Standard
+mode (RFB over TCP through the mesh) for the same documented reason:
+avconferenced cannot classify our raw utun (no `IFXF_IS_VPN` xflag,
+no Skywalk/NE agents) so `nw_interface_create_with_name("utun5")`
+returns nil → `Not setting unexpected transport type 0` → MTU never
+even gets read (`vcMediaStreamRecommendedMTU = 0` at both runs).
+
+**The real difference between 1380 and 1420 in user UX is
+Standard-mode jitter tolerance**, not HP classification:
+- Standard mode is RFB over TCP. Each framebuffer chunk fragments
+  into N inner-MTU packets. Loss/delay of any one stalls the whole
+  chunk via TCP backoff.
+- At 1380: more packets per chunk (≈1.5× vs 1420 for typical chunk
+  sizes) → more chances for jittery WiFi to delay one → visible
+  stalls.
+- At 1420: fewer packets per chunk → fewer stalls → "managed to
+  screen share."
+
+**Counter-finding to the v0.10.16 changelog:** the WiFi LAN MTU
+sweep that picked 1380 used iperf3 (raw UDP), which doesn't care
+about per-packet jitter. Standard-mode RFB-over-TCP cares much
+more. iperf3 was the wrong test for the actual screen-share workload.
+
+**Action taken:** v0.10.18 reverts `TunMTU` to 1420 — gives up
+~10 % WiFi LAN iperf3 throughput in exchange for usable Standard-mode
+screen-share, which is the actual production workload for daily-driver
+users.
+
+**HP mode itself remains structurally broken on raw userspace utun**,
+and only `NEPacketTunnelProvider` fixes that. MTU choice is a
+Standard-mode-quality decision, not an HP-engagement one.
