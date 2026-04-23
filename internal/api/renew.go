@@ -98,10 +98,23 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mtu := nebulacfg.TunMTU
 	useRelays := nebulacfg.UseRelays
 	punchBack := nebulacfg.PunchBack
 	listenPort := nebulacfg.ListenPort
+
+	// MTU is intentionally NOT pushed back. Two writers of nebula.yaml::tun.mtu
+	// is one too many — the agent's `ensureP2PConfig` writes it from its OWN
+	// compiled-in `nebulacfg.TunMTU` at startup, which is the source of truth
+	// for that agent's binary. If we also push the server's compiled-in default
+	// here, an OLDER server can clobber a NEWER agent's correct local value
+	// during the renewal window. (Empirically observed 2026-04-23: a v0.10.15
+	// control plane pushed mtu=1420 to a freshly-deployed v0.10.16 agent
+	// (TunMTU=1380) right after the agent's local rewrite to 1380, leaving
+	// the agent's nebula.yaml stuck at 1420 until manual intervention.)
+	//
+	// If a per-network admin-override-MTU feature is added later, this is
+	// where it would re-appear — sent only when the network has an explicit
+	// override, never as the global default.
 
 	writeJSON(w, map[string]interface{}{
 		"nodeCert":  string(nodeCert.CertPEM),
@@ -111,7 +124,6 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 			"useRelays":  &useRelays,
 			"punchBack":  &punchBack,
 			"punchDelay": nebulacfg.PunchDelay,
-			"mtu":        &mtu,
 			"listenPort": &listenPort,
 		},
 	})

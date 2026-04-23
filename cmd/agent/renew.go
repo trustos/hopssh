@@ -411,16 +411,17 @@ func mergeNebulaConfig(data []byte, update *nebulaConfigUpdate) ([]byte, bool, e
 		changed = true
 	}
 
-	// Update tun.mtu only if tun section already has mtu (kernel TUN mode).
-	if update.MTU != nil {
-		if tun, ok := cfg["tun"].(map[string]interface{}); ok {
-			if _, hasMTU := tun["mtu"]; hasMTU {
-				tun["mtu"] = *update.MTU
-				cfg["tun"] = tun
-				changed = true
-			}
-		}
-	}
+	// Server-pushed MTU is intentionally IGNORED. The server stopped
+	// pushing it as of v0.10.17 (see internal/api/renew.go for why), but
+	// older servers in the wild may still send it. Honoring it would let
+	// an older server clobber a newer agent's correct local MTU during
+	// the renewal window — which is exactly the bug we're guarding
+	// against. The agent's local `nebulacfg.TunMTU` (written by
+	// `ensureP2PConfig` at startup) is the single source of truth for
+	// MTU. If a per-network admin override is added later, it'll need a
+	// distinct field name so we can honor it without re-introducing
+	// this regression.
+	_ = update.MTU
 
 	if !changed {
 		return data, false, nil

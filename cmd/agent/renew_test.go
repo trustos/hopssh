@@ -154,7 +154,15 @@ func TestMergeNebulaConfig_AddPunchBackAndDelay(t *testing.T) {
 	}
 }
 
-func TestMergeNebulaConfig_UpdateMTU_KernelMode(t *testing.T) {
+// TestMergeNebulaConfig_IgnoresServerPushedMTU — as of v0.10.17 the
+// agent intentionally ignores any server-pushed `tun.mtu`. The
+// agent's local `nebulacfg.TunMTU` is the single source of truth
+// (written by `ensureP2PConfig` at startup). Honoring server-pushed
+// MTU let an older v0.10.15 control plane clobber a newer v0.10.16
+// agent's correct local value during cert renewal — the bug this
+// test guards against. If a per-network admin override is added
+// later it MUST use a distinct field, not re-purpose `update.MTU`.
+func TestMergeNebulaConfig_IgnoresServerPushedMTU(t *testing.T) {
 	update := &nebulaConfigUpdate{
 		MTU: intPtr(1400),
 	}
@@ -163,8 +171,10 @@ func TestMergeNebulaConfig_UpdateMTU_KernelMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !changed {
-		t.Fatal("expected changed=true")
+	// MTU was the only field in the update; with MTU now ignored the
+	// merge must report no change so we don't churn the file on disk.
+	if changed {
+		t.Fatal("expected changed=false: server-pushed MTU must be ignored")
 	}
 
 	cfg := parseCfg(t, out)
@@ -172,8 +182,9 @@ func TestMergeNebulaConfig_UpdateMTU_KernelMode(t *testing.T) {
 	if !ok {
 		t.Fatal("tun section missing")
 	}
-	if tun["mtu"] != 1400 {
-		t.Fatalf("expected mtu=1400, got %v", tun["mtu"])
+	// Original yaml had mtu: 1300 — must be untouched by the server push.
+	if tun["mtu"] != 1300 {
+		t.Fatalf("local mtu should be untouched (want 1300), got %v", tun["mtu"])
 	}
 	if tun["dev"] != "nebula1" {
 		t.Fatalf("tun.dev should be preserved, got %v", tun["dev"])
@@ -405,8 +416,12 @@ func TestMergeNebulaConfig_FullUpdateWithListenPort(t *testing.T) {
 		t.Fatal("delay should be 1s")
 	}
 	tun := cfg["tun"].(map[string]interface{})
-	if tun["mtu"] != 1400 {
-		t.Fatal("mtu should be 1400")
+	// MTU is intentionally ignored as of v0.10.17 (server-pushed mtu
+	// is no longer honored — see TestMergeNebulaConfig_IgnoresServerPushedMTU).
+	// Even though the update specified mtu: 1400, the agent must keep
+	// its local value (oldAgentConfig has mtu: 1300).
+	if tun["mtu"] != 1300 {
+		t.Fatalf("mtu should be untouched (want 1300), got %v", tun["mtu"])
 	}
 	listen := cfg["listen"].(map[string]interface{})
 	if listen["port"] != 4242 {
