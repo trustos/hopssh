@@ -284,46 +284,23 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		if caps["relay"] {
 			relayIPs = append(relayIPs, ip)
 		}
-		// Look up the peer's currently-advertised UDP endpoints from the
-		// lighthouse's in-memory cache. nil/empty is fine; the agent will
-		// fall back to the normal UDP HostQuery flow if this info is
-		// absent.
-		merged := make([]string, 0, 4)
-		seen := map[string]struct{}{}
+		// Resolve peer endpoints from BOTH the lighthouse's in-memory
+		// cache (UDP-driven, may be stale on cellular) AND the peer's
+		// self-reported endpoints from its own heartbeat (HTTPS-driven,
+		// always reachable). The merge is the Phase G core fix —
+		// guarantees endpoint distribution even when UDP-to-lighthouse
+		// is blocked.
+		var lighthouse []netip.AddrPort
 		if netInst != nil {
 			if vpn, err := netip.ParseAddr(ip); err == nil {
-				if eps := netInst.PeerEndpoints(vpn); len(eps) > 0 {
-					for _, ep := range eps {
-						s := ep.String()
-						if _, dup := seen[s]; dup {
-							continue
-						}
-						seen[s] = struct{}{}
-						merged = append(merged, s)
-					}
-				}
+				lighthouse = netInst.PeerEndpoints(vpn)
 			}
 		}
-		// Phase G: also merge endpoints the peer has self-reported via
-		// its HTTPS heartbeat. Independent of lighthouse UDP propagation
-		// — covers agents whose UDP-to-lighthouse path is filtered.
+		var hint *selfEndpointHint
 		if v, ok := h.selfEndpointCache.Load(p.ID); ok {
-			if hint, ok := v.(*selfEndpointHint); ok && time.Since(hint.updatedAt) < selfEndpointHintTTL {
-				for _, s := range hint.endpoints {
-					ap, err := netip.ParseAddrPort(s)
-					if err != nil || !ap.IsValid() {
-						continue
-					}
-					norm := ap.String()
-					if _, dup := seen[norm]; dup {
-						continue
-					}
-					seen[norm] = struct{}{}
-					merged = append(merged, norm)
-				}
-			}
+			hint, _ = v.(*selfEndpointHint)
 		}
-		if len(merged) > 0 {
+		if merged := mergePeerEndpoints(lighthouse, hint, selfEndpointHintTTL); len(merged) > 0 {
 			peerEndpoints[ip] = merged
 		}
 	}
@@ -346,6 +323,50 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, resp)
+}
+
+// mergePeerEndpoints combines a peer's lighthouse-cached UDP endpoints
+// (Nebula's in-memory advertise_addrs cache, populated via the UDP
+// HostQuery flow) with the peer's self-reported endpoints from its
+// HTTPS heartbeat (Phase G). Lighthouse entries come first in result
+// order (preferred when both sources agree); hint entries fill gaps.
+//
+// Returns deduped, validated `IP:port` strings. Hint entries past
+// the TTL are dropped — peers shouldn't dial dead addresses.
+//
+// This is the Phase G regression-test entry point: it's the exact
+// merge logic the Heartbeat handler uses, factored out so unit tests
+// can prove the cellular-idle silent-mesh failure mode is handled
+// without spinning up a real DB + HTTP server.
+func mergePeerEndpoints(lighthouse []netip.AddrPort, hint *selfEndpointHint, ttl time.Duration) []string {
+	out := make([]string, 0, len(lighthouse)+4)
+	seen := map[string]struct{}{}
+	for _, ap := range lighthouse {
+		if !ap.IsValid() {
+			continue
+		}
+		s := ap.String()
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	if hint != nil && time.Since(hint.updatedAt) < ttl {
+		for _, s := range hint.endpoints {
+			ap, err := netip.ParseAddrPort(s)
+			if err != nil || !ap.IsValid() {
+				continue
+			}
+			norm := ap.String()
+			if _, dup := seen[norm]; dup {
+				continue
+			}
+			seen[norm] = struct{}{}
+			out = append(out, norm)
+		}
+	}
+	return out
 }
 
 // parseCapabilitiesForRenew unmarshals the JSON-array capability blob
