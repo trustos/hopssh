@@ -358,6 +358,17 @@ func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverS
 		configureDNS(inst, inst.dnsConfig)
 	}
 
+	// Inject the on-disk peer-endpoint cache into Nebula's hostmap
+	// BEFORE any handshake fires. Without this, the first packet to a
+	// peer triggers a concurrent handshake + lighthouse query; on
+	// cellular the relay path often wins the race and the tunnel comes
+	// up relayed. TCP slow-starts through the relay leg, then collapses
+	// when Nebula reactively roams direct ~5-10 s later. Pre-populating
+	// the hostmap from disk lets the very first handshake attempt direct.
+	if n := injectCachedPeerEndpoints(inst); n > 0 {
+		log.Printf("[agent %s] injected %d cached peer endpoint(s) into hostmap", inst.name(), n)
+	}
+
 	// Warm tunnels synchronously: lighthouse first, then peers from
 	// heartbeat. Both must complete before the mesh listener starts,
 	// otherwise Screen Sharing's quality probe fails on first connect.

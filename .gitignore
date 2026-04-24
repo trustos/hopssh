@@ -31,6 +31,9 @@ deploy/*.pem
 # Runtime
 data/
 
+# Performance comparison runs (scripts/perf_compare.sh output)
+results/
+
 # OS
 .DS_Store
 Thumbs.db

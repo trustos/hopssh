@@ -221,26 +221,31 @@ func injectPeerEndpoints(inst *meshInstance, peerEndpoints map[string][]string) 
 		return
 	}
 	ctrl := inst.control()
-	if ctrl == nil {
-		return
-	}
-	for ipStr, epStrs := range peerEndpoints {
-		vpn, err := netip.ParseAddr(ipStr)
-		if err != nil || !vpn.IsValid() {
-			continue
-		}
-		addrs := make([]netip.AddrPort, 0, len(epStrs))
-		for _, s := range epStrs {
-			ap, err := netip.ParseAddrPort(s)
-			if err != nil || !ap.IsValid() {
+	if ctrl != nil {
+		for ipStr, epStrs := range peerEndpoints {
+			vpn, err := netip.ParseAddr(ipStr)
+			if err != nil || !vpn.IsValid() {
 				continue
 			}
-			addrs = append(addrs, ap)
+			addrs := make([]netip.AddrPort, 0, len(epStrs))
+			for _, s := range epStrs {
+				ap, err := netip.ParseAddrPort(s)
+				if err != nil || !ap.IsValid() {
+					continue
+				}
+				addrs = append(addrs, ap)
+			}
+			if len(addrs) == 0 {
+				continue
+			}
+			ctrl.AddStaticHostMap(vpn, addrs)
 		}
-		if len(addrs) == 0 {
-			continue
-		}
-		ctrl.AddStaticHostMap(vpn, addrs)
+	}
+	// Persist the snapshot so the next agent restart can inject the
+	// same endpoints BEFORE the first handshake fires (eliminates the
+	// relay-vs-direct race that collapses cold-start TCP cwnd).
+	if err := savePeerCache(inst, peerEndpoints); err != nil {
+		log.Printf("[agent %s] peer cache save failed: %v", inst.name(), err)
 	}
 }
 
