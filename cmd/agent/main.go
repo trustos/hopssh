@@ -391,6 +391,13 @@ func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverS
 		log.Fatalf("[agent %s] Nebula mesh listen: %v", inst.name(), err)
 	}
 	log.Printf("[agent %s] listening on :%d (Nebula mesh, %s TUN)", inst.name(), agentAPIPort, tunMode)
+
+	// Phase B-lite: per-peer RTT EWMA via TCP-connect probes to each
+	// direct peer's mesh listener (:41820). Feeds PeerDetail.RTTms in
+	// the heartbeat (dashboard surfaces it) and logs degradation
+	// (3× consecutive samples >50 ms above EWMA). One TCP-SYN per
+	// direct peer per 10 s — cost is negligible.
+	go runPathQuality(ctx, inst)
 }
 
 // startDebugOSListener serves the mux directly on the OS stack using a

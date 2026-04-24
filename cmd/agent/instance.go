@@ -67,6 +67,12 @@ type meshInstance struct {
 	// Lives for the full instance lifetime; survives Nebula restarts
 	// (the mapping targets the stable listen port, not a specific Control).
 	portmap *portmap.Manager
+
+	// pathQuality holds per-peer EWMA RTT samples gathered by
+	// runPathQuality. Populated lazily on instance startup; read by
+	// collectPeerState to attach RTTms to each PeerDetail in the
+	// heartbeat. Nil-safe via pathQuality.snapshot().
+	pathQuality *pathQuality
 }
 
 // reloadCooldown is the minimum spacing between watcher-initiated

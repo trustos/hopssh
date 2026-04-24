@@ -215,7 +215,7 @@ func TestClassify_CapsPeersListAtMax(t *testing.T) {
 // nil ctrl path — collectPeerState (the wrapper, not the inner helper)
 // must return ok=false so callers can omit the field from heartbeat.
 func TestCollectPeerState_NilCtrlReturnsNotOk(t *testing.T) {
-	d, r, p, ok := collectPeerState(nil)
+	d, r, p, ok := collectPeerState(nil, nil)
 	if ok {
 		t.Errorf("expected ok=false on nil ctrl")
 	}

@@ -119,7 +119,7 @@ func sendHeartbeat(inst *meshInstance) error {
 		"nodeId":       inst.nodeID(),
 		"agentVersion": buildinfo.Version, // "vX.Y.Z" (tagged) or "vX.Y.Z-N-gSHORTSHA(-dirty)" (dev)
 	}
-	if direct, relayed, peers, ok := collectPeerState(inst.control()); ok {
+	if direct, relayed, peers, ok := collectPeerState(inst.control(), inst.pathQuality); ok {
 		reqBody["peersDirect"] = direct
 		reqBody["peersRelayed"] = relayed
 		if len(peers) > 0 {

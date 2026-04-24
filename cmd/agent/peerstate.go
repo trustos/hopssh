@@ -13,6 +13,13 @@ type PeerDetail struct {
 	Direct           bool   `json:"direct"`                     // true = P2P UDP; false = relay-routed
 	LastHandshakeSec int64  `json:"lastHandshakeSec,omitempty"` // 0 = unknown (Nebula's public API doesn't expose it today)
 	RemoteAddr       string `json:"remoteAddr,omitempty"`       // observed remote UDP endpoint when Direct
+	// RTTms is the EWMA-smoothed TCP-connect round-trip in ms,
+	// measured by runPathQuality probing the peer's mesh listener
+	// (:41820). 0 means "no sample yet" (e.g. brand-new peer, or
+	// peer is relay-routed so we don't probe). Smoothed via EWMA
+	// alpha=0.3 across 10s probe intervals so the value tracks
+	// real path quality without being yanked by single outliers.
+	RTTms int `json:"rttMs,omitempty"`
 }
 
 // maxPeersPerReport caps the reported per-peer slice to prevent
@@ -52,7 +59,7 @@ const maxPeersPerReport = 100
 // up) — callers omit peer fields from the heartbeat in that case so
 // the server's COALESCE preserves the last known good value rather
 // than overwriting with zeros/empty.
-func collectPeerState(ctrl *nebula.Control) (direct, relayed int, peers []PeerDetail, ok bool) {
+func collectPeerState(ctrl *nebula.Control, pq *pathQuality) (direct, relayed int, peers []PeerDetail, ok bool) {
 	if ctrl == nil {
 		return 0, 0, nil, false
 	}
@@ -99,11 +106,15 @@ func collectPeerState(ctrl *nebula.Control) (direct, relayed int, peers []PeerDe
 		switch {
 		case entry.direct:
 			direct++
-			peers = append(peers, PeerDetail{
+			pd := PeerDetail{
 				VpnAddr:    vpnAddr,
 				Direct:     true,
 				RemoteAddr: entry.remoteAddr,
-			})
+			}
+			if rtt, n := pq.snapshot(vpnAddr); n > 0 {
+				pd.RTTms = rtt
+			}
+			peers = append(peers, pd)
 		case entry.hasRelay:
 			relayed++
 			peers = append(peers, PeerDetail{VpnAddr: vpnAddr, Direct: false})
