@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/trustos/hopssh/internal/db"
@@ -17,6 +18,19 @@ import (
 
 const renewCertDuration = 24 * time.Hour
 
+// selfEndpointHintTTL caps how long we trust an agent's self-reported
+// endpoints after its last heartbeat. Heartbeats fire every ~5 min in
+// steady state; 15 min absorbs one missed beat plus jitter while still
+// expiring stale data fast enough that peers don't dial dead addresses.
+const selfEndpointHintTTL = 15 * time.Minute
+
+// selfEndpointHint is the cached value: endpoints + when the agent
+// reported them. Lifetime tied to selfEndpointHintTTL.
+type selfEndpointHint struct {
+	endpoints []string
+	updatedAt time.Time
+}
+
 // RenewHandler manages agent certificate renewal and heartbeat.
 type RenewHandler struct {
 	Networks       *db.NetworkStore
@@ -24,6 +38,15 @@ type RenewHandler struct {
 	EventHub       *EventHub
 	Events         *db.NetworkEventStore
 	NetworkManager *mesh.NetworkManager
+
+	// selfEndpointCache holds each agent's most-recent self-reported
+	// reachable endpoints (populated from heartbeat body.SelfEndpoints).
+	// Phase G: HTTPS-distributed peer endpoints, independent of UDP-to-
+	// lighthouse advertise_addrs. Keyed by nodeID; entries auto-expire
+	// via selfEndpointHintTTL. In-memory only — agents heartbeat
+	// frequently enough that a server restart rebuilds the cache in
+	// minutes.
+	selfEndpointCache sync.Map // nodeID (string) -> *selfEndpointHint
 }
 
 // Renew issues a fresh short-lived certificate for an enrolled node.
@@ -151,6 +174,14 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		PeersRelayed *int64            `json:"peersRelayed,omitempty"`
 		Peers        []json.RawMessage `json:"peers,omitempty"` // re-serialized verbatim into peer_state
 		AgentVersion *string           `json:"agentVersion,omitempty"`
+		// SelfEndpoints (Phase G): agent's own observed reachable
+		// endpoints (NAT-PMP public + local interface IPs paired
+		// with listen port). Cached server-side and merged into
+		// peerEndpoints responses to OTHER agents — closes the
+		// loop when this agent's UDP-to-lighthouse path is filtered
+		// (e.g. iPhone Personal Hotspot). Optional; absent on older
+		// agent builds.
+		SelfEndpoints []string `json:"selfEndpoints,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NodeID == "" {
 		http.Error(w, "nodeId is required", http.StatusBadRequest)
@@ -178,6 +209,19 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.Nodes.RecordHeartbeat(node.ID, captureAgentIP(r), body.PeersDirect, body.PeersRelayed, peerStatePtr, body.AgentVersion)
+
+	// Phase G: cache agent's self-reported endpoints. Validated and
+	// deduped on read; here we just store the raw slice. Empty input
+	// CLEARS any prior entry (agent explicitly has nothing to report,
+	// e.g. portmap dropped + no useful interface IPs).
+	if len(body.SelfEndpoints) > 0 {
+		h.selfEndpointCache.Store(node.ID, &selfEndpointHint{
+			endpoints: body.SelfEndpoints,
+			updatedAt: time.Now(),
+		})
+	} else if body.SelfEndpoints != nil {
+		h.selfEndpointCache.Delete(node.ID)
+	}
 
 	if h.EventHub != nil {
 		evt := map[string]any{"nodeId": node.ID, "status": "online"}
@@ -244,16 +288,43 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		// lighthouse's in-memory cache. nil/empty is fine; the agent will
 		// fall back to the normal UDP HostQuery flow if this info is
 		// absent.
+		merged := make([]string, 0, 4)
+		seen := map[string]struct{}{}
 		if netInst != nil {
 			if vpn, err := netip.ParseAddr(ip); err == nil {
 				if eps := netInst.PeerEndpoints(vpn); len(eps) > 0 {
-					strs := make([]string, 0, len(eps))
 					for _, ep := range eps {
-						strs = append(strs, ep.String())
+						s := ep.String()
+						if _, dup := seen[s]; dup {
+							continue
+						}
+						seen[s] = struct{}{}
+						merged = append(merged, s)
 					}
-					peerEndpoints[ip] = strs
 				}
 			}
+		}
+		// Phase G: also merge endpoints the peer has self-reported via
+		// its HTTPS heartbeat. Independent of lighthouse UDP propagation
+		// — covers agents whose UDP-to-lighthouse path is filtered.
+		if v, ok := h.selfEndpointCache.Load(p.ID); ok {
+			if hint, ok := v.(*selfEndpointHint); ok && time.Since(hint.updatedAt) < selfEndpointHintTTL {
+				for _, s := range hint.endpoints {
+					ap, err := netip.ParseAddrPort(s)
+					if err != nil || !ap.IsValid() {
+						continue
+					}
+					norm := ap.String()
+					if _, dup := seen[norm]; dup {
+						continue
+					}
+					seen[norm] = struct{}{}
+					merged = append(merged, norm)
+				}
+			}
+		}
+		if len(merged) > 0 {
+			peerEndpoints[ip] = merged
 		}
 	}
 

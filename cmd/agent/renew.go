@@ -126,6 +126,15 @@ func sendHeartbeat(inst *meshInstance) error {
 			reqBody["peers"] = peers
 		}
 	}
+	// Phase G: report this agent's own observed UDP endpoints so the
+	// control plane can distribute them to peers via HTTPS heartbeat
+	// responses, even when our UDP path to the lighthouse is filtered
+	// (e.g. iPhone Personal Hotspot blocks UDP to specific Oracle
+	// Cloud IPs). Without this, peers can dial us via cached endpoints
+	// from A1 but lose us when our CGNAT mapping changes during idle.
+	if eps := selfEndpoints(inst); len(eps) > 0 {
+		reqBody["selfEndpoints"] = eps
+	}
 	reqBodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return err
