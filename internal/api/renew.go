@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 
 	"github.com/trustos/hopssh/internal/db"
+	"github.com/trustos/hopssh/internal/mesh"
 	"github.com/trustos/hopssh/internal/nebulacfg"
 	"github.com/trustos/hopssh/internal/pki"
 )
@@ -17,10 +19,11 @@ const renewCertDuration = 24 * time.Hour
 
 // RenewHandler manages agent certificate renewal and heartbeat.
 type RenewHandler struct {
-	Networks *db.NetworkStore
-	Nodes    *db.NodeStore
-	EventHub *EventHub
-	Events   *db.NetworkEventStore
+	Networks       *db.NetworkStore
+	Nodes          *db.NodeStore
+	EventHub       *EventHub
+	Events         *db.NetworkEventStore
+	NetworkManager *mesh.NetworkManager
 }
 
 // Renew issues a fresh short-lived certificate for an enrolled node.
@@ -199,11 +202,27 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	// Also surface peer-relay-capable nodes so agents can extend their
 	// `relay.relays` list (Pillar 3) and signal whether THIS node has
 	// the "relay" capability so it can set `am_relay: true`.
+	//
+	// `peerEndpoints` carries each peer's currently-advertised UDP
+	// endpoints (reported advertise_addrs seen by the server's
+	// lighthouse — includes NAT-PMP public mappings via patch 11). The
+	// agent uses these to pre-populate its Nebula hostmap via patch 20's
+	// AddStaticHostMap, so direct tunnel establishment works even when
+	// the agent can't reach the UDP lighthouse (e.g. carrier-filtered
+	// cellular to Oracle Cloud). Mirrors Tailscale's control-plane-
+	// distributes-peer-endpoints model.
 	peers, _ := h.Nodes.ListForNetwork(node.NetworkID)
 	var peerIPs []string
 	var relayIPs []string
+	peerEndpoints := map[string][]string{}
 	amRelay := false
 	now := time.Now().Unix()
+
+	var netInst *mesh.NetworkInstance
+	if h.NetworkManager != nil {
+		netInst, _ = h.NetworkManager.GetInstance(node.NetworkID)
+	}
+
 	for _, p := range peers {
 		caps := parseCapabilitiesForRenew(p.Capabilities)
 		if p.ID == node.ID {
@@ -221,6 +240,21 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		if caps["relay"] {
 			relayIPs = append(relayIPs, ip)
 		}
+		// Look up the peer's currently-advertised UDP endpoints from the
+		// lighthouse's in-memory cache. nil/empty is fine; the agent will
+		// fall back to the normal UDP HostQuery flow if this info is
+		// absent.
+		if netInst != nil {
+			if vpn, err := netip.ParseAddr(ip); err == nil {
+				if eps := netInst.PeerEndpoints(vpn); len(eps) > 0 {
+					strs := make([]string, 0, len(eps))
+					for _, ep := range eps {
+						strs = append(strs, ep.String())
+					}
+					peerEndpoints[ip] = strs
+				}
+			}
+		}
 	}
 
 	resp := map[string]interface{}{}
@@ -229,6 +263,9 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(relayIPs) > 0 {
 		resp["relays"] = relayIPs
+	}
+	if len(peerEndpoints) > 0 {
+		resp["peerEndpoints"] = peerEndpoints
 	}
 	if amRelay {
 		resp["amRelay"] = true

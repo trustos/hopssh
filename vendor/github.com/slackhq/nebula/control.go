@@ -339,3 +339,17 @@ func (c *Control) RemoveAdvertiseAddr(addr netip.AddrPort) {
 	}
 	c.f.lightHouse.RemoveAdvertiseAddr(addr)
 }
+
+// AddStaticHostMap injects endpoints for a peer vpnAddr into the
+// lighthouse cache, making them immediately available for outbound
+// handshakes. Used by hopssh when peer endpoints are learned via the
+// HTTPS control-plane heartbeat response (fallback path when UDP
+// lighthouse is unreachable). Safe for concurrent use.
+//
+// Added by hopssh patch 20.
+func (c *Control) AddStaticHostMap(vpnAddr netip.Addr, addrs []netip.AddrPort) {
+	if c == nil || c.f == nil || c.f.lightHouse == nil {
+		return
+	}
+	c.f.lightHouse.AddStaticHostMap(vpnAddr, addrs)
+}

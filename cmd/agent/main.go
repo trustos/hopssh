@@ -464,12 +464,24 @@ func warmPeersFromHeartbeat(inst *meshInstance, endpoint string) {
 	defer resp.Body.Close()
 
 	var body struct {
-		Peers []string `json:"peers"`
+		Peers         []string            `json:"peers"`
+		PeerEndpoints map[string][]string `json:"peerEndpoints"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil || len(body.Peers) == 0 {
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return
 	}
 
+	// Inject advertised peer UDP endpoints into Nebula's hostmap BEFORE
+	// dialing, so the TCP dials below traverse an already-populated hostmap
+	// (direct handshake path) instead of falling through to lighthouse
+	// discovery (which may be unreachable on carrier-filtered cellular).
+	if len(body.PeerEndpoints) > 0 {
+		injectPeerEndpoints(inst, body.PeerEndpoints)
+	}
+
+	if len(body.Peers) == 0 {
+		return
+	}
 	start := time.Now()
 	for _, ip := range body.Peers {
 		d := net.Dialer{Timeout: 2 * time.Second}

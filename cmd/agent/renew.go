@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"math/rand"
+	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -166,12 +167,22 @@ func sendHeartbeat(inst *meshInstance) error {
 	// info (Pillar 3) — `amRelay` flips this node into relay mode,
 	// `relays` is the list of OTHER nodes the agent should add to its
 	// `relay.relays` set so it can use them as fallback paths.
+	//
+	// `peerEndpoints` carries each peer's advertised UDP endpoints from
+	// the server's lighthouse cache (includes NAT-PMP mappings). Injected
+	// into Nebula's hostmap via patch 20's AddStaticHostMap so the agent
+	// can handshake directly with peers even when the UDP lighthouse is
+	// unreachable (e.g. carrier-filtered cellular to Oracle Cloud).
 	var body struct {
-		Peers   []string `json:"peers"`
-		Relays  []string `json:"relays"`
-		AmRelay bool     `json:"amRelay"`
+		Peers         []string            `json:"peers"`
+		Relays        []string            `json:"relays"`
+		AmRelay       bool                `json:"amRelay"`
+		PeerEndpoints map[string][]string `json:"peerEndpoints"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
+		if len(body.PeerEndpoints) > 0 {
+			injectPeerEndpoints(inst, body.PeerEndpoints)
+		}
 		if len(body.Peers) > 0 {
 			go warmPeers(body.Peers)
 		}
@@ -189,6 +200,48 @@ func readInstanceToken(inst *meshInstance) (string, error) {
 		return "", fmt.Errorf("read token: %w", err)
 	}
 	return strings.TrimSpace(string(data)), nil
+}
+
+// injectPeerEndpoints feeds peer advertised UDP endpoints (learned by the
+// server's lighthouse, e.g. mini's NAT-PMP mapping `46.10.240.91:4242`)
+// directly into this instance's Nebula hostmap. This is the agent-side
+// counterpart to patch 20's AddStaticHostMap.
+//
+// Why: when UDP to the lighthouse is carrier-blocked (iPhone hotspot to
+// Oracle Cloud, etc.), the agent can't learn peer endpoints via the
+// normal Nebula HostQuery flow. The HTTPS control-plane heartbeat is
+// still reachable, so the server pushes peer endpoints in-band via the
+// `peerEndpoints` response field and we inject them here. MBP can then
+// handshake directly to mini's home router public endpoint without
+// needing a live lighthouse path.
+//
+// Best-effort: invalid entries are skipped; no lighthouse means no-op.
+func injectPeerEndpoints(inst *meshInstance, peerEndpoints map[string][]string) {
+	if inst == nil || len(peerEndpoints) == 0 {
+		return
+	}
+	ctrl := inst.control()
+	if ctrl == nil {
+		return
+	}
+	for ipStr, epStrs := range peerEndpoints {
+		vpn, err := netip.ParseAddr(ipStr)
+		if err != nil || !vpn.IsValid() {
+			continue
+		}
+		addrs := make([]netip.AddrPort, 0, len(epStrs))
+		for _, s := range epStrs {
+			ap, err := netip.ParseAddrPort(s)
+			if err != nil || !ap.IsValid() {
+				continue
+			}
+			addrs = append(addrs, ap)
+		}
+		if len(addrs) == 0 {
+			continue
+		}
+		ctrl.AddStaticHostMap(vpn, addrs)
+	}
 }
 
 func warmPeers(peers []string) {

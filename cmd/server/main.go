@@ -193,7 +193,7 @@ func main() {
 		LighthouseHost: *lighthouseHost,
 	}
 
-	renewH := &api.RenewHandler{Networks: networks, Nodes: nodes}
+	renewH := &api.RenewHandler{Networks: networks, Nodes: nodes, NetworkManager: netMgr}
 	dnsH := &api.DNSHandler{Networks: networks, DNSRecords: dnsRecords, NetworkManager: netMgr}
 
 	auditH := &api.AuditHandler{Audit: audit, Networks: networks, Members: members}

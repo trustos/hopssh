@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"sync"
 	"time"
@@ -32,8 +33,9 @@ type NetworkInstance struct {
 	UDPPort   int
 	DNSDomain string
 
-	svc *service.Service
-	dns *MeshDNS
+	svc  *service.Service
+	ctrl *nebula.Control // cached for peer advertise_addrs lookup (see PeerEndpoints)
+	dns  *MeshDNS
 }
 
 // Dial opens a TCP connection to a node's agent API through the mesh.
@@ -72,6 +74,66 @@ func (ni *NetworkInstance) Close() {
 // DNS returns the mesh DNS server for this network (for record updates).
 func (ni *NetworkInstance) DNS() *MeshDNS {
 	return ni.dns
+}
+
+// PeerEndpoints returns the currently-known UDP endpoints for a peer
+// mesh IP (`vpnAddr`), as seen by this lighthouse instance. Combines
+// "reported" addresses (advertised by the peer via HostUpdateNotification,
+// including NAT-PMP-discovered public endpoints from patch 11) and
+// "learned" addresses (observed by the lighthouse as the source of
+// recent packets from this peer). De-duplicated, order: reported first.
+//
+// Used by the HTTPS heartbeat handler to return peer endpoints in-band
+// so agents unable to reach the UDP lighthouse (e.g. carrier-filtered
+// cellular) can still pre-populate their Nebula hostmap via patch 20's
+// AddStaticHostMap and establish direct tunnels to the peer's home
+// router public endpoint.
+//
+// Returns nil if the lighthouse has no info for vpnAddr.
+func (ni *NetworkInstance) PeerEndpoints(vpnAddr netip.Addr) []netip.AddrPort {
+	if ni == nil || ni.ctrl == nil || !vpnAddr.IsValid() {
+		return nil
+	}
+	cache := ni.ctrl.QueryLighthouse(vpnAddr)
+	if cache == nil {
+		return nil
+	}
+	seen := make(map[netip.AddrPort]struct{})
+	out := make([]netip.AddrPort, 0, 4)
+	// Reported endpoints — what the peer explicitly advertised (including
+	// NAT-PMP mappings via patch 11). Preferred over learned (which is
+	// just observed source IPs, may be stale).
+	for _, c := range *cache {
+		if c == nil {
+			continue
+		}
+		for _, ep := range c.Reported {
+			if !ep.IsValid() {
+				continue
+			}
+			if _, ok := seen[ep]; ok {
+				continue
+			}
+			seen[ep] = struct{}{}
+			out = append(out, ep)
+		}
+	}
+	for _, c := range *cache {
+		if c == nil {
+			continue
+		}
+		for _, ep := range c.Learned {
+			if !ep.IsValid() {
+				continue
+			}
+			if _, ok := seen[ep]; ok {
+				continue
+			}
+			seen[ep] = struct{}{}
+			out = append(out, ep)
+		}
+	}
+	return out
 }
 
 // NetworkManager manages persistent Nebula lighthouse+relay instances, one per network.
@@ -529,6 +591,7 @@ firewall:
 		UDPPort:   port,
 		DNSDomain: n.DNSDomain,
 		svc:       svc,
+		ctrl:      ctrl,
 		dns:       meshDNS,
 	}
 

@@ -1,0 +1,80 @@
+--- a/github.com/slackhq/nebula/lighthouse.go
++++ b/github.com/slackhq/nebula/lighthouse.go
+@@ -209,8 +209,56 @@
+ 		if lh.advertiseAddrs.CompareAndSwap(cur, &next) {
+ 			lh.l.WithField("addr", addr).Info("lighthouse: removed dynamic advertise_addr")
+ 			return
++		}
++	}
++}
++
++// AddStaticHostMap adds runtime-discovered endpoints for a peer's vpnAddr
++// into the lighthouse's cache, making them immediately available for the
++// handshake manager to try. Used by hopssh to inject peer endpoints learned
++// via the HTTPS control-plane heartbeat response when the UDP lighthouse
++// path is unreachable (carrier-filtered cellular to Oracle Cloud, etc).
++// Marks the entry as static so it's not evicted by idle GC. De-dupes.
++//
++// Added by hopssh patch 20.
++func (lh *LightHouse) AddStaticHostMap(vpnAddr netip.Addr, addrs []netip.AddrPort) {
++	if !vpnAddr.IsValid() || len(addrs) == 0 {
++		return
++	}
++	rl := lh.QueryCache([]netip.Addr{vpnAddr})
++	if rl == nil {
++		return
++	}
++	for _, a := range addrs {
++		if !a.IsValid() {
++			continue
++		}
++		rl.LearnRemote(vpnAddr, a)
++	}
++	// Mark as static to prevent GC of this entry (static_host_map semantics).
++	for {
++		cur := lh.staticList.Load()
++		if cur == nil {
++			newMap := make(map[netip.Addr]struct{})
++			newMap[vpnAddr] = struct{}{}
++			if lh.staticList.CompareAndSwap(cur, &newMap) {
++				break
++			}
++			continue
+ 		}
++		if _, ok := (*cur)[vpnAddr]; ok {
++			break
++		}
++		next := make(map[netip.Addr]struct{}, len(*cur)+1)
++		for k := range *cur {
++			next[k] = struct{}{}
++		}
++		next[vpnAddr] = struct{}{}
++		if lh.staticList.CompareAndSwap(cur, &next) {
++			break
++		}
+ 	}
++	lh.l.WithField("vpnAddr", vpnAddr).WithField("addrs", addrs).Info("lighthouse: added static host map entry")
+ }
+ 
+ func (lh *LightHouse) GetRelaysForMe() []netip.Addr {
+--- a/github.com/slackhq/nebula/control.go
++++ b/github.com/slackhq/nebula/control.go
+@@ -338,4 +338,18 @@
+ 		return
+ 	}
+ 	c.f.lightHouse.RemoveAdvertiseAddr(addr)
++}
++
++// AddStaticHostMap injects endpoints for a peer vpnAddr into the
++// lighthouse cache, making them immediately available for outbound
++// handshakes. Used by hopssh when peer endpoints are learned via the
++// HTTPS control-plane heartbeat response (fallback path when UDP
++// lighthouse is unreachable). Safe for concurrent use.
++//
++// Added by hopssh patch 20.
++func (c *Control) AddStaticHostMap(vpnAddr netip.Addr, addrs []netip.AddrPort) {
++	if c == nil || c.f == nil || c.f.lightHouse == nil {
++		return
++	}
++	c.f.lightHouse.AddStaticHostMap(vpnAddr, addrs)
+ }
