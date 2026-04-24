@@ -319,7 +319,7 @@ type PeerDetail struct {
 	VpnAddr          string `json:"vpnAddr" example:"10.42.1.7"`
 	Direct           bool   `json:"direct" example:"true"`
 	LastHandshakeSec int64  `json:"lastHandshakeSec,omitempty" example:"1712361600"`
-	RemoteAddr       string `json:"remoteAddr,omitempty" example:"192.168.23.18:4242"`
+	RemoteAddr       string `json:"remoteAddr,omitempty" example:"203.0.113.18:4242"`
 }
 
 // NodeResponse represents a node in API responses.

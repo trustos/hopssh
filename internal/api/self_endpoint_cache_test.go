@@ -15,7 +15,7 @@ import (
 func TestSelfEndpointCache_StoreAndRead(t *testing.T) {
 	h := &RenewHandler{}
 	h.selfEndpointCache.Store("node-1", &selfEndpointHint{
-		endpoints: []string{"46.10.240.91:4242", "192.168.1.5:4242"},
+		endpoints: []string{"203.0.113.10:4242", "192.168.0.5:4242"},
 		updatedAt: time.Now(),
 	})
 
@@ -122,7 +122,7 @@ func TestMergePeerEndpoints_CellularIdleScenario(t *testing.T) {
 
 	// Peer A's HTTPS heartbeat reported these moments ago.
 	hint := &selfEndpointHint{
-		endpoints: []string{"46.10.240.91:4242", "192.168.23.3:4242"},
+		endpoints: []string{"203.0.113.10:4242", "192.168.0.3:4242"},
 		updatedAt: time.Now(),
 	}
 
@@ -130,7 +130,7 @@ func TestMergePeerEndpoints_CellularIdleScenario(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %d endpoints, want 2 — Phase G fix REGRESSED, cellular-idle bug returns: %v", len(got), got)
 	}
-	want := map[string]bool{"46.10.240.91:4242": true, "192.168.23.3:4242": true}
+	want := map[string]bool{"203.0.113.10:4242": true, "192.168.0.3:4242": true}
 	for _, s := range got {
 		if !want[s] {
 			t.Errorf("unexpected endpoint %q", s)
@@ -141,21 +141,21 @@ func TestMergePeerEndpoints_CellularIdleScenario(t *testing.T) {
 func TestMergePeerEndpoints_LighthouseOnly(t *testing.T) {
 	// Healthy lighthouse path; no hint cached yet (older agent).
 	lighthouse := []netip.AddrPort{
-		netip.MustParseAddrPort("46.10.240.91:4242"),
+		netip.MustParseAddrPort("203.0.113.10:4242"),
 	}
 	got := mergePeerEndpoints(lighthouse, nil, selfEndpointHintTTL)
-	if len(got) != 1 || got[0] != "46.10.240.91:4242" {
-		t.Errorf("got %v, want [46.10.240.91:4242]", got)
+	if len(got) != 1 || got[0] != "203.0.113.10:4242" {
+		t.Errorf("got %v, want [203.0.113.10:4242]", got)
 	}
 }
 
 func TestMergePeerEndpoints_BothSourcesUnion(t *testing.T) {
 	// Both sources report DIFFERENT endpoints — result is union.
 	lighthouse := []netip.AddrPort{
-		netip.MustParseAddrPort("46.10.240.91:4242"),
+		netip.MustParseAddrPort("203.0.113.10:4242"),
 	}
 	hint := &selfEndpointHint{
-		endpoints: []string{"192.168.23.3:4242"},
+		endpoints: []string{"192.168.0.3:4242"},
 		updatedAt: time.Now(),
 	}
 	got := mergePeerEndpoints(lighthouse, hint, selfEndpointHintTTL)
@@ -163,7 +163,7 @@ func TestMergePeerEndpoints_BothSourcesUnion(t *testing.T) {
 		t.Errorf("union should have 2 entries, got %d: %v", len(got), got)
 	}
 	// Lighthouse comes first.
-	if got[0] != "46.10.240.91:4242" {
+	if got[0] != "203.0.113.10:4242" {
 		t.Errorf("lighthouse entry not first: %v", got)
 	}
 }
@@ -171,10 +171,10 @@ func TestMergePeerEndpoints_BothSourcesUnion(t *testing.T) {
 func TestMergePeerEndpoints_DedupOverlap(t *testing.T) {
 	// Lighthouse and hint both report the SAME endpoint — appears once.
 	lighthouse := []netip.AddrPort{
-		netip.MustParseAddrPort("46.10.240.91:4242"),
+		netip.MustParseAddrPort("203.0.113.10:4242"),
 	}
 	hint := &selfEndpointHint{
-		endpoints: []string{"46.10.240.91:4242", "192.168.23.3:4242"},
+		endpoints: []string{"203.0.113.10:4242", "192.168.0.3:4242"},
 		updatedAt: time.Now(),
 	}
 	got := mergePeerEndpoints(lighthouse, hint, selfEndpointHintTTL)
@@ -187,14 +187,14 @@ func TestMergePeerEndpoints_ExpiredHintIgnored(t *testing.T) {
 	// Hint is past TTL — must NOT be merged (stale endpoints could
 	// route packets to a now-dead address). Lighthouse alone wins.
 	lighthouse := []netip.AddrPort{
-		netip.MustParseAddrPort("46.10.240.91:4242"),
+		netip.MustParseAddrPort("203.0.113.10:4242"),
 	}
 	hint := &selfEndpointHint{
 		endpoints: []string{"1.2.3.4:4242"},
 		updatedAt: time.Now().Add(-2 * selfEndpointHintTTL),
 	}
 	got := mergePeerEndpoints(lighthouse, hint, selfEndpointHintTTL)
-	if len(got) != 1 || got[0] != "46.10.240.91:4242" {
+	if len(got) != 1 || got[0] != "203.0.113.10:4242" {
 		t.Errorf("expired hint leaked through: %v", got)
 	}
 }
@@ -203,11 +203,11 @@ func TestMergePeerEndpoints_InvalidHintStringSkipped(t *testing.T) {
 	// Garbage in hint (e.g. older agent format, parse failure on
 	// agent side, etc.) must not crash and must not poison output.
 	hint := &selfEndpointHint{
-		endpoints: []string{"not-an-addrport", "46.10.240.91:4242", ""},
+		endpoints: []string{"not-an-addrport", "203.0.113.10:4242", ""},
 		updatedAt: time.Now(),
 	}
 	got := mergePeerEndpoints(nil, hint, selfEndpointHintTTL)
-	if len(got) != 1 || got[0] != "46.10.240.91:4242" {
+	if len(got) != 1 || got[0] != "203.0.113.10:4242" {
 		t.Errorf("invalid entries leaked or valid one dropped: %v", got)
 	}
 }

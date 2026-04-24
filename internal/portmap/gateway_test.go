@@ -23,12 +23,13 @@ func TestDiscoverGateway_Smoke(t *testing.T) {
 
 func TestParseLinuxGatewayHex(t *testing.T) {
 	// /proc/net/route gives gateway in little-endian hex.
-	// 0117A8C0 = bytes 01,17,A8,C0 → IP 192.168.23.1.
-	gw, err := parseLinuxGatewayHex("0117A8C0")
+	// 0100A8C0 = bytes 01,00,A8,C0 → IP 192.168.0.1 (a common
+	// home-router default).
+	gw, err := parseLinuxGatewayHex("0100A8C0")
 	if err != nil {
 		t.Fatalf("parseLinuxGatewayHex: %v", err)
 	}
-	want := "192.168.23.1"
+	want := "192.168.0.1"
 	if got := gw.String(); got != want {
 		t.Fatalf("got %s, want %s", got, want)
 	}

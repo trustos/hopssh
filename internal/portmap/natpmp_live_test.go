@@ -13,9 +13,9 @@ import (
 //
 //   go test -tags=natpmp_live -v ./internal/portmap/ -run TestNATPMP_Live
 //
-// On the user's TP-Link (confirmed NAT-PMP-capable in diagnostic),
-// this should return the public IP 46.10.240.91 and an external port
-// equal to or near the suggested internal port 44244.
+// On a NAT-PMP-capable router (e.g. TP-Link Archer-class), this
+// should return the WAN public IP and an external port equal to or
+// near the suggested internal port 44244.
 func TestNATPMP_Live(t *testing.T) {
 	gw, err := DiscoverGateway()
 	if err != nil {

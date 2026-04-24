@@ -35,7 +35,7 @@ func DiscoverGateway() (netip.Addr, error) {
 //	   route to: default
 //	destination: default
 //	       mask: default
-//	    gateway: 192.168.23.1
+//	    gateway: 192.168.0.1
 //	  interface: en0
 //	      flags: <UP,GATEWAY,DONE,STATIC,PRCLONING,GLOBAL>
 //	 recvpipe  sendpipe  ssthresh  rtt,msec    rttvar  hopcount      mtu     expire
@@ -63,9 +63,9 @@ func discoverGatewayDarwin() (netip.Addr, error) {
 // Example:
 //
 //	Iface   Destination Gateway     Flags   RefCnt Use Metric Mask        MTU Window  IRTT
-//	eth0    00000000    0117A8C0    0003    0      0   100    00000000    0   0       0
+//	eth0    00000000    0100A8C0    0003    0      0   100    00000000    0   0       0
 //
-// Where 0117A8C0 → bytes 01, 17, A8, C0 → IP 192.168.23.1 (reversed).
+// Where 0100A8C0 → bytes 01, 00, A8, C0 → IP 192.168.0.1 (reversed).
 func discoverGatewayLinux() (netip.Addr, error) {
 	f, err := os.Open("/proc/net/route")
 	if err != nil {

@@ -3,8 +3,10 @@
 # Usage: make dev-deploy
 set -euo pipefail
 
-LAPTOP_USER="yavortenev"
-LAPTOP_HOST="192.168.23.18"
+# Override these via env (e.g. `LAPTOP_HOST=192.168.1.42 make dev-deploy`)
+# for your own dev setup. Defaults match the maintainer's local LAN.
+LAPTOP_USER="${LAPTOP_USER:-yavortenev}"
+LAPTOP_HOST="${LAPTOP_HOST:-192.168.23.18}"
 LAPTOP_SSH="${LAPTOP_USER}@${LAPTOP_HOST}"
 AGENT_PATH="/usr/local/bin/hop-agent"
 SERVICE_NAME="com.hopssh.agent"

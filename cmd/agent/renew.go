@@ -212,9 +212,9 @@ func readInstanceToken(inst *meshInstance) (string, error) {
 }
 
 // injectPeerEndpoints feeds peer advertised UDP endpoints (learned by the
-// server's lighthouse, e.g. mini's NAT-PMP mapping `46.10.240.91:4242`)
-// directly into this instance's Nebula hostmap. This is the agent-side
-// counterpart to patch 20's AddStaticHostMap.
+// server's lighthouse, e.g. a peer's NAT-PMP public mapping) directly
+// into this instance's Nebula hostmap. This is the agent-side counterpart
+// to patch 20's AddStaticHostMap.
 //
 // Why: when UDP to the lighthouse is carrier-blocked (iPhone hotspot to
 // Oracle Cloud, etc.), the agent can't learn peer endpoints via the

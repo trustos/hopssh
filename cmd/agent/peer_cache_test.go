@@ -30,8 +30,8 @@ func TestPeerCache_SaveLoadRoundTrip(t *testing.T) {
 	inst.customDir = dir
 
 	in := map[string][]string{
-		"10.42.1.7": {"46.10.240.91:4242", "192.168.23.3:4242"},
-		"10.42.2.3": {"46.10.240.91:4243"},
+		"10.42.1.7": {"203.0.113.10:4242", "192.168.0.3:4242"},
+		"10.42.2.3": {"203.0.113.10:4243"},
 	}
 	if err := savePeerCache(inst, in); err != nil {
 		t.Fatalf("savePeerCache: %v", err)
@@ -46,7 +46,7 @@ func TestPeerCache_SaveLoadRoundTrip(t *testing.T) {
 	if len(got.Peers) != 2 {
 		t.Fatalf("Peers count = %d, want 2", len(got.Peers))
 	}
-	wantP1 := []string{"192.168.23.3:4242", "46.10.240.91:4242"} // sorted
+	wantP1 := []string{"192.168.0.3:4242", "203.0.113.10:4242"} // sorted
 	if !stringSliceEqual(got.Peers["10.42.1.7"].Endpoints, wantP1) {
 		t.Errorf("10.42.1.7 endpoints = %v, want %v", got.Peers["10.42.1.7"].Endpoints, wantP1)
 	}
@@ -60,7 +60,7 @@ func TestPeerCache_SaveSkipsWhenUnchanged(t *testing.T) {
 	inst := newMeshInstance(&Enrollment{Name: "home"})
 	inst.customDir = dir
 
-	in := map[string][]string{"10.42.1.7": {"46.10.240.91:4242"}}
+	in := map[string][]string{"10.42.1.7": {"203.0.113.10:4242"}}
 	if err := savePeerCache(inst, in); err != nil {
 		t.Fatal(err)
 	}
@@ -97,8 +97,8 @@ func TestPeerCache_SaveRewritesOnEndpointChange(t *testing.T) {
 	inst := newMeshInstance(&Enrollment{Name: "home"})
 	inst.customDir = dir
 
-	_ = savePeerCache(inst, map[string][]string{"10.42.1.7": {"46.10.240.91:4242"}})
-	if err := savePeerCache(inst, map[string][]string{"10.42.1.7": {"46.10.240.91:4242", "1.2.3.4:5678"}}); err != nil {
+	_ = savePeerCache(inst, map[string][]string{"10.42.1.7": {"203.0.113.10:4242"}})
+	if err := savePeerCache(inst, map[string][]string{"10.42.1.7": {"203.0.113.10:4242", "1.2.3.4:5678"}}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := loadPeerCache(inst)
@@ -114,8 +114,8 @@ func TestPeerCache_MergeAcrossSnapshots(t *testing.T) {
 	inst := newMeshInstance(&Enrollment{Name: "home"})
 	inst.customDir = dir
 
-	_ = savePeerCache(inst, map[string][]string{"10.42.1.7": {"46.10.240.91:4242"}})
-	_ = savePeerCache(inst, map[string][]string{"10.42.2.3": {"46.10.240.91:4243"}})
+	_ = savePeerCache(inst, map[string][]string{"10.42.1.7": {"203.0.113.10:4242"}})
+	_ = savePeerCache(inst, map[string][]string{"10.42.2.3": {"203.0.113.10:4243"}})
 
 	got, _ := loadPeerCache(inst)
 	if got == nil {
@@ -137,8 +137,8 @@ func TestPeerCache_TTLFiltersStaleEntries(t *testing.T) {
 		SchemaVersion: peerCacheSchemaVersion,
 		UpdatedAt:     fresh,
 		Peers: map[string]peerCacheEntry{
-			"10.42.1.7": {Endpoints: []string{"46.10.240.91:4242"}, SeenAt: stale},
-			"10.42.2.3": {Endpoints: []string{"46.10.240.91:4243"}, SeenAt: fresh},
+			"10.42.1.7": {Endpoints: []string{"203.0.113.10:4242"}, SeenAt: stale},
+			"10.42.2.3": {Endpoints: []string{"203.0.113.10:4243"}, SeenAt: fresh},
 		},
 	}
 	data, _ := json.MarshalIndent(c, "", "  ")
@@ -182,8 +182,8 @@ func TestPeerCache_DropsInvalidVPNIP(t *testing.T) {
 	inst.customDir = dir
 
 	in := map[string][]string{
-		"not-an-ip": {"46.10.240.91:4242"},
-		"10.42.1.7": {"46.10.240.91:4242"},
+		"not-an-ip": {"203.0.113.10:4242"},
+		"10.42.1.7": {"203.0.113.10:4242"},
 	}
 	if err := savePeerCache(inst, in); err != nil {
 		t.Fatal(err)
@@ -202,14 +202,14 @@ func TestPeerCache_DropsInvalidVPNIP(t *testing.T) {
 
 func TestPeerCache_NormalizeEndpointsDropsInvalidAndDedupes(t *testing.T) {
 	in := []string{
-		"46.10.240.91:4242",
+		"203.0.113.10:4242",
 		"",
-		"46.10.240.91:4242",
+		"203.0.113.10:4242",
 		"not-an-addrport",
 		"1.2.3.4:5678",
 	}
 	out := normalizeEndpoints(in)
-	want := []string{"1.2.3.4:5678", "46.10.240.91:4242"}
+	want := []string{"1.2.3.4:5678", "203.0.113.10:4242"}
 	if !stringSliceEqual(out, want) {
 		t.Errorf("got %v, want %v", out, want)
 	}
@@ -220,7 +220,7 @@ func TestPeerCache_FileLocation(t *testing.T) {
 	inst := newMeshInstance(&Enrollment{Name: "home"})
 	inst.customDir = dir
 
-	if err := savePeerCache(inst, map[string][]string{"10.42.1.7": {"46.10.240.91:4242"}}); err != nil {
+	if err := savePeerCache(inst, map[string][]string{"10.42.1.7": {"203.0.113.10:4242"}}); err != nil {
 		t.Fatal(err)
 	}
 	want := filepath.Join(dir, peerCacheFile)
@@ -235,7 +235,7 @@ func TestPeerCache_InjectWithoutControlIsZero(t *testing.T) {
 	inst.customDir = dir
 
 	// Prime the cache.
-	if err := savePeerCache(inst, map[string][]string{"10.42.1.7": {"46.10.240.91:4242"}}); err != nil {
+	if err := savePeerCache(inst, map[string][]string{"10.42.1.7": {"203.0.113.10:4242"}}); err != nil {
 		t.Fatal(err)
 	}
 	// inst.svc is nil → control() returns nil → injection is a no-op.

@@ -13,9 +13,9 @@ import (
 //
 //   go test -tags=upnp_live -v ./internal/portmap/ -run TestUPnP_Live
 //
-// On the user's TP-Link (UPnP-IGD WANIPConnection:1 confirmed via
-// `upnpc -s`), this should yield the public IP 46.10.240.91 and an
-// external port equal to the suggested internal port.
+// On a UPnP-IGD WANIPConnection:1 router (verify via `upnpc -s`),
+// this should yield the WAN public IP and an external port equal to
+// the suggested internal port.
 func TestUPnP_Live(t *testing.T) {
 	c := NewUPnP()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
