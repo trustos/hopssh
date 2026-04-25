@@ -230,8 +230,20 @@ func injectPeerEndpoints(inst *meshInstance, peerEndpoints map[string][]string) 
 		return
 	}
 	ctrl := inst.control()
+	selfIP := inst.meshIP()
 	if ctrl != nil {
 		for ipStr, epStrs := range peerEndpoints {
+			// Fix E (v0.10.26): defensive — never inject self into
+			// hostmap. If the server's peerEndpoints response somehow
+			// contains this agent's own VPN IP (shouldn't happen given
+			// the `p.ID == node.ID` skip in internal/api/renew.go, but
+			// belt-and-braces against future regressions), skip it.
+			// Self-injection causes "Refusing to handshake with myself"
+			// log noise on every probe.
+			if selfIP != "" && ipStr == selfIP {
+				log.Printf("[agent %s] skipping self-loop peer endpoint injection for own VPN IP %s", inst.name(), ipStr)
+				continue
+			}
 			vpn, err := netip.ParseAddr(ipStr)
 			if err != nil || !vpn.IsValid() {
 				continue
@@ -419,6 +431,29 @@ type nebulaConfigUpdate struct {
 
 // applyNebulaConfigUpdate merges server-pushed settings into the local nebula.yaml.
 func applyNebulaConfigUpdate(inst *meshInstance, update *nebulaConfigUpdate) error {
+	// Fix B (v0.10.26): defensive reject of mismatched server-pushed
+	// listen port. The server (post-v0.10.26) no longer pushes
+	// listenPort, but if a regression or older server pushes one that
+	// doesn't match this enrollment's local allocation, IGNORE it.
+	// The enrollment registry (`enrollments.json`) is the source of
+	// truth for per-enrollment listen ports — only the agent knows
+	// which ports its other enrollments are using on the same host.
+	//
+	// History: pre-v0.10.26 the server hardcoded listenPort=4242 and
+	// pushed it on every renewal, silently corrupting multi-enrollment
+	// hosts whose secondary enrollment was on 4243+. The corruption
+	// caused a port-bind collision in reloadNebula, which left the
+	// enrollment without a running Nebula AND without a network-change
+	// watcher, breaking sleep recovery as a corollary.
+	if update != nil && update.ListenPort != nil {
+		if inst != nil && inst.enrollment != nil && inst.enrollment.ListenPort > 0 &&
+			*update.ListenPort != inst.enrollment.ListenPort {
+			log.Printf("[renew %s] ignoring server-pushed listenPort=%d, keeping enrollment's allocated port %d",
+				inst.name(), *update.ListenPort, inst.enrollment.ListenPort)
+			update.ListenPort = nil
+		}
+	}
+
 	configPath := filepath.Join(inst.dir(), "nebula.yaml")
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -875,28 +910,36 @@ func reloadNebula(inst *meshInstance) {
 		return
 	}
 
-	// Hot-restart path: tear down the old watcher first so it doesn't
-	// outlive its Control, then close the old svc, start the new one.
-	inst.stopWatcher()
+	// Hot-restart path (Fix C v0.10.26): try-then-swap to keep the old
+	// svc + watcher alive if the new svc fails to start, then schedule
+	// a retry-with-backoff goroutine so transient failures self-recover
+	// without operator intervention.
+	//
+	// Pre-v0.10.26 this path tore down the watcher and old svc FIRST,
+	// so a Nebula start failure (e.g., port collision from Bug 1) left
+	// the agent permanently broken: no svc, no watcher, no retry.
+	// Cascading consequence: sleep-wake recovery silently broken too,
+	// because the watcher goroutine that detects sleep gaps was killed
+	// alongside the failed start.
 	oldSvc := inst.svc
-	inst.svc = nil
 	inst.svcMu.Unlock()
-	oldSvc.Close()
 
-	var newSvc meshService
-	var err error
-	if tunMode == "kernel" {
-		newSvc, err = startNebulaKernelTun(configPath)
-	} else {
-		newSvc, err = startNebula(configPath)
-	}
-
+	newSvc, err := startNebulaByMode(configPath, tunMode)
 	if err != nil {
-		log.Printf("[renew %s] CRITICAL: failed to restart Nebula after cert renewal: %v", inst.name(), err)
-		log.Printf("[renew %s] agent will lose mesh connectivity when old cert expires", inst.name())
+		log.Printf("[renew %s] failed to restart Nebula after cert renewal: %v (keeping old svc + watcher alive; will retry)", inst.name(), err)
+		// Old svc + watcher remain in place — current mesh keeps working
+		// on the old cert until the cert expires. Schedule a retry that
+		// runs detached from this goroutine.
+		scheduleRetryReload(inst, configPath, tunMode)
 		return
 	}
 
+	// New svc started successfully. NOW it's safe to swap.
+	inst.stopWatcher()        // kill watcher bound to old ctrl
+	inst.svc = nil            // mark unconditionally so setSvc takes over
+	if oldSvc != nil {
+		oldSvc.Close()        // release old UDP port + utun
+	}
 	inst.setSvc(newSvc)
 
 	// Spawn a fresh watcher against the new ctrl.
@@ -916,6 +959,122 @@ func reloadNebula(inst *meshInstance) {
 	if inst.onRestart != nil {
 		inst.onRestart(newSvc)
 	}
+}
+
+// startNebulaByMode dispatches to kernel-TUN or userspace start based
+// on tunMode. Centralizes the dispatch so retry-with-backoff calls the
+// same path as the initial start.
+func startNebulaByMode(configPath, tunMode string) (meshService, error) {
+	if tunMode == "kernel" {
+		return startNebulaKernelTun(configPath)
+	}
+	return startNebula(configPath)
+}
+
+// retryReloadBackoff is the exponential backoff schedule used by
+// scheduleRetryReload after a failed Nebula start during cert renewal.
+// Capped at 30 minutes; max 10 attempts. Final give-up logs at ERROR.
+//
+// Tuning rationale: 5s catches transient binds (port held briefly by
+// stale kernel state); 30s/2m absorb most user-side blips; 10m/30m
+// cover longer-lived issues (e.g., wrong port collision waiting for
+// the OTHER enrollment's renewal to free the port). Total worst-case
+// retry window is ~3.5h — well under the 12h cert lifetime so we
+// recover before the existing cert expires in the common case.
+var retryReloadBackoff = []time.Duration{
+	5 * time.Second,
+	30 * time.Second,
+	2 * time.Minute,
+	5 * time.Minute,
+	10 * time.Minute,
+	15 * time.Minute,
+	30 * time.Minute,
+	30 * time.Minute,
+	30 * time.Minute,
+	30 * time.Minute,
+}
+
+// scheduleRetryReload spawns a detached goroutine that retries the
+// reload-Nebula path with exponential backoff after a failed start.
+// Cancellable via the instance's parentCtx so agent shutdown / hot
+// reload supersedes any in-progress retry cleanly.
+//
+// Idempotency: if a fresh reload succeeds OR the cert is renewed
+// again, the in-flight retry's next attempt will simply find
+// inst.svc != nil + valid and exit early. If the user manually
+// restarts the agent, parentCtx cancels and the goroutine exits.
+func scheduleRetryReload(inst *meshInstance, configPath, tunMode string) {
+	if inst == nil {
+		return
+	}
+	parentCtx := inst.parentCtx
+	if parentCtx == nil {
+		// Defensive: if parentCtx wasn't set (test setup), use background.
+		// The goroutine still exits when the agent process dies.
+		parentCtx = context.Background()
+	}
+
+	go func() {
+		for attempt, backoff := range retryReloadBackoff {
+			select {
+			case <-parentCtx.Done():
+				log.Printf("[renew %s] retry-reload cancelled (agent shutting down)", inst.name())
+				return
+			case <-time.After(addJitter(backoff)):
+			}
+
+			// Skip if reload already succeeded out-of-band (manual
+			// restart, next cert renewal, etc.).
+			inst.svcMu.Lock()
+			haveSvc := inst.svc != nil
+			inst.svcMu.Unlock()
+			if haveSvc {
+				log.Printf("[renew %s] retry-reload skipping attempt %d/%d: svc already restored",
+					inst.name(), attempt+1, len(retryReloadBackoff))
+				return
+			}
+
+			log.Printf("[renew %s] retry-reload attempt %d/%d after %v backoff",
+				inst.name(), attempt+1, len(retryReloadBackoff), backoff.Round(time.Second))
+
+			newSvc, err := startNebulaByMode(configPath, tunMode)
+			if err != nil {
+				log.Printf("[renew %s] retry-reload attempt %d/%d failed: %v",
+					inst.name(), attempt+1, len(retryReloadBackoff), err)
+				continue
+			}
+
+			// Success — perform the swap that the original reloadNebula
+			// would have done. Note: the old svc is already gone (was
+			// closed in the success path of reloadNebula's original
+			// call... but we landed here BEFORE that swap), so we just
+			// install the new svc.
+			inst.svcMu.Lock()
+			inst.stopWatcher()
+			oldSvc := inst.svc
+			inst.svc = nil
+			inst.svcMu.Unlock()
+			if oldSvc != nil {
+				oldSvc.Close()
+			}
+			inst.setSvc(newSvc)
+
+			if ctrl := newSvc.NebulaControl(); ctrl != nil && inst.endpoint() != "" {
+				inst.startWatcher(ctrl)
+			}
+			inst.reinjectPortmapAddr()
+			log.Printf("[renew %s] retry-reload SUCCESS on attempt %d/%d (mode: %s)",
+				inst.name(), attempt+1, len(retryReloadBackoff), tunMode)
+
+			if inst.onRestart != nil {
+				inst.onRestart(newSvc)
+			}
+			return
+		}
+
+		log.Printf("[renew %s] CRITICAL: retry-reload exhausted %d attempts; agent will lose mesh connectivity when current cert expires",
+			inst.name(), len(retryReloadBackoff))
+	}()
 }
 
 // readEndpointFromDisk reads the control plane endpoint URL from the

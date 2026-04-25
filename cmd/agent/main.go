@@ -262,6 +262,23 @@ func migrateListenPorts(reg *enrollmentRegistry) {
 	if updated > 0 {
 		log.Printf("[migrate] assigned listen ports to %d legacy enrollment(s)", updated)
 	}
+
+	// Fix F (v0.10.26): self-heal duplicate listen ports.
+	//
+	// Pre-v0.10.26 the server's /api/renew handler hardcoded a
+	// listenPort=4242 push that silently corrupted multi-enrollment
+	// hosts. Even after Fix A+B prevent future corruption, this
+	// startup check ensures we self-heal if any future regression OR
+	// manual edit ever leaves two enrollments with the same port —
+	// avoiding the catastrophic port-bind collision in reloadNebula
+	// that previously left the network permanently broken.
+	renumbered, err := reg.HealDuplicateListenPorts(nebulacfg.ListenPort)
+	if err != nil {
+		log.Printf("[migrate] WARNING: heal duplicate listen ports: %v", err)
+	} else if len(renumbered) > 0 {
+		log.Printf("[migrate] healed duplicate listen ports — reassigned: %v", renumbered)
+	}
+
 	for _, e := range reg.List() {
 		if err := healListenPortYAML(e); err != nil {
 			log.Printf("[migrate %s] WARNING: heal listen.port: %v", e.Name, err)
@@ -375,8 +392,17 @@ func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverS
 	warmTunnel(cfgPath)
 	warmPeersFromHeartbeat(inst, inst.endpoint())
 
-	if ctrl := meshSvc.NebulaControl(); ctrl != nil {
+	// Fix D (v0.10.26): mirror the empty-endpoint guard from the
+	// reload paths (renew.go:885, 933) so the watcher startup
+	// preconditions are consistent across all entry points. If the
+	// endpoint is empty, watchNetworkChanges would silently early-exit
+	// anyway — explicit log here is more discoverable.
+	if ctrl := meshSvc.NebulaControl(); ctrl != nil && inst.endpoint() != "" {
 		inst.startWatcher(ctrl)
+	} else if ctrl == nil {
+		log.Printf("[agent %s] WARNING: cannot start network-change watcher: no Nebula control", inst.name())
+	} else {
+		log.Printf("[agent %s] WARNING: cannot start network-change watcher: enrollment endpoint is empty", inst.name())
 	}
 
 	if nebulacfg.PortmapEnabled {

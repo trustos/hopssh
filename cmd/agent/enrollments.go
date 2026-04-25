@@ -214,6 +214,58 @@ func (r *enrollmentRegistry) AssignMissingListenPorts(base int) (int, error) {
 	return updated, nil
 }
 
+// HealDuplicateListenPorts (Fix F, v0.10.26) detects enrollments that
+// share a ListenPort value and reallocates all but the FIRST-enrolled
+// (oldest EnrolledAt) to fresh unique ports. Returns the names of
+// enrollments that were renumbered, so the caller can re-run
+// healListenPortYAML on them to make nebula.yaml match.
+//
+// Idempotent: returns nil on healthy registries (no duplicates).
+//
+// Why: pre-v0.10.26 the server pushed a hardcoded listenPort=4242 on
+// every cert renewal, silently corrupting multi-enrollment hosts whose
+// secondary enrollment was allocated 4243+. After Fix A+B prevent
+// future corruption, this catches any historical / future regression
+// (or manual hand-edit) that introduces duplicates, on the next agent
+// process start.
+func (r *enrollmentRegistry) HealDuplicateListenPorts(base int) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Group enrollments by ListenPort. Skip zero-port entries — those
+	// are handled by AssignMissingListenPorts instead.
+	byPort := map[int][]*Enrollment{}
+	for _, e := range r.enrollments {
+		if e.ListenPort > 0 {
+			byPort[e.ListenPort] = append(byPort[e.ListenPort], e)
+		}
+	}
+
+	var renumbered []string
+	for _, group := range byPort {
+		if len(group) < 2 {
+			continue
+		}
+		// Sort: oldest EnrolledAt first (it keeps the port).
+		sort.Slice(group, func(i, j int) bool {
+			return group[i].EnrolledAt.Before(group[j].EnrolledAt)
+		})
+		// group[0] keeps its port; reassign the rest.
+		for _, e := range group[1:] {
+			e.ListenPort = r.nextAvailableListenPortLocked(base)
+			renumbered = append(renumbered, e.Name)
+		}
+	}
+
+	if len(renumbered) == 0 {
+		return nil, nil
+	}
+	if err := r.saveLocked(); err != nil {
+		return nil, err
+	}
+	return renumbered, nil
+}
+
 // Get returns the enrollment with the given name, or nil.
 func (r *enrollmentRegistry) Get(name string) *Enrollment {
 	r.mu.Lock()

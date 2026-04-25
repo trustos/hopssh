@@ -126,7 +126,6 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 
 	useRelays := nebulacfg.UseRelays
 	punchBack := nebulacfg.PunchBack
-	listenPort := nebulacfg.ListenPort
 
 	// MTU is intentionally NOT pushed back. Two writers of nebula.yaml::tun.mtu
 	// is one too many — the agent's `ensureP2PConfig` writes it from its OWN
@@ -141,6 +140,16 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 	// If a per-network admin-override-MTU feature is added later, this is
 	// where it would re-appear — sent only when the network has an explicit
 	// override, never as the global default.
+	//
+	// listenPort is ALSO intentionally NOT pushed (Fix A, v0.10.26). The
+	// server has no per-node knowledge of which UDP port a given node's
+	// agent allocated — there is no `listen_port` column on the `nodes`
+	// table. Pushing the compile-time constant `nebulacfg.ListenPort`
+	// (4242) silently corrupted multi-enrollment agents whose secondary
+	// enrollment was allocated 4243+ via `NextAvailableListenPort`. The
+	// agent's `enrollments.json` is the source of truth; `ensureP2PConfig`
+	// already self-heals nebula.yaml from `Enrollment.ListenPort` at
+	// boot and on every renewal.
 
 	writeJSON(w, map[string]interface{}{
 		"nodeCert":  string(nodeCert.CertPEM),
@@ -150,7 +159,6 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 			"useRelays":  &useRelays,
 			"punchBack":  &punchBack,
 			"punchDelay": nebulacfg.PunchDelay,
-			"listenPort": &listenPort,
 		},
 	})
 }

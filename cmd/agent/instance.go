@@ -4,6 +4,8 @@ import (
 	"context"
 	"log"
 	"net/netip"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -73,6 +75,12 @@ type meshInstance struct {
 	// collectPeerState to attach RTTms to each PeerDetail in the
 	// heartbeat. Nil-safe via pathQuality.snapshot().
 	pathQuality *pathQuality
+
+	// meshIPMu + cachedMeshIP back the meshIP() lazy reader. Cached
+	// for the instance lifetime — the cert's VPN IP doesn't change
+	// across renewals (only the signature/expiry does).
+	meshIPMu     sync.Mutex
+	cachedMeshIP string
 }
 
 // reloadCooldown is the minimum spacing between watcher-initiated
@@ -129,6 +137,36 @@ func (i *meshInstance) endpoint() string {
 // nodeID returns the enrollment's server-assigned node id.
 func (i *meshInstance) nodeID() string {
 	return i.enrollment.NodeID
+}
+
+// meshIP returns this enrollment's own VPN/mesh IP as a bare string
+// (e.g. "10.42.1.11"), without the netmask. Lazily reads + caches
+// from the cert on disk; "" on any failure.
+//
+// Used by `injectPeerEndpoints` and `injectCachedPeerEndpoints` to
+// skip self-loop entries — a defensive filter against any future
+// regression that causes the agent's own VPN IP to appear in its
+// own peerEndpoints (which would inject self into hostmap, generating
+// "Refusing to handshake with myself" log noise on every probe).
+func (i *meshInstance) meshIP() string {
+	if i == nil {
+		return ""
+	}
+	i.meshIPMu.Lock()
+	defer i.meshIPMu.Unlock()
+	if i.cachedMeshIP != "" {
+		return i.cachedMeshIP
+	}
+	ip, err := readMeshIPFromCert(filepath.Join(i.dir(), "nebula.yaml"))
+	if err != nil {
+		return ""
+	}
+	// Strip CIDR suffix if present (cert returns "10.42.1.11/24").
+	if idx := strings.IndexByte(ip, '/'); idx > 0 {
+		ip = ip[:idx]
+	}
+	i.cachedMeshIP = ip
+	return i.cachedMeshIP
 }
 
 // signalHeartbeat asks runHeartbeat (for this instance) to fire one

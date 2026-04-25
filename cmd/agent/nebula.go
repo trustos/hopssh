@@ -174,14 +174,29 @@ func (k *kernelTunMeshService) Close() {
 // don't leak the goroutine or keep it calling methods on a stopped
 // Nebula Control.
 func watchNetworkChanges(ctx context.Context, inst *meshInstance, ctrl *nebula.Control) {
+	// Fix D (v0.10.26): observability + crash safety. Pre-fix, this
+	// goroutine could die silently on early-return (empty endpoint) or
+	// panic (e.g., calling methods on a closed Nebula control after a
+	// race), and the only way to discover the death was waiting for a
+	// sleep/wake that never logged. Now we log on every entry, exit,
+	// and panic so operators can verify the watcher is actually running.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[agent %s] CRITICAL: network-change watcher PANICKED: %v (goroutine exited; sleep recovery and network-change rebind disabled until next reload)", inst.name(), r)
+		}
+	}()
+
 	host := extractHost(inst.endpoint())
 	if host == "" {
+		log.Printf("[agent %s] network-change watcher exiting: empty endpoint (cannot detect physical interface)", inst.name())
 		return
 	}
 
 	lastIface, _ := nebulacfg.DetectPhysicalInterface(host)
 	lastAddrs := getLocalAddrs(lastIface)
 	lastTick := time.Now()
+
+	log.Printf("[agent %s] network-change watcher started (iface: %s, endpoint: %s)", inst.name(), lastIface, host)
 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -197,6 +212,14 @@ func watchNetworkChanges(ctx context.Context, inst *meshInstance, ctrl *nebula.C
 
 		tickCount++
 		now := time.Now()
+
+		// Periodic liveness log (Fix D, v0.10.26): every 200 ticks
+		// (~16 min) confirm the goroutine is still running. Quick
+		// post-deploy spot-check: `grep "watcher alive" hop-agent.log`
+		// should show one line per ~16 min per enrollment.
+		if tickCount%200 == 0 {
+			log.Printf("[agent %s] watcher alive (ticks: %d, iface: %s)", inst.name(), tickCount, lastIface)
+		}
 
 		// Detect sleep/wake: if the ticker fires and the gap since the
 		// last tick is >15s (3× the 5s interval), the process was suspended

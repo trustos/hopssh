@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
 	"os"
@@ -187,8 +188,15 @@ func injectCachedPeerEndpoints(inst *meshInstance) int {
 	if ctrl == nil {
 		return 0
 	}
+	selfIP := inst.meshIP()
 	n := 0
 	for ipStr, e := range c.Peers {
+		// Fix E (v0.10.26): defensive — never inject self into hostmap
+		// from the on-disk cache. See injectPeerEndpoints for rationale.
+		if selfIP != "" && ipStr == selfIP {
+			log.Printf("[agent %s] skipping self-loop cached peer endpoint for own VPN IP %s", inst.name(), ipStr)
+			continue
+		}
 		vpn, err := netip.ParseAddr(ipStr)
 		if err != nil || !vpn.IsValid() {
 			continue
