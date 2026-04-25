@@ -21,8 +21,11 @@ package main
 // on Darwin/Linux/Windows.
 
 import (
+	"log"
 	"net"
 	"net/netip"
+
+	"github.com/trustos/hopssh/internal/nebulacfg"
 )
 
 // selfEndpoints returns the list of `IP:port` strings that THIS agent
@@ -61,10 +64,29 @@ func selfEndpoints(inst *meshInstance) []string {
 		}
 	}
 
-	// Local interface addresses. Best-effort: any error in walking
-	// interfaces drops the local part silently — the public mapping
-	// alone is enough for cellular peers.
-	addrs := localUnicastAddrs()
+	// Local interface addresses. Restricted to the PHYSICAL egress
+	// interface (the one routing to the control plane endpoint) so
+	// Phase G doesn't HTTPS-distribute IPs from overlay/VPN tap
+	// interfaces (ZeroTier, Cloudflare WARP, Tailscale, Parallels
+	// bridges). Distributing those caused Nebula on the receiving
+	// peer to maintain multiple competing source paths, which the
+	// kernel routed nondeterministically — triggering connection_manager
+	// dead-marks every ~15 min and a 5-10s handshake storm that broke
+	// active screen-share sessions (RTCP timeout).
+	//
+	// Best-effort: if DetectPhysicalInterface fails (no endpoint, no
+	// network), we fall back to enumerating ALL interfaces so we
+	// still surface SOMETHING for peers to dial. Better to advertise
+	// noise than nothing on a degraded host.
+	physIface := ""
+	if host := extractHost(inst.endpoint()); host != "" {
+		if iface, err := nebulacfg.DetectPhysicalInterface(host); err == nil {
+			physIface = iface
+		} else {
+			log.Printf("[agent %s] selfEndpoints: physical-interface detect failed: %v (falling back to all interfaces)", inst.name(), err)
+		}
+	}
+	addrs := localUnicastAddrsOnInterface(physIface)
 	for _, ip := range addrs {
 		ap := netip.AddrPortFrom(ip, uint16(port))
 		if !ap.IsValid() {
@@ -83,17 +105,23 @@ func selfEndpoints(inst *meshInstance) []string {
 	return out
 }
 
-// localUnicastAddrs returns this host's globally-routable-ish IPv4
-// addresses across all up interfaces, excluding loopback, link-local,
-// and the agent's own mesh IP (10.42.x.x — those are mesh-internal
-// and useless to peers as a reachability hint).
+// localUnicastAddrsOnInterface returns this host's globally-routable-ish
+// IPv4 addresses, excluding loopback, link-local, and the agent's own
+// mesh IP (10.42.x.x — mesh-internal and useless to peers as a
+// reachability hint).
+//
+// If onlyIface is non-empty, restricts results to that single interface
+// — this is the production path that prevents overlay/VPN tap addresses
+// from being distributed via Phase G. If onlyIface is empty (detection
+// failed), falls back to enumerating ALL up non-loopback interfaces so
+// the agent still surfaces something on a degraded host.
 //
 // We intentionally include RFC1918 private addresses (192.168.x.x,
 // 10.x.x.x outside our mesh range, 172.16-31.x.x): same-LAN peers
 // can hit them directly, and the peer's `preferred_ranges` config
 // will pick them over public addresses for hairpin-NAT-bypass
 // scenarios.
-func localUnicastAddrs() []netip.Addr {
+func localUnicastAddrsOnInterface(onlyIface string) []netip.Addr {
 	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil
@@ -101,6 +129,9 @@ func localUnicastAddrs() []netip.Addr {
 	out := make([]netip.Addr, 0, 4)
 	for _, iface := range ifaces {
 		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		if onlyIface != "" && iface.Name != onlyIface {
 			continue
 		}
 		ifAddrs, err := iface.Addrs()
@@ -136,4 +167,11 @@ func localUnicastAddrs() []netip.Addr {
 		}
 	}
 	return out
+}
+
+// localUnicastAddrs is kept for backward-compatibility with existing tests.
+// New callers should use localUnicastAddrsOnInterface("") or pass the
+// physical interface name directly.
+func localUnicastAddrs() []netip.Addr {
+	return localUnicastAddrsOnInterface("")
 }

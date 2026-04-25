@@ -136,6 +136,36 @@ const ListenPort = 4242
 // mode reliable, which 1420 does.
 const TunMTU = 1420
 
+// ConnectionAliveIntervalSec is how often Nebula's connection_manager
+// probes each tunnel to verify it's still alive (key:
+// `timers.connection_alive_interval`, in seconds).
+//
+// Nebula default: 5 s — too aggressive. With multiple competing source
+// paths on the host (LAN + WAN-via-NAT-PMP, common with NAT-PMP-aware
+// routers), the kernel can route a probe response via a DIFFERENT
+// interface than the one the test packet was sent from, causing the
+// probe to time out spuriously. The tunnel gets dead-marked and forced
+// re-handshake takes 5-10 s — long enough to break active screen-share
+// sessions (AVConference RTCP timeout = 5-10 s).
+//
+// 10 s halves probe frequency and gives the kernel/NAT more time to
+// settle a single flow before the next probe. Mobile-network handoff
+// detection latency increases by ~5 s, but watchNetworkChanges already
+// triggers a forced rebind on detected changes (5 s polling), so this
+// is only a regression for unannounced silent failures (rare).
+const ConnectionAliveIntervalSec = 10
+
+// PendingDeletionIntervalSec is how long Nebula waits after a probe
+// times out before declaring the tunnel dead (key:
+// `timers.pending_deletion_interval`, in seconds).
+//
+// Nebula default: 10 s. Combined with the 5 s probe interval, the
+// total dead-detection time is ~15 s. Bumping to 30 s gives 40 s
+// total — well above any transient WiFi MAC contention or NAT
+// rebalance event, but still fast enough that genuinely-dead
+// connections recover within the user's perceived "wait" window.
+const PendingDeletionIntervalSec = 30
+
 // HandshakeTryInterval is the retry interval for Noise handshake attempts.
 // Default 100ms wastes time if the lighthouse responds faster. 20ms ensures
 // the handshake fires almost immediately after receiving peer addresses,

@@ -585,6 +585,24 @@ func ensureP2PConfig(inst *meshInstance) {
 		changed = true
 	}
 
+	// Connection-manager tolerance (Option C, v0.10.25). Nebula's
+	// default 5s probe + 10s deletion-grace was dead-marking active
+	// tunnels every ~15min during screen-share because multi-path
+	// kernel routing caused individual probe packets to be lost. The
+	// looser timers (10s + 30s = 40s total) absorb transient packet
+	// loss without affecting genuine network-change recovery (which
+	// is handled separately by watchNetworkChanges + forced rebind).
+	timers := yamlMap(cfg, "timers")
+	if v, ok := timers["connection_alive_interval"]; !ok || v != nebulacfg.ConnectionAliveIntervalSec {
+		timers["connection_alive_interval"] = nebulacfg.ConnectionAliveIntervalSec
+		changed = true
+	}
+	if v, ok := timers["pending_deletion_interval"]; !ok || v != nebulacfg.PendingDeletionIntervalSec {
+		timers["pending_deletion_interval"] = nebulacfg.PendingDeletionIntervalSec
+		changed = true
+	}
+	cfg["timers"] = timers
+
 	// Punchy settings for fast P2P establishment.
 	punchy := yamlMap(cfg, "punchy")
 	if tar, ok := punchy["target_all_remotes"]; !ok || tar != true {

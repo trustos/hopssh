@@ -46,6 +46,32 @@ func TestSelfEndpoints_ReturnsLocalAddrsWithPort(t *testing.T) {
 	}
 }
 
+// TestLocalUnicastAddrsOnInterface_RestrictsToNamedIface — the v0.10.25
+// fix for the screen-share black-out bug. When we pass a specific
+// interface name, ONLY that interface's addresses come back, even if
+// other interfaces (ZeroTier, Tailscale, Parallels bridges) have
+// routable addresses on the host. Empty-string falls back to all.
+func TestLocalUnicastAddrsOnInterface_RestrictsToNamedIface(t *testing.T) {
+	all := localUnicastAddrsOnInterface("")
+	if len(all) == 0 {
+		t.Skip("no usable local interface addresses on this host")
+	}
+
+	// Pick the loopback iface name; we expect zero results because
+	// the helper skips loopback interfaces regardless.
+	got := localUnicastAddrsOnInterface("lo0")
+	if len(got) != 0 {
+		t.Errorf("loopback explicitly named should still yield zero (filtered before name check): %v", got)
+	}
+
+	// Pick a non-existent interface; should yield zero addresses
+	// without erroring (no panic, no crash).
+	got = localUnicastAddrsOnInterface("definitely-not-an-interface")
+	if len(got) != 0 {
+		t.Errorf("nonexistent iface returned %v, want empty", got)
+	}
+}
+
 func TestLocalUnicastAddrs_FiltersMeshAndLoopback(t *testing.T) {
 	got := localUnicastAddrs()
 	for _, addr := range got {
