@@ -793,3 +793,138 @@ iperf3 -c <mesh-ip>     # on the other
 - **Higher MTU = fewer TUN reads per frame.** MTU 4400 (3 IP fragments)
   reduces TUN reads from 35 to 12 per 50KB keyframe — 33% less encrypt+send
   time. But static high MTU breaks internet paths.
+
+---
+
+## Cellular Parity & Reload Resilience (v0.10.20 → v0.10.26)
+
+Series of empirically-validated fixes that closed the cellular gap to
+Tailscale and hardened cert-renewal lifecycle.
+
+### v0.10.20 — Phase A1+A2: peer-endpoint cache + UDP-hello probe
+
+**Problem**: cold-start TCP cwnd collapse on cellular. Pre-fix:
+`87.6 → 22.0 → 26.1 → 51.6 Mb/s` (Tput@1s/5s/10s/30s) — relay-vs-direct
+race caused tunnel to come up via lighthouse relay first, then TCP slow-
+started through the relay leg. After ~5-10 s when Nebula reactively
+roamed to direct, congestion control had collapsed and recovery on
+cellular takes 25+ s.
+
+**Fix**: persistent on-disk peer-endpoint cache (`cmd/agent/peer_cache.go`,
+schema v1, 24 h TTL, atomic write) populated from heartbeat-driven
+`peerEndpoints`. Cache loaded at agent startup BEFORE the first handshake
+fires, so the first attempt goes direct. Plus a 1-byte UDP-hello probe to
+each cached endpoint (`warmEndpointPath`) to open the cellular CGNAT
+outbound flow + populate kernel ARP/route cache.
+
+**Result** (3-pass cellular, Mac mini ↔ MBP, Yettel BG iPhone hotspot,
+fresh-restart cold start each pass):
+
+| Pass | Network | Tput@1s | Tput@5s | Tput@10s | Tput@30s | Peak |
+|---|---|---|---|---|---|---|
+| 1 | hopssh | 40.7 | 36.6 | 13.6 | 15.7 | **40.7** |
+| 1 | tailscale | 48.0 | 32.5 | 36.8 | 31.4 | **48.0** |
+| 2 | hopssh | 46.0 | 25.1 | 21.9 | 13.7 | **46.0** |
+| 2 | tailscale | 39.6 | 0.0 | 6.3 | 26.1 | **40.9** |
+| 3 | hopssh | 50.2 | 30.5 | 33.6 | 24.0 | **50.2** |
+| 3 | tailscale | 57.6 | 3.1 | 22.0 | 24.1 | **57.6** |
+
+Mean peak hopssh **45.6 Mb/s** vs Tailscale 48.8 — within 7%, basically
+parity (vs ~30% gap pre-A1). The s05 collapse is gone — no `(RELAYED)`
+log lines anywhere; first received handshake is always direct from the
+peer's NAT-PMP public endpoint.
+
+Jitter under TCP load (ping at 100 ms cadence, ~590 samples/pass):
+**hopssh wins on cellular every metric, every pass**:
+mean 114 vs 126 ms, p95 227 vs 297, p99 323 vs 408, max 437 vs 514.
+
+### v0.10.21 — Phase B-lite: per-peer EWMA RTT observability
+
+Per-instance prober dials each direct peer's mesh listener
+(TCP-connect to `:41820`) every 10 s; tracks EWMA (α=0.3); logs
+degradation when 3 consecutive samples land >50 ms above baseline.
+RTT surfaces in `PeerDetail.RTTms` via existing heartbeat → server
+→ dashboard pipeline. Pure observability — no auto-swap of
+CurrentRemote.
+
+Cost: one TCP-SYN per direct peer per 10 s. Negligible.
+
+### v0.10.22-24 — Phase G: HTTPS-distributed self-endpoints
+
+Closes the "cellular peer goes silent at idle" gap. Symptom: after
+16+ minutes of mesh idle, MBP-cellular ↔ mini home went unreachable;
+mini's home Nebula appeared "frozen". Root cause was the architecture:
+MBP cellular CGNAT closed the idle UDP flow; MBP's UDP-to-lighthouse
+`advertise_addrs` updates were carrier-filtered, so server's
+lighthouse cache went stale; mini home had no fresh path info → silent.
+
+**Fix**: agent now sends `selfEndpoints []string` (NAT-PMP public +
+local interface IPs paired with listen port) in every heartbeat POST.
+Server caches per-node with 15-min TTL (`RenewHandler.selfEndpointCache
+sync.Map`); merges into `peerEndpoints` responses. Independent of
+UDP-to-lighthouse propagation.
+
+Live regression test (`scripts/cellular_idle_test.sh`) verifies
+end-to-end: 17 heartbeat-driven endpoint pushes during 17-min idle
+window; mesh recovers without manual restart.
+
+### v0.10.25 — selfEndpoints filter to physical egress interface
+
+Bug discovered 2026-04-25: screen-share sessions periodically went
+black + auto-reconnected at a strict ~13-16 min cadence. Root cause:
+multi-NIC presence (ZeroTier, Tailscale, Cloudflare WARP, Parallels
+bridges) caused Nebula's `connection_manager` to dead-mark the
+active tunnel because the kernel routed individual probe packets via
+different interfaces. Re-handshake took 5-10 s → AVConference RTCP
+timeout → screen black.
+
+**Fix**: Phase G's `selfEndpoints` now restricts to the physical
+egress interface only (via `nebulacfg.DetectPhysicalInterface`).
+Plus defensive bump of Nebula's connection-manager timeouts:
+`tunnels.connection_alive_interval` 5→10 s,
+`pending_deletion_interval` 10→30 s. Total dead-detect window
+15→40 s, well above any WiFi MAC contention or NAT-rebalance event.
+
+### v0.10.26 — Cert-renewal port-clobber + reload-cascade fix
+
+See `docs/sleep-wake-plan.md` for full diagnosis. Six coordinated
+fixes (server stops pushing hardcoded `listenPort`; agent rejects
+mismatches defensively; `reloadNebula` try-then-swap +
+retry-with-backoff; watcher startup log + periodic alive log + panic
+recover; self-VPN-IP filter in peer-endpoint injection; boot-time
+duplicate-port self-heal).
+
+WiFi-LAN throughput on v0.10.26 vs v0.10.20 baseline:
+
+| Build | Mean peak (3 passes) | vs Tailscale (same run) |
+|---|---|---|
+| v0.10.20 baseline | 423 Mb/s | beats by ~12% |
+| **v0.10.26** | **472 Mb/s** | beats by ~17% |
+
+Defensive code (try-then-swap, retry goroutine, panic recover, all
+the new tests) added ZERO measurable overhead. Mean peak +12% over
+the previous baseline likely reflects cleaner WiFi conditions during
+the test run.
+
+### Architectural lessons captured (CLAUDE.md Discovery Log)
+
+These patterns now apply to all future config-update fields:
+
+1. **Server stops pushing values it doesn't own.** If the server has
+   no per-node DB column for a value, it has no ground truth to push.
+   Same anti-pattern as v0.10.17's MTU-push removal. Audit other
+   server-pushed config fields.
+2. **Reload-then-fail-then-die is a class of bug.** Any operation
+   that tears down state before validating a replacement is fragile.
+   Always shadow-validate or roll back.
+3. **Goroutine death without observability is invisible.** Every
+   long-lived goroutine should log on entry, on exit, and on periodic
+   alive ticks.
+4. **Overlay/VPN-tap interfaces should NOT be advertised as mesh
+   paths.** Industry standard (Tailscale, ZeroTier) — each operates
+   over physical egress only. Stacking VPNs creates non-deterministic
+   routing during inner roam events.
+5. **Inner mesh's connection_manager timeouts must be wider than
+   typical packet-loss bursts.** Default 5+10 s is too aggressive for
+   WiFi MAC contention; 10+30 s absorbs transient loss without
+   dead-marking active tunnels.

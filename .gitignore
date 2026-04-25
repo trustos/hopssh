@@ -45,6 +45,9 @@ Thumbs.db
 *.swo
 *~
 
+# Claude Code internal state (per-session lock files, plan caches, etc.)
+.claude/
+
 # E2E-session reference (host connection details — not secrets,
 # but session-scoped and machine-specific so never committed).
 .e2e-*

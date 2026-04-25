@@ -620,3 +620,69 @@ fix (vs 3s timeout before).
 - hopssh fixes: commit 606384b (v0.9.6), `cmd/agent/nebula.go:166-197`,
   `cmd/agent/renew.go:517-560`
 - Evidence: `spike/nebula-baseline-evidence/` (30s outage survival test) — target `spike/sleep-wake-evidence/` (this plan)
+
+---
+
+## 2026-04-25 update — v0.10.26 cascading-failure fix
+
+The original sleep-wake handling (`cmd/agent/nebula.go::watchNetworkChanges`,
+5 s polling + tick-gap detection + `RebindUDPServer` + `CloseAllTunnels`)
+remained correct, but a **separate cert-renewal bug killed the watcher
+goroutine**, making sleep recovery silently fail until process restart.
+
+### The cascading bug (verified 2026-04-25)
+
+1. **Server side** (`internal/api/renew.go:129`) hardcoded `listenPort :=
+   nebulacfg.ListenPort` (constant 4242) and pushed it on every
+   `/api/renew` response.
+2. **Agent side** (`cmd/agent/renew.go::applyNebulaConfigUpdate`) blindly
+   applied the server's port to nebula.yaml, silently overwriting the
+   per-enrollment port allocated via `NextAvailableListenPort`.
+3. On multi-enrollment hosts (e.g. MBP with `home`+`work`), home's port
+   got rewritten from 4243 to 4242 — colliding with work's port.
+4. `reloadNebula`'s hot-restart path called `stopWatcher()` + `oldSvc.Close()`
+   BEFORE attempting the new svc start. The new start failed:
+   `unable to bind to socket: address already in use`. Early-return,
+   `inst.svc=nil`, **watcher gone forever**.
+5. When MBP slept and woke, the watcher goroutine that detects sleep
+   gaps no longer existed. Sleep recovery looked broken; it was
+   actually a corollary of the port-corruption bug.
+
+### Six coordinated fixes (v0.10.26)
+
+| Fix | What | Files |
+|---|---|---|
+| A | Server stops pushing `listenPort` entirely | `internal/api/renew.go` |
+| B | Agent rejects mismatched server-pushed `listenPort` | `cmd/agent/renew.go::applyNebulaConfigUpdate` |
+| C | `reloadNebula` try-then-swap + retry-with-backoff (5 s → 30 m × 4 cap, 10 attempts) | `cmd/agent/renew.go::scheduleRetryReload` |
+| D | `watchNetworkChanges` startup log + periodic alive log + `defer recover()` | `cmd/agent/nebula.go` |
+| E | Self-VPN-IP filter in peer-endpoint injection | `cmd/agent/{renew,peer_cache}.go` |
+| F | Boot-time duplicate-port self-heal | `cmd/agent/enrollments.go::HealDuplicateListenPorts` |
+
+### Architectural lessons (captured in CLAUDE.md Discovery Log)
+
+1. **"Server stops pushing values it doesn't own"** is a generalizable
+   principle. Server has no `listen_port` column on the `nodes` table;
+   it never had ground truth to push. Same anti-pattern as the v0.10.17
+   MTU-push removal.
+2. **Reload-then-fail-then-die is a class of bug**: any operation that
+   tears down state before validating a replacement is fragile. Always
+   shadow-validate or roll back.
+3. **Goroutine death without observability is invisible**: every long-
+   lived goroutine should log on entry, on exit, and on periodic alive
+   ticks. The "wait for sleep cycle to test if watcher works" pattern
+   was too slow to catch silent death.
+
+### Verification
+
+- 12 new unit tests across `cmd/agent/v0_10_26_test.go` and
+  `internal/api/v0_10_26_test.go` (including a static source-check that
+  Bug 1's exact pattern doesn't reappear in renew.go)
+- Live regression: real cellular Phase G test
+  (`scripts/cellular_idle_test.sh 17`) passes 17/17 heartbeat-driven
+  pushes during 17-min idle window; both ping directions recover
+  within ~5 s post-idle on v0.10.26
+- WiFi-LAN throughput **+12% over v0.10.20 baseline** (mean peak
+  472 vs 423 Mb/s) — defensive code added zero measurable overhead
+- User-visible sleep recovery confirmed working post-deploy (lid-close
+  test on real MBP)
