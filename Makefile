@@ -4,7 +4,7 @@ export
 
 .PHONY: all setup vendor patch-vendor build build-all build-linux vet test \
        generate clean clean-vendor frontend frontend-embed \
-       run dev release
+       run dev release wifi-snapshot
 
 # Version injection via ldflags.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -134,3 +134,24 @@ clean:
 # Remove vendor directory (re-run `make setup` to restore).
 clean-vendor:
 	rm -rf vendor/
+
+# Capture a path-state snapshot into the running wifi_comparison.sh
+# results dir. Use during a perceived "buggy" window so the spike can
+# be correlated against pings.tsv afterwards.
+wifi-snapshot:
+	@LATEST=$$(ls -td results/wifi-comparison-* 2>/dev/null | head -1); \
+	if [ -z "$$LATEST" ]; then \
+	    echo "no results/wifi-comparison-* dir found — start with scripts/wifi_comparison.sh first"; \
+	    exit 1; \
+	fi; \
+	STAMP=$$(date +%H%M%S); \
+	SNAP="$$LATEST/snapshot-$$STAMP.txt"; \
+	{ \
+	    echo "=== ts=$$(date +%s) wall=$$(date) ==="; \
+	    echo "## last 60s ping summary per VPN"; \
+	    awk -F'\t' -v cutoff=$$(($$(date +%s)-60)) 'NR>1 && $$1>cutoff {c[$$2]++; if($$3!="LOSS"){s[$$2]++; n[$$2]+=$$3; if($$3>m[$$2])m[$$2]=$$3}} END{for(k in c) printf "  %-12s n=%d ok=%d max=%.1fms mean=%.1fms\n", k, c[k], s[k], m[k], s[k]?n[k]/s[k]:0}' "$$LATEST/pings.tsv"; \
+	    echo; echo "## tailscale status"; tailscale status 2>&1 | head -5; \
+	    echo; echo "## ZeroTier MBP peer"; sudo zerotier-cli peers 2>&1 | grep "5a0c0c6ebd" || echo "no MBP peer"; \
+	    echo; echo "## WiFi (wdutil)"; sudo wdutil info 2>&1 | sed -n '/^WIFI/,/^[A-Z][A-Z]/p' | head -40; \
+	} > "$$SNAP" 2>&1; \
+	echo "snapshot saved to: $$SNAP"
