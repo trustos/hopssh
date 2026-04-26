@@ -18,17 +18,37 @@ import (
 
 const renewCertDuration = 24 * time.Hour
 
-// selfEndpointHintTTL caps how long we trust an agent's self-reported
-// endpoints after its last heartbeat. Heartbeats fire every ~5 min in
-// steady state; 15 min absorbs one missed beat plus jitter while still
-// expiring stale data fast enough that peers don't dial dead addresses.
+// selfEndpointHintTTL is the FALLBACK expiry applied to endpoints whose
+// agent didn't report a per-endpoint lifetime hint (old agent build, or
+// LAN interface address with no router lease). Heartbeats fire every
+// ~5 min in steady state; 15 min absorbs one missed beat plus jitter
+// while still expiring stale data fast enough that peers don't dial
+// dead addresses.
+//
+// Layer 1 (v0.10.27): per-endpoint lifetimes from RFC 6886 NAT-PMP leases
+// take precedence when present. The fallback only applies when the agent
+// didn't supply a hint.
 const selfEndpointHintTTL = 15 * time.Minute
 
-// selfEndpointHint is the cached value: endpoints + when the agent
-// reported them. Lifetime tied to selfEndpointHintTTL.
+// selfEndpointHint is the cached value: per-endpoint expiry timestamps.
+// Each endpoint has its own expiry derived from the NAT-PMP lease (when
+// reported) or fallback (selfEndpointHintTTL after the heartbeat).
+//
+// Lifetime semantics:
+//   - The HINT itself lives until the next heartbeat from this nodeID
+//     overwrites it (sync.Map.Store).
+//   - INDIVIDUAL endpoints inside expire on their own schedule per
+//     `expiresAt`. mergePeerEndpoints filters out past-expiry entries
+//     before serving them to other peers.
 type selfEndpointHint struct {
-	endpoints []string
-	updatedAt time.Time
+	endpoints []endpointHint
+}
+
+// endpointHint pairs an endpoint string with its computed expiry
+// timestamp. expiresAt is absolute wall-clock time (server's clock).
+type endpointHint struct {
+	addr      string
+	expiresAt time.Time
 }
 
 // RenewHandler manages agent certificate renewal and heartbeat.
@@ -190,6 +210,16 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		// (e.g. iPhone Personal Hotspot). Optional; absent on older
 		// agent builds.
 		SelfEndpoints []string `json:"selfEndpoints,omitempty"`
+		// SelfEndpointLifetimesSec (Layer 1, v0.10.27): per-endpoint
+		// router-reported lease lifetime in seconds. MATCHING-ORDER
+		// with SelfEndpoints. 0 (or absent) = no hint, server applies
+		// default TTL. Used to bound how long a NAT-PMP-mapped endpoint
+		// stays in the lighthouse cache after the source rotates —
+		// the router may reassign the same external port to a different
+		// internal host once the lease expires (CGNAT port reuse), so
+		// we MUST stop dialing the old address once its lease is gone.
+		// Optional; old agents omit it.
+		SelfEndpointLifetimesSec []int `json:"selfEndpointLifetimesSec,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NodeID == "" {
 		http.Error(w, "nodeId is required", http.StatusBadRequest)
@@ -218,15 +248,33 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	h.Nodes.RecordHeartbeat(node.ID, captureAgentIP(r), body.PeersDirect, body.PeersRelayed, peerStatePtr, body.AgentVersion)
 
-	// Phase G: cache agent's self-reported endpoints. Validated and
-	// deduped on read; here we just store the raw slice. Empty input
-	// CLEARS any prior entry (agent explicitly has nothing to report,
-	// e.g. portmap dropped + no useful interface IPs).
+	// Phase G: cache agent's self-reported endpoints. Layer 1 (v0.10.27):
+	// each endpoint carries its own expiry derived from the agent's
+	// NAT-PMP lease lifetime (when reported via SelfEndpointLifetimesSec
+	// in matching order) OR the global fallback selfEndpointHintTTL.
+	//
+	// Empty SelfEndpoints CLEARS any prior entry (agent explicitly has
+	// nothing to report, e.g. portmap dropped + no useful interface IPs).
 	if len(body.SelfEndpoints) > 0 {
-		h.selfEndpointCache.Store(node.ID, &selfEndpointHint{
-			endpoints: body.SelfEndpoints,
-			updatedAt: time.Now(),
-		})
+		now := time.Now()
+		hints := make([]endpointHint, 0, len(body.SelfEndpoints))
+		for i, addr := range body.SelfEndpoints {
+			expiresAt := now.Add(selfEndpointHintTTL)
+			// If the agent reported a per-endpoint lifetime, use it.
+			// Apply 50% safety margin per RFC 6886 §3.3 — peers must
+			// stop dialing before the router actually drops the lease,
+			// otherwise the brief window between actual expiry and
+			// our pruning lets the router reassign the port and we
+			// race to a different host.
+			if i < len(body.SelfEndpointLifetimesSec) && body.SelfEndpointLifetimesSec[i] > 0 {
+				safe := time.Duration(body.SelfEndpointLifetimesSec[i]/2) * time.Second
+				if safe < selfEndpointHintTTL {
+					expiresAt = now.Add(safe)
+				}
+			}
+			hints = append(hints, endpointHint{addr: addr, expiresAt: expiresAt})
+		}
+		h.selfEndpointCache.Store(node.ID, &selfEndpointHint{endpoints: hints})
 	} else if body.SelfEndpoints != nil {
 		h.selfEndpointCache.Delete(node.ID)
 	}
@@ -308,7 +356,7 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		if v, ok := h.selfEndpointCache.Load(p.ID); ok {
 			hint, _ = v.(*selfEndpointHint)
 		}
-		if merged := mergePeerEndpoints(lighthouse, hint, selfEndpointHintTTL); len(merged) > 0 {
+		if merged := mergePeerEndpoints(lighthouse, hint, time.Now()); len(merged) > 0 {
 			peerEndpoints[ip] = merged
 		}
 	}
@@ -340,13 +388,18 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 // order (preferred when both sources agree); hint entries fill gaps.
 //
 // Returns deduped, validated `IP:port` strings. Hint entries past
-// the TTL are dropped — peers shouldn't dial dead addresses.
+// their per-endpoint expiry are dropped — peers shouldn't dial dead
+// addresses, and crucially shouldn't dial addresses whose router lease
+// has expired (CGNAT may have reassigned the external port to a
+// different host by then — Layer 1 fix).
+//
+// `now` is injected for testability (production passes time.Now()).
 //
 // This is the Phase G regression-test entry point: it's the exact
 // merge logic the Heartbeat handler uses, factored out so unit tests
 // can prove the cellular-idle silent-mesh failure mode is handled
 // without spinning up a real DB + HTTP server.
-func mergePeerEndpoints(lighthouse []netip.AddrPort, hint *selfEndpointHint, ttl time.Duration) []string {
+func mergePeerEndpoints(lighthouse []netip.AddrPort, hint *selfEndpointHint, now time.Time) []string {
 	out := make([]string, 0, len(lighthouse)+4)
 	seen := map[string]struct{}{}
 	for _, ap := range lighthouse {
@@ -360,9 +413,14 @@ func mergePeerEndpoints(lighthouse []netip.AddrPort, hint *selfEndpointHint, ttl
 		seen[s] = struct{}{}
 		out = append(out, s)
 	}
-	if hint != nil && time.Since(hint.updatedAt) < ttl {
-		for _, s := range hint.endpoints {
-			ap, err := netip.ParseAddrPort(s)
+	if hint != nil {
+		for _, e := range hint.endpoints {
+			if !e.expiresAt.IsZero() && now.After(e.expiresAt) {
+				// Endpoint past its NAT-PMP-derived (or fallback) expiry.
+				// Drop — the router may have reassigned the port.
+				continue
+			}
+			ap, err := netip.ParseAddrPort(e.addr)
 			if err != nil || !ap.IsValid() {
 				continue
 			}

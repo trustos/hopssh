@@ -76,11 +76,13 @@ type meshInstance struct {
 	// heartbeat. Nil-safe via pathQuality.snapshot().
 	pathQuality *pathQuality
 
-	// meshIPMu + cachedMeshIP back the meshIP() lazy reader. Cached
-	// for the instance lifetime — the cert's VPN IP doesn't change
-	// across renewals (only the signature/expiry does).
-	meshIPMu     sync.Mutex
-	cachedMeshIP string
+	// meshIPMu + cachedMeshIP + cachedMeshSubnet back the meshIP() and
+	// meshSubnet() lazy readers. Cached for the instance lifetime — the
+	// cert's VPN IP and subnet don't change across renewals (only the
+	// signature/expiry does).
+	meshIPMu         sync.Mutex
+	cachedMeshIP     string
+	cachedMeshSubnet netip.Prefix
 }
 
 // reloadCooldown is the minimum spacing between watcher-initiated
@@ -167,6 +169,33 @@ func (i *meshInstance) meshIP() string {
 	}
 	i.cachedMeshIP = ip
 	return i.cachedMeshIP
+}
+
+// meshSubnet returns this enrollment's mesh subnet (e.g. 10.42.1.0/24)
+// derived from the node certificate. Lazily reads + caches; zero-value
+// Prefix on any failure (callers must check IsValid()).
+//
+// Used by injectPeerEndpoints / injectCachedPeerEndpoints to drop
+// any peer-endpoint entry whose VPN address falls OUTSIDE this
+// enrollment's subnet — defensive against cross-network endpoint
+// distribution. Each network has its own /24 (or whatever prefix the
+// cert encodes); a vpnAddr from a different network must not be
+// injected into this instance's hostmap.
+func (i *meshInstance) meshSubnet() netip.Prefix {
+	if i == nil {
+		return netip.Prefix{}
+	}
+	i.meshIPMu.Lock()
+	defer i.meshIPMu.Unlock()
+	if i.cachedMeshSubnet.IsValid() {
+		return i.cachedMeshSubnet
+	}
+	prefix, err := readMeshSubnetFromCert(filepath.Join(i.dir(), "nebula.yaml"))
+	if err != nil {
+		return netip.Prefix{}
+	}
+	i.cachedMeshSubnet = prefix.Masked()
+	return i.cachedMeshSubnet
 }
 
 // signalHeartbeat asks runHeartbeat (for this instance) to fire one

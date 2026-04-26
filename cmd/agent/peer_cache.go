@@ -26,7 +26,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/netip"
 	"os"
@@ -189,16 +188,13 @@ func injectCachedPeerEndpoints(inst *meshInstance) int {
 		return 0
 	}
 	selfIP := inst.meshIP()
+	subnet := inst.meshSubnet()
 	n := 0
 	for ipStr, e := range c.Peers {
-		// Fix E (v0.10.26): defensive — never inject self into hostmap
-		// from the on-disk cache. See injectPeerEndpoints for rationale.
-		if selfIP != "" && ipStr == selfIP {
-			log.Printf("[agent %s] skipping self-loop cached peer endpoint for own VPN IP %s", inst.name(), ipStr)
-			continue
-		}
-		vpn, err := netip.ParseAddr(ipStr)
-		if err != nil || !vpn.IsValid() {
+		// Shared filter (Fix E + Layer 3) — drops self-loops and
+		// cross-network entries before they reach the hostmap.
+		vpn, ok := acceptPeerEndpoint(inst.name(), ipStr, selfIP, subnet)
+		if !ok {
 			continue
 		}
 		addrs := make([]netip.AddrPort, 0, len(e.Endpoints))
@@ -212,7 +208,7 @@ func injectCachedPeerEndpoints(inst *meshInstance) int {
 		if len(addrs) == 0 {
 			continue
 		}
-		ctrl.AddStaticHostMap(vpn, addrs)
+		ctrl.ReplaceStaticHostMap(vpn, addrs)
 		warmEndpointPath(addrs)
 		n++
 	}

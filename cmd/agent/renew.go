@@ -134,6 +134,15 @@ func sendHeartbeat(inst *meshInstance) error {
 	// from A1 but lose us when our CGNAT mapping changes during idle.
 	if eps := selfEndpoints(inst); len(eps) > 0 {
 		reqBody["selfEndpoints"] = eps
+		// Layer 1 (v0.10.27): per-endpoint lifetime hints in seconds, in
+		// MATCHING ORDER with selfEndpoints. Server uses these as expiry
+		// timestamps so NAT-PMP-mapped entries get pruned automatically
+		// when the router reassigns the external port. 0 = no lifetime
+		// hint, server applies the default TTL. Old servers without
+		// Layer 1 simply ignore this field — backward-compatible.
+		if lifetimes := selfEndpointLifetimes(inst, eps); len(lifetimes) > 0 {
+			reqBody["selfEndpointLifetimesSec"] = lifetimes
+		}
 	}
 	reqBodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
@@ -231,21 +240,11 @@ func injectPeerEndpoints(inst *meshInstance, peerEndpoints map[string][]string) 
 	}
 	ctrl := inst.control()
 	selfIP := inst.meshIP()
+	subnet := inst.meshSubnet()
 	if ctrl != nil {
 		for ipStr, epStrs := range peerEndpoints {
-			// Fix E (v0.10.26): defensive — never inject self into
-			// hostmap. If the server's peerEndpoints response somehow
-			// contains this agent's own VPN IP (shouldn't happen given
-			// the `p.ID == node.ID` skip in internal/api/renew.go, but
-			// belt-and-braces against future regressions), skip it.
-			// Self-injection causes "Refusing to handshake with myself"
-			// log noise on every probe.
-			if selfIP != "" && ipStr == selfIP {
-				log.Printf("[agent %s] skipping self-loop peer endpoint injection for own VPN IP %s", inst.name(), ipStr)
-				continue
-			}
-			vpn, err := netip.ParseAddr(ipStr)
-			if err != nil || !vpn.IsValid() {
+			vpn, ok := acceptPeerEndpoint(inst.name(), ipStr, selfIP, subnet)
+			if !ok {
 				continue
 			}
 			addrs := make([]netip.AddrPort, 0, len(epStrs))
@@ -259,7 +258,16 @@ func injectPeerEndpoints(inst *meshInstance, peerEndpoints map[string][]string) 
 			if len(addrs) == 0 {
 				continue
 			}
-			ctrl.AddStaticHostMap(vpn, addrs)
+			// Layer 2 (v0.10.27): use ReplaceStaticHostMap (patch 21)
+			// instead of AddStaticHostMap. The replace variant prunes
+			// stale Reported entries from prior heartbeats. Each
+			// heartbeat's peerEndpoints is the server's authoritative
+			// current set; older addresses (e.g. a previous NAT-PMP
+			// allocation that has since rotated to a new external port)
+			// must not linger in the hostmap, otherwise the connection
+			// manager probes them and traffic gets routed to whoever
+			// the upstream router has now reassigned the port to.
+			ctrl.ReplaceStaticHostMap(vpn, addrs)
 		}
 	}
 	// Persist the snapshot so the next agent restart can inject the
@@ -268,6 +276,54 @@ func injectPeerEndpoints(inst *meshInstance, peerEndpoints map[string][]string) 
 	if err := savePeerCache(inst, peerEndpoints); err != nil {
 		log.Printf("[agent %s] peer cache save failed: %v", inst.name(), err)
 	}
+}
+
+// acceptPeerEndpoint applies the two cross-defense filters that injectPeerEndpoints
+// and injectCachedPeerEndpoints share: drop self-loop entries (Fix E v0.10.26),
+// and drop cross-network entries (Layer 3 v0.10.27).
+//
+// Returns the parsed VPN address and ok=true if the entry should be injected
+// into Nebula's hostmap. ok=false means the caller should skip this entry
+// silently — this function logs the rejection for operators.
+//
+// Why a shared helper: both call sites had drift potential — the original
+// inline filters duplicated the same logic, and any future fix had to be
+// applied in both places. Extracting also makes the filter unit-testable
+// without spinning up a Nebula control.
+//
+// instName is for log context; selfIP and subnet are the enrollment-scoped
+// invariants the caller already computed.
+func acceptPeerEndpoint(instName, ipStr, selfIP string, subnet netip.Prefix) (netip.Addr, bool) {
+	// Fix E (v0.10.26): never inject this enrollment's OWN VPN IP.
+	// The server's `p.ID == node.ID` skip in internal/api/renew.go
+	// should prevent this, but belt-and-braces against future
+	// regressions. Self-injection causes "Refusing to handshake with
+	// myself" log noise on every probe.
+	if selfIP != "" && ipStr == selfIP {
+		log.Printf("[agent %s] skipping self-loop peer endpoint for own VPN IP %s", instName, ipStr)
+		return netip.Addr{}, false
+	}
+	vpn, err := netip.ParseAddr(ipStr)
+	if err != nil || !vpn.IsValid() {
+		return netip.Addr{}, false
+	}
+	// Layer 3 (cross-network defense, v0.10.27): drop any peerEndpoint
+	// whose VPN address falls outside this enrollment's mesh subnet.
+	// Per-network scoping in internal/api/renew.go already filters by
+	// network on the server, but a server-side regression OR a stale
+	// on-disk peer-cache from a previous re-enrollment OR a NAT-PMP
+	// port reuse interaction could land cross-network entries here.
+	// Without this guard, Nebula's hostmap accumulates wrong-network
+	// entries that connection_manager then probes, generating
+	// "Invalid certificate from host" log spam at the receiver and
+	// dead-tunnel cycles. If meshSubnet() is invalid (cert unreadable
+	// during cold-start race), we fall through to the original
+	// behavior — never WORSE than today.
+	if subnet.IsValid() && !subnet.Contains(vpn) {
+		log.Printf("[agent %s] dropping cross-network peer endpoint vpnAddr=%s (this enrollment's subnet=%s)", instName, ipStr, subnet)
+		return netip.Addr{}, false
+	}
+	return vpn, true
 }
 
 func warmPeers(peers []string) {

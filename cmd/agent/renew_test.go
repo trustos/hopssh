@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/netip"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -433,4 +434,104 @@ func TestMergeNebulaConfig_FullUpdateWithListenPort(t *testing.T) {
 	if pki["ca"] != "/etc/hop-agent/ca.crt" {
 		t.Fatal("pki.ca should be preserved")
 	}
+}
+
+// TestAcceptPeerEndpoint_FilterCases covers the two defenses:
+//  1. self-loop rejection (Fix E v0.10.26): drop entries that match the
+//     instance's own VPN IP.
+//  2. cross-network rejection (Layer 3 v0.10.27): drop entries whose VPN
+//     address falls outside this enrollment's mesh subnet.
+//
+// Each case tests the pure helper without spinning up a Nebula control,
+// since the helper carries the entire filter contract.
+func TestAcceptPeerEndpoint_FilterCases(t *testing.T) {
+	const instName = "home"
+	const selfIP = "10.42.1.7"
+	subnet := mustPrefix(t, "10.42.1.0/24")
+
+	tests := []struct {
+		name    string
+		ipStr   string
+		wantOK  bool
+		wantStr string // expected vpn.String() when ok=true
+	}{
+		{
+			name:    "in-subnet, not self → accept",
+			ipStr:   "10.42.1.8",
+			wantOK:  true,
+			wantStr: "10.42.1.8",
+		},
+		{
+			name:    "in-subnet, self → reject (self-loop)",
+			ipStr:   selfIP,
+			wantOK:  false,
+		},
+		{
+			name:    "cross-network (work subnet) → reject",
+			ipStr:   "10.42.2.4",
+			wantOK:  false,
+		},
+		{
+			name:    "cross-network (different /24) → reject",
+			ipStr:   "10.43.1.1",
+			wantOK:  false,
+		},
+		{
+			name:    "totally unrelated address → reject",
+			ipStr:   "192.168.1.1",
+			wantOK:  false,
+		},
+		{
+			name:    "malformed address → reject",
+			ipStr:   "not.an.ip.at.all",
+			wantOK:  false,
+		},
+		{
+			name:    "empty string → reject",
+			ipStr:   "",
+			wantOK:  false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, ok := acceptPeerEndpoint(instName, tc.ipStr, selfIP, subnet)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v (got addr=%v)", ok, tc.wantOK, got)
+			}
+			if ok && got.String() != tc.wantStr {
+				t.Fatalf("vpn = %q, want %q", got.String(), tc.wantStr)
+			}
+		})
+	}
+}
+
+// TestAcceptPeerEndpoint_InvalidSubnetFallsThrough verifies the cold-start
+// race handling: when the cert isn't readable yet (meshSubnet returns
+// zero-value Prefix), the function must NOT erroneously reject everything —
+// it should accept whatever's not a self-loop, falling back to the prior
+// behavior so we never make things WORSE than today.
+func TestAcceptPeerEndpoint_InvalidSubnetFallsThrough(t *testing.T) {
+	var noSubnet netip.Prefix // zero value, IsValid() == false
+
+	got, ok := acceptPeerEndpoint("home", "10.42.99.99", "10.42.1.7", noSubnet)
+	if !ok {
+		t.Fatalf("with invalid subnet, expected accept, got reject")
+	}
+	if got.String() != "10.42.99.99" {
+		t.Fatalf("got %q, want 10.42.99.99", got.String())
+	}
+
+	// Self-loop still rejected even without subnet info.
+	if _, ok := acceptPeerEndpoint("home", "10.42.1.7", "10.42.1.7", noSubnet); ok {
+		t.Fatalf("self-loop should still be rejected when subnet is invalid")
+	}
+}
+
+func mustPrefix(t *testing.T, s string) netip.Prefix {
+	t.Helper()
+	p, err := netip.ParsePrefix(s)
+	if err != nil {
+		t.Fatalf("netip.ParsePrefix(%q): %v", s, err)
+	}
+	return p
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -437,6 +438,31 @@ func readMeshIPFromCert(nebulaConfigPath string) (string, error) {
 	}
 
 	return networks[0].Addr().String(), nil
+}
+
+// readMeshSubnetFromCert extracts the full mesh subnet (e.g. 10.42.1.0/24)
+// from the node certificate. Caller is responsible for masking via
+// `prefix.Masked()` if a canonical network address is required.
+func readMeshSubnetFromCert(nebulaConfigPath string) (netip.Prefix, error) {
+	dir := filepath.Dir(nebulaConfigPath)
+	certPath := filepath.Join(dir, "node.crt")
+
+	certPEM, err := os.ReadFile(certPath)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("read cert %s: %w", certPath, err)
+	}
+
+	c, _, err := cert.UnmarshalCertificateFromPEM(certPEM)
+	if err != nil {
+		return netip.Prefix{}, fmt.Errorf("parse cert: %w", err)
+	}
+
+	networks := c.Networks()
+	if len(networks) == 0 {
+		return netip.Prefix{}, fmt.Errorf("cert has no networks")
+	}
+
+	return networks[0], nil
 }
 
 // readTunMode determines the TUN mode for the current run.

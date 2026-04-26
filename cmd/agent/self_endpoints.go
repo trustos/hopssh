@@ -28,6 +28,45 @@ import (
 	"github.com/trustos/hopssh/internal/nebulacfg"
 )
 
+// selfEndpointLifetimes returns the per-endpoint lifetime hints for the
+// addresses returned by selfEndpoints, in matching order. A 0 entry means
+// "lifetime unknown" — callers (server side) should fall back to the
+// global default TTL. Currently only the NAT-PMP-mapped public address
+// carries a real lifetime (sourced from the router's lease). LAN
+// interface addresses don't expire from the agent's perspective so we
+// emit 0 (server uses default).
+//
+// Layer 1 (v0.10.27): part of the stale-endpoint TTL fix. By telling the
+// server when each NAT-PMP-mapped endpoint will expire, the lighthouse
+// can prune entries proactively rather than letting them linger after the
+// router reassigns the external port to a different host. RFC 6886 §3.3
+// specifies that NAT-PMP clients renew at 50%-lifetime; the lighthouse
+// applies the same semantics to bound staleness.
+func selfEndpointLifetimes(inst *meshInstance, addrs []string) []int {
+	if inst == nil || len(addrs) == 0 {
+		return nil
+	}
+	out := make([]int, len(addrs))
+	if inst.portmap == nil {
+		return out
+	}
+	pubLifetime := inst.portmap.LifetimeSeconds()
+	if pubLifetime <= 0 {
+		return out
+	}
+	publicAddr := inst.portmap.Current()
+	if !publicAddr.IsValid() {
+		return out
+	}
+	publicStr := publicAddr.String()
+	for i, a := range addrs {
+		if a == publicStr {
+			out[i] = pubLifetime
+		}
+	}
+	return out
+}
+
 // selfEndpoints returns the list of `IP:port` strings that THIS agent
 // believes it can be reached at, ordered by likely usefulness:
 //   1. Public mapping from NAT-PMP/UPnP/PCP (most likely to work

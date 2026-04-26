@@ -129,6 +129,23 @@ func (m *Manager) Current() netip.AddrPort {
 	return m.current
 }
 
+// LifetimeSeconds returns the router-reported lease lifetime of the current
+// mapping, in seconds. 0 if no mapping is established or if the protocol
+// didn't include a lifetime hint (some routers lie). Callers use this to
+// tag the endpoint with an expiry timestamp when distributing it via the
+// control plane (Layer 1 — RFC 6886-aligned TTL propagation), so other
+// peers can prune stale entries proactively when the lease elapses.
+//
+// Reflects the most-recent successful probe; rotates with each refresh.
+func (m *Manager) LifetimeSeconds() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ttl <= 0 {
+		return 0
+	}
+	return int(m.ttl.Seconds())
+}
+
 // Start probes for a port mapping in the background. Returns nil once
 // the background goroutine is running; the actual mapping may or may
 // not be established by the time Start returns. Callers use OnChange to

@@ -1,0 +1,88 @@
+--- a/github.com/slackhq/nebula/lighthouse.go	2026-04-26 09:40:58
++++ b/github.com/slackhq/nebula/lighthouse.go	2026-04-26 09:41:43
+@@ -261,6 +261,85 @@
+ 	lh.l.WithField("vpnAddr", vpnAddr).WithField("addrs", addrs).Info("lighthouse: added static host map entry")
+ }
+ 
++// ReplaceStaticHostMap is the replace-not-add cousin of AddStaticHostMap.
++// Both populate the same lighthouse cache for vpnAddr, but ReplaceStaticHostMap
++// FULLY REPLACES the prior reported address set instead of adding to it.
++// Stale entries from previous heartbeats are pruned atomically.
++//
++// Why this exists: Phase G server-pushed peerEndpoints reflect the LATEST
++// known set as of the requesting heartbeat. AddStaticHostMap (which routes
++// through LearnRemote — a singular learned slot per peer) cannot evict an
++// older Reported entry that's no longer in the current set. Over time,
++// stale NAT-PMP-mapped addresses accumulate in the lighthouse's RemoteList
++// reported slice, and Nebula's handshake manager probes all of them.
++// When the upstream router reuses external port numbers across hosts
++// (standard CGNAT behavior), packets sent to a stale address arrive at
++// the WRONG host, generating "Invalid certificate from host" log spam
++// and dead-tunnel cycles.
++//
++// Replace semantics fix this: each heartbeat's peerEndpoints is the
++// authoritative current set; older entries vanish.
++//
++// Added by hopssh patch 21.
++func (lh *LightHouse) ReplaceStaticHostMap(vpnAddr netip.Addr, addrs []netip.AddrPort) {
++	if !vpnAddr.IsValid() || len(addrs) == 0 {
++		return
++	}
++	rl := lh.QueryCache([]netip.Addr{vpnAddr})
++	if rl == nil {
++		return
++	}
++	v4 := make([]*V4AddrPort, 0, len(addrs))
++	v6 := make([]*V6AddrPort, 0, len(addrs))
++	for _, a := range addrs {
++		if !a.IsValid() {
++			continue
++		}
++		if a.Addr().Is4() {
++			v4 = append(v4, netAddrToProtoV4AddrPort(a.Addr(), a.Port()))
++		} else {
++			v6 = append(v6, netAddrToProtoV6AddrPort(a.Addr(), a.Port()))
++		}
++	}
++	rl.Lock()
++	if len(v4) > 0 {
++		rl.unlockedSetV4(vpnAddr, vpnAddr, v4, lh.unlockedShouldAddV4)
++	} else if c := rl.unlockedGetOrMakeV4(vpnAddr); c != nil {
++		c.reported = c.reported[:0]
++		rl.shouldRebuild = true
++	}
++	if len(v6) > 0 {
++		rl.unlockedSetV6(vpnAddr, vpnAddr, v6, lh.unlockedShouldAddV6)
++	} else if c := rl.unlockedGetOrMakeV6(vpnAddr); c != nil {
++		c.reported = c.reported[:0]
++		rl.shouldRebuild = true
++	}
++	rl.Unlock()
++	for {
++		cur := lh.staticList.Load()
++		if cur == nil {
++			newMap := make(map[netip.Addr]struct{})
++			newMap[vpnAddr] = struct{}{}
++			if lh.staticList.CompareAndSwap(cur, &newMap) {
++				break
++			}
++			continue
++		}
++		if _, ok := (*cur)[vpnAddr]; ok {
++			break
++		}
++		next := make(map[netip.Addr]struct{}, len(*cur)+1)
++		for k := range *cur {
++			next[k] = struct{}{}
++		}
++		next[vpnAddr] = struct{}{}
++		if lh.staticList.CompareAndSwap(cur, &next) {
++			break
++		}
++	}
++	lh.l.WithField("vpnAddr", vpnAddr).WithField("addrs", addrs).Info("lighthouse: replaced static host map entry")
++}
++
+ func (lh *LightHouse) GetRelaysForMe() []netip.Addr {
+ 	return *lh.relaysForMe.Load()
+ }

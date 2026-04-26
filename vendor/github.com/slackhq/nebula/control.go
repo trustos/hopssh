@@ -353,3 +353,76 @@ func (c *Control) AddStaticHostMap(vpnAddr netip.Addr, addrs []netip.AddrPort) {
 	}
 	c.f.lightHouse.AddStaticHostMap(vpnAddr, addrs)
 }
+
+// ReplaceStaticHostMap fully replaces the lighthouse's cached endpoint set
+// for vpnAddr with the provided addrs. Unlike AddStaticHostMap (which is
+// additive via LearnRemote — see patch 20), this prunes stale Reported
+// entries from prior calls. Used by hopssh's Phase G heartbeat handler
+// to keep the agent's hostmap in lockstep with the server's authoritative
+// current set, eliminating the stale-NAT-PMP-endpoint accumulation that
+// causes cross-host packet rejection under CGNAT port reuse.
+//
+// Added by hopssh patch 21.
+func (c *Control) ReplaceStaticHostMap(vpnAddr netip.Addr, addrs []netip.AddrPort) {
+	if c == nil || c.f == nil || c.f.lightHouse == nil {
+		return
+	}
+	c.f.lightHouse.ReplaceStaticHostMap(vpnAddr, addrs)
+}
+
+// SetInboundObserver registers a callback invoked on every authenticated
+// inbound non-relayed packet from a peer. Arguments are the peer's vpnAddr
+// and the source UDP remote address (post-CGNAT, as observed on the wire).
+//
+// Used by hopssh's Layer 4 active-probe scheduler (cmd/agent/endpoint_probe.go)
+// to track per-endpoint liveness — endpoints that haven't sent us a packet
+// within the staleness window get pruned from the hostmap via
+// ReplaceStaticHostMap. This catches the failure mode that connection_manager
+// can't: stale endpoints that Nebula's own dead-mark logic doesn't reap
+// because they're not the CurrentRemote.
+//
+// Pass nil to disable observation. Hot-path overhead when nil: one atomic
+// pointer load and a nil check (~2 ns).
+//
+// Added by hopssh patch 22.
+func (c *Control) SetInboundObserver(cb func(vpnAddr netip.Addr, remote netip.AddrPort)) {
+	if c == nil || c.f == nil {
+		return
+	}
+	if cb == nil {
+		c.f.inboundObserver.Store(nil)
+		return
+	}
+	c.f.inboundObserver.Store(&cb)
+}
+
+// ProbeEndpoint sends a Nebula TestRequest to the specified remote address
+// for the given vpnAddr, bypassing the HostInfo's CurrentRemote. Used by
+// the Layer 4 active probe scheduler to test liveness of EVERY candidate
+// endpoint (not just the one Nebula's connection_manager currently uses).
+//
+// Returns false if no HostInfo exists for vpnAddr (no tunnel established
+// yet — caller should warm via lighthouse query first) or if the
+// connection state isn't ready.
+//
+// Mechanism: leverages Interface.sendTo (already in vendor at inside.go:265),
+// which routes a single packet to a SPECIFIC remote address overriding
+// the HostInfo's normal destination. Nebula's outside.go test-packet
+// receive handler responds with a TestReply via the inbound observer,
+// confirming endpoint liveness.
+//
+// Added by hopssh patch 22.
+func (c *Control) ProbeEndpoint(vpnAddr netip.Addr, remoteAddr netip.AddrPort) bool {
+	if c == nil || c.f == nil || !vpnAddr.IsValid() || !remoteAddr.IsValid() {
+		return false
+	}
+	hostInfo := c.f.hostMap.QueryVpnAddr(vpnAddr)
+	if hostInfo == nil || hostInfo.ConnectionState == nil {
+		return false
+	}
+	p := []byte{0}
+	nb := make([]byte, 12)
+	out := make([]byte, mtu)
+	c.f.sendTo(header.Test, header.TestRequest, hostInfo.ConnectionState, hostInfo, remoteAddr, p, nb, out)
+	return true
+}

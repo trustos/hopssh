@@ -424,6 +424,18 @@ func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverS
 	// (3× consecutive samples >50 ms above EWMA). One TCP-SYN per
 	// direct peer per 10 s — cost is negligible.
 	go runPathQuality(ctx, inst)
+
+	// Layer 4 (v0.10.27): per-endpoint active liveness probing. Sends
+	// a Nebula TestRequest to EVERY candidate endpoint of EVERY peer
+	// every 5s (via patch 22's Control.ProbeEndpoint), tracks inbound
+	// activity per (peer, endpoint) tuple, and reaps endpoints with no
+	// inbound traffic in 30s by calling ReplaceStaticHostMap with the
+	// live-only set. Closes the gap that Layers 1-3 can't: stale
+	// endpoints that peers cached locally from prior lighthouse queries
+	// and that Nebula's per-HostInfo connection_manager dead-mark
+	// doesn't reach (it only checks the CurrentRemote, not all
+	// candidates).
+	go runEndpointProbe(ctx, inst)
 }
 
 // startDebugOSListener serves the mux directly on the OS stack using a
