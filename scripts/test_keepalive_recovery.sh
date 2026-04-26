@@ -30,14 +30,16 @@ if ! command -v hop-agent >/dev/null; then
     exit 2
 fi
 
-# Get control-plane IP from the agent's endpoint config.
+# Get control-plane IP from the agent's endpoint config. The "Endpoint:"
+# value contains its own colons (https://) so we extract everything after
+# the first ": " sequence, not split on every colon.
 ENDPOINT=$(hop-agent info --config-dir /etc/hop-agent 2>/dev/null \
-    | awk -F': *' '/^Endpoint:/{print $2}')
+    | sed -nE 's/^Endpoint:[[:space:]]+(.*)$/\1/p')
 if [[ -z "$ENDPOINT" ]]; then
     echo "error: could not determine control-plane endpoint" >&2
     exit 2
 fi
-HOST=$(echo "$ENDPOINT" | awk -F'/' '{print $3}' | awk -F':' '{print $1}')
+HOST=$(echo "$ENDPOINT" | sed -nE 's,^https?://([^/:]+).*,\1,p')
 IP=$(getent hosts "$HOST" | awk '{print $1}' | head -1)
 if [[ -z "$IP" ]]; then
     echo "error: could not resolve $HOST" >&2
@@ -45,7 +47,7 @@ if [[ -z "$IP" ]]; then
 fi
 
 VERSION=$(hop-agent info --config-dir /etc/hop-agent 2>/dev/null \
-    | awk -F': *' '/^Version:/{print $2}')
+    | sed -nE 's/^Version:[[:space:]]+(.*)$/\1/p')
 
 LOG=/var/log/hop-agent.log
 [[ -r "$LOG" ]] || LOG=$(systemd-cat-find 2>/dev/null || echo "/var/log/syslog")
