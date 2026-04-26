@@ -196,6 +196,7 @@ func watchNetworkChanges(ctx context.Context, inst *meshInstance, ctrl *nebula.C
 	lastIface, _ := nebulacfg.DetectPhysicalInterface(host)
 	lastAddrs := getLocalAddrs(lastIface)
 	lastTick := time.Now()
+	lastAliveLog := lastTick
 
 	log.Printf("[agent %s] network-change watcher started (iface: %s, endpoint: %s)", inst.name(), lastIface, host)
 
@@ -214,14 +215,6 @@ func watchNetworkChanges(ctx context.Context, inst *meshInstance, ctrl *nebula.C
 		tickCount++
 		now := time.Now()
 
-		// Periodic liveness log (Fix D, v0.10.26): every 200 ticks
-		// (~16 min) confirm the goroutine is still running. Quick
-		// post-deploy spot-check: `grep "watcher alive" hop-agent.log`
-		// should show one line per ~16 min per enrollment.
-		if tickCount%200 == 0 {
-			log.Printf("[agent %s] watcher alive (ticks: %d, iface: %s)", inst.name(), tickCount, lastIface)
-		}
-
 		// Detect sleep/wake: if the ticker fires and the gap since the
 		// last tick is >15s (3× the 5s interval), the process was suspended
 		// — almost certainly a macOS/Windows sleep cycle. Force a rebind
@@ -231,6 +224,26 @@ func watchNetworkChanges(ctx context.Context, inst *meshInstance, ctrl *nebula.C
 		tickGap := now.Sub(lastTick)
 		sleptAndWoke := tickGap > 15*time.Second
 		lastTick = now
+
+		// Bug A1 (v0.10.29): periodic liveness log every 60s of WALL-CLOCK
+		// (replaced the previous 200-tick interval, which was ~16 min and
+		// too coarse to debug post-sleep watcher silence).
+		//
+		// Includes the tickGap measurement so post-sleep diagnosis is
+		// possible from the log alone. If a tick fires after a long sleep,
+		// the alive log shows the ACTUAL gap (e.g. "lastGap=16m32s") even
+		// if sleptAndWoke also triggers a separate rebind log.
+		//
+		// Why time-based not tick-based: under macOS App Nap or other
+		// scheduler suspensions, ticks may not fire at the expected 5s
+		// cadence. Time-based ensures we always log within 60s of REAL
+		// time, never longer than 200×actual-tick-interval (which could
+		// be hours under suspension).
+		if time.Since(lastAliveLog) >= 60*time.Second {
+			log.Printf("[agent %s] watcher alive (ticks: %d, iface: %s, lastGap: %v)",
+				inst.name(), tickCount, lastIface, tickGap.Round(time.Second))
+			lastAliveLog = now
+		}
 
 		currentIface, _ := nebulacfg.DetectPhysicalInterface(host)
 		currentAddrs := getLocalAddrs(currentIface)

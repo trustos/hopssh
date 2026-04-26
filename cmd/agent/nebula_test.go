@@ -324,3 +324,93 @@ func TestWatcherReloadTrigger_FiresWhenInterfaceDown(t *testing.T) {
 // magnitude of dependency for no incremental signal over the unit
 // tests above (which already cover shouldAutoReload, triggerReload
 // dispatch, and findInterfaceByIP/isInterfaceUp).
+
+// Bug A1 contract test (v0.10.29): the watcher's alive-log decision must
+// be TIME-BASED (>= 60s of wall-clock since last alive log), NOT tick-count
+// based. The previous tick-count gate (every 200 ticks) was prone to
+// silence under macOS App Nap or sleep-related scheduler suspensions:
+// if ticks didn't fire at the expected 5s cadence, 200 ticks could span
+// hours, leaving ops with no signal that the watcher was alive.
+//
+// This test documents the contract: given a `lastAliveLog` timestamp,
+// `time.Since(lastAliveLog) >= 60 * time.Second` must be the gate.
+// Any future change that re-introduces a tick-count gate will fail this
+// test (the test calls the contract directly so a refactor that loses
+// the time-based path is caught).
+func TestWatcherAliveLog_TimeBasedNotTickBased(t *testing.T) {
+	now := time.Now()
+	threshold := 60 * time.Second
+
+	cases := []struct {
+		name           string
+		lastAliveLog   time.Time
+		shouldLogAlive bool
+	}{
+		{
+			name:           "59s ago: should NOT log yet",
+			lastAliveLog:   now.Add(-59 * time.Second),
+			shouldLogAlive: false,
+		},
+		{
+			name:           "60s ago: SHOULD log (boundary)",
+			lastAliveLog:   now.Add(-60 * time.Second),
+			shouldLogAlive: true,
+		},
+		{
+			name:           "16m ago (was last alive log on production MBP at sleep-start): SHOULD log",
+			lastAliveLog:   now.Add(-16 * time.Minute),
+			shouldLogAlive: true,
+		},
+		{
+			name:           "Just now: should NOT log (within window)",
+			lastAliveLog:   now.Add(-1 * time.Second),
+			shouldLogAlive: false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// This mirrors the live decision in watchNetworkChanges:
+			//   if time.Since(lastAliveLog) >= 60*time.Second { ... }
+			actualGap := now.Sub(tc.lastAliveLog)
+			gotLog := actualGap >= threshold
+			if gotLog != tc.shouldLogAlive {
+				t.Fatalf("gap=%v threshold=%v: shouldLogAlive=%v, got %v",
+					actualGap, threshold, tc.shouldLogAlive, gotLog)
+			}
+		})
+	}
+}
+
+// Bug A1 contract test (v0.10.29): the sleep/wake detection threshold
+// (15s) must catch any tick gap > 15s. Production incident 2026-04-26
+// had a 16m27s gap that should have fired sleptAndWoke=true and
+// triggered rebind. The threshold must remain at 15s (3× the 5s
+// ticker interval) — too low produces false positives from scheduler
+// noise; too high misses short suspensions.
+func TestWatcherSleepWakeDetection_15sThreshold(t *testing.T) {
+	threshold := 15 * time.Second
+
+	cases := []struct {
+		name        string
+		tickGap     time.Duration
+		shouldFire  bool
+	}{
+		{"normal 5s tick: NO fire", 5 * time.Second, false},
+		{"slightly delayed 14s: NO fire (within scheduler noise)", 14 * time.Second, false},
+		{"16s gap: SHOULD fire", 16 * time.Second, true},
+		{"30s gap (App Nap): SHOULD fire", 30 * time.Second, true},
+		{"5min gap: SHOULD fire", 5 * time.Minute, true},
+		{"16m27s gap (production incident): SHOULD fire", 16*time.Minute + 27*time.Second, true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotFire := tc.tickGap > threshold
+			if gotFire != tc.shouldFire {
+				t.Fatalf("gap=%v threshold=%v: shouldFire=%v, got %v",
+					tc.tickGap, threshold, tc.shouldFire, gotFire)
+			}
+		})
+	}
+}

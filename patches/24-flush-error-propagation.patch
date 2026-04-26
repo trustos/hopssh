@@ -1,0 +1,71 @@
+--- a/github.com/slackhq/nebula/interface.go	2026-04-26 11:04:48
++++ b/github.com/slackhq/nebula/interface.go	2026-04-26 11:04:45
+@@ -351,7 +351,14 @@
+ 			}
+ 			// Flush queued UDP sends from this batch in one sendmsg_x syscall.
+ 			if err := f.writers[i].Flush(); err != nil {
+-				f.l.WithError(err).Debug("Flush failed")
++				// hopssh patch 24 (Bug B, v0.10.29): elevated from Debug to Warn.
++				// Flush errors mean queued packets (including handshakes) were
++				// dropped without the upstream caller knowing. Production
++				// incident 2026-04-26: post-sleep, sendmsg_x failed silently
++				// while handshake_manager logged "Handshake message sent"
++				// optimistically based on the WriteTo return (which only
++				// queued the packet, not actually sent it).
++				f.l.WithError(err).Warn("Flush failed — queued packets dropped (network may need rebind)")
+ 			}
+ 			continue
+ 		}
+--- a/github.com/slackhq/nebula/udp/udp_darwin.go	2026-04-26 11:04:47
++++ b/github.com/slackhq/nebula/udp/udp_darwin.go	2026-04-26 11:04:45
+@@ -289,7 +289,9 @@
+ 				r(netip.AddrPortFrom(ip.Unmap(), binary.BigEndian.Uint16(names[i][2:4])), buffers[i][:msgs[i].Datalen])
+ 			}
+ 			if err := u.Flush(); err != nil {
+-				u.l.WithError(err).Debug("flush after listenOut batch failed")
++				// hopssh patch 24 (Bug B, v0.10.29): elevated from Debug to Warn.
++				// See interface.go Flush callsite for full rationale.
++				u.l.WithError(err).Warn("flush after listenOut batch failed — queued packets dropped")
+ 			}
+ 			for i := 0; i < n; i++ {
+ 				msgs[i].Namelen = uint32(unix.SizeofSockaddrInet6)
+--- a/github.com/slackhq/nebula/handshake_manager.go	2026-04-26 11:04:46
++++ b/github.com/slackhq/nebula/handshake_manager.go	2026-04-26 11:04:45
+@@ -251,12 +251,34 @@
+ 		}
+ 	})
+ 
+-	// Don't be too noisy or confusing if we fail to send a handshake - if we don't get through we'll eventually log a timeout,
+-	// so only log when the list of remotes has changed
+-	if remotesHaveChanged {
++	// hopssh patch 24 (Bug B2, v0.10.29): force a Flush after the handshake
++	// WriteTo loop. On the macOS sendmsg_x batched path (patches 04+), WriteTo
++	// only QUEUES the packet — it returns nil even if the packet hasn't been
++	// transmitted. Without this explicit Flush, "Handshake message sent" is
++	// logged optimistically and the packets sit in the lane until the next
++	// listenIn / listenOut batch flushes them (could be seconds later, or
++	// indefinitely if no other traffic arrives).
++	//
++	// Production incident 2026-04-26: post-MBP-sleep, queued handshakes were
++	// never flushed because the UDP socket was in a broken post-sleep state;
++	// agent logged "Handshake message sent" but tcpdump showed zero packets
++	// leaving the host. By calling Flush here we get the syscall result
++	// synchronously and can log a meaningful Error if it fails — instead of
++	// the success log lying to operators.
++	if flushErr := hm.outside.Flush(); flushErr != nil {
+ 		hostinfo.logger(hm.l).WithField("udpAddrs", sentTo).
+ 			WithField("initiatorIndex", hostinfo.localIndexId).
+ 			WithField("handshake", m{"stage": 1, "style": "ix_psk0"}).
++			WithError(flushErr).Error("Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake")
++		// Don't log "Handshake message sent" — that would lie about delivery.
++		// The next handshake retry cycle (~1s later via handshake_manager)
++		// will try again with a fresh socket state if rebind fixed it.
++	} else if remotesHaveChanged {
++		// Don't be too noisy or confusing if we fail to send a handshake - if we don't get through we'll eventually log a timeout,
++		// so only log when the list of remotes has changed
++		hostinfo.logger(hm.l).WithField("udpAddrs", sentTo).
++			WithField("initiatorIndex", hostinfo.localIndexId).
++			WithField("handshake", m{"stage": 1, "style": "ix_psk0"}).
+ 			Info("Handshake message sent")
+ 	} else if hm.l.Level >= logrus.DebugLevel {
+ 		hostinfo.logger(hm.l).WithField("udpAddrs", sentTo).
