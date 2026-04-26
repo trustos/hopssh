@@ -425,17 +425,25 @@ func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverS
 	// direct peer per 10 s — cost is negligible.
 	go runPathQuality(ctx, inst)
 
-	// Layer 4 (v0.10.27): per-endpoint active liveness probing. Sends
-	// a Nebula TestRequest to EVERY candidate endpoint of EVERY peer
-	// every 5s (via patch 22's Control.ProbeEndpoint), tracks inbound
-	// activity per (peer, endpoint) tuple, and reaps endpoints with no
-	// inbound traffic in 30s by calling ReplaceStaticHostMap with the
-	// live-only set. Closes the gap that Layers 1-3 can't: stale
-	// endpoints that peers cached locally from prior lighthouse queries
-	// and that Nebula's per-HostInfo connection_manager dead-mark
-	// doesn't reach (it only checks the CurrentRemote, not all
-	// candidates).
-	go runEndpointProbe(ctx, inst)
+	// Layer 4 DISABLED in v0.10.27.1 hotfix. Two production issues:
+	// (1) Reap loop under asymmetric CGNAT (probed source-IP doesn't
+	//     match reply source-IP, endpoints falsely classified dead).
+	// (2) Probes themselves cause hostmap roam-flap — every TestRequest
+	//     to a different candidate endpoint elicits a TestReply that
+	//     triggers Nebula's handleHostRoaming, CurrentRemote bounces
+	//     every 5s (probe interval), defeating patches 14+15's
+	//     preferred_ranges roam suppression. Verified post-hotfix
+	//     2026-04-26: MBP↔mini hostmap flapped between 3 addresses
+	//     every 5s, matching probeTicker cadence.
+	//
+	// Until Layer 4b (nonce-correlated TestRequest/TestReply for
+	// CGNAT-asymmetry-safe per-endpoint liveness signal) is built,
+	// disable the entire goroutine. The vendor patch infrastructure
+	// (SetInboundObserver, ProbeEndpoint, ReplaceStaticHostMap)
+	// remains in place for future iteration — only the agent-side
+	// scheduler is dormant.
+	//
+	// go runEndpointProbe(ctx, inst)
 }
 
 // startDebugOSListener serves the mux directly on the OS stack using a
