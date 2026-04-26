@@ -180,11 +180,78 @@ test3() {
     echo "==> Test 3 done. Output: $status_file, $netcheck_file, $pings_file"
 }
 
+# ===== Test 4: Active iperf3 UDP workload + concurrent ping =====
+# Models VNC/RTP-style sustained throughput. iperf3 server expected on
+# MBP at port 5300. Runs 30 min per VPN. Captures ping under load.
+test4() {
+    local pings_file="$OUT/pings-load.tsv"
+    local iperf_log="$OUT/iperf3-load.log"
+    local rate="${WORKLOAD_RATE:-10M}"   # ~VNC peak; override e.g. WORKLOAD_RATE=20M
+    local len="${WORKLOAD_LEN:-1300}"    # MTU-safe RTP-ish payload
+    local secs="${WORKLOAD_WINDOW:-1800}" # 30 min
+    echo "==> Test 4: 30-min active workload (UDP $rate, $len-byte) + concurrent ping per VPN"
+    printf '%s\t%s\t%s\n' "ts" "label" "rtt_ms_or_LOSS" > "$pings_file"
+    : > "$iperf_log"
+
+    if ! command -v iperf3 >/dev/null; then
+        echo "ERROR: iperf3 not found locally. brew install iperf3" >&2
+        return 2
+    fi
+    # Bring up iperf3 server on MBP if not already.
+    ssh "${LAPTOP_USER:-yavortenev}@${LAPTOP_HOST:-192.168.23.18}" \
+        'pgrep -f "iperf3 -s -p 5300" >/dev/null || nohup iperf3 -s -p 5300 >/dev/null 2>&1 &' \
+        2>/dev/null || true
+    sleep 2
+
+    for entry in "hopssh:$HOPSSH_TARGET" "tailscale:$TAILSCALE_TARGET" "zerotier:$ZEROTIER_TARGET"; do
+        IFS=':' read -r label target <<< "$entry"
+        echo "    [$(date +%H:%M:%S)] $secs s under load via $label ($target)"
+        # Background iperf3 sustained UDP stream. Output discarded; -t bounds runtime.
+        iperf3 -c "$target" -p 5300 -u -b "$rate" -l "$len" -t "$secs" \
+            >> "$iperf_log" 2>&1 &
+        local iperf_pid=$!
+        # Concurrently ping the same target.
+        ping_window "$label" "$target" "$secs" "$pings_file" &
+        local ping_pid=$!
+        wait "$iperf_pid" 2>/dev/null || true
+        wait "$ping_pid" 2>/dev/null || true
+        # Brief idle gap between VPNs to let buffers drain.
+        sleep 30
+    done
+    echo "==> Test 4 done. Output: $pings_file, $iperf_log"
+}
+
+# ===== Test 5: WiFi pcap on pktap during hopssh + Tailscale windows =====
+# pktap surfaces 802.11 metadata when available on Apple Silicon. Pure
+# tcpdump capture; analysis (retry/MCS distribution) is post-hoc.
+test5() {
+    local secs="${PCAP_WINDOW:-1800}"   # 30 min per VPN
+    local iface="${PCAP_IFACE:-en1}"    # WiFi physical
+    echo "==> Test 5: pktap capture on $iface, $secs s per VPN (sudo required)"
+    if ! sudo -n true 2>/dev/null; then
+        echo "ERROR: sudo cache required. Run 'sudo -v' first." >&2
+        return 2
+    fi
+    for entry in "hopssh:$HOPSSH_TARGET" "tailscale:$TAILSCALE_TARGET"; do
+        IFS=':' read -r label target <<< "$entry"
+        local pcap="$OUT/pcap-$label.pcap.gz"
+        local pings_file="$OUT/pings-pcap.tsv"
+        [[ -f "$pings_file" ]] || printf '%s\t%s\t%s\n' "ts" "label" "rtt_ms_or_LOSS" > "$pings_file"
+        echo "    [$(date +%H:%M:%S)] $secs s pcap + ping via $label ($target)"
+        sudo tcpdump -i pktap -y PPI -G "$secs" -W 1 -w - "host $target" 2>/dev/null \
+            | gzip > "$pcap" &
+        local cap_pid=$!
+        ping_window "$label" "$target" "$secs" "$pings_file" || true
+        wait "$cap_pid" 2>/dev/null || true
+    done
+    echo "==> Test 5 done. Output: $OUT/pcap-*.pcap.gz, $OUT/pings-pcap.tsv"
+}
+
 # ===== Dispatch =====
 cmd="${1:-}"
 case "$cmd" in
-    test1|test2|test3|all) ;;
-    "" ) echo "usage: $0 {test1 [hours]|test2|test3|all}" >&2; exit 2 ;;
+    test1|test2|test3|test4|test5|all) ;;
+    "" ) echo "usage: $0 {test1 [hours]|test2|test3|test4|test5|all}" >&2; exit 2 ;;
     * )  echo "unknown command: $cmd" >&2; exit 2 ;;
 esac
 
@@ -194,7 +261,9 @@ case "$cmd" in
     test1) test1 "${2:-24}" ;;
     test2) test2 ;;
     test3) test3 ;;
-    all)   test1 24; test2; test3 ;;
+    test4) test4 ;;
+    test5) test5 ;;
+    all)   test1 24; test2; test3; test4; test5 ;;
 esac
 
 cat > "$OUT/README.md" <<EOF
