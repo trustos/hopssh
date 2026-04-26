@@ -18,7 +18,7 @@
 	// Time window buttons → unix seconds cutoff. Matches the activity log
 	// conventions (server defaults to now-24h; explicit 0 = all).
 	type RangeKey = '24h' | '7d' | '30d' | 'all';
-	let range = $state<RangeKey>('24h');
+	let range = $state<RangeKey>('all');
 	function rangeSince(k: RangeKey): number {
 		const n = Math.floor(Date.now() / 1000);
 		switch (k) {
@@ -114,7 +114,14 @@
 </svelte:head>
 
 <div class="p-6">
-	<h1 class="mb-6 text-2xl font-semibold">Audit Log</h1>
+	<div class="mb-6 flex items-baseline gap-3">
+		<h1 class="text-2xl font-semibold">Audit Log</h1>
+		{#if !loading && !error}
+			<span class="text-sm text-muted-foreground">
+				{entries.length} {entries.length === 1 ? 'entry' : 'entries'} in {range === 'all' ? 'history' : `last ${range}`}
+			</span>
+		{/if}
+	</div>
 
 	<div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
 		<div class="flex gap-1">
