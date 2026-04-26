@@ -3,6 +3,10 @@
 # newly-added file under them).
 /hop-agent
 /hop-server
+/hop-agent-linux-*
+/hop-server-linux-*
+/hop-agent-darwin-*
+/hop-server-darwin-*
 /agent
 /server
 spike/quic/quic-spike
