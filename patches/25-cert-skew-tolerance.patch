@@ -1,0 +1,50 @@
+--- /dev/null
++++ b/github.com/slackhq/nebula/cert/skew_tolerance.go
+@@ -0,0 +1,23 @@
++package cert
++
++import "time"
++
++// ClockSkewTolerance widens the validity window applied by Expired() to
++// absorb local-clock skew. With a positive value the validator considers
++// the cert valid from (NotBefore - tolerance) to (NotAfter + tolerance).
++// Default zero preserves upstream behavior.
++//
++// Set this from the agent's startup once a configured value is known.
++// Race-free in practice: only ever assigned during agent boot before any
++// CAPool/Certificate is constructed; reads are concurrent and unsynchronized
++// because the value is constant for the lifetime of the process.
++//
++// Why this exists (hopssh patch 25): Nebula's strict cert validation
++// rejects every handshake when the local clock has drifted beyond the
++// 24h cert window — UTM-suspended VMs, sleepy laptops, boards without
++// RTC. Tailscale doesn't have this problem because WireGuard uses
++// static keys with no time-bounded credential between peers. We can't
++// change Nebula's PKI but we can soften the validity check by a small
++// configurable window. A 1h tolerance gives a comfortable margin on
++// 24h certs without meaningfully weakening the security property.
++var ClockSkewTolerance time.Duration
+--- a/github.com/slackhq/nebula/cert/cert_v1.go
++++ b/github.com/slackhq/nebula/cert/cert_v1.go
+@@ -126,7 +126,8 @@
+ }
+ 
+ func (c *certificateV1) Expired(t time.Time) bool {
+-	return c.details.notBefore.After(t) || c.details.notAfter.Before(t)
++	// hopssh patch 25: ClockSkewTolerance widens the window on both ends.
++	return c.details.notBefore.Add(-ClockSkewTolerance).After(t) || c.details.notAfter.Add(ClockSkewTolerance).Before(t)
+ }
+ 
+ func (c *certificateV1) VerifyPrivateKey(curve Curve, key []byte) error {
+--- a/github.com/slackhq/nebula/cert/cert_v2.go
++++ b/github.com/slackhq/nebula/cert/cert_v2.go
+@@ -165,7 +165,8 @@
+ }
+ 
+ func (c *certificateV2) Expired(t time.Time) bool {
+-	return c.details.notBefore.After(t) || c.details.notAfter.Before(t)
++	// hopssh patch 25: ClockSkewTolerance widens the window on both ends.
++	return c.details.notBefore.Add(-ClockSkewTolerance).After(t) || c.details.notAfter.Add(ClockSkewTolerance).Before(t)
+ }
+ 
+ func (c *certificateV2) VerifyPrivateKey(curve Curve, key []byte) error {

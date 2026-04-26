@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"regexp"
+	"time"
 )
 
 // UseRelays controls whether agents can relay through the lighthouse when
@@ -165,6 +166,18 @@ const ConnectionAliveIntervalSec = 10
 // rebalance event, but still fast enough that genuinely-dead
 // connections recover within the user's perceived "wait" window.
 const PendingDeletionIntervalSec = 30
+
+// ClockSkewTolerance widens cert validity-window evaluation on both
+// ends to absorb small local-clock skew. Nebula upstream uses 0
+// tolerance, so a 24h cert plus a Pi without RTC, a UTM-suspended
+// VM, or a laptop with broken NTP all fail with `certificate is
+// expired` even when the cert is in fact valid in real time. We
+// widen by 1h via vendor patch 25 — comfortable margin without
+// meaningfully weakening the security property of a 24h cert.
+//
+// Set on the cert package's `ClockSkewTolerance` global at agent
+// boot time before any cert is loaded.
+const ClockSkewTolerance = time.Hour
 
 // HandshakeTryInterval is the retry interval for Noise handshake attempts.
 // Default 100ms wastes time if the lighthouse responds faster. 20ms ensures

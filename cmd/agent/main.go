@@ -211,6 +211,15 @@ func runServe(args []string) {
 		// each a unique deterministic port + persist + heal nebula.yaml.
 		migrateListenPorts(reg)
 
+		// Boot-time clock-sanity gate. Probe the first enrollment's
+		// control plane HTTPS Date header; if local clock is drastically
+		// off, attempt a platform-native NTP resync before Nebula starts.
+		// This closes the UTM-suspended-VM / no-RTC-board class of
+		// "every handshake fails with certificate is expired" failures.
+		if first := reg.List(); len(first) > 0 {
+			EnsureClockSane(renewCtx, first[0].Endpoint)
+		}
+
 		// The common case: start one Nebula instance per enrollment.
 		for _, e := range reg.List() {
 			inst := newMeshInstance(e)
