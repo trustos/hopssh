@@ -159,7 +159,15 @@ func sendHeartbeat(inst *meshInstance) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+authToken)
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	// DisableKeepAlives: each call dials a fresh TCP+TLS conn instead of
+	// reusing http.DefaultTransport's idle pool. Prevents post-network-
+	// change heartbeats (sleep/wake, hotspot toggle, DHCP renew to a
+	// different gateway) from picking up a now-defunct idle conn and
+	// timing out for minutes until Go's idle timer ages it out.
+	client := &http.Client{
+		Timeout:   10 * time.Second,
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
@@ -419,7 +427,11 @@ func renewCert(inst *meshInstance) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+authToken)
 
-	client := &http.Client{Timeout: 30 * time.Second}
+	// DisableKeepAlives: see matching comment in sendHeartbeat.
+	client := &http.Client{
+		Timeout:   30 * time.Second,
+		Transport: &http.Transport{DisableKeepAlives: true},
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("request failed: %w", err)
