@@ -1,0 +1,32 @@
+[package]
+name = "hopssh-desktop"
+version = "0.1.0"
+description = "hopssh desktop client"
+authors = ["hopssh"]
+edition = "2021"
+rust-version = "1.77"
+
+# See https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "hopssh_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-opener = "2"
+tauri-plugin-shell = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
+parking_lot = "0.12"
+once_cell = "1"
+ctrlc = { version = "3", features = ["termination"] }
+
+[features]
+# This feature is used for production builds or when a dev server is not
+# specified, DO NOT remove!!
+custom-protocol = ["tauri/custom-protocol"]

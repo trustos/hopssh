@@ -1,0 +1,25 @@
+@import 'tailwindcss';
+
+/* Native macOS feel: tight typography, system font stack. */
+:root {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter',
+    'Helvetica Neue', Helvetica, Arial, sans-serif;
+  font-feature-settings: 'cv11', 'ss01';
+  -webkit-font-smoothing: antialiased;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+button {
+  font-family: inherit;
+}
+
+:focus:not(:focus-visible) {
+  outline: none;
+}

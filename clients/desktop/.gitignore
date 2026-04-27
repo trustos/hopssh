@@ -1,0 +1,20 @@
+# Node + bundler outputs
+node_modules/
+dist/
+
+# Tauri build artefacts
+src-tauri/target/
+src-tauri/Cargo.lock
+src-tauri/gen/schemas/
+
+# Source icon scratch
+src-tauri/icons/source.png
+
+# Bundled host-arch agent (cross-compiled fresh per build)
+src-tauri/binaries/
+
+# Local dev env (token + endpoint)
+.env.local
+
+# OS detritus
+.DS_Store

@@ -4,7 +4,8 @@ export
 
 .PHONY: all setup vendor patch-vendor build build-all build-linux vet test \
        generate clean clean-vendor frontend frontend-embed \
-       run dev release wifi-snapshot
+       run dev release wifi-snapshot \
+       desktop-build desktop-app desktop-dev desktop-smoke desktop-clean
 
 # Version injection via ldflags.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
@@ -155,3 +156,41 @@ wifi-snapshot:
 	    echo; echo "## WiFi (wdutil)"; sudo wdutil info 2>&1 | sed -n '/^WIFI/,/^[A-Z][A-Z]/p' | head -40; \
 	} > "$$SNAP" 2>&1; \
 	echo "snapshot saved to: $$SNAP"
+
+# --- Desktop client (Tauri 2 + Svelte) -------------------------------------
+
+DESKTOP_DIR     := clients/desktop
+DESKTOP_AGENT   := $(DESKTOP_DIR)/src-tauri/binaries/hop-agent
+DESKTOP_APP_OUT := $(DESKTOP_DIR)/src-tauri/target/release/bundle/macos/hopssh.app
+
+# Build the host-arch hop-agent into the desktop sidecar binaries dir.
+desktop-build:
+	@test -d vendor || (echo "Run 'make setup' first." && exit 1)
+	@mkdir -p $(DESKTOP_DIR)/src-tauri/binaries
+	go build -mod=vendor -ldflags='$(LDFLAGS)' -o $(DESKTOP_AGENT) ./cmd/agent
+	@echo "==> Built $(DESKTOP_AGENT)"
+
+# Bundle the Tauri .app (debug-style: no signing, no notarization, no DMG).
+# Use this for local dogfooding; CI's `make release` will sign + notarize.
+desktop-app: desktop-build
+	cd $(DESKTOP_DIR) && npm install --no-audit --no-fund
+	cd $(DESKTOP_DIR) && npx tauri build --bundles app
+	@echo ""
+	@echo "==> Built $(DESKTOP_APP_OUT)"
+	@echo "    Launch with:  open $(DESKTOP_APP_OUT)"
+
+# Run the agent + Tauri shell + Vite dev server live with hot reload.
+desktop-dev: desktop-build
+	cd $(DESKTOP_DIR) && npm install --no-audit --no-fund
+	cd $(DESKTOP_DIR) && npx tauri dev
+
+# End-to-end smoke test of the local API surface.
+desktop-smoke: desktop-build
+	cd $(DESKTOP_DIR) && bash scripts/smoke-test.sh
+
+# Wipe build artifacts (agent binary + Tauri target + Vite dist + node_modules
+# kept on purpose — those are slow to rebuild).
+desktop-clean:
+	rm -rf $(DESKTOP_DIR)/src-tauri/target
+	rm -rf $(DESKTOP_DIR)/dist
+	rm -f $(DESKTOP_AGENT)
