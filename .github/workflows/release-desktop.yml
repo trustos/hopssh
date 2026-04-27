@@ -81,7 +81,7 @@ jobs:
       - name: Vendor + patch
         run: make setup
 
-      - name: Build hop-agent (universal: arm64 + amd64 lipo)
+      - name: "Build hop-agent (universal arm64 + amd64 lipo)"
         run: |
           mkdir -p clients/desktop/src-tauri/binaries
           GOOS=darwin GOARCH=arm64 go build -mod=vendor -ldflags='-s -w' \
