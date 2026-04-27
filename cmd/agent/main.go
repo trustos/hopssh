@@ -188,6 +188,118 @@ func runServe(args []string) {
 	servers := newServerSet()
 	defer servers.shutdownAll()
 
+	// Loopback HTTP API used by the desktop GUI shell (Tauri). Always
+	// started — gated only by the bearer token + 127.0.0.1 origin check
+	// inside the handlers. Stdout prints HOPSSH_LOCAL_API:<addr>:<token>
+	// on success so a parent process can scrape it.
+	//
+	// connect/disconnect closures capture servers + mux + renewCtx so
+	// the local API can bring enrollments up/down at runtime — the user
+	// never has to restart the agent to use a freshly-enrolled network.
+	connectFn := func(name string) error {
+		e := reg.Get(name)
+		if e == nil {
+			return fmt.Errorf("enrollment %q not found", name)
+		}
+		if existing := instances.get(name); existing != nil && existing.control() != nil {
+			return nil // already up
+		}
+		// Drop any stale instance entry (e.g. previous start failed and
+		// left a half-initialized inst in the registry) so the new
+		// tryStartMeshInstance gets a clean slate.
+		if old := instances.remove(name); old != nil {
+			old.close()
+			servers.shutdownInstance(name)
+		}
+		// Wait for the kernel to release per-enrollment resources from
+		// any prior instance: UDP listen port, and (on Linux) the TUN
+		// device. Cross-platform notes: macOS auto-assigns utun names
+		// so its TUN-name collision is impossible; Windows uses WinTun
+		// which has a different driver model.
+		//
+		// On Linux, /sys/class/net/<dev> can disappear before the
+		// kernel finishes releasing the underlying netdev — so
+		// waitForTUNDeviceFreeFn is necessary but not sufficient.
+		// The retry-with-backoff below is the real fix; the wait is
+		// just the optimistic fast path.
+		listenPort := e.ListenPort
+		if listenPort == 0 {
+			listenPort = nebulacfg.ListenPort
+		}
+		devName := meshIfaceName(name)
+
+		try := func() (*meshInstance, error) {
+			waitForUDPPortFreeFn(listenPort, 3*time.Second)
+			waitForTUNDeviceFreeFn(devName, 3*time.Second)
+
+			inst := newMeshInstance(e)
+			instances.add(inst)
+			if err := tryStartMeshInstance(renewCtx, inst, servers, mux); err != nil {
+				instances.remove(name)
+				inst.close()
+				return nil, err
+			}
+			// tryStartMeshInstance falls back to OS stack and returns
+			// nil even when both kernel TUN and userspace Nebula
+			// failed (e.g. resource still busy). Detect that here so
+			// the API caller sees a real error and the retry loop
+			// fires.
+			if inst.control() == nil {
+				instances.remove(name)
+				inst.close()
+				servers.shutdownInstance(name)
+				return nil, fmt.Errorf("nebula did not start (kernel TUN + userspace both failed; likely 'address already in use' or 'device or resource busy')")
+			}
+			return inst, nil
+		}
+
+		// Multi-attempt retry: linux kernel TUN/UDP release after
+		// inst.close() can take several seconds, especially on busy
+		// systems or VMs. Total budget ~25 s (3 attempts × 3 s wait +
+		// inter-attempt sleeps of 2 s, 4 s, 8 s). Each attempt
+		// re-runs the resource waits, so the kernel has more time on
+		// each successive try.
+		var lastErr error
+		for attempt := 0; attempt < 4; attempt++ {
+			if attempt > 0 {
+				sleep := time.Duration(1<<uint(attempt)) * time.Second
+				log.Printf("[local-api] connect %q attempt %d backoff %v after: %v", name, attempt, sleep, lastErr)
+				time.Sleep(sleep)
+			}
+			_, err := try()
+			if err == nil {
+				return nil
+			}
+			lastErr = err
+			es := err.Error()
+			retryable := strings.Contains(es, "address already in use") ||
+				strings.Contains(es, "device or resource busy") ||
+				strings.Contains(es, "nebula did not start")
+			if !retryable {
+				return err
+			}
+		}
+		return fmt.Errorf("connect failed after 4 attempts: %w", lastErr)
+	}
+
+	disconnectFn := func(name string) error {
+		inst := instances.remove(name)
+		if inst == nil {
+			return nil // already gone
+		}
+		// stopwatcher → close → release UDP port + utun + DNS, all
+		// inside meshInstance.close().
+		inst.close()
+		// Drop the per-instance HTTP listener too so the next connect
+		// can rebind cleanly.
+		servers.shutdownInstance(name)
+		return nil
+	}
+
+	if err := startLocalAPI(shutdownCtx, configDir, reg, instances, connectFn, disconnectFn); err != nil {
+		log.Printf("[agent] WARNING: local API not started: %v", err)
+	}
+
 	// --listen overrides + no enrollment → OS-stack-only debug mode.
 	// Preserve the historical single-process behavior for running the
 	// agent against a manual --token for ad-hoc testing.
@@ -199,9 +311,15 @@ func runServe(args []string) {
 		// No enrollment and no explicit listen → serve on mesh-less OS
 		// stack at the default port so `hop-agent enroll` workflows that
 		// expect an already-running process still succeed.
-		log.Printf("[agent] no enrollments found, running on OS stack (enroll with 'hop-agent enroll')")
+		//
+		// Soft-fail when no token is configured: the GUI shell drives
+		// enrollment through the local API on 127.0.0.1, so a
+		// freshly-installed agent (no token, no enrollments) must stay
+		// alive long enough to be enrolled. The local API handlers run
+		// on a separate listener and don't depend on this one.
+		log.Printf("[agent] no enrollments found, awaiting enrollment (use the desktop client or 'hop-agent enroll')")
 		if err := startDebugOSListener(servers, mux, *token, *tokenFile, fmt.Sprintf(":%d", agentAPIPort)); err != nil {
-			log.Fatalf("%v", err)
+			log.Printf("[agent] mesh API listener not started (this is expected for a fresh install): %v", err)
 		}
 	} else {
 		// Migrate legacy enrollments missing a per-enrollment listen
@@ -329,26 +447,47 @@ func healListenPortYAML(e *Enrollment) error {
 	return nil
 }
 
-// startMeshInstance brings up Nebula + heartbeat + renewal + DNS for one
-// enrollment and wires a per-instance HTTP server onto its mesh listener.
-// Best-effort: on Nebula failure we fall back to an OS-stack listener
-// scoped to this instance so the renewal loop can still reach the
-// control plane and recover later.
+// startMeshInstance is the boot-time wrapper: returns nothing and
+// log.Fatals on anything that should keep the agent from coming up at
+// all. Runtime callers (the local API's live-connect path) should use
+// tryStartMeshInstance which returns errors.
 func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverSet, mux http.Handler) {
+	if err := tryStartMeshInstance(ctx, inst, servers, mux); err != nil {
+		log.Fatalf("[agent %s] start: %v", inst.name(), err)
+	}
+}
+
+// tryStartMeshInstance brings up Nebula + heartbeat + renewal + DNS for
+// one enrollment and wires a per-instance HTTP server onto its mesh
+// listener. Returns an error on hard failures (missing token, port
+// bind on the agent listener); soft failures (Nebula start) fall back
+// to an OS-stack listener so the renewal loop keeps running.
+//
+// Boot path uses startMeshInstance (which log.Fatal's on error since
+// the agent can't proceed). Runtime path uses this directly so a bad
+// runtime enroll can't crash the whole agent.
+func tryStartMeshInstance(ctx context.Context, inst *meshInstance, servers *serverSet, mux http.Handler) error {
 	cfgPath := filepath.Join(inst.dir(), "nebula.yaml")
 	inst.parentCtx = ctx
+	// Per-instance ctx so disconnect/leave can stop heartbeat + renewal
+	// + path-quality goroutines without taking down the whole agent.
+	// Pre-v0.10.34 these used the outer (agent-wide) ctx, so a
+	// disconnect left them running against a closed instance — leaking
+	// goroutines and producing duplicate heartbeats/renewals on
+	// subsequent reconnect.
+	inst.runCtx, inst.runCancel = context.WithCancel(ctx)
 
 	authToken, err := readInstanceToken(inst)
 	if err != nil {
-		log.Fatalf("[agent %s] read token: %v", inst.name(), err)
+		return fmt.Errorf("read token: %w", err)
 	}
 	authed := authMiddleware(authToken, mux)
 
 	// Start cert renewal + heartbeat regardless of Nebula outcome —
 	// even an expired-cert agent needs to renew + re-sync.
 	if inst.endpoint() != "" && inst.nodeID() != "" {
-		go runCertRenewal(ctx, inst)
-		go runHeartbeat(ctx, inst)
+		go runCertRenewal(inst.runCtx, inst)
+		go runHeartbeat(inst.runCtx, inst)
 		log.Printf("[agent %s] cert auto-renewal + heartbeat enabled (endpoint: %s)", inst.name(), inst.endpoint())
 	}
 
@@ -357,7 +496,7 @@ func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverS
 	if _, err := os.Stat(cfgPath); err != nil {
 		log.Printf("[agent %s] no Nebula config at %s, running on OS stack", inst.name(), cfgPath)
 		servers.startOSListener(inst, authed, fmt.Sprintf(":%d", agentAPIPort))
-		return
+		return nil
 	}
 
 	tunMode := readTunMode(inst)
@@ -373,7 +512,7 @@ func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverS
 	if meshSvc == nil {
 		log.Printf("[agent %s] all Nebula modes failed — falling back to OS stack", inst.name())
 		servers.startOSListener(inst, authed, fmt.Sprintf(":%d", agentAPIPort))
-		return
+		return nil
 	}
 	inst.setSvc(meshSvc)
 	log.Printf("[agent %s] Nebula mesh connected (mode: %s)", inst.name(), tunMode)
@@ -423,7 +562,7 @@ func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverS
 	}
 
 	if err := servers.startMeshListener(inst, authed, meshSvc, fmt.Sprintf(":%d", agentAPIPort)); err != nil {
-		log.Fatalf("[agent %s] Nebula mesh listen: %v", inst.name(), err)
+		return fmt.Errorf("Nebula mesh listen: %w", err)
 	}
 	log.Printf("[agent %s] listening on :%d (Nebula mesh, %s TUN)", inst.name(), agentAPIPort, tunMode)
 
@@ -432,7 +571,7 @@ func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverS
 	// the heartbeat (dashboard surfaces it) and logs degradation
 	// (3× consecutive samples >50 ms above EWMA). One TCP-SYN per
 	// direct peer per 10 s — cost is negligible.
-	go runPathQuality(ctx, inst)
+	go runPathQuality(inst.runCtx, inst)
 
 	// Layer 4 DISABLED in v0.10.27.1 hotfix. Two production issues:
 	// (1) Reap loop under asymmetric CGNAT (probed source-IP doesn't
@@ -453,6 +592,7 @@ func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverS
 	// scheduler is dormant.
 	//
 	// go runEndpointProbe(ctx, inst)
+	return nil
 }
 
 // startDebugOSListener serves the mux directly on the OS stack using a

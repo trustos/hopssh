@@ -35,9 +35,18 @@ type meshInstance struct {
 	dnsConfig *dnsConfig
 
 	// parentCtx scopes every per-instance goroutine (heartbeat,
-	// renewal, network-change watcher) to the agent's lifetime.
-	// Assigned once in startMeshInstance.
+	// renewal, network-change watcher) to the AGENT'S lifetime. This
+	// is derived from the outer renewCtx and is the ctx the watcher
+	// uses (since the watcher must survive cert reloads).
 	parentCtx context.Context
+
+	// runCtx + runCancel scope the per-instance work (heartbeat, cert
+	// renewal, path-quality) to the LIFE OF THIS INSTANCE specifically.
+	// Cancelled by inst.close() so disconnect/leave correctly stops all
+	// per-instance goroutines instead of leaving them running against
+	// the agent-wide ctx (the v0.10.34 bug).
+	runCtx    context.Context
+	runCancel context.CancelFunc
 
 	// watcherCancel stops the currently-running watchNetworkChanges
 	// goroutine. Re-derived each time Nebula is (re)started so the
@@ -322,7 +331,17 @@ func (i *meshInstance) stopPortmap() {
 
 // close tears down the instance: stops goroutines, closes Nebula,
 // cleans up DNS. Idempotent. Safe to call from any goroutine.
+//
+// Order matters: cancel runCtx FIRST so per-instance goroutines
+// (heartbeat, renewal, path-quality) observe Done() and exit before
+// we touch the underlying Nebula svc. Otherwise a heartbeat in flight
+// could panic on inst.svc dereference, or a renewal goroutine could
+// re-spawn Nebula via reloadNebula after we've nilled svc.
 func (i *meshInstance) close() {
+	if i.runCancel != nil {
+		i.runCancel()
+		i.runCancel = nil
+	}
 	i.stopWatcher()
 	i.stopPortmap()
 	i.svcMu.Lock()
@@ -383,6 +402,24 @@ func (r *instanceRegistry) len() int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return len(r.byName)
+}
+
+// remove drops the named instance from the registry and returns it
+// (without closing). The caller is responsible for inst.close(). This
+// split — drop-from-registry vs close-instance — lets the local API's
+// disconnect handler atomically prune the registry while running the
+// (potentially blocking) close outside any registry lock.
+//
+// Returns nil if no instance with that name exists.
+func (r *instanceRegistry) remove(name string) *meshInstance {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	inst, ok := r.byName[name]
+	if !ok {
+		return nil
+	}
+	delete(r.byName, name)
+	return inst
 }
 
 // closeAll tears down every instance. Safe to call from the shutdown

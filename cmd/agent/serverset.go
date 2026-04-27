@@ -145,6 +145,31 @@ func (s *serverSet) rebindMesh(inst *meshInstance, handler http.Handler, svc mes
 	return nil
 }
 
+// shutdownInstance stops the per-instance HTTP server (if any) and drops
+// it from the set. Used by the local API's disconnect path so the
+// instance's listener is released alongside its meshService. Idempotent.
+func (s *serverSet) shutdownInstance(name string) {
+	s.mu.Lock()
+	entry, ok := s.servers[name]
+	if ok {
+		delete(s.servers, name)
+	}
+	s.mu.Unlock()
+	if entry == nil {
+		return
+	}
+	entry.mu.Lock()
+	srv := entry.srv
+	entry.srv = nil
+	entry.mu.Unlock()
+	if srv == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(ctx)
+}
+
 // shutdownAll stops every tracked HTTP server gracefully. Each server
 // gets its own 5 s timeout so a hung connection on one instance can't
 // starve the remaining instances out of their shutdown budget.
