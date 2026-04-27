@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/slackhq/nebula/cert"
@@ -79,6 +80,21 @@ type localEvent struct {
 type localEventHub struct {
 	mu          sync.Mutex
 	subscribers map[chan localEvent]struct{}
+}
+
+// globalEventBus is set by startLocalAPI() so other parts of the agent
+// (the watchdog in keepalive.go, the connect/disconnect callbacks in
+// main.go) can publish events without holding a reference to the
+// localAPIServer struct. Nil if startLocalAPI hasn't been called yet
+// or failed — publishToEventBus is then a silent no-op.
+var globalEventBus atomic.Pointer[localEventHub]
+
+// publishToEventBus emits an event on the package-level bus if one
+// has been initialized. Safe to call from any goroutine; never blocks.
+func publishToEventBus(ev localEvent) {
+	if hub := globalEventBus.Load(); hub != nil {
+		hub.publish(ev)
+	}
 }
 
 func newLocalEventHub() *localEventHub {
@@ -145,6 +161,9 @@ func startLocalAPI(
 		disconnectFn: disconnectFn,
 		events:       newLocalEventHub(),
 	}
+	// Publish the hub so other goroutines (watchdog, etc.) can emit
+	// events without holding a reference to srv.
+	globalEventBus.Store(srv.events)
 
 	tokenPath := filepath.Join(cfgDir, localAPITokenFile)
 	if err := os.MkdirAll(cfgDir, 0700); err != nil {

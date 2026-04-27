@@ -92,6 +92,186 @@ fn set_tray_tooltip(app: AppHandle, tooltip: String) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(Serialize)]
+pub struct InstallStatus {
+    pub system_service: bool, // /Library/LaunchDaemons/com.hopssh.agent.plist exists
+    pub cli_symlink: bool,    // /usr/local/bin/hop exists and points at our bundle
+}
+
+/// One-shot probe of admin-installed integrations. JS uses this to
+/// decide whether to render the Settings → Install / Uninstall buttons.
+#[tauri::command]
+fn install_status() -> InstallStatus {
+    InstallStatus {
+        system_service: std::path::Path::new("/Library/LaunchDaemons/com.hopssh.agent.plist").exists(),
+        cli_symlink: std::path::Path::new("/usr/local/bin/hop").exists(),
+    }
+}
+
+/// Install hop-agent as a launchd system daemon. Triggers a single
+/// admin-prompt via osascript; on consent, the bundled hop-agent runs
+/// `install` (which writes the plist + bootstraps it). After this
+/// the agent runs as root and survives across user logouts.
+///
+/// macOS only — no-op on other platforms.
+#[tauri::command]
+fn install_system_service(_app: AppHandle) -> Result<String, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        return Err("install_system_service: only supported on macOS".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let agent = resolve_agent_path()
+            .ok_or_else(|| "could not locate bundled hop-agent binary".to_string())?;
+        // Quote-safe: osascript "do shell script" requires single-line
+        // quoted POSIX path. We trust resolve_agent_path's output (no
+        // user input).
+        let script = format!(
+            r#"do shell script "'{}' install" with administrator privileges"#,
+            agent.display()
+        );
+        run_osascript(&script).map(|out| {
+            if out.trim().is_empty() {
+                "system service installed".to_string()
+            } else {
+                out
+            }
+        })
+    }
+}
+
+/// Uninstall the launchd daemon (mirror of install_system_service).
+#[tauri::command]
+fn uninstall_system_service(_app: AppHandle) -> Result<String, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        return Err("uninstall_system_service: only supported on macOS".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let agent = resolve_agent_path()
+            .ok_or_else(|| "could not locate bundled hop-agent binary".to_string())?;
+        let script = format!(
+            r#"do shell script "'{}' uninstall" with administrator privileges"#,
+            agent.display()
+        );
+        run_osascript(&script).map(|out| {
+            if out.trim().is_empty() {
+                "system service removed".to_string()
+            } else {
+                out
+            }
+        })
+    }
+}
+
+/// Symlink /usr/local/bin/hop to the bundled hop-agent binary so
+/// power users can invoke it from Terminal. Idempotent — overwrites
+/// any existing symlink that already points at our bundle, refuses
+/// to overwrite a stranger's binary.
+#[tauri::command]
+fn install_cli_symlink(_app: AppHandle) -> Result<String, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        return Err("install_cli_symlink: only supported on macOS".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let agent = resolve_agent_path()
+            .ok_or_else(|| "could not locate bundled hop-agent binary".to_string())?;
+        // Refuse if /usr/local/bin/hop exists and is NOT a symlink
+        // pointing at our bundle. Avoids clobbering a user's
+        // unrelated `hop` binary.
+        let target = std::path::Path::new("/usr/local/bin/hop");
+        if target.exists() {
+            if let Ok(link) = std::fs::read_link(target) {
+                if link != agent {
+                    return Err(format!(
+                        "/usr/local/bin/hop already exists and points at {} (not our bundle); manual cleanup required",
+                        link.display()
+                    ));
+                }
+            } else {
+                return Err("/usr/local/bin/hop already exists as a regular file (not a symlink); manual cleanup required".to_string());
+            }
+        }
+        let script = format!(
+            r#"do shell script "mkdir -p /usr/local/bin && ln -sf '{}' /usr/local/bin/hop" with administrator privileges"#,
+            agent.display()
+        );
+        run_osascript(&script).map(|_| "/usr/local/bin/hop installed".to_string())
+    }
+}
+
+/// Remove /usr/local/bin/hop only if it's a symlink to our bundle —
+/// won't touch any unrelated `hop` binary the user installed.
+#[tauri::command]
+fn uninstall_cli_symlink(_app: AppHandle) -> Result<String, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        return Err("uninstall_cli_symlink: only supported on macOS".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let agent = resolve_agent_path()
+            .ok_or_else(|| "could not locate bundled hop-agent binary".to_string())?;
+        let target = std::path::Path::new("/usr/local/bin/hop");
+        if !target.exists() {
+            return Ok("/usr/local/bin/hop not present; nothing to do".to_string());
+        }
+        match std::fs::read_link(target) {
+            Ok(link) if link == agent => {
+                let script = r#"do shell script "rm /usr/local/bin/hop" with administrator privileges"#;
+                run_osascript(script).map(|_| "/usr/local/bin/hop removed".to_string())
+            }
+            Ok(link) => Err(format!(
+                "/usr/local/bin/hop points at {} (not our bundle); refusing to remove",
+                link.display()
+            )),
+            Err(_) => Err("/usr/local/bin/hop is not a symlink; refusing to remove".to_string()),
+        }
+    }
+}
+
+/// Run an osascript with the given AppleScript source. Returns stdout
+/// on success, stderr-prefixed on failure. macOS-only; protected by
+/// caller's #[cfg(target_os = "macos")] guard.
+#[cfg(target_os = "macos")]
+fn run_osascript(script: &str) -> Result<String, String> {
+    let out = std::process::Command::new("/usr/bin/osascript")
+        .arg("-e")
+        .arg(script)
+        .output()
+        .map_err(|e| format!("osascript spawn failed: {e}"))?;
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        // Cancel-on-prompt → exit code 1 with this stderr.
+        if stderr.contains("User canceled") {
+            return Err("admin prompt cancelled by user".to_string());
+        }
+        return Err(format!("osascript failed: {stderr}"));
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// JS calls this when the aggregate connection state changes. Valid
+/// values: "connected", "relay", "disconnected". Anything else falls
+/// back to "disconnected" (safer than panicking on bad input).
+#[tauri::command]
+fn set_tray_state(app: AppHandle, state: String) -> Result<(), String> {
+    let bytes: &[u8] = match state.as_str() {
+        "connected" => include_bytes!("../icons/tray/tray-connected@2x.png"),
+        "relay" => include_bytes!("../icons/tray/tray-relay@2x.png"),
+        _ => include_bytes!("../icons/tray/tray-disconnected@2x.png"),
+    };
+    let img = tauri::image::Image::from_bytes(bytes).map_err(|e| e.to_string())?;
+    if let Some(tray) = app.tray_by_id("main") {
+        tray.set_icon(Some(img)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
@@ -113,11 +293,18 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             local_api_endpoint,
             show_main_window,
-            set_tray_tooltip
+            set_tray_tooltip,
+            set_tray_state,
+            install_status,
+            install_system_service,
+            uninstall_system_service,
+            install_cli_symlink,
+            uninstall_cli_symlink
         ])
         .setup(move |app| {
             // Build menubar tray menu.

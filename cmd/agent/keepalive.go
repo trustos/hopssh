@@ -160,12 +160,17 @@ func runMeshKeepalive(ctx context.Context, inst *meshInstance) {
 //      BEFORE restart so a future investigator can root-cause why
 //      Nebula's data plane stalled (multi-instance contention?
 //      vendored-runtime deadlock?).
-//   2. Respect cooldown: if we already restarted this instance
+//   2. Emit an SSE event ("instance.watchdog-tripped") so the GUI
+//      can surface a banner. Lifecycle of UI feedback decoupled
+//      from agent-side recovery action.
+//   3. Respect cooldown: if we already restarted this instance
 //      within watchdogRestartCooldown, log only — don't restart-loop.
-//   3. Invoke inst.restartFn (set by runServe's connectFn closure)
+//   4. Invoke inst.restartFn (set by runServe's connectFn closure)
 //      to bring the instance down + back up cleanly. The inst's
 //      runCtx will be cancelled as part of the restart, ending THIS
 //      goroutine — the new instance spawns a fresh keepalive.
+//   5. Emit "instance.watchdog-recovered" on successful restart so
+//      the GUI can flip the banner from warning → info.
 func watchdogTrip(inst *meshInstance, cycle uint64, stuckCount int) {
 	dumpPath := writeStuckStateDump(inst, cycle, stuckCount)
 	if dumpPath != "" {
@@ -174,9 +179,28 @@ func watchdogTrip(inst *meshInstance, cycle uint64, stuckCount int) {
 		log.Printf("[agent %s] WATCHDOG: data plane stuck after %d cycles (forensic dump failed; see preceding logs)", inst.name(), stuckCount)
 	}
 
+	publishToEventBus(localEvent{
+		Time: time.Now(),
+		Type: "instance.watchdog-tripped",
+		Data: map[string]any{
+			"name":             inst.name(),
+			"consecutiveStuck": stuckCount,
+			"cycle":            cycle,
+			"dumpPath":         dumpPath,
+		},
+	})
+
 	if !inst.lastWatchdogRestartAt.IsZero() && time.Since(inst.lastWatchdogRestartAt) < watchdogRestartCooldown {
 		log.Printf("[agent %s] WATCHDOG: skipping auto-restart — last restart was %s ago, cooldown is %s",
 			inst.name(), time.Since(inst.lastWatchdogRestartAt).Truncate(time.Second), watchdogRestartCooldown)
+		publishToEventBus(localEvent{
+			Time: time.Now(),
+			Type: "instance.watchdog-cooldown",
+			Data: map[string]any{
+				"name":         inst.name(),
+				"cooldownSecs": int(watchdogRestartCooldown.Seconds()),
+			},
+		})
 		return
 	}
 
@@ -189,9 +213,24 @@ func watchdogTrip(inst *meshInstance, cycle uint64, stuckCount int) {
 	log.Printf("[agent %s] WATCHDOG: invoking auto-restart", inst.name())
 	if err := inst.restartFn(); err != nil {
 		log.Printf("[agent %s] WATCHDOG: auto-restart returned error: %v (manual intervention may be needed)", inst.name(), err)
+		publishToEventBus(localEvent{
+			Time: time.Now(),
+			Type: "instance.watchdog-recovery-failed",
+			Data: map[string]any{
+				"name":  inst.name(),
+				"error": err.Error(),
+			},
+		})
 		return
 	}
 	log.Printf("[agent %s] WATCHDOG: auto-restart returned cleanly; new instance should be running", inst.name())
+	publishToEventBus(localEvent{
+		Time: time.Now(),
+		Type: "instance.watchdog-recovered",
+		Data: map[string]any{
+			"name": inst.name(),
+		},
+	})
 }
 
 // writeStuckStateDump captures a goroutine snapshot to a file under

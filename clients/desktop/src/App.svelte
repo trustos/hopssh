@@ -8,6 +8,8 @@
   import StatusBar from './lib/StatusBar.svelte';
   import Disconnected from './lib/Disconnected.svelte';
   import Logo from './lib/Logo.svelte';
+  import BannerStrip from './lib/BannerStrip.svelte';
+  import { checkForUpdate } from './lib/updater';
 
   let view = $state<'main' | 'onboarding' | 'settings'>('main');
   let trayUnsub: UnlistenFn | null = null;
@@ -20,6 +22,11 @@
       }).then((u) => {
         trayUnsub = u;
       });
+      // Probe for updates 10s after launch (after the agent + UI
+      // settle). Errors are swallowed inside checkForUpdate.
+      window.setTimeout(() => {
+        void checkForUpdate();
+      }, 10_000);
     }
   });
   onDestroy(() => {
@@ -70,6 +77,8 @@
       </button>
     </nav>
   </header>
+
+  <BannerStrip />
 
   <main class="min-h-0 flex-1 overflow-y-auto">
     {#if agent.initialLoad}

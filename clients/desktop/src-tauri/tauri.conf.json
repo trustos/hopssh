@@ -40,6 +40,14 @@
       "menuOnLeftClick": false
     }
   },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://releases.hopssh.com/{{target}}/{{current_version}}"
+      ],
+      "pubkey": "PLACEHOLDER_REPLACE_AT_RELEASE_TIME"
+    }
+  },
   "bundle": {
     "active": true,
     "targets": ["app"],

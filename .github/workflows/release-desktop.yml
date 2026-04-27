@@ -1,0 +1,144 @@
+name: Release Desktop
+
+# Builds, code-signs, notarizes, and uploads the macOS .app + DMG for
+# the Tauri desktop client. Triggered on tags matching v*.
+#
+# Gating: ALL of the following secrets must be present, else the
+# job emits a clear "skipped — credentials missing" message and exits
+# successfully (CI doesn't fail when the cert isn't yet in place).
+#
+#   APPLE_DEVELOPER_ID_CERT_P12    — base64-encoded .p12 of the
+#                                    Developer ID Application cert.
+#   APPLE_DEVELOPER_ID_CERT_PASS   — password for the .p12.
+#   APPLE_NOTARY_APPLE_ID          — Apple ID with notarization rights.
+#   APPLE_NOTARY_TEAM_ID           — 10-char Apple team ID.
+#   APPLE_NOTARY_APP_PASSWORD      — app-specific password for notarytool.
+#   TAURI_UPDATER_PRIVATE_KEY      — base64 of the Tauri updater
+#                                    Ed25519 private key (used to
+#                                    sign the .tar.gz update bundle).
+#   TAURI_UPDATER_KEY_PASSWORD     — password for the updater key.
+#
+# The corresponding pub-key is embedded at build time via
+# tauri.conf.json's plugins.updater.pubkey.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  preflight:
+    name: Preflight (check signing creds)
+    runs-on: ubuntu-latest
+    outputs:
+      signing-available: ${{ steps.check.outputs.signing-available }}
+    steps:
+      - id: check
+        run: |
+          if [ -n "${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}" ] && \
+             [ -n "${{ secrets.APPLE_DEVELOPER_ID_CERT_PASS }}" ] && \
+             [ -n "${{ secrets.APPLE_NOTARY_APPLE_ID }}" ] && \
+             [ -n "${{ secrets.APPLE_NOTARY_TEAM_ID }}" ] && \
+             [ -n "${{ secrets.APPLE_NOTARY_APP_PASSWORD }}" ]; then
+            echo "signing-available=true" >> "$GITHUB_OUTPUT"
+            echo "All Apple signing credentials present."
+          else
+            echo "signing-available=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Apple Developer ID cert + notarization secrets not configured. Skipping signed-build job."
+            echo "Required GitHub Actions secrets:"
+            echo "  APPLE_DEVELOPER_ID_CERT_P12"
+            echo "  APPLE_DEVELOPER_ID_CERT_PASS"
+            echo "  APPLE_NOTARY_APPLE_ID"
+            echo "  APPLE_NOTARY_TEAM_ID"
+            echo "  APPLE_NOTARY_APP_PASSWORD"
+          fi
+
+  build-macos:
+    name: Build + sign + notarize macOS .app + DMG
+    needs: preflight
+    if: needs.preflight.outputs.signing-available == 'true'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Set up Rust
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      - name: Vendor + patch
+        run: make setup
+
+      - name: Build hop-agent (universal: arm64 + amd64 lipo)
+        run: |
+          mkdir -p clients/desktop/src-tauri/binaries
+          GOOS=darwin GOARCH=arm64 go build -mod=vendor -ldflags='-s -w' \
+            -o /tmp/hop-agent-darwin-arm64 ./cmd/agent
+          GOOS=darwin GOARCH=amd64 go build -mod=vendor -ldflags='-s -w' \
+            -o /tmp/hop-agent-darwin-amd64 ./cmd/agent
+          lipo -create -output clients/desktop/src-tauri/binaries/hop-agent \
+            /tmp/hop-agent-darwin-arm64 /tmp/hop-agent-darwin-amd64
+
+      - name: Import Developer ID cert
+        env:
+          P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
+          P12_PASS: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASS }}
+        run: |
+          echo "$P12_BASE64" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p actions-tmp build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p actions-tmp build.keychain
+          security import /tmp/cert.p12 -k build.keychain -P "$P12_PASS" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k actions-tmp build.keychain
+          rm /tmp/cert.p12
+
+      - name: Sign hop-agent binary (pre-bundle)
+        run: |
+          codesign --force --options runtime --timestamp \
+            --sign "Developer ID Application" \
+            clients/desktop/src-tauri/binaries/hop-agent
+
+      - name: Build Tauri app (signed)
+        env:
+          APPLE_SIGNING_IDENTITY: "Developer ID Application"
+          APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_NOTARY_TEAM_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_NOTARY_APP_PASSWORD }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_UPDATER_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_UPDATER_KEY_PASSWORD }}
+        working-directory: clients/desktop
+        run: |
+          npm install --no-audit --no-fund
+          npx tauri build --bundles app,dmg
+
+      - name: Verify codesign + notary stapling
+        run: |
+          APP=clients/desktop/src-tauri/target/release/bundle/macos/hopssh.app
+          DMG=$(find clients/desktop/src-tauri/target/release/bundle/dmg -name '*.dmg' | head -1)
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          spctl --assess --verbose --type execute "$APP"
+          if [ -n "$DMG" ]; then
+            spctl --assess --verbose --type install "$DMG"
+            xcrun stapler validate "$DMG"
+          fi
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            clients/desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            clients/desktop/src-tauri/target/release/bundle/macos/hopssh.app
+          tag_name: ${{ github.ref_name }}
+          fail_on_unmatched_files: false
