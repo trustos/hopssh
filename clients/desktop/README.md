@@ -9,7 +9,7 @@ This is the **desktop** project; an iOS/Android variant on the same Svelte UI
 will land on top of this once `internal/client/` is extracted (Phase 1A in the
 plan).
 
-## Status (2026-04-27)
+## Status (2026-04-27, agent at v0.10.36)
 
 Working end-to-end:
 - ✅ `.app` builds and launches
@@ -17,17 +17,24 @@ Working end-to-end:
 - ✅ Loopback API + bearer-token auth + 127.0.0.1 enforcement
 - ✅ SSE event stream (status + enrollment lifecycle)
 - ✅ Device-flow enrollment kickoff against `https://hopssh.com`
-- ✅ **Live connect / disconnect / leave (v0.10.34) — no agent restart needed**
+- ✅ Live connect / disconnect / leave (v0.10.34) — no agent restart needed
 - ✅ Auto-connect after a successful enrollment
 - ✅ Cert-status / peer-list display from live agent state
 - ✅ Token-flow enrollment + leave endpoints
 - ✅ Child agent cleanup on Cmd-Q / SIGTERM / SIGINT (no leaks)
 
-Pending (Phase 2):
-- Menu bar tray polish (icon states, dropdown actions)
-- Code signing + notarization
-- DMG packaging
-- Auto-update (Tauri updater + agent self-update coordination)
+Agent reliability inherited automatically:
+- ✅ Cert renewals never strand the agent on an expired cert (v0.10.33).
+- ✅ CGNAT idle timeouts can't kill an idle tunnel — every 90 s the agent fires a TCP-connect to each peer to refresh flow state (v0.10.35). User-visible: clicking Screen Sharing after long idle no longer triggers the 30 s black-screen.
+- ✅ If Nebula's data plane ever silently stalls (multi-instance vendored-runtime stuck-state), a watchdog detects within ~5 min, writes a goroutine pprof dump for forensics, then auto-recovers the instance (v0.10.36).
+
+Pending:
+- Menu bar tray icon state variants (PNGs for connected / relay / disconnected — tooltip is already dynamic)
+- Optional kernel-TUN upgrade flow (Settings → "Install system component")
+- Optional CLI tools install (Settings → symlink `/usr/local/bin/hop`)
+- Code signing + notarization + DMG packaging
+- Tauri auto-update + agent self-update coordination
+- Surface agent watchdog events in the UI as transient banners
 
 ## Quick start
 
