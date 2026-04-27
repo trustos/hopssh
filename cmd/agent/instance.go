@@ -85,6 +85,22 @@ type meshInstance struct {
 	// heartbeat. Nil-safe via pathQuality.snapshot().
 	pathQuality *pathQuality
 
+	// restartFn is invoked by the v0.10.36 keepalive watchdog when it
+	// detects stuck-data-plane state (consecutive all-failed keepalive
+	// cycles). The callback closes the running svc and starts a fresh
+	// one. Set by runServe via the connectFn closure so the watchdog
+	// has access to runServe-local state (servers, mux, registry).
+	// nil means "no auto-recovery wired" — the watchdog logs CRITICAL
+	// but cannot self-heal.
+	restartFn func() error
+
+	// lastWatchdogRestartAt is the timestamp of the most recent
+	// auto-recovery restart triggered by the watchdog. Used to suppress
+	// restart-loop cycles: after a recovery, the next 5 minutes of
+	// stuck-detection get logged but not acted on, so we don't burn
+	// CPU restart-cycling if the underlying issue is persistent.
+	lastWatchdogRestartAt time.Time
+
 	// meshIPMu + cachedMeshIP + cachedMeshSubnet back the meshIP() and
 	// meshSubnet() lazy readers. Cached for the instance lifetime — the
 	// cert's VPN IP and subnet don't change across renewals (only the

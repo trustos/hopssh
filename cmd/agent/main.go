@@ -196,7 +196,12 @@ func runServe(args []string) {
 	// connect/disconnect closures capture servers + mux + renewCtx so
 	// the local API can bring enrollments up/down at runtime — the user
 	// never has to restart the agent to use a freshly-enrolled network.
-	connectFn := func(name string) error {
+	//
+	// connectFn is forward-declared so its body (and any restartFn
+	// closure inside) can reference connectFn itself for the v0.10.36
+	// watchdog auto-recovery path.
+	var connectFn func(name string) error
+	connectFn = func(name string) error {
 		e := reg.Get(name)
 		if e == nil {
 			return fmt.Errorf("enrollment %q not found", name)
@@ -233,6 +238,12 @@ func runServe(args []string) {
 			waitForTUNDeviceFreeFn(devName, 3*time.Second)
 
 			inst := newMeshInstance(e)
+			// v0.10.36: re-wire restartFn on every fresh instance so
+			// the watchdog can recover this one too. Recursion is
+			// fine here: each restart constructs a new closure
+			// bound to the new inst, replacing the prior one.
+			instName := name
+			inst.restartFn = func() error { return connectFn(instName) }
 			instances.add(inst)
 			if err := tryStartMeshInstance(renewCtx, inst, servers, mux); err != nil {
 				instances.remove(name)
@@ -341,6 +352,11 @@ func runServe(args []string) {
 		// The common case: start one Nebula instance per enrollment.
 		for _, e := range reg.List() {
 			inst := newMeshInstance(e)
+			// v0.10.36: wire watchdog auto-recovery for boot-time
+			// instances too. connectFn is constructed below; capture
+			// the enrollment name so each closure is bound correctly.
+			instName := e.Name
+			inst.restartFn = func() error { return connectFn(instName) }
 			instances.add(inst)
 			startMeshInstance(renewCtx, inst, servers, mux)
 		}

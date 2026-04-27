@@ -93,9 +93,9 @@ func TestKeepalive_RunCtxCancellation(t *testing.T) {
 // being reloaded). Must NOT panic.
 func TestKeepalive_OneCycle_NilCtrl(t *testing.T) {
 	inst := newMeshInstance(&Enrollment{Name: "home"})
-	probed, skipped := keepaliveOneCycle(inst)
-	if probed != 0 || skipped != 0 {
-		t.Errorf("nil-ctrl cycle should return (0,0), got (%d,%d)", probed, skipped)
+	probed, succeeded, skipped, peers := keepaliveOneCycle(inst)
+	if probed != 0 || succeeded != 0 || skipped != 0 || peers != 0 {
+		t.Errorf("nil-ctrl cycle should return all zeros, got (%d,%d,%d,%d)", probed, succeeded, skipped, peers)
 	}
 }
 

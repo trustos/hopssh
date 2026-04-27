@@ -30,6 +30,9 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
+	"runtime/pprof"
 	"sync/atomic"
 	"time"
 )
@@ -56,6 +59,20 @@ const (
 	// (90 s × 20 cycles) of healthy operation. Anomalies log
 	// unconditionally.
 	keepaliveLogStride = 20
+
+	// watchdogStuckThreshold: number of consecutive all-failed cycles
+	// (each cycle has >0 peers AND every probe failed) that trips the
+	// auto-recovery. 3 cycles × 90 s = 4.5 minutes of confirmed
+	// stuck-state before we self-heal. Below this we'd false-trigger
+	// on transient network blips; above this we'd let the user
+	// suffer too long.
+	watchdogStuckThreshold = 3
+
+	// watchdogRestartCooldown: minimum interval between auto-recovery
+	// restarts on the same instance. Prevents restart-loop cycles if
+	// the underlying problem is persistent (kernel-level firewall
+	// rule, hardware issue, persistent CGNAT block).
+	watchdogRestartCooldown = 5 * time.Minute
 )
 
 // keepaliveDialFn is the indirection used by runMeshKeepalive's per-peer
@@ -103,12 +120,30 @@ func runMeshKeepalive(ctx context.Context, inst *meshInstance) {
 	defer t.Stop()
 
 	var cycle uint64
+	var consecutiveStuck int
 	for {
-		probed, skipped := keepaliveOneCycle(inst)
+		probed, succeeded, skipped, peers := keepaliveOneCycle(inst)
 		c := atomic.AddUint64(&cycle, 1)
-		if c%keepaliveLogStride == 1 {
-			log.Printf("[agent %s] mesh-keepalive: cycle %d (probed: %d, skipped recent: %d)",
-				inst.name(), c, probed, skipped)
+
+		// Watchdog: a "stuck cycle" is one where the instance has
+		// known peers in its hostmap AND every probe attempted to
+		// reach them failed. Genuinely-no-peers states (peers == 0)
+		// don't increment — fresh cold-start instances and
+		// disconnected periods are not stuck-state.
+		if peers > 0 && probed > 0 && succeeded == 0 {
+			consecutiveStuck++
+			log.Printf("[agent %s] mesh-keepalive: STUCK cycle %d (%d/%d peers all failed; consecutive: %d/%d)",
+				inst.name(), c, probed, peers, consecutiveStuck, watchdogStuckThreshold)
+			if consecutiveStuck >= watchdogStuckThreshold {
+				watchdogTrip(inst, c, consecutiveStuck)
+				consecutiveStuck = 0 // reset after recovery attempt
+			}
+		} else {
+			consecutiveStuck = 0
+			if c%keepaliveLogStride == 1 {
+				log.Printf("[agent %s] mesh-keepalive: cycle %d (probed: %d ok: %d skipped: %d peers: %d)",
+					inst.name(), c, probed, succeeded, skipped, peers)
+			}
 		}
 
 		select {
@@ -120,14 +155,98 @@ func runMeshKeepalive(ctx context.Context, inst *meshInstance) {
 	}
 }
 
-// keepaliveOneCycle fires one round of per-peer probes. Returns counts
-// (probed, skipped) for diagnostic logging.
-func keepaliveOneCycle(inst *meshInstance) (probed, skipped int) {
+// watchdogTrip handles a confirmed stuck-state detection. Sequence:
+//   1. Capture goroutine + heap dumps to disk for forensics — done
+//      BEFORE restart so a future investigator can root-cause why
+//      Nebula's data plane stalled (multi-instance contention?
+//      vendored-runtime deadlock?).
+//   2. Respect cooldown: if we already restarted this instance
+//      within watchdogRestartCooldown, log only — don't restart-loop.
+//   3. Invoke inst.restartFn (set by runServe's connectFn closure)
+//      to bring the instance down + back up cleanly. The inst's
+//      runCtx will be cancelled as part of the restart, ending THIS
+//      goroutine — the new instance spawns a fresh keepalive.
+func watchdogTrip(inst *meshInstance, cycle uint64, stuckCount int) {
+	dumpPath := writeStuckStateDump(inst, cycle, stuckCount)
+	if dumpPath != "" {
+		log.Printf("[agent %s] WATCHDOG: data plane stuck after %d cycles — forensic dump at %s", inst.name(), stuckCount, dumpPath)
+	} else {
+		log.Printf("[agent %s] WATCHDOG: data plane stuck after %d cycles (forensic dump failed; see preceding logs)", inst.name(), stuckCount)
+	}
+
+	if !inst.lastWatchdogRestartAt.IsZero() && time.Since(inst.lastWatchdogRestartAt) < watchdogRestartCooldown {
+		log.Printf("[agent %s] WATCHDOG: skipping auto-restart — last restart was %s ago, cooldown is %s",
+			inst.name(), time.Since(inst.lastWatchdogRestartAt).Truncate(time.Second), watchdogRestartCooldown)
+		return
+	}
+
+	if inst.restartFn == nil {
+		log.Printf("[agent %s] WATCHDOG: cannot auto-recover — no restartFn wired (boot path?). Manual restart required.", inst.name())
+		return
+	}
+
+	inst.lastWatchdogRestartAt = time.Now()
+	log.Printf("[agent %s] WATCHDOG: invoking auto-restart", inst.name())
+	if err := inst.restartFn(); err != nil {
+		log.Printf("[agent %s] WATCHDOG: auto-restart returned error: %v (manual intervention may be needed)", inst.name(), err)
+		return
+	}
+	log.Printf("[agent %s] WATCHDOG: auto-restart returned cleanly; new instance should be running", inst.name())
+}
+
+// writeStuckStateDump captures a goroutine snapshot to a file under
+// the instance's config dir. Best-effort — on any error, logs and
+// returns empty string. Includes the trip context (cycle number,
+// stuck count) at the top so the file is self-explanatory weeks
+// later when an operator finds it.
+func writeStuckStateDump(inst *meshInstance, cycle uint64, stuckCount int) string {
+	if inst == nil {
+		return ""
+	}
+	stamp := time.Now().UTC().Format("20060102T150405Z")
+	path := filepath.Join(inst.dir(), fmt.Sprintf("stuck-state-%s.txt", stamp))
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
+	if err != nil {
+		log.Printf("[agent %s] WATCHDOG: cannot create dump file %s: %v", inst.name(), path, err)
+		return ""
+	}
+	defer f.Close()
+
+	fmt.Fprintf(f, "# hopssh agent stuck-state forensic dump\n")
+	fmt.Fprintf(f, "# enrollment: %s\n", inst.name())
+	fmt.Fprintf(f, "# captured: %s\n", time.Now().UTC().Format(time.RFC3339Nano))
+	fmt.Fprintf(f, "# keepalive cycle: %d\n", cycle)
+	fmt.Fprintf(f, "# consecutive stuck cycles: %d (threshold %d)\n", stuckCount, watchdogStuckThreshold)
+	fmt.Fprintf(f, "# context: every keepalive probe failed for >%d cycles (~%.0fs); auto-restart was triggered.\n",
+		watchdogStuckThreshold, float64(watchdogStuckThreshold)*keepaliveInterval.Seconds())
+	fmt.Fprintf(f, "\n=== goroutine dump (debug=2 for full stacks) ===\n\n")
+
+	prof := pprof.Lookup("goroutine")
+	if prof == nil {
+		fmt.Fprintf(f, "goroutine profile not available (pprof.Lookup returned nil)\n")
+		return path
+	}
+	if err := prof.WriteTo(f, 2); err != nil {
+		fmt.Fprintf(f, "WriteTo failed: %v\n", err)
+	}
+	return path
+}
+
+// keepaliveOneCycle fires one round of per-peer probes. Returns:
+//   probed     — number of peers we attempted to dial this cycle
+//   succeeded  — number whose dial returned nil (mesh flow IS alive)
+//   skipped    — number skipped due to pathQualityRecent
+//   peers      — number of peers in the hostmap (excluding skipped)
+//
+// The watchdog uses (peers > 0 && probed > 0 && succeeded == 0) as the
+// "stuck cycle" signal. Pure no-peers states (peers == 0) do NOT
+// count as stuck — common during cold-start or full-disconnect.
+func keepaliveOneCycle(inst *meshInstance) (probed, succeeded, skipped, peers int) {
 	ctrl := inst.control()
 	if ctrl == nil {
 		// Nebula not running (cold-start race, or instance is being
 		// reloaded). Quietly skip; the next cycle will catch it.
-		return 0, 0
+		return 0, 0, 0, 0
 	}
 	hosts := ctrl.ListHostmapHosts(false)
 	now := time.Now().Unix()
@@ -139,6 +258,7 @@ func keepaliveOneCycle(inst *meshInstance) (probed, skipped int) {
 		if vpn == "" {
 			continue
 		}
+		peers++
 		// Skip-on-recent: pathQuality probed this peer within the
 		// last keepaliveSkipIfRecentSec. The mesh flow is already
 		// being kept warm by the user's actual traffic OR by
@@ -151,17 +271,13 @@ func keepaliveOneCycle(inst *meshInstance) (probed, skipped int) {
 				continue
 			}
 		}
-		// Best-effort: the dial result doesn't matter for keepalive
-		// purposes — the act of dialing fires UDP through Nebula's
-		// encrypt path, which refreshes our outbound CGNAT state.
 		target := fmt.Sprintf("%s:%d", vpn, agentAPIPort)
-		if err := keepaliveDialFn(target); err != nil {
-			// Down-peer is normal (peer offline / firewalled);
-			// don't spam the log. Could lift to a counter later.
+		if err := keepaliveDialFn(target); err == nil {
+			succeeded++
 		}
 		probed++
 	}
-	return probed, skipped
+	return probed, succeeded, skipped, peers
 }
 
 // pathQualityRecent returns true if pathQuality has a sample for vpn
