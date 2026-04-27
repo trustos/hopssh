@@ -1,22 +1,27 @@
 #!/usr/bin/env bash
 # build-dmg.sh — Build a polished drag-to-Applications DMG for hopssh.
 #
-# Why we don't just use `tauri build --bundles dmg`:
-#   - Tauri 2.10.x invokes `bundle_dmg.sh` (a fork of create-dmg) which runs an
-#     AppleScript step to position icons inside the DMG window. On macOS
-#     Sequoia (and in headless CI) that AppleScript times out with -1712
-#     because the parent process lacks Automation->Finder permission.
-#   - `bundle_dmg.sh` supports a `--sandbox-safe` flag that skips the
-#     AppleScript entirely. Tauri's CLI doesn't expose a way to pass it.
+# Why we don't use `tauri build --bundles dmg`:
+#   - Tauri 2.10.x invokes `bundle_dmg.sh` (forked from create-dmg) which
+#     runs Finder AppleScript to position icons, set the background, etc.
+#     On macOS Sequoia AND on `macos-latest` GitHub runners that
+#     AppleScript times out with -1712 (Automation->Finder denied).
+#   - Even with --sandbox-safe (skip AppleScript) the result has no
+#     window size, no icon positions, no background — just a default
+#     Finder window. Users complain (rightly) that it doesn't look like
+#     a real installer.
 #
 # So this script:
-#   1. Runs `tauri build --bundles app` to produce the signed .app
-#   2. Calls Tauri's own `bundle_dmg.sh` with --sandbox-safe to produce the DMG
-#
-# The resulting DMG opens to a tiny window with hopssh.app on the left and an
-# Applications symlink on the right (default Finder layout, since icon-position
-# AppleScript was skipped — Finder snaps both icons to a clean grid which is
-# perfectly legible for the drag-to-install flow).
+#   1. Runs `tauri build --bundles app` to produce the .app
+#   2. Properly ad-hoc-signs the .app bundle (creates _CodeSignature/
+#      CodeResources). Without this, downloaded-from-browser DMGs fail
+#      with "hopssh is damaged and can't be opened" because Gatekeeper
+#      rejects bundles that have signed Mach-O binaries but no sealed
+#      resources. With it, users see "unidentified developer" and can
+#      bypass once via right-click -> Open.
+#   3. Uses the `appdmg` npm tool (pure Node.js, no Finder Automation)
+#      to build the DMG with our background image, icon positions, and
+#      window size.
 
 set -euo pipefail
 
@@ -31,73 +36,43 @@ case "$ARCH" in
 esac
 
 DMG_NAME="hopssh_${VERSION}_${DMG_ARCH}.dmg"
+STABLE_DMG_NAME="hopssh-macos-${DMG_ARCH}.dmg"
 BUNDLE_DIR="src-tauri/target/release/bundle"
 APP_PATH="${BUNDLE_DIR}/macos/hopssh.app"
 DMG_DIR="${BUNDLE_DIR}/dmg"
 DMG_PATH="${DMG_DIR}/${DMG_NAME}"
+STABLE_DMG_PATH="${DMG_DIR}/${STABLE_DMG_NAME}"
 
-echo "[build-dmg] Building hopssh.app + seeding DMG support files..."
-# We pass --bundles app,dmg even though the dmg step will fail at the
-# AppleScript stage. The failure is what seeds bundle_dmg.sh + icon.icns
-# into target/release/bundle/dmg/, which we then drive ourselves below
-# with --sandbox-safe (which Tauri's CLI doesn't expose).
-npx tauri build --bundles app,dmg || true
+echo "[build-dmg] Building hopssh.app..."
+npx tauri build --bundles app
 
 if [[ ! -d "$APP_PATH" ]]; then
   echo "[build-dmg] ERROR: ${APP_PATH} not found after tauri build" >&2
   exit 1
 fi
 
-echo "[build-dmg] Preparing DMG staging directory..."
+# Ad-hoc-sign the bundle. Critical: without --deep applied to a bundle,
+# the link-time signature on Contents/MacOS/hopssh-desktop is the only
+# signature, and Gatekeeper rejects the BUNDLE as damaged because there's
+# no _CodeSignature/CodeResources sealing the bundle. With --deep + bundle
+# path, codesign creates that sealed resources file and the right-click ->
+# Open bypass becomes available for users.
+#
+# If APPLE_SIGNING_IDENTITY is set (CI signed path), skip — Tauri or a
+# later step will sign with the real cert.
+if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
+  echo "[build-dmg] Ad-hoc signing the .app bundle..."
+  codesign --force --deep --sign - "$APP_PATH"
+  codesign -dv --verbose=2 "$APP_PATH" 2>&1 | grep -E 'Sealed|Signature|Identifier' || true
+fi
+
+echo "[build-dmg] Cleaning DMG output dir..."
 mkdir -p "$DMG_DIR"
-rm -f "$DMG_PATH"
-find "${BUNDLE_DIR}/macos" -name 'rw.*.dmg' -delete 2>/dev/null || true
+rm -f "$DMG_PATH" "$STABLE_DMG_PATH"
 
-STAGING="${DMG_DIR}/staging"
-rm -rf "$STAGING"
-mkdir "$STAGING"
-cp -R "$APP_PATH" "$STAGING/"
+echo "[build-dmg] Building DMG with appdmg..."
+npx appdmg scripts/dmg-spec.json "$DMG_PATH"
 
-# bundle_dmg.sh and icon.icns are written by Tauri's bundler. If a previous
-# `tauri build --bundles dmg` (or `--bundles app,dmg`) ran, they exist; if not,
-# we fall back to skipping the volume icon.
-BUNDLE_DMG_SH="${DMG_DIR}/bundle_dmg.sh"
-VOLICON="${DMG_DIR}/icon.icns"
-
-if [[ ! -x "$BUNDLE_DMG_SH" ]]; then
-  echo "[build-dmg] ERROR: ${BUNDLE_DMG_SH} not found." >&2
-  echo "[build-dmg]   Run \`npx tauri build --bundles app,dmg\` once first to" >&2
-  echo "[build-dmg]   let Tauri seed bundle_dmg.sh + icon.icns. The dmg step" >&2
-  echo "[build-dmg]   will fail at the AppleScript stage; that's OK — this" >&2
-  echo "[build-dmg]   script picks up where it left off with --sandbox-safe." >&2
-  exit 1
-fi
-
-VOLICON_ARGS=()
-if [[ -f "$VOLICON" ]]; then
-  VOLICON_ARGS=(--volicon icon.icns)
-fi
-
-echo "[build-dmg] Running bundle_dmg.sh with --sandbox-safe..."
-(
-  cd "$DMG_DIR"
-  ./bundle_dmg.sh \
-    --sandbox-safe \
-    --volname hopssh \
-    --icon hopssh.app 140 200 \
-    --app-drop-link 400 200 \
-    --window-size 540 380 \
-    --hide-extension hopssh.app \
-    "${VOLICON_ARGS[@]}" \
-    "$DMG_NAME" staging
-)
-
-rm -rf "$STAGING"
-
-# Also produce a stable-named copy so the /download/desktop endpoint can
-# redirect to a known URL without having to look up the desktop version.
-STABLE_DMG_NAME="hopssh-macos-${DMG_ARCH}.dmg"
-STABLE_DMG_PATH="${DMG_DIR}/${STABLE_DMG_NAME}"
 cp "$DMG_PATH" "$STABLE_DMG_PATH"
 
 echo "[build-dmg] DMG created:"

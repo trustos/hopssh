@@ -1,0 +1,14 @@
+{
+  "title": "hopssh",
+  "icon": "../src-tauri/icons/icon.icns",
+  "background": "../src-tauri/dmg-assets/background.png",
+  "contents": [
+    { "x": 140, "y": 200, "type": "file", "path": "../src-tauri/target/release/bundle/macos/hopssh.app" },
+    { "x": 400, "y": 200, "type": "link", "path": "/Applications" }
+  ],
+  "window": {
+    "size": { "width": 540, "height": 380 }
+  },
+  "format": "UDZO",
+  "icon-size": 96
+}

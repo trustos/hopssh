@@ -144,6 +144,9 @@
 				</svg>
 				Download for macOS
 			</a>
+			<p class="mt-2 text-[11px] text-muted-foreground">
+				First launch: right-click <strong>hopssh.app</strong> &rarr; Open &rarr; Open
+			</p>
 		</div>
 	</div>
 </div>
