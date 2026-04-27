@@ -573,6 +573,16 @@ func tryStartMeshInstance(ctx context.Context, inst *meshInstance, servers *serv
 	// direct peer per 10 s — cost is negligible.
 	go runPathQuality(inst.runCtx, inst)
 
+	// CGNAT-aware mesh keepalive: every 90s, fire a TCP-connect to
+	// each peer's mesh API listener via the mesh IP. Refreshes our
+	// outbound UDP flow state on the wire so a CGNAT operator's
+	// idle-timeout (typically 60-300s) can't drop the flow during
+	// app-layer silence. Without this, an idle-then-active mesh
+	// session (e.g. user clicks Screen Sharing after 5+ min idle)
+	// pays a re-handshake cost that the application protocol may
+	// see as a timeout (RFB ≈ 30s) before recovery completes.
+	go runMeshKeepalive(inst.runCtx, inst)
+
 	// Layer 4 DISABLED in v0.10.27.1 hotfix. Two production issues:
 	// (1) Reap loop under asymmetric CGNAT (probed source-IP doesn't
 	//     match reply source-IP, endpoints falsely classified dead).
