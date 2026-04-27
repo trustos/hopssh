@@ -1,12 +1,18 @@
 name: Release Desktop
 
-# Builds, code-signs, notarizes, and uploads the macOS .app + DMG for
-# the Tauri desktop client. Triggered on tags matching v*.
+# Builds + uploads the macOS .app + DMG for the Tauri desktop client.
+# Triggered on tags matching v*.
 #
-# Gating: ALL of the following secrets must be present, else the
-# job emits a clear "skipped — credentials missing" message and exits
-# successfully (CI doesn't fail when the cert isn't yet in place).
+# Two paths:
+#   - SIGNED   — when ALL Apple Developer secrets are present, the build
+#     is code-signed, notarized, and stapled. Users can launch the app
+#     by double-clicking with no Gatekeeper warning.
+#   - UNSIGNED — when secrets are missing, we still build + upload an
+#     ad-hoc-signed DMG so users can install today. They'll need to
+#     bypass Gatekeeper once (System Settings -> Privacy & Security ->
+#     "Open anyway", or right-click -> Open).
 #
+# Required secrets for the SIGNED path:
 #   APPLE_DEVELOPER_ID_CERT_P12    — base64-encoded .p12 of the
 #                                    Developer ID Application cert.
 #   APPLE_DEVELOPER_ID_CERT_PASS   — password for the .p12.
@@ -14,8 +20,7 @@ name: Release Desktop
 #   APPLE_NOTARY_TEAM_ID           — 10-char Apple team ID.
 #   APPLE_NOTARY_APP_PASSWORD      — app-specific password for notarytool.
 #   TAURI_UPDATER_PRIVATE_KEY      — base64 of the Tauri updater
-#                                    Ed25519 private key (used to
-#                                    sign the .tar.gz update bundle).
+#                                    Ed25519 private key.
 #   TAURI_UPDATER_KEY_PASSWORD     — password for the updater key.
 #
 # The corresponding pub-key is embedded at build time via
@@ -45,22 +50,15 @@ jobs:
              [ -n "${{ secrets.APPLE_NOTARY_TEAM_ID }}" ] && \
              [ -n "${{ secrets.APPLE_NOTARY_APP_PASSWORD }}" ]; then
             echo "signing-available=true" >> "$GITHUB_OUTPUT"
-            echo "All Apple signing credentials present."
+            echo "All Apple signing credentials present — building SIGNED path."
           else
             echo "signing-available=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Apple Developer ID cert + notarization secrets not configured. Skipping signed-build job."
-            echo "Required GitHub Actions secrets:"
-            echo "  APPLE_DEVELOPER_ID_CERT_P12"
-            echo "  APPLE_DEVELOPER_ID_CERT_PASS"
-            echo "  APPLE_NOTARY_APPLE_ID"
-            echo "  APPLE_NOTARY_TEAM_ID"
-            echo "  APPLE_NOTARY_APP_PASSWORD"
+            echo "::warning::Apple Developer ID secrets not configured. Building UNSIGNED DMG."
           fi
 
   build-macos:
-    name: Build + sign + notarize macOS .app + DMG
+    name: Build macOS .app + DMG
     needs: preflight
-    if: needs.preflight.outputs.signing-available == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -91,7 +89,9 @@ jobs:
           lipo -create -output clients/desktop/src-tauri/binaries/hop-agent \
             /tmp/hop-agent-darwin-arm64 /tmp/hop-agent-darwin-amd64
 
+      # ---- SIGNED PATH ----
       - name: Import Developer ID cert
+        if: needs.preflight.outputs.signing-available == 'true'
         env:
           P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_CERT_P12 }}
           P12_PASS: ${{ secrets.APPLE_DEVELOPER_ID_CERT_PASS }}
@@ -105,12 +105,14 @@ jobs:
           rm /tmp/cert.p12
 
       - name: Sign hop-agent binary (pre-bundle)
+        if: needs.preflight.outputs.signing-available == 'true'
         run: |
           codesign --force --options runtime --timestamp \
             --sign "Developer ID Application" \
             clients/desktop/src-tauri/binaries/hop-agent
 
-      - name: Build Tauri app (signed)
+      - name: Build Tauri app + DMG (SIGNED)
+        if: needs.preflight.outputs.signing-available == 'true'
         env:
           APPLE_SIGNING_IDENTITY: "Developer ID Application"
           APPLE_ID: ${{ secrets.APPLE_NOTARY_APPLE_ID }}
@@ -121,9 +123,10 @@ jobs:
         working-directory: clients/desktop
         run: |
           npm install --no-audit --no-fund
-          npx tauri build --bundles app,dmg
+          npm run build:dmg
 
       - name: Verify codesign + notary stapling
+        if: needs.preflight.outputs.signing-available == 'true'
         run: |
           APP=clients/desktop/src-tauri/target/release/bundle/macos/hopssh.app
           DMG=$(find clients/desktop/src-tauri/target/release/bundle/dmg -name '*.dmg' | head -1)
@@ -134,11 +137,20 @@ jobs:
             xcrun stapler validate "$DMG"
           fi
 
+      # ---- UNSIGNED PATH ----
+      - name: Build Tauri app + DMG (UNSIGNED, ad-hoc)
+        if: needs.preflight.outputs.signing-available != 'true'
+        working-directory: clients/desktop
+        run: |
+          npm install --no-audit --no-fund
+          npm run build:dmg
+
+      # ---- COMMON UPLOAD ----
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            clients/desktop/src-tauri/target/release/bundle/dmg/*.dmg
-            clients/desktop/src-tauri/target/release/bundle/macos/hopssh.app
+            clients/desktop/src-tauri/target/release/bundle/dmg/hopssh-macos-*.dmg
+            clients/desktop/src-tauri/target/release/bundle/dmg/hopssh_*.dmg
           tag_name: ${{ github.ref_name }}
           fail_on_unmatched_files: false

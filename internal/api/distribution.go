@@ -25,6 +25,13 @@ const (
 // validBinaryName matches hop-agent-linux-amd64, hop-server-darwin-arm64, etc.
 var validBinaryName = regexp.MustCompile(`^hop-(agent|server)-(linux|darwin|windows)-(amd64|arm64)(\.exe)?$`)
 
+// validDesktopAsset matches stable per-platform desktop filenames.
+// We ship one file per (os, arch) and the os dictates the file extension:
+//   macos   -> .dmg
+//   windows -> .exe
+//   linux   -> .AppImage
+var validDesktopAsset = regexp.MustCompile(`^hopssh-(?:macos-(?:aarch64|x86_64)\.dmg|windows-(?:aarch64|x86_64)\.exe|linux-(?:aarch64|x86_64)\.AppImage)$`)
+
 // DistributionHandler serves install scripts, binary downloads, and version info.
 type DistributionHandler struct {
 	Endpoint string // Public URL of this control plane
@@ -115,6 +122,23 @@ func (h *DistributionHandler) Download(w http.ResponseWriter, r *http.Request) {
 func (h *DistributionHandler) DownloadChecksums(w http.ResponseWriter, r *http.Request) {
 	version := h.LatestVersion()
 	url := fmt.Sprintf("%s/%s/SHA256SUMS", githubDownloadURL, version)
+	http.Redirect(w, r, url, http.StatusFound)
+}
+
+// DownloadDesktop redirects to the desktop client asset (DMG, exe, AppImage)
+// for the requested platform on the latest release.
+// GET /download/desktop/{asset} — public, no auth.
+//
+// asset is one of: hopssh-macos-aarch64.dmg, hopssh-macos-x86_64.dmg,
+// hopssh-windows-x86_64.exe, hopssh-linux-x86_64.AppImage, etc.
+func (h *DistributionHandler) DownloadDesktop(w http.ResponseWriter, r *http.Request) {
+	asset := chi.URLParam(r, "asset")
+	if !validDesktopAsset.MatchString(asset) {
+		http.Error(w, "Invalid desktop asset name. Expected: hopssh-{macos|windows|linux}-{aarch64|x86_64}.{dmg|exe|AppImage}", http.StatusBadRequest)
+		return
+	}
+	version := h.LatestVersion()
+	url := fmt.Sprintf("%s/%s/%s", githubDownloadURL, version, asset)
 	http.Redirect(w, r, url, http.StatusFound)
 }
 

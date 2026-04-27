@@ -50,7 +50,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app"],
+    "targets": ["app", "dmg"],
     "resources": ["binaries/hop-agent"],
     "icon": [
       "icons/32x32.png",
@@ -61,6 +61,13 @@
     ],
     "category": "public.app-category.utilities",
     "shortDescription": "hopssh mesh client",
-    "longDescription": "hopssh — encrypted mesh networking. Hop into your network."
+    "longDescription": "hopssh — encrypted mesh networking. Hop into your network.",
+    "macOS": {
+      "dmg": {
+        "windowSize": { "width": 540, "height": 380 },
+        "appPosition": { "x": 140, "y": 200 },
+        "applicationFolderPosition": { "x": 400, "y": 200 }
+      }
+    }
   }
 }

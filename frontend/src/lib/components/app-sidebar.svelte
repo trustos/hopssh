@@ -6,7 +6,7 @@
 	import { getServerInfo } from '$lib/stores/server-info.svelte';
 	import TerminalPane from '$lib/components/terminal-pane.svelte';
 	import * as Sidebar from '$lib/components/ui/sidebar/index.js';
-	import { Globe, Smartphone, FileText, Sun, Moon, LogOut, Server } from 'lucide-svelte';
+	import { Globe, Smartphone, FileText, Sun, Moon, LogOut, Server, Download } from 'lucide-svelte';
 
 	const auth = getAuth();
 	const theme = getTheme();
@@ -76,6 +76,16 @@
 								<a href="/audit" {...props}>
 									<FileText class="size-4" />
 									<span>Audit Log</span>
+								</a>
+							{/snippet}
+						</Sidebar.MenuButton>
+					</Sidebar.MenuItem>
+					<Sidebar.MenuItem>
+						<Sidebar.MenuButton tooltipContent="Download desktop app for macOS">
+							{#snippet child({ props })}
+								<a href="/download/desktop/hopssh-macos-aarch64.dmg" {...props}>
+									<Download class="size-4" />
+									<span>Get Desktop App</span>
 								</a>
 							{/snippet}
 						</Sidebar.MenuButton>

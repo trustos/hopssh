@@ -1,15 +1,31 @@
 # Code signing + notarization + auto-update setup
 
-This is a one-time operator runbook for getting the macOS Tauri app
-signed, notarized, packaged as a DMG, and equipped with auto-update.
-The `.github/workflows/release-desktop.yml` workflow runs end-to-end
-once these credentials are in place; until they are, the workflow's
-preflight job emits a clean "skipped" warning and exits successfully
-so CI green-status isn't held hostage by missing secrets.
+Operator runbook for the macOS Tauri client. The release workflow
+(`.github/workflows/release-desktop.yml`) ALWAYS builds + uploads a
+DMG; if the Apple secrets below are present it takes the SIGNED +
+notarized path, otherwise it ships an unsigned ad-hoc-signed DMG that
+users can open via right-click → Open (Gatekeeper warns once).
 
-Until this is done, users get an unsigned `.app` bundle (built locally
-via `make desktop-app`). That works but Gatekeeper shows
-"unidentified developer" the first time and requires Cmd-click → Open.
+## DMG build path (works in CI + locally, signed or unsigned)
+
+Tauri 2.10.x's built-in DMG bundler invokes `bundle_dmg.sh` which
+runs an AppleScript step to position icons inside the DMG window. On
+macOS Sequoia and on `macos-latest` GitHub runners that AppleScript
+times out with `-1712` (Automation→Finder permission denied).
+
+Workaround: `clients/desktop/scripts/build-dmg.sh` runs
+`tauri build --bundles app,dmg` (tolerating the AppleScript failure —
+it still seeds `bundle_dmg.sh` + `icon.icns` into the bundle dir),
+then re-invokes `bundle_dmg.sh --sandbox-safe` directly. The
+`--sandbox-safe` flag skips the icon-positioning AppleScript; Finder
+arranges both icons (hopssh.app + Applications symlink) on its own
+default grid which is perfectly legible for drag-to-install.
+
+Run with `npm run build:dmg` from `clients/desktop/`. Output:
+- `bundle/dmg/hopssh_<version>_aarch64.dmg` — version-stamped
+- `bundle/dmg/hopssh-macos-aarch64.dmg` — stable name; the
+  `/download/desktop/{asset}` server endpoint redirects to this on
+  the latest release tag.
 
 ---
 
