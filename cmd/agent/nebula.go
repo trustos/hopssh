@@ -25,6 +25,19 @@ import (
 // Two implementations: userspace (gvisor netstack) and kernel TUN (OS interface).
 type meshService interface {
 	Listen(network, address string) (net.Listener, error)
+	// Close shuts down the Nebula instance.
+	//
+	// CONTRACT: Close MUST release the underlying UDP listen socket and
+	// (for kernel TUN mode) the TUN device either synchronously before
+	// returning, OR within ~2 s of returning. Cert-reload recovery in
+	// reloadNebula closes the old svc, polls for UDP port availability
+	// for up to 2 s via waitForUDPPortFree, then starts a new svc on
+	// the same port. An implementation that holds the UDP port for >2s
+	// after Close() returns will trigger spurious "address already in
+	// use" failures during cert renewal — the same class of bug
+	// v0.10.33 was shipped to fix.
+	//
+	// Validated by: cmd/agent/renew_reload_invariants_test.go (I1, I5).
 	Close()
 	NebulaControl() *nebula.Control
 	// DevName returns the OS-level interface name for kernel TUN mode

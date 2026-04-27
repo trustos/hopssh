@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/slackhq/nebula/cert"
@@ -978,36 +979,49 @@ func reloadNebula(inst *meshInstance) {
 		return
 	}
 
-	// Hot-restart path (Fix C v0.10.26): try-then-swap to keep the old
-	// svc + watcher alive if the new svc fails to start, then schedule
-	// a retry-with-backoff goroutine so transient failures self-recover
-	// without operator intervention.
+	// Hot-restart path (Fix v0.10.33): close-old-then-start-new with a
+	// port-release wait. v0.10.26's try-then-swap order ALWAYS produced
+	// "address already in use" because Nebula's listen socket can't
+	// share-port; the new bind would fail, leaving the agent stuck on
+	// the OLD svc holding an OLD cert. Once that OLD cert expired, peers
+	// rejected every handshake (verified in production 2026-04-27 morning).
 	//
-	// Pre-v0.10.26 this path tore down the watcher and old svc FIRST,
-	// so a Nebula start failure (e.g., port collision from Bug 1) left
-	// the agent permanently broken: no svc, no watcher, no retry.
-	// Cascading consequence: sleep-wake recovery silently broken too,
-	// because the watcher goroutine that detects sleep gaps was killed
-	// alongside the failed start.
+	// The new order: stop watcher, nil out inst.svc, close old svc to
+	// release the UDP port, wait briefly for the kernel to free the port,
+	// then start the new svc. The retry-with-backoff (scheduleRetryReload)
+	// remains the safety net for any genuinely transient failure.
+	//
+	// Setting inst.svc = nil BEFORE scheduling retry is load-bearing: it
+	// makes scheduleRetryReload's "haveSvc" check correctly identify the
+	// "another path restored the svc" case (which is what we want to
+	// skip) vs. the "we just failed and stale OLD svc lingers" case
+	// (which is exactly what was masking the bug pre-v0.10.33).
+	inst.stopWatcher()
 	oldSvc := inst.svc
+	inst.svc = nil
 	inst.svcMu.Unlock()
+	if oldSvc != nil {
+		oldSvc.Close() // releases UDP listener + (kernel mode) utun
+	}
 
-	newSvc, err := startNebulaByMode(configPath, tunMode)
+	// Wait for the kernel to release the UDP listen port so the new
+	// nebula.Main()'s synchronous bind succeeds. Best-effort: on timeout
+	// we proceed and let the bind error surface naturally (and trip the
+	// retry-backoff path).
+	listenPort := inst.enrollment.ListenPort
+	if listenPort == 0 {
+		listenPort = nebulacfg.ListenPort
+	}
+	waitForUDPPortFreeFn(listenPort, 2*time.Second)
+
+	newSvc, err := startNebulaByModeFn(configPath, tunMode)
 	if err != nil {
-		log.Printf("[renew %s] failed to restart Nebula after cert renewal: %v (keeping old svc + watcher alive; will retry)", inst.name(), err)
-		// Old svc + watcher remain in place — current mesh keeps working
-		// on the old cert until the cert expires. Schedule a retry that
-		// runs detached from this goroutine.
+		log.Printf("[renew %s] failed to start new Nebula instance after cert renewal: %v (will retry with backoff)", inst.name(), err)
+		// Old svc is gone, inst.svc is nil — retry path can cleanly try again.
 		scheduleRetryReload(inst, configPath, tunMode)
 		return
 	}
 
-	// New svc started successfully. NOW it's safe to swap.
-	inst.stopWatcher()        // kill watcher bound to old ctrl
-	inst.svc = nil            // mark unconditionally so setSvc takes over
-	if oldSvc != nil {
-		oldSvc.Close()        // release old UDP port + utun
-	}
 	inst.setSvc(newSvc)
 
 	// Spawn a fresh watcher against the new ctrl.
@@ -1032,11 +1046,71 @@ func reloadNebula(inst *meshInstance) {
 // startNebulaByMode dispatches to kernel-TUN or userspace start based
 // on tunMode. Centralizes the dispatch so retry-with-backoff calls the
 // same path as the initial start.
+//
+// Indirected via startNebulaByModeFn so tests can substitute a fake
+// without standing up a real Nebula process.
+var startNebulaByModeFn = startNebulaByMode
+
 func startNebulaByMode(configPath, tunMode string) (meshService, error) {
 	if tunMode == "kernel" {
 		return startNebulaKernelTun(configPath)
 	}
 	return startNebula(configPath)
+}
+
+// waitForUDPPortFreeFn is the indirection used by reloadNebula's port
+// availability wait. Tests substitute this to simulate stuck-port
+// scenarios without binding real OS sockets.
+var waitForUDPPortFreeFn = waitForUDPPortFree
+
+// waitForUDPPortFree polls until a UDP socket can bind to :port or the
+// deadline passes. Used between closing the old Nebula svc and starting
+// the new one so the new nebula.Main() bind succeeds reliably.
+//
+// Timeout is best-effort: on miss we return silently and let the
+// subsequent bind attempt surface its own error to the caller, which
+// triggers the retry-with-backoff path.
+func waitForUDPPortFree(port int, deadline time.Duration) {
+	end := time.Now().Add(deadline)
+	for time.Now().Before(end) {
+		conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: port})
+		if err == nil {
+			conn.Close()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// waitForTUNDeviceFreeFn is the indirection used by the live
+// connect-after-disconnect path to wait for a kernel TUN device to be
+// released. Tests substitute this. Linux-only; macOS uses auto-assigned
+// utun names (no collision possible), Windows uses WinTun (different
+// driver model).
+var waitForTUNDeviceFreeFn = waitForTUNDeviceFree
+
+// waitForTUNDeviceFree polls until /sys/class/net/<dev> goes away or
+// the deadline passes. Used in connectFn to handle the Linux race
+// where the kernel takes a moment to release the netdev after
+// nebula.Control.Stop() returns. On non-Linux platforms the path
+// doesn't exist so the first probe returns immediately (no-op).
+//
+// Best-effort: on timeout we return silently. The subsequent
+// startMeshInstance bind attempt will surface "device or resource
+// busy" if the device is genuinely stuck, which the local API
+// surfaces to the caller as a 500. The user can retry.
+func waitForTUNDeviceFree(devName string, deadline time.Duration) {
+	if devName == "" {
+		return
+	}
+	path := "/sys/class/net/" + devName
+	end := time.Now().Add(deadline)
+	for time.Now().Before(end) {
+		if _, err := os.Stat(path); err != nil {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 // retryReloadBackoff is the exponential backoff schedule used by
@@ -1049,17 +1123,38 @@ func startNebulaByMode(configPath, tunMode string) (meshService, error) {
 // the OTHER enrollment's renewal to free the port). Total worst-case
 // retry window is ~3.5h — well under the 12h cert lifetime so we
 // recover before the existing cert expires in the common case.
-var retryReloadBackoff = []time.Duration{
-	5 * time.Second,
-	30 * time.Second,
-	2 * time.Minute,
-	5 * time.Minute,
-	10 * time.Minute,
-	15 * time.Minute,
-	30 * time.Minute,
-	30 * time.Minute,
-	30 * time.Minute,
-	30 * time.Minute,
+//
+// Stored in an atomic.Pointer so unit tests can substitute a shorter
+// schedule (via setRetryReloadBackoffForTest) with proper happens-
+// before edges between the test goroutine's writes and the retry
+// goroutine's reads. Reads in production code go through
+// retryReloadBackoffSchedule().
+var retryReloadBackoff atomic.Pointer[[]time.Duration]
+
+func init() {
+	defaultSchedule := []time.Duration{
+		5 * time.Second,
+		30 * time.Second,
+		2 * time.Minute,
+		5 * time.Minute,
+		10 * time.Minute,
+		15 * time.Minute,
+		30 * time.Minute,
+		30 * time.Minute,
+		30 * time.Minute,
+		30 * time.Minute,
+	}
+	retryReloadBackoff.Store(&defaultSchedule)
+}
+
+// retryReloadBackoffSchedule returns the current schedule. Production
+// callers always get the package default; tests may swap via the
+// _test.go helper.
+func retryReloadBackoffSchedule() []time.Duration {
+	if p := retryReloadBackoff.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // scheduleRetryReload spawns a detached goroutine that retries the
@@ -1083,7 +1178,8 @@ func scheduleRetryReload(inst *meshInstance, configPath, tunMode string) {
 	}
 
 	go func() {
-		for attempt, backoff := range retryReloadBackoff {
+		schedule := retryReloadBackoffSchedule()
+		for attempt, backoff := range schedule {
 			select {
 			case <-parentCtx.Done():
 				log.Printf("[renew %s] retry-reload cancelled (agent shutting down)", inst.name())
@@ -1091,24 +1187,36 @@ func scheduleRetryReload(inst *meshInstance, configPath, tunMode string) {
 			case <-time.After(addJitter(backoff)):
 			}
 
-			// Skip if reload already succeeded out-of-band (manual
-			// restart, next cert renewal, etc.).
+			// Skip if reload already succeeded out-of-band: a manual
+			// `launchctl bootstrap`, the next cert-renewal cycle, or
+			// any other path has already installed a fresh svc.
+			//
+			// Precondition (load-bearing): the caller of
+			// scheduleRetryReload — i.e. reloadNebula's hot-restart
+			// path — MUST set inst.svc = nil BEFORE scheduling. Pre-
+			// v0.10.33 it didn't, so this check fired as a false
+			// positive on the very state it was supposed to recover
+			// from (stale old svc lingering after a failed bind),
+			// silently masking the cert-reload-port-bind bug. The
+			// fix in reloadNebula (set inst.svc = nil pre-schedule)
+			// makes this check correctly distinguish "real restore
+			// happened" from "we just failed".
 			inst.svcMu.Lock()
 			haveSvc := inst.svc != nil
 			inst.svcMu.Unlock()
 			if haveSvc {
 				log.Printf("[renew %s] retry-reload skipping attempt %d/%d: svc already restored",
-					inst.name(), attempt+1, len(retryReloadBackoff))
+					inst.name(), attempt+1, len(schedule))
 				return
 			}
 
 			log.Printf("[renew %s] retry-reload attempt %d/%d after %v backoff",
-				inst.name(), attempt+1, len(retryReloadBackoff), backoff.Round(time.Second))
+				inst.name(), attempt+1, len(schedule), backoff.Round(time.Second))
 
-			newSvc, err := startNebulaByMode(configPath, tunMode)
+			newSvc, err := startNebulaByModeFn(configPath, tunMode)
 			if err != nil {
 				log.Printf("[renew %s] retry-reload attempt %d/%d failed: %v",
-					inst.name(), attempt+1, len(retryReloadBackoff), err)
+					inst.name(), attempt+1, len(schedule), err)
 				continue
 			}
 
@@ -1132,7 +1240,7 @@ func scheduleRetryReload(inst *meshInstance, configPath, tunMode string) {
 			}
 			inst.reinjectPortmapAddr()
 			log.Printf("[renew %s] retry-reload SUCCESS on attempt %d/%d (mode: %s)",
-				inst.name(), attempt+1, len(retryReloadBackoff), tunMode)
+				inst.name(), attempt+1, len(schedule), tunMode)
 
 			if inst.onRestart != nil {
 				inst.onRestart(newSvc)
@@ -1141,7 +1249,7 @@ func scheduleRetryReload(inst *meshInstance, configPath, tunMode string) {
 		}
 
 		log.Printf("[renew %s] CRITICAL: retry-reload exhausted %d attempts; agent will lose mesh connectivity when current cert expires",
-			inst.name(), len(retryReloadBackoff))
+			inst.name(), len(schedule))
 	}()
 }
 

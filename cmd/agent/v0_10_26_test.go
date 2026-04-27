@@ -219,23 +219,24 @@ func TestFixE_MeshIP_EmptyOnMissingCert(t *testing.T) {
 // --- Fix C — reloadNebula resilience helpers ---
 
 func TestFixC_RetryReloadBackoff_HasMonotonicSchedule(t *testing.T) {
-	if len(retryReloadBackoff) < 5 {
-		t.Errorf("retry schedule too short: %d entries", len(retryReloadBackoff))
+	schedule := retryReloadBackoffSchedule()
+	if len(schedule) < 5 {
+		t.Errorf("retry schedule too short: %d entries", len(schedule))
 	}
 	// Monotonically non-decreasing.
-	for i := 1; i < len(retryReloadBackoff); i++ {
-		if retryReloadBackoff[i] < retryReloadBackoff[i-1] {
+	for i := 1; i < len(schedule); i++ {
+		if schedule[i] < schedule[i-1] {
 			t.Errorf("schedule not monotonic at index %d: %v < %v",
-				i, retryReloadBackoff[i], retryReloadBackoff[i-1])
+				i, schedule[i], schedule[i-1])
 		}
 	}
 	// First attempt should be reasonably fast (<1 minute) so transient
 	// failures recover quickly.
-	if retryReloadBackoff[0] > time.Minute {
-		t.Errorf("first retry too slow: %v", retryReloadBackoff[0])
+	if schedule[0] > time.Minute {
+		t.Errorf("first retry too slow: %v", schedule[0])
 	}
 	// Last attempt should be capped (<= 1 hour).
-	last := retryReloadBackoff[len(retryReloadBackoff)-1]
+	last := schedule[len(schedule)-1]
 	if last > time.Hour {
 		t.Errorf("retry cap too high: %v", last)
 	}

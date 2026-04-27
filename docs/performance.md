@@ -885,14 +885,20 @@ Plus defensive bump of Nebula's connection-manager timeouts:
 `pending_deletion_interval` 10→30 s. Total dead-detect window
 15→40 s, well above any WiFi MAC contention or NAT-rebalance event.
 
-### v0.10.26 — Cert-renewal port-clobber + reload-cascade fix
+### v0.10.26 — Cert-renewal port-clobber + reload-cascade fix (partial; completed in v0.10.33)
 
 See `docs/sleep-wake-plan.md` for full diagnosis. Six coordinated
 fixes (server stops pushing hardcoded `listenPort`; agent rejects
 mismatches defensively; `reloadNebula` try-then-swap +
 retry-with-backoff; watcher startup log + periodic alive log + panic
 recover; self-VPN-IP filter in peer-endpoint injection; boot-time
-duplicate-port self-heal).
+duplicate-port self-heal). **v0.10.33 superseded the try-then-swap
+order with close-old-then-start-new + UDP-port-release wait** —
+v0.10.26's try-then-swap was the wrong shape for cert reload (it
+ALWAYS produced "address already in use" because Nebula's listen
+socket can't share-port; the retry-backoff couldn't recover because
+its `inst.svc != nil` "skip" check tripped falsely on the leftover
+OLD svc). See sleep-wake-plan postscript for full v0.10.33 details.
 
 WiFi-LAN throughput on v0.10.26 vs v0.10.20 baseline:
 

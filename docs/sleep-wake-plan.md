@@ -686,3 +686,21 @@ goroutine**, making sleep recovery silently fail until process restart.
   472 vs 423 Mb/s) — defensive code added zero measurable overhead
 - User-visible sleep recovery confirmed working post-deploy (lid-close
   test on real MBP)
+
+### Postscript (v0.10.33, 2026-04-27): Fix C was incomplete
+
+Fix C above ("`reloadNebula` try-then-swap + retry-with-backoff") was insufficient. After deploy, the cert-reload path STILL produced "address already in use" on every renewal cycle — because try-then-swap means we ALWAYS attempt to bind the new svc on a port the OLD svc still holds. The retry-with-backoff exists but couldn't fire: it short-circuited via `if inst.svc != nil → "svc already restored"`, treating the leftover OLD svc as evidence that "something else fixed it" when in fact we had just failed.
+
+**Production impact (verified 2026-04-27 morning):** MBP overnight sleep → cert renewal at 06:30 + 06:46 → both renewals failed silently → MBP kept serving the OLD cert from in-memory Nebula even though `hop-agent status` reported the disk cert as "valid (17h59m remaining)" → mini rejected every MBP handshake with `error="certificate is expired"` → mesh fully down for that enrollment until `launchctl bootout` forced an agent restart.
+
+**Fix v0.10.33** (`cmd/agent/renew.go::reloadNebula`):
+1. Stop watcher → set `inst.svc = nil` → close OLD svc to release the UDP port BEFORE the new svc start.
+2. Call `waitForUDPPortFreeFn(listenPort, 2s)` — polls `net.ListenUDP` until the kernel frees the port (handles any Close-async semantics).
+3. Start new svc; on failure, schedule retry. Now `inst.svc == nil` precondition makes the haveSvc check correctly distinguish "manual restart already restored" from "we just failed".
+
+**Test coverage added (5 invariant tests + 1 source-scan tripwire + 4 helper tests):**
+- `cmd/agent/renew_reload_invariants_test.go` — runtime fakes covering close-before-start ordering (I1), svc=nil on failure (I2), retry skip-on-restored (I3), retry proceed-on-nil (I4), full failure-then-recovery integration (I5).
+- `cmd/agent/renew_reload_source_test.go` — static text scan asserting `oldSvc.Close()` precedes `startNebulaByModeFn(...)` and `inst.svc = nil` precedes `scheduleRetryReload(...)` in the source. Catches regressions at compile-test time before they could ever ship.
+- `cmd/agent/renew_reload_port_release_test.go` — direct exercise of `waitForUDPPortFree` against real UDP sockets: free → fast return; held forever → respects deadline; released mid-wait → detects within one poll tick.
+
+**Architectural lesson (added to CLAUDE.md):** The v0.10.26 try-then-swap design optimized for the wrong failure mode — it protected against config-error failures (rare, transient) by accepting port-bind failures (frequent, permanent under same-port reload). For cert renewals specifically, only the cert files change; nebula.yaml is untouched, so config-error failures don't apply. Match the recovery primitive to the actual failure class of the operation. Also: any retry-loop "skip if already restored" check must distinguish "stale leftover" from "real fix" — usually requires nilling the stale before scheduling, OR a generation counter, never relying on `!= nil` alone.
