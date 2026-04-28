@@ -64,6 +64,15 @@ build-linux:
 dev-deploy:
 	@./scripts/dev-deploy.sh
 
+# Deploy the macOS Tauri .app to both local Macs (build agent + bundle
+# .app + tar + scp + install + open). Mirror of dev-deploy but for the
+# desktop client. Useful for fast iteration on UI/UX changes — much
+# faster than make release + waiting for CI to build a DMG.
+#
+# Override env: LAPTOP_HOST, LAPTOP_USER, SKIP_LAPTOP=1, SKIP_LOCAL=1.
+dev-deploy-desktop:
+	@./scripts/dev-deploy-desktop.sh
+
 # Deploy control plane to remote server (cross-compile + scp + restart).
 # Requires DEPLOY_HOST, DEPLOY_USER, DEPLOY_KEY in .env
 dev-deploy-server:
