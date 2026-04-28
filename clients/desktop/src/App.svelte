@@ -46,7 +46,10 @@
     }
   });
 
-  function tabClass(active: boolean) {
+  function tabClass(active: boolean, disabled = false) {
+    if (disabled) {
+      return 'rounded-md px-2.5 py-1 text-zinc-600 cursor-not-allowed';
+    }
     return active
       ? 'rounded-md bg-zinc-800 px-2.5 py-1 text-zinc-100'
       : 'rounded-md px-2.5 py-1 text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200';
@@ -69,10 +72,20 @@
       <button class={tabClass(view === 'main')} onclick={() => (view = 'main')}>
         Status
       </button>
-      <button class={tabClass(view === 'onboarding')} onclick={() => (view = 'onboarding')}>
+      <button
+        class={tabClass(view === 'onboarding', !agent.online)}
+        onclick={() => agent.online && (view = 'onboarding')}
+        disabled={!agent.online}
+        title={!agent.online ? 'Available once the agent is connected' : undefined}
+      >
         Add
       </button>
-      <button class={tabClass(view === 'settings')} onclick={() => (view = 'settings')}>
+      <button
+        class={tabClass(view === 'settings', !agent.online)}
+        onclick={() => agent.online && (view = 'settings')}
+        disabled={!agent.online}
+        title={!agent.online ? 'Available once the agent is connected' : undefined}
+      >
         Settings
       </button>
     </nav>

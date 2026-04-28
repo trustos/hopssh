@@ -80,6 +80,13 @@ class AgentStore {
   online = $state(false);
   lastError = $state<string | null>(null);
   initialLoad = $state(true);
+  // firstFailureAt is the epoch-ms of the first connection failure
+  // since the last successful connect. Reset to null on success.
+  // The UI uses this to distinguish "transient retry blip" (< ~10s)
+  // from "actually broken" — only the latter shows the hard error
+  // screen. Anything below the threshold renders a friendly
+  // "Connecting…" spinner while SSE backoff retries silently.
+  firstFailureAt = $state<number | null>(null);
 
   events = $state<LocalEvent[]>([]);
   banners = $state<Banner[]>([]);
@@ -92,11 +99,13 @@ class AgentStore {
       this.status = s;
       this.online = true;
       this.lastError = null;
+      this.firstFailureAt = null;
       void syncTrayTooltip(s);
       void syncTrayState(s);
     } catch (e: unknown) {
       this.online = false;
       this.lastError = e instanceof Error ? e.message : String(e);
+      if (this.firstFailureAt === null) this.firstFailureAt = Date.now();
     } finally {
       this.initialLoad = false;
     }
@@ -112,6 +121,7 @@ class AgentStore {
           // SSE pushes a fresh status snapshot every 5s; merge it in.
           this.status = ev.data as unknown as LocalStatus;
           this.online = true;
+          this.firstFailureAt = null;
           void syncTrayTooltip(this.status);
           void syncTrayState(this.status);
         }
@@ -126,7 +136,12 @@ class AgentStore {
       },
       (online) => {
         this.online = online;
-        if (!online) this.lastError = 'agent unreachable';
+        if (online) {
+          this.firstFailureAt = null;
+        } else {
+          this.lastError = 'agent unreachable';
+          if (this.firstFailureAt === null) this.firstFailureAt = Date.now();
+        }
       }
     );
     // Periodic banner GC: expire stale banners every 1s.
