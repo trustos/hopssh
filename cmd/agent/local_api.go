@@ -250,19 +250,31 @@ func localAuthMiddleware(token string, next http.Handler) http.Handler {
 			http.Error(w, "loopback only", http.StatusForbidden)
 			return
 		}
-		auth := r.Header.Get("Authorization")
-		if subtle.ConstantTimeCompare([]byte(auth), []byte(expected)) != 1 {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		// Liberal CORS for the Tauri WebView. The 127.0.0.1 + bearer
-		// gates already constrain who can reach this endpoint; CORS
-		// here is just for the browser-side fetch to succeed.
+
+		// Liberal CORS for the Tauri WebView. The loopback + bearer gates
+		// already constrain who can reach this endpoint; CORS headers are
+		// just so the browser-side fetch from the WebView doesn't get
+		// blocked by same-origin policy.
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+
+		// CORS preflight MUST be answered without requiring auth. The
+		// browser sends OPTIONS automatically before any cross-origin
+		// fetch that has a non-simple header (e.g. Authorization), and
+		// per spec preflight does NOT carry credentials. If we reject
+		// OPTIONS with 401, the browser blocks the actual GET — even
+		// though the GET would succeed if it ran. Loopback gate above
+		// is enough security here; an attacker who can hit the loopback
+		// port can do anything from a real browser tab anyway.
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		auth := r.Header.Get("Authorization")
+		if subtle.ConstantTimeCompare([]byte(auth), []byte(expected)) != 1 {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
 		next.ServeHTTP(w, r)
