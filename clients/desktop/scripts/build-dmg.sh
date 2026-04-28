@@ -51,19 +51,40 @@ if [[ ! -d "$APP_PATH" ]]; then
   exit 1
 fi
 
-# Ad-hoc-sign the bundle. Critical: without --deep applied to a bundle,
-# the link-time signature on Contents/MacOS/hopssh-desktop is the only
-# signature, and Gatekeeper rejects the BUNDLE as damaged because there's
-# no _CodeSignature/CodeResources sealing the bundle. With --deep + bundle
-# path, codesign creates that sealed resources file and the right-click ->
-# Open bypass becomes available for users.
+# Ad-hoc-sign the bundle. Critical layering for downloaded-and-quarantined
+# bundles to actually launch:
+#
+#   1. Inner Mach-O binaries inside Contents/Resources/binaries/ get a
+#      proper ad-hoc signature instead of the linker's auto-generated
+#      "linker-signed" stub. macOS treats linker-signed binaries inside
+#      a quarantined bundle as untrusted and silently blocks Launch
+#      Services from spawning them as children. A real ad-hoc codesign
+#      passes the post-quarantine spawn check after user approves the
+#      parent .app once.
+#   2. Then --deep-sign the bundle, which seals _CodeSignature/Code
+#      Resources. Without this, Gatekeeper says "is damaged and can't
+#      be opened" with no bypass option (we shipped this fix for the
+#      .app itself; the inner-binary fix above completes the picture).
 #
 # If APPLE_SIGNING_IDENTITY is set (CI signed path), skip — Tauri or a
 # later step will sign with the real cert.
 if [[ -z "${APPLE_SIGNING_IDENTITY:-}" ]]; then
-  echo "[build-dmg] Ad-hoc signing the .app bundle..."
+  echo "[build-dmg] Ad-hoc signing inner binaries (replaces linker-signed)..."
+  if [[ -f "$APP_PATH/Contents/Resources/binaries/hop-agent" ]]; then
+    codesign --force --sign - "$APP_PATH/Contents/Resources/binaries/hop-agent"
+  fi
+  echo "[build-dmg] Ad-hoc deep-signing the .app bundle..."
   codesign --force --deep --sign - "$APP_PATH"
   codesign -dv --verbose=2 "$APP_PATH" 2>&1 | grep -E 'Sealed|Signature|Identifier' || true
+  # Verify the inner binary picked up a real ad-hoc signature, not
+  # linker-signed. If this assertion ever fails, downloads will fail
+  # again with "agent unreachable" and the user gets a regression.
+  echo "[build-dmg] Verifying inner binary signature..."
+  if codesign -dv --verbose=2 "$APP_PATH/Contents/Resources/binaries/hop-agent" 2>&1 | grep -q "linker-signed"; then
+    echo "[build-dmg] ERROR: hop-agent inside the bundle is still linker-signed —" >&2
+    echo "[build-dmg] post-download Gatekeeper would block the spawn. Aborting." >&2
+    exit 1
+  fi
 fi
 
 echo "[build-dmg] Cleaning DMG output dir..."

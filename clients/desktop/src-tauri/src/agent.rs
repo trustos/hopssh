@@ -34,6 +34,27 @@ pub fn spawn_and_watch(app: &AppHandle, state: &Arc<AppState>) -> Result<(), Str
             .to_string()
     })?;
 
+    // Strip com.apple.quarantine from the bundled hop-agent binary
+    // before spawning. When the user downloads our .dmg via browser,
+    // macOS attaches the quarantine xattr to EVERY file in the bundle
+    // (Tauri's hop-agent sidecar included). The user's right-click ->
+    // Open approves the .app itself, but macOS does NOT propagate that
+    // approval to spawn-children — Launch Services performs a fresh
+    // Gatekeeper check on hop-agent every time we Command::spawn it.
+    // Without an Apple-notarized signature, that check fails and the
+    // child process never starts (manifests as "agent unreachable" in
+    // the UI). We can't ask Apple to notarize without a Dev ID, but
+    // the .app can modify xattrs on its OWN bundle resources after
+    // the user has approved it — so we strip quarantine here, just
+    // before the spawn. Idempotent and silent on re-launch.
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("/usr/bin/xattr")
+            .args(["-d", "com.apple.quarantine"])
+            .arg(&agent_path)
+            .output();
+    }
+
     log::info!("spawning hop-agent: {}", agent_path.display());
 
     let mut cmd = Command::new(&agent_path);
