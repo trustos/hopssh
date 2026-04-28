@@ -35,27 +35,14 @@
     return endpointMode === 'hosted' ? HOSTED_URL : selfHostedUrl.trim();
   }
 
-  // ---- Pre-flight reachability check ----
-  // Fires a HEAD-like GET against the control plane's /healthz before
-  // starting the device flow. Surfaces "control plane unreachable" as
-  // a clear up-front error instead of a generic device-flow start
-  // failure (which could mean DNS, TLS, server down, or just typo).
-  async function preflight(endpoint: string): Promise<void> {
-    let res: Response;
-    try {
-      res = await fetch(`${endpoint}/healthz`, {
-        method: 'GET',
-        signal: AbortSignal.timeout(5000)
-      });
-    } catch (e) {
-      throw new Error(
-        `Couldn't reach ${endpoint}. Check the URL and your network connection.`
-      );
-    }
-    if (!res.ok) {
-      throw new Error(`${endpoint} returned HTTP ${res.status}. Is this a hopssh control plane?`);
-    }
-  }
+  // No WebView-side pre-flight: a fetch from the WebView's origin
+  // (http://tauri.localhost) to hopssh.com /healthz is blocked by CORS
+  // (the public endpoint correctly does NOT advertise broad ACAO),
+  // which the WebView surfaces as TypeError "Failed to fetch" — not
+  // useful to the user and indistinguishable from a real network
+  // outage. Instead, we trust the agent's server-to-server POST to
+  // /api/device/code (no CORS, full error reporting) to surface
+  // unreachability with a real diagnostic.
 
   async function startFlow() {
     const endpoint = effectiveEndpoint();
@@ -75,7 +62,6 @@
     errorMessage = '';
     showCode = false;
     try {
-      await preflight(endpoint);
       const r = await local.enrollDeviceFlowStart({ endpoint });
       userCode = r.userCode;
       verificationUrl = r.verificationUrl;

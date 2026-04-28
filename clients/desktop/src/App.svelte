@@ -58,9 +58,13 @@
 
 <div class="flex h-full flex-col bg-zinc-950 text-zinc-100">
   <header
-    class="flex shrink-0 items-center justify-between border-b border-zinc-800 px-4 py-3"
+    class="flex shrink-0 items-center justify-between border-b border-zinc-800 py-3 pr-4 pl-[78px]"
     data-tauri-drag-region
   >
+    <!-- pl-[78px] reserves space for macOS traffic lights (red/yellow/green)
+         which sit at top-left of the window. tauri.conf.json sets
+         titleBarStyle=Overlay + hiddenTitle so the lights float over our
+         own header rather than living in a system-drawn title bar. -->
     <div class="flex items-center gap-2">
       <Logo class="h-5 w-5 text-emerald-400" />
       <span class="text-sm font-semibold tracking-tight">hopssh</span>
