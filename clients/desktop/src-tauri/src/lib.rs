@@ -583,8 +583,18 @@ pub fn run() {
             let quit = MenuItem::with_id(app, "quit", "Quit hopssh", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show, &add, &sep1, &about, &sep2, &quit])?;
 
+            // Use the four-dots template icon at boot, NOT
+            // app.default_window_icon() — that's the colorful 128px
+            // app icon and lights up with a background blob in the
+            // menubar. The template variant is monochrome + alpha so
+            // macOS auto-flips it for dark/light menubar without a
+            // background. State updates after the agent connects swap
+            // to connected/relay variants via set_tray_state.
+            let boot_icon_bytes: &[u8] = include_bytes!("../icons/tray/tray-disconnected@2x.png");
+            let boot_icon = tauri::image::Image::from_bytes(boot_icon_bytes)
+                .expect("tray-disconnected@2x.png must be valid PNG");
             let _tray = TrayIconBuilder::with_id("main")
-                .icon(app.default_window_icon().cloned().unwrap())
+                .icon(boot_icon)
                 .icon_as_template(true)
                 .menu(&menu)
                 .show_menu_on_left_click(false)
