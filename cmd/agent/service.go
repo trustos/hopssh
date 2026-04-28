@@ -208,51 +208,47 @@ func installAgentLaunchdUser() {
 	fmt.Println("    Start:  launchctl load " + plistPath)
 }
 
-func runAgentUninstall(args []string) {
-	fs := flag.NewFlagSet("uninstall", flag.ExitOnError)
-	purge := fs.Bool("purge", false, "Also remove config directory (/etc/hop-agent/)")
-	fs.Parse(args)
-
-	switch runtime.GOOS {
-	case "linux":
-		uninstallAgentSystemd()
-	case "darwin":
-		uninstallAgentLaunchd()
-	case "windows":
-		uninstallAgentWindows()
-	default:
-		fmt.Fprintf(os.Stderr, "Error: Unsupported operating system: %s\n", runtime.GOOS)
-		os.Exit(1)
-	}
-
-	if *purge {
-		if err := os.RemoveAll(configDir); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: Could not remove %s: %v\n", configDir, err)
-		} else {
-			fmt.Printf("    Removed: %s\n", configDir)
-		}
-	}
-}
-
+// uninstallAgentSystemd stops + disables the hop-agent systemd unit and
+// removes the unit file. Idempotent — silent no-op if the unit isn't
+// present. Called by the central uninstall flow in uninstall.go BEFORE
+// file removal so any open file handles in the running daemon are
+// released first.
 func uninstallAgentSystemd() {
+	if _, err := os.Stat(agentSystemdPath); os.IsNotExist(err) {
+		fmt.Println("==> hop-agent systemd unit not installed (skipping stop).")
+		return
+	}
 	exec.Command("systemctl", "stop", agentServiceName).Run()
 	exec.Command("systemctl", "disable", agentServiceName).Run()
-	os.Remove(agentSystemdPath)
 	exec.Command("systemctl", "daemon-reload").Run()
-	fmt.Println("==> hop-agent service uninstalled.")
+	fmt.Println("==> hop-agent systemd service stopped + disabled.")
 }
 
+// uninstallAgentLaunchd unloads BOTH the system LaunchDaemon and any
+// user-level LaunchAgent plists, then leaves the plist files for the
+// uninstall.go file-removal pass. macOS Sequoia's `launchctl unload`
+// can return I/O errors when the daemon was already torn down; we
+// swallow those so a "second-run" uninstall is silent.
 func uninstallAgentLaunchd() {
-	plistPath := agentLaunchdDaemonPath
-	exec.Command("launchctl", "unload", plistPath).Run()
-	os.Remove(plistPath)
-	// Also clean up old LaunchAgents location if it exists.
-	if home, err := os.UserHomeDir(); err == nil {
-		oldPath := filepath.Join(home, "Library/LaunchAgents/com.hopssh.agent.plist")
-		exec.Command("launchctl", "unload", oldPath).Run()
-		os.Remove(oldPath)
+	stopped := false
+	if _, err := os.Stat(agentLaunchdDaemonPath); err == nil {
+		exec.Command("launchctl", "bootout", "system", agentLaunchdDaemonPath).Run()
+		exec.Command("launchctl", "unload", agentLaunchdDaemonPath).Run()
+		stopped = true
 	}
-	fmt.Println("==> hop-agent service uninstalled.")
+	if home, err := os.UserHomeDir(); err == nil {
+		userPlist := filepath.Join(home, "Library", "LaunchAgents", "com.hopssh.agent.plist")
+		if _, err := os.Stat(userPlist); err == nil {
+			exec.Command("launchctl", "bootout", fmt.Sprintf("gui/%d", os.Getuid()), userPlist).Run()
+			exec.Command("launchctl", "unload", userPlist).Run()
+			stopped = true
+		}
+	}
+	if stopped {
+		fmt.Println("==> hop-agent launchd service stopped.")
+	} else {
+		fmt.Println("==> hop-agent launchd service not installed (skipping stop).")
+	}
 }
 
 func runRestart(args []string) {

@@ -21,7 +21,8 @@ Commands:
   restart     Restart the agent service
   stop        Stop the agent service
   install     Install as a system/user service
-  uninstall   Remove the service
+  uninstall   Remove the service (--purge to also remove configs + logs;
+              --remove-binary for a complete wipe; --dry-run to preview)
   update      Update to the latest version
   version     Print version and exit
 
