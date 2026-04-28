@@ -4,8 +4,10 @@
  */
 
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import {
   local,
+  resetCachedEndpoint,
   subscribeEvents,
   type LocalStatus,
   type LocalEvent
@@ -92,6 +94,43 @@ class AgentStore {
   banners = $state<Banner[]>([]);
   private nextBannerId = 1;
   private cancelEvents: (() => void) | null = null;
+  private cancelAgentReady: UnlistenFn | null = null;
+
+  // subscribeFn is the same SSE-subscribe call we make from start().
+  // Extracted into a method so the agent-ready handler can re-subscribe
+  // after invalidating the endpoint cache without duplicating the
+  // (event, onStatus) closures.
+  private async subscribeSSE() {
+    return await subscribeEvents(
+      (ev) => {
+        // Keep at most 200 events for the activity drawer.
+        this.events = [ev, ...this.events].slice(0, 200);
+        if (ev.type === 'status' && ev.data && typeof ev.data === 'object') {
+          this.status = ev.data as unknown as LocalStatus;
+          this.online = true;
+          this.firstFailureAt = null;
+          void syncTrayTooltip(this.status);
+          void syncTrayState(this.status);
+        }
+        if (
+          ev.type === 'enrollment.added' ||
+          ev.type === 'enrollment.removed'
+        ) {
+          this.refresh();
+        }
+        this.handleBannerEvent(ev);
+      },
+      (online) => {
+        this.online = online;
+        if (online) {
+          this.firstFailureAt = null;
+        } else {
+          this.lastError = 'agent unreachable';
+          if (this.firstFailureAt === null) this.firstFailureAt = Date.now();
+        }
+      }
+    );
+  }
 
   async refresh() {
     try {
@@ -113,39 +152,41 @@ class AgentStore {
 
   async start() {
     await this.refresh();
-    this.cancelEvents = await subscribeEvents(
-      (ev) => {
-        // Keep at most 200 events for the activity drawer.
-        this.events = [ev, ...this.events].slice(0, 200);
-        if (ev.type === 'status' && ev.data && typeof ev.data === 'object') {
-          // SSE pushes a fresh status snapshot every 5s; merge it in.
-          this.status = ev.data as unknown as LocalStatus;
-          this.online = true;
-          this.firstFailureAt = null;
-          void syncTrayTooltip(this.status);
-          void syncTrayState(this.status);
-        }
-        if (
-          ev.type === 'enrollment.added' ||
-          ev.type === 'enrollment.removed'
-        ) {
-          // Force a fresh fetch for canonical state.
-          this.refresh();
-        }
-        this.handleBannerEvent(ev);
-      },
-      (online) => {
-        this.online = online;
-        if (online) {
-          this.firstFailureAt = null;
-        } else {
-          this.lastError = 'agent unreachable';
-          if (this.firstFailureAt === null) this.firstFailureAt = Date.now();
-        }
-      }
-    );
+    this.cancelEvents = await this.subscribeSSE();
+
+    // Listen for the Tauri-side `agent-ready` event. Emitted by the
+    // Rust shell whenever the underlying agent endpoint changes —
+    // currently from convert_to_system_service / revert_to_bundled
+    // (Settings → Run in the background toggle), but the contract
+    // generalizes to any future runtime mode swap.
+    //
+    // Without this, the JS layer's module-level endpoint cache stays
+    // pinned to the old (now-dead) loopback port and the UI shows
+    // "agent unreachable" indefinitely. See Phase D in the plan.
+    if (isTauri) {
+      this.cancelAgentReady = await listen('agent-ready', async () => {
+        // Tear down the SSE stream — its outer-loop fetch is holding
+        // the old endpoint.
+        this.cancelEvents?.();
+        this.cancelEvents = null;
+        // Clear the module-level cache so the next request() re-runs
+        // the local_api_endpoint Tauri command.
+        resetCachedEndpoint();
+        // Re-fetch status against the new endpoint + re-subscribe.
+        await this.refresh();
+        this.cancelEvents = await this.subscribeSSE();
+      });
+    }
+
     // Periodic banner GC: expire stale banners every 1s.
     this.scheduleBannerSweep();
+  }
+
+  stop() {
+    this.cancelEvents?.();
+    this.cancelEvents = null;
+    this.cancelAgentReady?.();
+    this.cancelAgentReady = null;
   }
 
   private bannerTimer: number | null = null;
@@ -217,11 +258,6 @@ class AgentStore {
 
   dismissBanner(id: number) {
     this.banners = this.banners.filter((b) => b.id !== id);
-  }
-
-  stop() {
-    this.cancelEvents?.();
-    this.cancelEvents = null;
   }
 }
 

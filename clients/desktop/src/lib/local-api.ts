@@ -49,6 +49,27 @@ async function endpoint(): Promise<{ base: string; token: string }> {
   );
 }
 
+/**
+ * resetCachedEndpoint clears the module-level endpoint cache so the
+ * next request() / subscribeEvents call re-runs the Tauri command
+ * and picks up a freshly-published endpoint.
+ *
+ * Must be called whenever the underlying agent process changes — the
+ * Settings → "Run in the background" toggle invokes
+ * `convert_to_system_service` / `revert_to_bundled` which SIGKILL the
+ * old hop-agent and bring up a new one at a different loopback port.
+ * Without this, the JS layer keeps fetching the dead port and the UI
+ * shows "agent unreachable" even though a healthy agent is running
+ * on the new port.
+ *
+ * Wired in stores.svelte.ts via a Tauri event listener for
+ * `agent-ready` (emitted by the Rust shell whenever it transitions
+ * to a new endpoint).
+ */
+export function resetCachedEndpoint(): void {
+  cached = null;
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -63,11 +84,24 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   };
   if (body !== undefined) headers['Content-Type'] = 'application/json';
 
-  const res = await fetch(`${base}${path}`, {
-    method,
-    headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${base}${path}`, {
+      method,
+      headers,
+      body: body !== undefined ? JSON.stringify(body) : undefined
+    });
+  } catch (e) {
+    // Network-level fetch failure (TypeError "Failed to fetch") usually
+    // means the cached endpoint points at a dead loopback port — e.g.
+    // the bundled child got SIGKILLed by convert_to_system_service and
+    // the agent-ready event is in flight but hasn't been processed yet.
+    // Clear the cache so the next request() re-runs the Tauri command
+    // and picks up the new endpoint. Caller-visible behavior is the
+    // same (this throws), but the NEXT call self-heals.
+    cached = null;
+    throw e;
+  }
 
   if (!res.ok) {
     let msg = res.statusText;
@@ -252,6 +286,11 @@ export async function subscribeEvents(
         }
       } catch (e) {
         if (cancelled) return;
+        // Same defensive cache-reset as request(): if the cached
+        // endpoint is stale (e.g. the agent we were talking to just
+        // got replaced by Run-in-the-background's convert), clear it
+        // so the next loop iteration re-runs the Tauri command.
+        cached = null;
         onStatus?.(false);
         await new Promise((r) => setTimeout(r, backoff));
         backoff = Math.min(backoff * 2, 10_000);
