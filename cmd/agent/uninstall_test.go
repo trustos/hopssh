@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -79,11 +80,10 @@ func TestUninstallTargetsCoverWindows(t *testing.T) {
 	assertTargetsContain(t, uninstallTargetsWindows(), must)
 }
 
-// TestUninstallCategoryFilter verifies the --purge / --remove-binary
-// flag semantics: a default uninstall touches ONLY service files;
-// --purge widens to config + logs; --remove-binary further widens to
-// the binary itself. A regression here would silently break the
-// "stop the daemon but keep the certs" use case.
+// TestUninstallCategoryFilter verifies the per-platform target list
+// has at least one entry in each category we expect (service, config,
+// binary). Logs are platform-dependent (Linux uses journald + has no
+// log file targets), so we don't assert log presence here.
 func TestUninstallCategoryFilter(t *testing.T) {
 	all := uninstallTargets()
 	if len(all) == 0 {
@@ -108,6 +108,50 @@ func TestUninstallCategoryFilter(t *testing.T) {
 	}
 	if count(all, categoryBinary) == 0 {
 		t.Errorf("expected at least one binary target on %s", runtime.GOOS)
+	}
+}
+
+// TestUninstallLogsSeparateFromPurge is a tripwire that locks in the
+// best-practice decision: logs are NOT removed by --purge alone. They
+// have forensic value (postmortem of why a node went rogue, audit
+// trails, support tickets) and matching `apt remove` / `apt purge`
+// semantics, both leave /var/log alone. Anyone tempted to fold
+// categoryLog into categoryConfig, see this test + the docstring on
+// runAgentUninstall before doing it.
+func TestUninstallLogsSeparateFromPurge(t *testing.T) {
+	all := uninstallTargets()
+	for _, tt := range all {
+		// Anything that looks like a log file should be marked as
+		// categoryLog, not categoryConfig.
+		isLogPath := strings.Contains(tt.Path, "log") || strings.Contains(tt.Path, "Logs")
+		if isLogPath && tt.Category == categoryConfig {
+			t.Errorf("path %q looks like a log but is categorized as config — logs must be in categoryLog so they are not removed by --purge alone",
+				tt.Path)
+		}
+	}
+}
+
+// TestUninstallTargetsExcludeDesktopAppData asserts the agent uninstall
+// does NOT touch the Tauri desktop client's data dirs. The .app is a
+// separate product owned by macOS Finder + the GUI installer; pulling
+// its data on `hop-agent uninstall` would be a footgun for users who
+// only want to remove the daemon.
+func TestUninstallTargetsExcludeDesktopAppData(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-specific")
+	}
+	forbidden := []string{
+		"com.hopssh.desktop",
+		"hopssh.app",
+		"/Applications/",
+	}
+	for _, tt := range uninstallTargetsDarwin() {
+		for _, f := range forbidden {
+			if strings.Contains(tt.Path, f) {
+				t.Errorf("path %q matches forbidden substring %q — the agent uninstall must not touch desktop-client paths",
+					tt.Path, f)
+			}
+		}
 	}
 }
 
