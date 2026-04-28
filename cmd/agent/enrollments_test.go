@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -213,6 +214,66 @@ func TestEnrollmentRegistry_NextAvailableListenPort_IgnoresZero(t *testing.T) {
 	_ = reg.Add(&Enrollment{Name: "legacy"})
 	if got := reg.NextAvailableListenPort(4242); got != 4242 {
 		t.Errorf("zero ListenPort shouldn't block 4242; got %d", got)
+	}
+}
+
+// TestEnrollmentRegistry_NextAvailableListenPort_SkipsOSHeldPort is the
+// regression test for the v0.10.47 user-reported "address already in
+// use" failure. A leftover system-mode hop-agent on the same host can
+// hold a UDP port that doesn't appear in THIS registry. Without the
+// net.ListenUDP probe in nextAvailableListenPortLocked, fresh
+// enrollments would clash and Nebula would fail to bind. With the
+// probe, the registry returns the next free port instead.
+func TestEnrollmentRegistry_NextAvailableListenPort_SkipsOSHeldPort(t *testing.T) {
+	dir := t.TempDir()
+	reg, _ := loadEnrollmentRegistry(dir)
+
+	// Hold a port at the OS level — simulates a parallel hop-agent on
+	// the same host. Pick a fresh port via :0 so we don't collide with
+	// whatever the test runner has bound.
+	holder, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		t.Fatalf("hold udp port: %v", err)
+	}
+	defer holder.Close()
+	heldPort := holder.LocalAddr().(*net.UDPAddr).Port
+
+	// Start the search at the held port — the probe should advance.
+	got := reg.NextAvailableListenPort(heldPort)
+	if got == heldPort {
+		t.Fatalf("expected NextAvailableListenPort to skip OS-held port %d; got %d", heldPort, got)
+	}
+	if got <= heldPort {
+		t.Fatalf("expected port > %d after skip; got %d", heldPort, got)
+	}
+
+	// And the picked port must itself be bindable.
+	pick, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: got})
+	if err != nil {
+		t.Fatalf("picked port %d should be bindable: %v", got, err)
+	}
+	pick.Close()
+}
+
+// TestUDPPortAvailable covers the helper directly.
+func TestUDPPortAvailable(t *testing.T) {
+	holder, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	if err != nil {
+		t.Fatalf("hold udp: %v", err)
+	}
+	defer holder.Close()
+	heldPort := holder.LocalAddr().(*net.UDPAddr).Port
+	if udpPortAvailable(heldPort) {
+		t.Errorf("port %d is held; udpPortAvailable should be false", heldPort)
+	}
+	holder.Close()
+	// After release: same port should be available again. (Linger may
+	// briefly hold UDP ports in TIME_WAIT-equivalent state on some OSes;
+	// we can't guarantee true freshness inside the test, so we test a
+	// definitely-unused port instead.)
+	if !udpPortAvailable(0) {
+		// :0 means "any port" so this should always succeed.
+		t.Errorf("udpPortAvailable(0) should always succeed")
 	}
 }
 

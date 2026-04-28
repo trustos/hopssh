@@ -13,9 +13,19 @@
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { CheckCircle, Minus } from 'lucide-svelte';
 
-	// Strip "HOP-" prefix if pasted or from URL param
+	// stripCode normalizes any clipboard form to the 4-char base32 body.
+	// The desktop app's "Copy with HOP-" button copies "HOP-HKST"; the
+	// "Copy 4 chars" button copies just "HKST". Either pasted into the
+	// OTP needs to land as HKST. Single source of truth used at:
+	//   - URL ?code= param parse
+	//   - bits-ui PinInput pasteTransformer
+	//   - oninput sanity check
+	function stripCode(raw: string): string {
+		return raw.replace(/^\s*HOP-?/i, '').replace(/[^A-Z0-9]/gi, '').toUpperCase();
+	}
+
 	const rawCode = page.url.searchParams.get('code') || '';
-	let code = $state(rawCode.replace(/^HOP-/i, '').toUpperCase());
+	let code = $state(stripCode(rawCode));
 	let selectedNetwork = $state('');
 	let networkList = $state<NetworkResponse[]>([]);
 	let error = $state('');
@@ -24,8 +34,26 @@
 	let submitting = $state(false);
 	let loadingNetworks = $state(true);
 
+	// arrivedWithCode: the user came from the desktop app (URL had ?code=).
+	// Combined with single-admin-network and signed-in, that's the
+	// "no human decision needed" state where we auto-submit. See
+	// onMount + the trio of conditions there.
+	const arrivedWithCode = !!rawCode;
+
 	const adminNetworks = $derived(networkList.filter(n => n.role === 'admin'));
 	const fullCode = $derived('HOP-' + code.toUpperCase());
+
+	// Stage drives the 3-step progress ladder. Mirrors the desktop's
+	// onboarding ladder so the user sees a consistent narrative
+	// across devices: code received → confirming → authorized.
+	let stage = $derived<'code' | 'confirming' | 'authorized'>(
+		success ? 'authorized' : submitting ? 'confirming' : 'code'
+	);
+	const steps = $derived([
+		{ label: 'Code received', done: code.length === 4, active: code.length < 4 },
+		{ label: 'Authorize',     done: success,            active: !success && code.length === 4 },
+		{ label: 'Done',          done: success,            active: false }
+	]);
 
 	onMount(async () => {
 		try {
@@ -37,6 +65,22 @@
 			loadError = e instanceof Error ? e.message : 'Failed to load networks';
 		} finally {
 			loadingNetworks = false;
+			// Auto-submit when the trio of conditions holds:
+			//   - user arrived with ?code= from the desktop opener
+			//   - exactly one admin network (no human decision)
+			//   - code parses to 4 chars after the strip
+			// Anything else (multiple networks, paste-from-clipboard,
+			// signed-out round-trip) requires a click.
+			if (
+				arrivedWithCode &&
+				code.length === 4 &&
+				adminNetworks.length === 1 &&
+				!error &&
+				!success
+			) {
+				selectedNetwork = adminNetworks[0].id;
+				handleSubmit(new Event('submit'));
+			}
 		}
 	});
 
@@ -56,22 +100,54 @@
 </script>
 
 <svelte:head>
-	<title>Device Auth - hopssh</title>
+	<title>Authorize Device - hopssh</title>
 </svelte:head>
 
 <div class="flex items-center justify-center p-6">
 	<div class="w-full max-w-sm space-y-6">
 		<div class="text-center">
 			<h1 class="text-2xl font-bold">Authorize Device</h1>
-			<p class="mt-1 text-sm text-muted-foreground">Enter the code shown on your server</p>
+			<p class="mt-1 text-sm text-muted-foreground">
+				{#if arrivedWithCode && code.length === 4}
+					Approve the Mac that asked to join.
+				{:else}
+					Enter the code shown on the device that's joining.
+				{/if}
+			</p>
 		</div>
+
+		<!-- Progress ladder mirrors the desktop's "Open browser → Approve →
+		     Bring mesh up". Always visible so the user knows what step they
+		     are at and what comes next. -->
+		<ol class="flex items-center justify-between gap-2">
+			{#each steps as s, i}
+				<li class="flex flex-1 items-center gap-2">
+					<span
+						class={
+							s.done
+								? 'inline-flex h-6 w-6 items-center justify-center rounded-full bg-primary text-primary-foreground text-[11px] font-semibold'
+								: s.active
+									? 'inline-flex h-6 w-6 items-center justify-center rounded-full border-2 border-primary text-primary text-[11px] font-semibold'
+									: 'inline-flex h-6 w-6 items-center justify-center rounded-full border border-muted-foreground/30 text-muted-foreground text-[11px]'
+						}
+					>
+						{#if s.done}✓{:else}{i + 1}{/if}
+					</span>
+					<span class={s.done || s.active ? 'text-sm' : 'text-sm text-muted-foreground'}>
+						{s.label}
+					</span>
+				</li>
+			{/each}
+		</ol>
 
 		{#if success}
 			<Card.Root class="border-primary/50 bg-primary/10">
 				<Card.Content class="py-6 text-center">
 					<CheckCircle class="mx-auto mb-2 size-8 text-primary" />
-					<p class="font-medium text-primary">Device authorized!</p>
-					<p class="mt-1 text-sm text-muted-foreground">The agent will connect momentarily.</p>
+					<p class="font-medium text-primary">Device authorized</p>
+					<p class="mt-1 text-sm text-muted-foreground">
+						Return to hopssh on your device — the mesh will come up automatically.
+					</p>
 				</Card.Content>
 			</Card.Root>
 		{:else if loadError}
@@ -118,6 +194,7 @@
 									bind:value={code}
 									maxlength={4}
 									class="justify-center"
+									pasteTransformer={stripCode}
 									onComplete={() => {
 										if (selectedNetwork && code.length === 4) {
 											handleSubmit(new Event('submit'));
@@ -135,27 +212,39 @@
 							</div>
 						</div>
 
-						<div class="space-y-2">
-							<Label>Network</Label>
-							<Select.Root type="single" bind:value={selectedNetwork}>
-								<Select.Trigger class="w-full">
-									{@const selected = adminNetworks.find(n => n.id === selectedNetwork)}
-									<span>{selected?.name || 'Select a network'}</span>
-								</Select.Trigger>
-								<Select.Content>
-									{#each adminNetworks as network}
-										<Select.Item value={network.id}>{network.name}</Select.Item>
-									{/each}
-								</Select.Content>
-							</Select.Root>
-						</div>
+						<!-- When there's only one admin network we lock the picker
+						     to that single option. Multi-network admins still get
+						     the full Select with their full list. -->
+						{#if adminNetworks.length === 1}
+							<div class="space-y-2">
+								<Label>Network</Label>
+								<div class="rounded-md border bg-muted/30 px-3 py-2 text-sm">
+									{adminNetworks[0].name}
+								</div>
+							</div>
+						{:else}
+							<div class="space-y-2">
+								<Label>Network</Label>
+								<Select.Root type="single" bind:value={selectedNetwork}>
+									<Select.Trigger class="w-full">
+										{@const selected = adminNetworks.find(n => n.id === selectedNetwork)}
+										<span>{selected?.name || 'Select a network'}</span>
+									</Select.Trigger>
+									<Select.Content>
+										{#each adminNetworks as network}
+											<Select.Item value={network.id}>{network.name}</Select.Item>
+										{/each}
+									</Select.Content>
+								</Select.Root>
+							</div>
+						{/if}
 
 						<Button
 							type="submit"
 							class="w-full"
 							disabled={submitting || code.length < 4 || !selectedNetwork}
 						>
-							{submitting ? 'Authorizing...' : 'Authorize'}
+							{submitting ? 'Authorizing…' : 'Authorize'}
 						</Button>
 					</form>
 				</Card.Content>

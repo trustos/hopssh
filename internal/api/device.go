@@ -49,8 +49,17 @@ func (h *DeviceHandler) RequestCode(w http.ResponseWriter, r *http.Request) {
 		"deviceCode":      dc.DeviceCode,
 		"userCode":        dc.UserCode,
 		"verificationURI": "/device",
-		"expiresIn":       int(time.Until(time.Unix(dc.ExpiresAt, 0)).Seconds()),
-		"interval":        5, // poll interval in seconds
+		// verificationURIComplete is the RFC 8628 "verification_uri_complete"
+		// field — the verification URI with the user code embedded as a
+		// query param so clients that can render URLs (desktop apps, QR
+		// codes) skip the manual code-entry step entirely. The /device
+		// page strips the HOP- prefix from the ?code= param automatically
+		// (see frontend/src/routes/(app)/device/+page.svelte:17). Older
+		// clients that don't read this field fall back to verificationURI
+		// + manual code entry.
+		"verificationURIComplete": "/device?code=" + dc.UserCode,
+		"expiresIn":               int(time.Until(time.Unix(dc.ExpiresAt, 0)).Seconds()),
+		"interval":                5, // poll interval in seconds
 	})
 }
 

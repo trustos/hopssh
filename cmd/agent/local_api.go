@@ -311,13 +311,32 @@ type EnrollmentStatus struct {
 
 // LocalStatus is the GET /local/status response.
 type LocalStatus struct {
-	Version       string             `json:"version"`
-	Commit        string             `json:"commit"`
-	OS            string             `json:"os"`
-	Arch          string             `json:"arch"`
-	ConfigDir     string             `json:"configDir"`
-	ServiceStatus string             `json:"serviceStatus,omitempty"`
-	Enrollments   []EnrollmentStatus `json:"enrollments"`
+	Version         string             `json:"version"`
+	Commit          string             `json:"commit"`
+	OS              string             `json:"os"`
+	Arch            string             `json:"arch"`
+	ConfigDir       string             `json:"configDir"`
+	ServiceStatus   string             `json:"serviceStatus,omitempty"`
+	Enrollments     []EnrollmentStatus `json:"enrollments"`
+	ParallelInstall *ParallelInstall   `json:"parallelInstall,omitempty"`
+}
+
+// ParallelInstall describes signals of a parallel hop-agent install on
+// the same host. Surfaced to the desktop UI so the onboarding flow can
+// warn the user that a leftover install will block enrollment with a
+// port-bind conflict, and offer a one-click Reset before they hit the
+// device-flow path.
+//
+// Detection is best-effort and read-only — never mutates host state.
+type ParallelInstall struct {
+	// LaunchDaemon is true when /Library/LaunchDaemons/com.hopssh.agent.plist
+	// exists on macOS. A leftover system install creates this; the
+	// bundled .app does not. macOS-only signal.
+	LaunchDaemon bool `json:"launchDaemon"`
+	// LegacyConfigDir is true when /etc/hop-agent exists with our
+	// expected layout (enrollments.json present). Indicates a previous
+	// `sudo hop-agent install` left state behind.
+	LegacyConfigDir bool `json:"legacyConfigDir"`
 }
 
 func (s *localAPIServer) statusSnapshot() map[string]any {
@@ -342,7 +361,37 @@ func (s *localAPIServer) buildStatus() LocalStatus {
 	for _, e := range s.enrolls.List() {
 		out.Enrollments = append(out.Enrollments, s.enrollmentStatus(e))
 	}
+	if pi := detectParallelInstall(s.configDir); pi != nil {
+		out.ParallelInstall = pi
+	}
 	return out
+}
+
+// detectParallelInstall returns non-nil when a leftover system-mode
+// hop-agent install is present alongside the current (typically
+// bundled) agent. Used by the desktop UI to warn the user before they
+// trigger an enrollment that would fail with a port-bind conflict.
+//
+// `currentConfigDir` is the agent's own configDir; we suppress the
+// "legacy" signal when WE are the legacy configDir owner, which avoids
+// a system-installed hop-agent reporting itself as a parallel install.
+func detectParallelInstall(currentConfigDir string) *ParallelInstall {
+	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	pi := &ParallelInstall{}
+	if _, err := os.Stat("/Library/LaunchDaemons/com.hopssh.agent.plist"); err == nil {
+		pi.LaunchDaemon = true
+	}
+	if currentConfigDir != "/etc/hop-agent" {
+		if _, err := os.Stat("/etc/hop-agent/enrollments.json"); err == nil {
+			pi.LegacyConfigDir = true
+		}
+	}
+	if !pi.LaunchDaemon && !pi.LegacyConfigDir {
+		return nil
+	}
+	return pi
 }
 
 func (s *localAPIServer) enrollmentStatus(e *Enrollment) EnrollmentStatus {
@@ -565,10 +614,11 @@ func (s *localAPIServer) handleEnrollDeviceFlowStart(w http.ResponseWriter, r *h
 		return
 	}
 	var codeResp struct {
-		DeviceCode string `json:"deviceCode"`
-		UserCode   string `json:"userCode"`
-		ExpiresIn  int    `json:"expiresIn"`
-		Interval   int    `json:"interval"`
+		DeviceCode              string `json:"deviceCode"`
+		UserCode                string `json:"userCode"`
+		ExpiresIn               int    `json:"expiresIn"`
+		Interval                int    `json:"interval"`
+		VerificationURIComplete string `json:"verificationURIComplete"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&codeResp); err != nil {
 		writeJSONError(w, http.StatusBadGateway, "decode device code: "+err.Error())
@@ -592,10 +642,24 @@ func (s *localAPIServer) handleEnrollDeviceFlowStart(w http.ResponseWriter, r *h
 	activeDeviceFlow[codeResp.DeviceCode] = state
 	deviceFlowMu.Unlock()
 
+	// Prefer the server's verificationURIComplete (RFC 8628 — URL with the
+	// user code embedded as ?code=). Falls back to the bare /device path
+	// for older control planes that don't return the field — the page
+	// itself accepts a manual code-entry path so both work.
+	verificationURL := endpoint + "/device"
+	if codeResp.VerificationURIComplete != "" {
+		// Server returns a relative path (/device?code=HOP-XXXX); join it
+		// to the endpoint base. Treat absolute URLs as-is for safety.
+		if strings.HasPrefix(codeResp.VerificationURIComplete, "http://") || strings.HasPrefix(codeResp.VerificationURIComplete, "https://") {
+			verificationURL = codeResp.VerificationURIComplete
+		} else {
+			verificationURL = endpoint + codeResp.VerificationURIComplete
+		}
+	}
 	writeJSON(w, http.StatusOK, enrollDeviceFlowStartResp{
 		DeviceCode:      codeResp.DeviceCode,
 		UserCode:        codeResp.UserCode,
-		VerificationURL: endpoint + "/device",
+		VerificationURL: verificationURL,
 		ExpiresIn:       codeResp.ExpiresIn,
 		Interval:        codeResp.Interval,
 	})

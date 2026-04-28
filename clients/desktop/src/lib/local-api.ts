@@ -110,6 +110,11 @@ export interface EnrollmentStatus {
   lastError?: string;
 }
 
+export interface ParallelInstall {
+  launchDaemon: boolean;
+  legacyConfigDir: boolean;
+}
+
 export interface LocalStatus {
   version: string;
   commit: string;
@@ -118,6 +123,7 @@ export interface LocalStatus {
   configDir: string;
   serviceStatus?: string;
   enrollments: EnrollmentStatus[];
+  parallelInstall?: ParallelInstall;
 }
 
 export interface PeerDetail {

@@ -290,6 +290,22 @@ func runServe(args []string) {
 				return err
 			}
 		}
+		// Classify the final retry-loop error so the UI can show an
+		// actionable message instead of a generic "address already in
+		// use" hedge. The most common case in production is a parallel
+		// hop-agent install (system LaunchDaemon left over after a
+		// download of the .app, or a dev `hop-agent serve` running in
+		// a terminal) holding the bundled-agent's chosen UDP port.
+		// We have a port-availability probe at NextAvailableListenPort
+		// (cmd/agent/enrollments.go) that should pick a free port, but
+		// it can race with a parallel-agent that binds AFTER our probe
+		// and BEFORE Nebula's actual bind — so this error path can still
+		// fire. The message points the user at Settings → Danger zone →
+		// Reset which removes the parallel install.
+		es := lastErr.Error()
+		if strings.Contains(es, "address already in use") || strings.Contains(es, "device or resource busy") {
+			return fmt.Errorf("connect failed after 4 attempts: another hop-agent on this Mac is using the network port. Open Settings → Danger zone → Reset to remove the conflicting install, then try Connect again. (underlying: %s)", es)
+		}
 		return fmt.Errorf("connect failed after 4 attempts: %w", lastErr)
 	}
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -184,11 +185,43 @@ func (r *enrollmentRegistry) nextAvailableListenPortLocked(base int) int {
 		}
 	}
 	for p := base; p < 65535; p++ {
-		if !used[p] {
+		if used[p] {
+			continue
+		}
+		// Belt-and-braces: also probe the OS for an actual UDP bind.
+		// Our own registry is the primary source of truth, but a parallel
+		// hop-agent install on the same host (e.g. a leftover system
+		// LaunchDaemon when the user installs the bundled .app, or a
+		// dev-mode `hop-agent serve` running from a terminal) holds the
+		// port at the kernel level even though it doesn't appear in
+		// THIS registry. Without this probe, fresh enrollments on hosts
+		// with a parallel install fail at Nebula bind-time with EADDRINUSE
+		// → the user sees "address already in use" and has no recourse
+		// short of a manual cleanup.
+		if udpPortAvailable(p) {
 			return p
 		}
 	}
 	return 0 // shouldn't happen with realistic enrollment counts
+}
+
+// udpPortAvailable returns true if we can bind UDP `*:port` right now.
+// Used by nextAvailableListenPortLocked to skip ports held by parallel
+// hop-agent installs the registry doesn't know about.
+//
+// The bind is immediately closed, so this is a transient check — it
+// races with whoever might bind the port between this probe and the
+// actual Nebula bind. In practice the only thing that holds these
+// ports is another hop-agent process, and they don't churn ports;
+// the race window is theoretical not practical.
+func udpPortAvailable(port int) bool {
+	addr := &net.UDPAddr{IP: net.IPv4zero, Port: port}
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 // AssignMissingListenPorts walks the registry, assigns a unique port
