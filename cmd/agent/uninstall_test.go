@@ -155,6 +155,47 @@ func TestUninstallTargetsExcludeDesktopAppData(t *testing.T) {
 	}
 }
 
+// TestUninstallYesBypassesPrompt locks in the contract that any
+// flag-combo with --yes does NOT trigger the confirmation prompt.
+//
+// This is load-bearing for the desktop client's Tauri shell-out: the
+// Reset and Uninstall buttons in Settings.svelte invoke the agent CLI
+// via osascript "do shell script", which has no stdin attached. If
+// the agent ever waits for a y/N response on those code paths, the
+// admin prompt completes but the privileged child hangs forever and
+// the user sees a stalled UI. Any future change to needsConfirm that
+// breaks the --yes contract MUST fail this test.
+func TestUninstallYesBypassesPrompt(t *testing.T) {
+	cases := []struct {
+		name            string
+		purge, logs, yes bool
+		want             bool
+	}{
+		// Default uninstall: no destructive scope, no prompt.
+		{"defaults", false, false, false, false},
+		// --purge alone: prompt.
+		{"purge_no_yes", true, false, false, true},
+		// --remove-logs alone: prompt.
+		{"logs_no_yes", false, true, false, true},
+		// --purge + --remove-logs: prompt.
+		{"purge_and_logs_no_yes", true, true, false, true},
+
+		// --yes MUST bypass the prompt for every destructive combo.
+		// These are the desktop-client paths.
+		{"purge_yes_reset_path", true, false, true, false},
+		{"purge_yes_remove_logs_yes", true, true, true, false},
+		{"logs_only_yes", false, true, true, false},
+		{"purge_yes_uninstall_full_path", true, false, true, false},
+	}
+	for _, c := range cases {
+		got := needsConfirm(c.purge, c.logs, c.yes)
+		if got != c.want {
+			t.Errorf("needsConfirm(purge=%v, logs=%v, yes=%v) = %v, want %v (case %q)",
+				c.purge, c.logs, c.yes, got, c.want, c.name)
+		}
+	}
+}
+
 func assertTargetsContain(t *testing.T, targets []cleanupTarget, must []string) {
 	t.Helper()
 	enumerated := make(map[string]bool, len(targets))

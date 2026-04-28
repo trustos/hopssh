@@ -204,6 +204,91 @@ fn install_cli_symlink(_app: AppHandle) -> Result<String, String> {
     }
 }
 
+/// Build the osascript command for `hop-agent uninstall` with the
+/// given flag set. Extracted from the Tauri commands so it's
+/// directly testable — the flag combos are load-bearing (Reset path
+/// MUST keep the binary; Uninstall path MUST remove it; both MUST
+/// pass --yes to skip the agent's stdin confirmation prompt, which
+/// would hang the osascript-spawned shell). See tripwire tests at
+/// the bottom of this file.
+fn build_uninstall_script(agent_path: &std::path::Path, remove_binary: bool) -> String {
+    let binary_flag = if remove_binary {
+        "--remove-binary"
+    } else {
+        "--remove-binary=false"
+    };
+    format!(
+        r#"do shell script "'{}' uninstall --purge {} --yes" with administrator privileges"#,
+        agent_path.display(),
+        binary_flag
+    )
+}
+
+/// Reset hopssh — remove enrollments + certs but leave the binary +
+/// system service installed. Equivalent of:
+///
+///   hop-agent uninstall --purge --remove-binary=false --yes
+///
+/// One admin prompt; agent restarts back to fresh-install state and
+/// can re-enroll immediately. Wires through osascript so the
+/// privileged CLI invocation has the same admin-prompt UX as the
+/// existing install_system_service / uninstall_cli_symlink commands.
+#[tauri::command]
+fn reset_hopssh() -> Result<String, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        return Err("reset_hopssh: only supported on macOS".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let agent = resolve_agent_path()
+            .ok_or_else(|| "could not locate bundled hop-agent binary".to_string())?;
+        let script = build_uninstall_script(&agent, false);
+        run_osascript(&script).map(|out| {
+            if out.trim().is_empty() {
+                "hopssh reset to fresh-install state".to_string()
+            } else {
+                out
+            }
+        })
+    }
+}
+
+/// Uninstall hopssh — full removal of agent integrations + binary.
+/// Equivalent of:
+///
+///   hop-agent uninstall --purge --remove-binary --yes
+///
+/// One admin prompt. Cannot remove the running .app from inside
+/// itself, so the success message instructs the user to drag
+/// /Applications/hopssh.app to the Trash. The UI shows that message
+/// in a banner along with a Quit button (calls `quit_app`).
+#[tauri::command]
+fn uninstall_hopssh_full() -> Result<String, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        return Err("uninstall_hopssh_full: only supported on macOS".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let agent = resolve_agent_path()
+            .ok_or_else(|| "could not locate bundled hop-agent binary".to_string())?;
+        let script = build_uninstall_script(&agent, true);
+        run_osascript(&script).map(|_| {
+            "Uninstall complete. Quit hopssh and drag /Applications/hopssh.app to the Trash to finish.".to_string()
+        })
+    }
+}
+
+/// Quit the desktop app. Used by the post-uninstall banner's "Quit"
+/// button so the user can complete the macOS uninstall flow (drag .app
+/// to Trash) without hunting for the Apple-menu Quit item. Drops AppState,
+/// which kills the child hop-agent process via ctrlc handler / RunEvent::Exit.
+#[tauri::command]
+fn quit_app(app: AppHandle) {
+    app.exit(0);
+}
+
 /// Remove /usr/local/bin/hop only if it's a symlink to our bundle —
 /// won't touch any unrelated `hop` binary the user installed.
 #[tauri::command]
@@ -304,7 +389,10 @@ pub fn run() {
             install_system_service,
             uninstall_system_service,
             install_cli_symlink,
-            uninstall_cli_symlink
+            uninstall_cli_symlink,
+            reset_hopssh,
+            uninstall_hopssh_full,
+            quit_app
         ])
         .setup(move |app| {
             // Build menubar tray menu.
@@ -448,4 +536,71 @@ pub fn resolve_agent_path() -> Option<PathBuf> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    /// Tripwire: the Reset path MUST keep the binary AND pass --yes.
+    /// Without --yes the agent waits for stdin which the
+    /// osascript-spawned shell can't supply, hanging the UI.
+    #[test]
+    fn reset_command_keeps_binary_and_skips_prompt() {
+        let path = Path::new("/usr/local/bin/hop-agent");
+        let s = build_uninstall_script(path, false);
+        assert!(s.contains("--purge"), "Reset must include --purge: {s}");
+        assert!(
+            s.contains("--remove-binary=false"),
+            "Reset MUST keep the binary (--remove-binary=false): {s}"
+        );
+        assert!(
+            !s.contains("--remove-binary "),
+            "Reset must NOT use bare --remove-binary (which would delete it): {s}"
+        );
+        assert!(
+            s.contains("--yes"),
+            "Reset must pass --yes (osascript shell has no stdin): {s}"
+        );
+        assert!(
+            !s.contains("--remove-logs"),
+            "Reset must NOT remove logs (forensic value preserved): {s}"
+        );
+    }
+
+    /// Tripwire: the Uninstall path MUST remove the binary AND pass --yes.
+    #[test]
+    fn uninstall_full_command_removes_binary_and_skips_prompt() {
+        let path = Path::new("/usr/local/bin/hop-agent");
+        let s = build_uninstall_script(path, true);
+        assert!(s.contains("--purge"), "Uninstall must include --purge: {s}");
+        assert!(
+            s.contains("--remove-binary "),
+            "Uninstall must include bare --remove-binary (the variant that removes): {s}"
+        );
+        assert!(
+            !s.contains("--remove-binary=false"),
+            "Uninstall must NOT use --remove-binary=false: {s}"
+        );
+        assert!(
+            s.contains("--yes"),
+            "Uninstall must pass --yes (osascript shell has no stdin): {s}"
+        );
+    }
+
+    /// Tripwire: the AppleScript wrapping uses single-quoted POSIX paths
+    /// to survive paths with spaces, and runs with administrator
+    /// privileges so the agent can remove root-owned files like the
+    /// LaunchDaemon plist.
+    #[test]
+    fn uninstall_command_runs_privileged() {
+        let path = Path::new("/Applications/hopssh.app/Contents/Resources/binaries/hop-agent");
+        let s = build_uninstall_script(path, true);
+        assert!(
+            s.contains("with administrator privileges"),
+            "must request admin to remove root-owned files: {s}"
+        );
+        assert!(s.contains("'/Applications/hopssh.app/"));
+    }
 }

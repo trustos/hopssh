@@ -14,6 +14,18 @@
   let installBusy = $state<string | null>(null); // which command is running
   let installResult = $state<{ kind: 'ok' | 'err'; msg: string } | null>(null);
 
+  // Danger zone state.
+  // dangerConfirm tracks which destructive row is in confirm-mode
+  // ('signout' | 'reset' | 'uninstall' | null). Two-stage confirm
+  // pattern matches Leave's per-row flow (above) — first click flips
+  // to confirm, second click commits.
+  let dangerConfirm = $state<'signout' | 'reset' | 'uninstall' | null>(null);
+  let dangerBusy = $state<'signout' | 'reset' | 'uninstall' | null>(null);
+  let dangerError = $state<string | null>(null);
+  // Once uninstallDone is set, the Danger zone is replaced by the
+  // post-uninstall banner with Quit instructions + button.
+  let uninstallDone = $state<string | null>(null);
+
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
   async function refreshInstallStatus() {
@@ -56,6 +68,92 @@
     } finally {
       leavingName = null;
       confirmingName = null;
+    }
+  }
+
+  // leaveAllNetworks calls local.leave per enrollment in series.
+  // Errors from one leave don't block the others — partial cleanup is
+  // better than nothing, and the user sees a per-failure message.
+  async function leaveAllNetworks(): Promise<{ leftCount: number; errors: string[] }> {
+    const status = agent.status;
+    if (!status) return { leftCount: 0, errors: [] };
+    const errors: string[] = [];
+    let leftCount = 0;
+    for (const e of status.enrollments) {
+      try {
+        await local.leave(e.name);
+        leftCount++;
+      } catch (err) {
+        errors.push(`${e.name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    await agent.refresh();
+    return { leftCount, errors };
+  }
+
+  async function doDangerSignout() {
+    dangerBusy = 'signout';
+    dangerError = null;
+    try {
+      const { leftCount, errors } = await leaveAllNetworks();
+      if (errors.length > 0) {
+        dangerError = `Signed out of ${leftCount} network(s); errors: ${errors.join('; ')}`;
+      } else {
+        leaveDone = `Signed out of ${leftCount} network(s).`;
+      }
+    } finally {
+      dangerBusy = null;
+      dangerConfirm = null;
+    }
+  }
+
+  async function doDangerReset() {
+    dangerBusy = 'reset';
+    dangerError = null;
+    try {
+      // Step 1: leave each network in-process so the running child agent
+      // tears down meshInstances cleanly + releases utun fds.
+      const { errors } = await leaveAllNetworks();
+      if (errors.length > 0) {
+        dangerError = `Some networks failed to leave: ${errors.join('; ')}. Continuing with reset.`;
+      }
+      // Step 2: privileged CLI sweeps any leftover system-mode configs
+      // (e.g. /etc/hop-agent if the user had run `sudo hop-agent
+      // install`). Single admin prompt.
+      const out = await invoke<string>('reset_hopssh');
+      leaveDone = out;
+      await agent.refresh();
+    } catch (e: unknown) {
+      dangerError = e instanceof Error ? e.message : String(e);
+    } finally {
+      dangerBusy = null;
+      dangerConfirm = null;
+    }
+  }
+
+  async function doDangerUninstall() {
+    dangerBusy = 'uninstall';
+    dangerError = null;
+    try {
+      // Same in-process leave step as Reset, then full CLI uninstall
+      // (purge + remove binary + remove kernel-TUN service + remove
+      // CLI symlink). Single admin prompt.
+      await leaveAllNetworks();
+      const out = await invoke<string>('uninstall_hopssh_full');
+      uninstallDone = out;
+    } catch (e: unknown) {
+      dangerError = e instanceof Error ? e.message : String(e);
+    } finally {
+      dangerBusy = null;
+      dangerConfirm = null;
+    }
+  }
+
+  async function doQuitApp() {
+    try {
+      await invoke('quit_app');
+    } catch (e: unknown) {
+      dangerError = `Failed to quit: ${e instanceof Error ? e.message : String(e)}`;
     }
   }
 </script>
@@ -263,4 +361,168 @@
     "Kernel-TUN system service" upgrade above gives better Screen Sharing
     fidelity at the cost of one admin prompt.
   </p>
+
+  {#if isTauri}
+    {#if uninstallDone}
+      <!-- Post-uninstall banner replaces the Danger zone once the CLI
+           uninstall has succeeded. The .app itself can't be removed
+           from inside its own running process, so we point the user
+           at the standard macOS drag-to-Trash flow. -->
+      <section class="mt-6 rounded-lg border border-emerald-800 bg-emerald-950/40 p-4">
+        <h3 class="text-sm font-semibold text-emerald-200">Uninstall complete</h3>
+        <p class="mt-2 text-xs leading-relaxed text-emerald-100/90">
+          To finish removing hopssh from this Mac, quit the app and drag
+          <span class="font-semibold">hopssh.app</span> from
+          <span class="font-mono">/Applications</span> to the Trash.
+        </p>
+        <button
+          class="mt-3 rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400"
+          onclick={doQuitApp}
+          type="button"
+        >
+          Quit hopssh
+        </button>
+      </section>
+    {:else}
+      <section class="mt-6 rounded-lg border border-red-900/60 bg-red-950/20">
+        <div class="border-b border-red-900/60 px-4 py-2.5">
+          <h3 class="text-xs font-semibold uppercase tracking-wide text-red-300">
+            Danger zone
+          </h3>
+        </div>
+
+        <!-- Sign out of all networks -->
+        <div class="border-b border-red-900/60 px-4 py-3">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0 flex-1">
+              <div class="text-sm font-medium">Sign out of all networks</div>
+              <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
+                Disconnects every enrollment. Re-enroll anytime — no admin
+                prompt. {agent.status?.enrollments.length ?? 0} active.
+              </p>
+            </div>
+            <div class="flex shrink-0 gap-2">
+              {#if dangerConfirm === 'signout'}
+                <button
+                  class="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium hover:bg-red-500 disabled:opacity-50"
+                  onclick={doDangerSignout}
+                  disabled={dangerBusy !== null}
+                  type="button"
+                >
+                  {dangerBusy === 'signout' ? 'Signing out…' : 'Confirm'}
+                </button>
+                <button
+                  class="rounded-md border border-zinc-700 px-2.5 py-1.5 text-xs hover:bg-zinc-800"
+                  onclick={() => (dangerConfirm = null)}
+                  type="button"
+                >
+                  Cancel
+                </button>
+              {:else}
+                <button
+                  class="rounded-md border border-red-900/80 px-3 py-1.5 text-xs text-red-300 hover:border-red-500 hover:bg-red-950/40 disabled:opacity-50"
+                  onclick={() => (dangerConfirm = 'signout')}
+                  disabled={dangerBusy !== null || (agent.status?.enrollments.length ?? 0) === 0}
+                  type="button"
+                >
+                  Sign out
+                </button>
+              {/if}
+            </div>
+          </div>
+        </div>
+
+        <!-- Reset hopssh -->
+        <div class="border-b border-red-900/60 px-4 py-3">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0 flex-1">
+              <div class="text-sm font-medium">Reset hopssh</div>
+              <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
+                Removes all enrollments + certificates. Keeps the app
+                installed so you can re-enroll fresh. Logs preserved.
+                Triggers an admin prompt.
+              </p>
+            </div>
+            <div class="flex shrink-0 gap-2">
+              {#if dangerConfirm === 'reset'}
+                <button
+                  class="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium hover:bg-red-500 disabled:opacity-50"
+                  onclick={doDangerReset}
+                  disabled={dangerBusy !== null}
+                  type="button"
+                >
+                  {dangerBusy === 'reset' ? 'Resetting…' : 'Confirm reset'}
+                </button>
+                <button
+                  class="rounded-md border border-zinc-700 px-2.5 py-1.5 text-xs hover:bg-zinc-800"
+                  onclick={() => (dangerConfirm = null)}
+                  type="button"
+                >
+                  Cancel
+                </button>
+              {:else}
+                <button
+                  class="rounded-md border border-red-900/80 px-3 py-1.5 text-xs text-red-300 hover:border-red-500 hover:bg-red-950/40 disabled:opacity-50"
+                  onclick={() => (dangerConfirm = 'reset')}
+                  disabled={dangerBusy !== null}
+                  type="button"
+                >
+                  Reset
+                </button>
+              {/if}
+            </div>
+          </div>
+        </div>
+
+        <!-- Uninstall hopssh -->
+        <div class="px-4 py-3">
+          <div class="flex items-start justify-between gap-3">
+            <div class="min-w-0 flex-1">
+              <div class="text-sm font-medium">Uninstall hopssh</div>
+              <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
+                Removes everything: enrollments, certs, the kernel-TUN
+                system service, the CLI symlink, and the agent binary.
+                After confirm: drag <span class="font-mono">/Applications/hopssh.app</span>
+                to the Trash. Triggers an admin prompt.
+              </p>
+            </div>
+            <div class="flex shrink-0 gap-2">
+              {#if dangerConfirm === 'uninstall'}
+                <button
+                  class="rounded-md bg-red-600 px-2.5 py-1.5 text-xs font-medium hover:bg-red-500 disabled:opacity-50"
+                  onclick={doDangerUninstall}
+                  disabled={dangerBusy !== null}
+                  type="button"
+                >
+                  {dangerBusy === 'uninstall' ? 'Uninstalling…' : 'Confirm uninstall'}
+                </button>
+                <button
+                  class="rounded-md border border-zinc-700 px-2.5 py-1.5 text-xs hover:bg-zinc-800"
+                  onclick={() => (dangerConfirm = null)}
+                  type="button"
+                >
+                  Cancel
+                </button>
+              {:else}
+                <button
+                  class="rounded-md border border-red-900/80 px-3 py-1.5 text-xs text-red-300 hover:border-red-500 hover:bg-red-950/40 disabled:opacity-50"
+                  onclick={() => (dangerConfirm = 'uninstall')}
+                  disabled={dangerBusy !== null}
+                  type="button"
+                >
+                  Uninstall
+                </button>
+              {/if}
+            </div>
+          </div>
+        </div>
+
+        {#if dangerError}
+          <div class="border-t border-red-900/60 px-4 py-2 text-xs text-amber-400">
+            {dangerError}
+          </div>
+        {/if}
+      </section>
+    {/if}
+  {/if}
 </div>

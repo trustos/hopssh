@@ -211,7 +211,7 @@ func runAgentUninstall(args []string) {
 	// service-only path is reversible (just reinstall) so no prompt
 	// for that. --yes bypasses; non-TTY (pipe) auto-confirms with a
 	// notice (so curl|sh install scripts can drive it).
-	if (*purge || *removeLogs) && !*yes {
+	if needsConfirm(*purge, *removeLogs, *yes) {
 		if !confirmPrompt() {
 			fmt.Println("Cancelled.")
 			return
@@ -272,6 +272,25 @@ func bestEffortLeaveAll() {
 		// here without changing the user-visible behavior.
 		fmt.Printf("    %s @ %s — will appear offline; remove from the dashboard manually.\n", e.Name, e.Endpoint)
 	}
+}
+
+// needsConfirm returns true if the destructive-action confirmation
+// prompt should fire given the current flag combination. Extracted
+// from runAgentUninstall so it can be unit-tested independently of
+// the actual stdin reading.
+//
+// Critical for the desktop client's Tauri shell-out: the Tauri Reset
+// (--purge --remove-binary=false --yes) and Uninstall (--purge
+// --remove-binary --yes) commands MUST NOT trigger the prompt — there's
+// no stdin attached to the osascript-spawned shell, so the agent would
+// hang forever waiting for a y/N response. The --yes flag must always
+// short-circuit the prompt regardless of which other destructive flags
+// are present.
+func needsConfirm(purge, removeLogs, yes bool) bool {
+	if yes {
+		return false
+	}
+	return purge || removeLogs
 }
 
 func confirmPrompt() bool {
