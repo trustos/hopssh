@@ -201,6 +201,14 @@ func startLocalAPI(
 	fmt.Fprintf(os.Stdout, "%s%s:%s\n", localAPIReadyPrefix, addr, token)
 	log.Printf("[local-api] listening on %s (token: %s..., file: %s)", addr, token[:8], tokenPath)
 
+	// When running as the system-mode agent (launchd-spawned with
+	// --mirror-dir set), write the token + port into the console
+	// user's well-known mirror dir so the desktop .app can attach
+	// without needing root to read /etc/hop-agent/local-api-token.
+	// Best-effort; bundled mode is the recoverable fallback if this
+	// fails.
+	writeSystemMirrorFiles(systemMirrorDirOverride, token, addr)
+
 	go func() {
 		<-ctx.Done()
 		shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -317,6 +325,12 @@ type LocalStatus struct {
 	Arch            string             `json:"arch"`
 	ConfigDir       string             `json:"configDir"`
 	ServiceStatus   string             `json:"serviceStatus,omitempty"`
+	// RunMode is "bundled" when the agent is a child of a desktop .app
+	// (or otherwise running out of a user configDir) and "system" when
+	// it's the launchd-spawned daemon out of /etc/hop-agent. The
+	// desktop UI uses this to drive the "Run in the background" toggle
+	// state, replacing the previous developer-jargon "Service" row.
+	RunMode         string             `json:"runMode"`
 	Enrollments     []EnrollmentStatus `json:"enrollments"`
 	ParallelInstall *ParallelInstall   `json:"parallelInstall,omitempty"`
 }
@@ -356,6 +370,7 @@ func (s *localAPIServer) buildStatus() LocalStatus {
 		Arch:          runtime.GOARCH,
 		ConfigDir:     s.configDir,
 		ServiceStatus: readServiceStatus(),
+		RunMode:       deriveRunMode(s.configDir),
 		Enrollments:   []EnrollmentStatus{},
 	}
 	for _, e := range s.enrolls.List() {
@@ -372,21 +387,27 @@ func (s *localAPIServer) buildStatus() LocalStatus {
 // bundled) agent. Used by the desktop UI to warn the user before they
 // trigger an enrollment that would fail with a port-bind conflict.
 //
-// `currentConfigDir` is the agent's own configDir; we suppress the
-// "legacy" signal when WE are the legacy configDir owner, which avoids
-// a system-installed hop-agent reporting itself as a parallel install.
+// `currentConfigDir` is the agent's own configDir. When the current
+// agent IS the system-mode install (configDir == /etc/hop-agent), we
+// suppress BOTH signals: the LaunchDaemon plist points at OURSELVES,
+// and the legacy configDir IS our own. Reporting them as a parallel
+// install would surface the warning banner on the post-A1 happy
+// path, which is exactly the inverse of what we want.
 func detectParallelInstall(currentConfigDir string) *ParallelInstall {
 	if runtime.GOOS != "darwin" {
+		return nil
+	}
+	// Self-suppression: when WE are the system agent, neither signal
+	// is a "parallel" install — they're our own install.
+	if currentConfigDir == "/etc/hop-agent" {
 		return nil
 	}
 	pi := &ParallelInstall{}
 	if _, err := os.Stat("/Library/LaunchDaemons/com.hopssh.agent.plist"); err == nil {
 		pi.LaunchDaemon = true
 	}
-	if currentConfigDir != "/etc/hop-agent" {
-		if _, err := os.Stat("/etc/hop-agent/enrollments.json"); err == nil {
-			pi.LegacyConfigDir = true
-		}
+	if _, err := os.Stat("/etc/hop-agent/enrollments.json"); err == nil {
+		pi.LegacyConfigDir = true
 	}
 	if !pi.LaunchDaemon && !pi.LegacyConfigDir {
 		return nil

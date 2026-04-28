@@ -1,60 +1,36 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
   import { agent } from './stores.svelte';
   import { local } from './local-api';
 
+  // ---- Per-network "Leave" state (unchanged behavior) ----
   let leavingName = $state<string | null>(null);
   let leaveError = $state<string | null>(null);
   let leaveDone = $state<string | null>(null);
   let confirmingName = $state<string | null>(null);
 
-  // Install integrations state.
-  let installStatus = $state<{ system_service: boolean; cli_symlink: boolean } | null>(null);
-  let installBusy = $state<string | null>(null); // which command is running
-  let installResult = $state<{ kind: 'ok' | 'err'; msg: string } | null>(null);
-
-  // Danger zone state.
-  // dangerConfirm tracks which destructive row is in confirm-mode
-  // ('signout' | 'reset' | 'uninstall' | null). Two-stage confirm
-  // pattern matches Leave's per-row flow (above) — first click flips
-  // to confirm, second click commits.
+  // ---- Danger zone state ----
+  // Two-stage confirm pattern: first click flips to 'confirm', second
+  // click commits. Mirrors the per-network Leave UX.
   let dangerConfirm = $state<'signout' | 'reset' | 'uninstall' | null>(null);
   let dangerBusy = $state<'signout' | 'reset' | 'uninstall' | null>(null);
   let dangerError = $state<string | null>(null);
-  // Once uninstallDone is set, the Danger zone is replaced by the
-  // post-uninstall banner with Quit instructions + button.
   let uninstallDone = $state<string | null>(null);
+
+  // ---- Background-mode toggle state ----
+  // Drives the "Run in the background" preference. Reads runMode from
+  // /local/status to infer the live state; calls convert/revert Tauri
+  // commands on toggle.
+  let bgConfirm = $state<'enable' | 'disable' | null>(null);
+  let bgBusy = $state(false);
+  let bgError = $state<string | null>(null);
+  let bgDone = $state<string | null>(null);
 
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
-  async function refreshInstallStatus() {
-    if (!isTauri) return;
-    try {
-      installStatus = await invoke('install_status');
-    } catch {
-      installStatus = null;
-    }
-  }
-
-  async function runInstall(cmd: string, label: string) {
-    if (!isTauri) return;
-    installBusy = label;
-    installResult = null;
-    try {
-      const out = await invoke<string>(cmd);
-      installResult = { kind: 'ok', msg: out };
-      await refreshInstallStatus();
-    } catch (e: unknown) {
-      installResult = { kind: 'err', msg: e instanceof Error ? e.message : String(e) };
-    } finally {
-      installBusy = null;
-    }
-  }
-
-  onMount(() => {
-    refreshInstallStatus();
-  });
+  // True when the agent reports it's the launchd-spawned system daemon.
+  // When false, the agent is a child of the .app (bundled mode).
+  let inSystemMode = $derived(agent.status?.runMode === 'system');
 
   async function doLeave(name: string) {
     leavingName = name;
@@ -71,9 +47,6 @@
     }
   }
 
-  // leaveAllNetworks calls local.leave per enrollment in series.
-  // Errors from one leave don't block the others — partial cleanup is
-  // better than nothing, and the user sees a per-failure message.
   async function leaveAllNetworks(): Promise<{ leftCount: number; errors: string[] }> {
     const status = agent.status;
     if (!status) return { leftCount: 0, errors: [] };
@@ -111,15 +84,10 @@
     dangerBusy = 'reset';
     dangerError = null;
     try {
-      // Step 1: leave each network in-process so the running child agent
-      // tears down meshInstances cleanly + releases utun fds.
       const { errors } = await leaveAllNetworks();
       if (errors.length > 0) {
         dangerError = `Some networks failed to leave: ${errors.join('; ')}. Continuing with reset.`;
       }
-      // Step 2: privileged CLI sweeps any leftover system-mode configs
-      // (e.g. /etc/hop-agent if the user had run `sudo hop-agent
-      // install`). Single admin prompt.
       const out = await invoke<string>('reset_hopssh');
       leaveDone = out;
       await agent.refresh();
@@ -135,9 +103,6 @@
     dangerBusy = 'uninstall';
     dangerError = null;
     try {
-      // Same in-process leave step as Reset, then full CLI uninstall
-      // (purge + remove binary + remove kernel-TUN service + remove
-      // CLI symlink). Single admin prompt.
       await leaveAllNetworks();
       const out = await invoke<string>('uninstall_hopssh_full');
       uninstallDone = out;
@@ -156,41 +121,136 @@
       dangerError = `Failed to quit: ${e instanceof Error ? e.message : String(e)}`;
     }
   }
+
+  // ---- Background-mode handlers ----
+  // Toggle ON: convert_to_system_service. The .app's bundled child
+  // shuts down first, then admin prompt installs the LaunchDaemon and
+  // migrates enrollments. ~5s mesh gap.
+  async function doEnableBackground() {
+    bgBusy = true;
+    bgError = null;
+    bgDone = null;
+    try {
+      const msg = await invoke<string>('convert_to_system_service');
+      bgDone = msg;
+      // Refresh status so runMode flips to 'system' in the UI.
+      await agent.refresh();
+    } catch (e: unknown) {
+      bgError = e instanceof Error ? e.message : String(e);
+    } finally {
+      bgBusy = false;
+      bgConfirm = null;
+    }
+  }
+
+  // Toggle OFF: revert_to_bundled. The system LaunchDaemon stops +
+  // unloads, enrollments move back into the user's configDir, and
+  // the .app's bundled child re-spawns on the next refresh.
+  async function doDisableBackground() {
+    bgBusy = true;
+    bgError = null;
+    bgDone = null;
+    try {
+      const msg = await invoke<string>('revert_to_bundled');
+      bgDone = msg;
+      await agent.refresh();
+    } catch (e: unknown) {
+      bgError = e instanceof Error ? e.message : String(e);
+    } finally {
+      bgBusy = false;
+      bgConfirm = null;
+    }
+  }
 </script>
 
 <div class="mx-auto max-w-md p-6">
   <h2 class="text-base font-semibold">Settings</h2>
 
-  <section class="mt-6 rounded-lg border border-zinc-800 bg-zinc-900/40">
-    <div class="border-b border-zinc-800 px-4 py-2.5">
-      <h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-300">
-        Agent
-      </h3>
-    </div>
-    <dl class="divide-y divide-zinc-800 text-xs">
-      <div class="flex justify-between px-4 py-2">
-        <dt class="text-zinc-400">Version</dt>
-        <dd class="font-mono">{agent.status?.version ?? '—'}</dd>
+  <!-- ============================================================
+       Preferences — the user-intent toggles. Replaces the previous
+       "System integrations" section with developer-jargon "Kernel-TUN
+       system service" + "CLI symlink" buttons. Tailscale/ZeroTier
+       convention: one toggle, "Run in the background", phrased in
+       user terms.
+       ============================================================ -->
+  {#if isTauri}
+    <section class="mt-6 rounded-lg border border-zinc-800 bg-zinc-900/40">
+      <div class="border-b border-zinc-800 px-4 py-2.5">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-300">
+          Preferences
+        </h3>
       </div>
-      <div class="flex justify-between px-4 py-2">
-        <dt class="text-zinc-400">Commit</dt>
-        <dd class="font-mono text-[10px] text-zinc-500">{agent.status?.commit ?? '—'}</dd>
-      </div>
-      <div class="flex justify-between px-4 py-2">
-        <dt class="text-zinc-400">OS / Arch</dt>
-        <dd class="font-mono">{agent.status?.os}/{agent.status?.arch}</dd>
-      </div>
-      <div class="flex justify-between px-4 py-2">
-        <dt class="text-zinc-400">Service</dt>
-        <dd>{agent.status?.serviceStatus ?? '—'}</dd>
-      </div>
-      <div class="flex justify-between px-4 py-2">
-        <dt class="text-zinc-400">Config</dt>
-        <dd class="font-mono text-[10px]">{agent.status?.configDir}</dd>
-      </div>
-    </dl>
-  </section>
 
+      <div class="px-4 py-3">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-medium">Run in the background</div>
+            <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
+              Keep hopssh connected when you log out, and reconnect after
+              restart. Briefly disconnects (~5s) while switching modes.
+              Triggers an admin prompt.
+            </p>
+            <div class="mt-1 text-[11px] {inSystemMode ? 'text-emerald-400' : 'text-zinc-500'}">
+              {inSystemMode ? '● On' : '○ Off — only runs while hopssh is open'}
+            </div>
+          </div>
+          <div class="flex shrink-0 gap-2">
+            {#if bgConfirm !== null}
+              <button
+                class="rounded-md bg-emerald-500 px-2.5 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400 disabled:opacity-50"
+                onclick={bgConfirm === 'enable' ? doEnableBackground : doDisableBackground}
+                disabled={bgBusy}
+                type="button"
+              >
+                {bgBusy ? 'Working…' : 'Confirm'}
+              </button>
+              <button
+                class="rounded-md border border-zinc-700 px-2.5 py-1.5 text-xs hover:bg-zinc-800"
+                onclick={() => (bgConfirm = null)}
+                type="button"
+                disabled={bgBusy}
+              >
+                Cancel
+              </button>
+            {:else if inSystemMode}
+              <button
+                class="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:border-amber-500 hover:text-amber-400 disabled:opacity-50"
+                onclick={() => (bgConfirm = 'disable')}
+                disabled={bgBusy}
+                type="button"
+              >
+                Turn off
+              </button>
+            {:else}
+              <button
+                class="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400 disabled:opacity-60"
+                onclick={() => (bgConfirm = 'enable')}
+                disabled={bgBusy}
+                type="button"
+              >
+                Turn on
+              </button>
+            {/if}
+          </div>
+        </div>
+      </div>
+
+      {#if bgError}
+        <div class="border-t border-zinc-800 px-4 py-2 text-xs text-amber-400">
+          {bgError}
+        </div>
+      {/if}
+      {#if bgDone}
+        <div class="border-t border-zinc-800 px-4 py-2 text-xs text-emerald-400">
+          {bgDone}
+        </div>
+      {/if}
+    </section>
+  {/if}
+
+  <!-- ============================================================
+       Networks — per-enrollment Leave (unchanged).
+       ============================================================ -->
   <section class="mt-6 rounded-lg border border-zinc-800 bg-zinc-900/40">
     <div class="border-b border-zinc-800 px-4 py-2.5">
       <h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-300">
@@ -206,9 +266,19 @@
         {#each agent.status.enrollments as e}
           <li class="px-4 py-3">
             <div class="flex items-start justify-between">
-              <div>
-                <div class="text-sm font-medium">{e.name}</div>
-                <div class="mt-0.5 text-[11px] text-zinc-500">{e.endpoint}</div>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2 text-sm font-medium">
+                  <span
+                    class={
+                      e.connected
+                        ? 'inline-block h-2 w-2 shrink-0 rounded-full bg-emerald-400'
+                        : 'inline-block h-2 w-2 shrink-0 rounded-full bg-zinc-600'
+                    }
+                    title={e.connected ? 'connected' : 'disconnected'}
+                  ></span>
+                  <span class="truncate">{e.name}</span>
+                </div>
+                <div class="mt-0.5 truncate text-[11px] text-zinc-500">{e.endpoint}</div>
               </div>
               {#if confirmingName === e.name}
                 <div class="flex gap-2">
@@ -254,120 +324,12 @@
     {/if}
   </section>
 
-  {#if isTauri}
-    <section class="mt-6 rounded-lg border border-zinc-800 bg-zinc-900/40">
-      <div class="border-b border-zinc-800 px-4 py-2.5">
-        <h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-300">
-          System integrations
-        </h3>
-      </div>
-
-      <!-- Kernel-TUN system service -->
-      <div class="border-b border-zinc-800 px-4 py-3">
-        <div class="flex items-start justify-between gap-3">
-          <div class="min-w-0 flex-1">
-            <div class="text-sm font-medium">Kernel-TUN system service</div>
-            <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
-              Runs hop-agent as a launchd daemon so the mesh stays up across
-              user logouts and supports kernel-mode TUN (better for AV apps
-              like Screen Sharing). Triggers a one-time admin prompt.
-            </p>
-            {#if installStatus}
-              <div class="mt-1 text-[11px] {installStatus.system_service ? 'text-emerald-400' : 'text-zinc-500'}">
-                {installStatus.system_service ? '● Installed' : '○ Not installed'}
-              </div>
-            {/if}
-          </div>
-          <div class="flex shrink-0 gap-2">
-            {#if installStatus?.system_service}
-              <button
-                class="rounded-md border border-zinc-700 px-3 py-1.5 text-xs hover:border-red-500 hover:text-red-400 disabled:opacity-50"
-                onclick={() => runInstall('uninstall_system_service', 'uninstall-svc')}
-                disabled={installBusy !== null}
-                type="button"
-              >
-                {installBusy === 'uninstall-svc' ? '…' : 'Uninstall'}
-              </button>
-            {:else}
-              <button
-                class="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400 disabled:opacity-60"
-                onclick={() => runInstall('install_system_service', 'install-svc')}
-                disabled={installBusy !== null}
-                type="button"
-              >
-                {installBusy === 'install-svc' ? 'Installing…' : 'Install'}
-              </button>
-            {/if}
-          </div>
-        </div>
-      </div>
-
-      <!-- CLI symlink -->
-      <div class="px-4 py-3">
-        <div class="flex items-start justify-between gap-3">
-          <div class="min-w-0 flex-1">
-            <div class="text-sm font-medium">Command line tools</div>
-            <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
-              Symlinks
-              <code class="rounded bg-zinc-900 px-1 py-0.5 font-mono">/usr/local/bin/hop</code>
-              to the bundled agent so you can run
-              <code class="rounded bg-zinc-900 px-1 py-0.5 font-mono">hop status</code>
-              from Terminal.
-            </p>
-            {#if installStatus}
-              <div class="mt-1 text-[11px] {installStatus.cli_symlink ? 'text-emerald-400' : 'text-zinc-500'}">
-                {installStatus.cli_symlink ? '● Installed' : '○ Not installed'}
-              </div>
-            {/if}
-          </div>
-          <div class="flex shrink-0 gap-2">
-            {#if installStatus?.cli_symlink}
-              <button
-                class="rounded-md border border-zinc-700 px-3 py-1.5 text-xs hover:border-red-500 hover:text-red-400 disabled:opacity-50"
-                onclick={() => runInstall('uninstall_cli_symlink', 'uninstall-cli')}
-                disabled={installBusy !== null}
-                type="button"
-              >
-                {installBusy === 'uninstall-cli' ? '…' : 'Uninstall'}
-              </button>
-            {:else}
-              <button
-                class="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400 disabled:opacity-60"
-                onclick={() => runInstall('install_cli_symlink', 'install-cli')}
-                disabled={installBusy !== null}
-                type="button"
-              >
-                {installBusy === 'install-cli' ? 'Installing…' : 'Install'}
-              </button>
-            {/if}
-          </div>
-        </div>
-      </div>
-
-      {#if installResult}
-        <div
-          class={installResult.kind === 'ok'
-            ? 'border-t border-zinc-800 px-4 py-2 text-xs text-emerald-400'
-            : 'border-t border-zinc-800 px-4 py-2 text-xs text-amber-400'}
-        >
-          {installResult.msg}
-        </div>
-      {/if}
-    </section>
-  {/if}
-
-  <p class="mt-6 text-[11px] leading-relaxed text-zinc-500">
-    Tip: hopssh runs in user-space mode by default — no admin prompts. The
-    "Kernel-TUN system service" upgrade above gives better Screen Sharing
-    fidelity at the cost of one admin prompt.
-  </p>
-
+  <!-- ============================================================
+       Danger zone — Sign out / Reset / Uninstall.
+       Replaced by the post-uninstall banner once Uninstall succeeds.
+       ============================================================ -->
   {#if isTauri}
     {#if uninstallDone}
-      <!-- Post-uninstall banner replaces the Danger zone once the CLI
-           uninstall has succeeded. The .app itself can't be removed
-           from inside its own running process, so we point the user
-           at the standard macOS drag-to-Trash flow. -->
       <section class="mt-6 rounded-lg border border-emerald-800 bg-emerald-950/40 p-4">
         <h3 class="text-sm font-semibold text-emerald-200">Uninstall complete</h3>
         <p class="mt-2 text-xs leading-relaxed text-emerald-100/90">
@@ -391,7 +353,6 @@
           </h3>
         </div>
 
-        <!-- Sign out of all networks -->
         <div class="border-b border-red-900/60 px-4 py-3">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0 flex-1">
@@ -432,7 +393,6 @@
           </div>
         </div>
 
-        <!-- Reset hopssh -->
         <div class="border-b border-red-900/60 px-4 py-3">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0 flex-1">
@@ -474,15 +434,14 @@
           </div>
         </div>
 
-        <!-- Uninstall hopssh -->
         <div class="px-4 py-3">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0 flex-1">
               <div class="text-sm font-medium">Uninstall hopssh</div>
               <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
-                Removes everything: enrollments, certs, the kernel-TUN
-                system service, the CLI symlink, and the agent binary.
-                After confirm: drag <span class="font-mono">/Applications/hopssh.app</span>
+                Removes everything: enrollments, certs, the background
+                service, and the agent binary. After confirm: drag
+                <span class="font-mono">/Applications/hopssh.app</span>
                 to the Trash. Triggers an admin prompt.
               </p>
             </div>
@@ -525,4 +484,39 @@
       </section>
     {/if}
   {/if}
+
+  <!-- ============================================================
+       About — diagnostic metadata, collapsed by default. Replaces the
+       previous "Agent" panel that surfaced "Service: stopped" as a
+       confusing first-class field.
+       ============================================================ -->
+  <details class="mt-6 rounded-lg border border-zinc-800 bg-zinc-900/40">
+    <summary class="cursor-pointer px-4 py-2.5 text-xs font-semibold uppercase tracking-wide text-zinc-400 hover:text-zinc-200">
+      About
+    </summary>
+    <dl class="border-t border-zinc-800 divide-y divide-zinc-800 text-xs">
+      <div class="flex justify-between px-4 py-2">
+        <dt class="text-zinc-400">Version</dt>
+        <dd class="font-mono">{agent.status?.version ?? '—'}</dd>
+      </div>
+      <div class="flex justify-between px-4 py-2">
+        <dt class="text-zinc-400">Commit</dt>
+        <dd class="font-mono text-[10px] text-zinc-500">{agent.status?.commit ?? '—'}</dd>
+      </div>
+      <div class="flex justify-between px-4 py-2">
+        <dt class="text-zinc-400">OS / Arch</dt>
+        <dd class="font-mono">{agent.status?.os}/{agent.status?.arch}</dd>
+      </div>
+      <div class="flex justify-between px-4 py-2">
+        <dt class="text-zinc-400">Mode</dt>
+        <dd class="font-mono">{inSystemMode ? 'system (background)' : 'bundled (.app)'}</dd>
+      </div>
+      <div class="flex flex-col px-4 py-2">
+        <dt class="text-zinc-400">Config</dt>
+        <dd class="mt-1 break-all font-mono text-[10px] text-zinc-500">
+          {agent.status?.configDir}
+        </dd>
+      </div>
+    </dl>
+  </details>
 </div>

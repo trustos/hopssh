@@ -6,12 +6,56 @@
 //! the global state. After that, all subsequent stdout/stderr is logged.
 
 use std::io::{BufRead, BufReader};
+use std::net::{SocketAddr, TcpStream};
+use std::path::PathBuf;
 use std::process::{ChildStdout, Command, Stdio};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tauri::{AppHandle, Emitter};
 
 use crate::{resolve_agent_path, AppState, LocalAgentEndpoint};
+
+/// try_attach_to_system_agent probes for a `hop-agent install --migrate-from`
+/// LaunchDaemon by reading its mirror token + port file out of the user's
+/// `~/Library/Application Support/hopssh/`. Returns Some(endpoint) when
+/// both files exist + the loopback port accepts a TCP connection. Returns
+/// None on any failure (missing files, bad parse, port not bound) so the
+/// caller falls through to spawning the bundled child. Defense in depth.
+///
+/// File contracts (set by cmd/agent/migrate.go::writeSystemMirrorFiles):
+///   - system-local-api-token  — bearer token, mode 0600, owned by user
+///   - system-local-api-port   — decimal port number, mode 0644, owned by user
+fn try_attach_to_system_agent() -> Option<LocalAgentEndpoint> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        return None;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME").ok()?;
+        let mirror = PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("hopssh");
+        let token_path = mirror.join("system-local-api-token");
+        let port_path = mirror.join("system-local-api-port");
+        if !token_path.exists() || !port_path.exists() {
+            return None;
+        }
+        let token = std::fs::read_to_string(&token_path).ok()?.trim().to_string();
+        let port_str = std::fs::read_to_string(&port_path).ok()?.trim().to_string();
+        let port: u16 = port_str.parse().ok()?;
+        // TCP-connect probe — confirms the launchd-spawned agent is
+        // actually up before we hand the .app's UI a stale endpoint.
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().ok()?;
+        TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
+        Some(LocalAgentEndpoint {
+            host: format!("127.0.0.1:{port}"),
+            token,
+        })
+    }
+}
 
 const READY_PREFIX: &str = "HOPSSH_LOCAL_API:";
 
@@ -25,6 +69,20 @@ pub fn spawn_and_watch(app: &AppHandle, state: &Arc<AppState>) -> Result<(), Str
     ) {
         log::info!("attaching to externally-managed agent at {host}");
         *state.endpoint.lock() = Some(LocalAgentEndpoint { host, token });
+        let _ = app.emit("agent-ready", ());
+        return Ok(());
+    }
+
+    // Probe for a system-mode hop-agent installed via "Run in the
+    // background" (the launchd LaunchDaemon writes a mirror of its
+    // local-api token + listen port into our user-readable Application
+    // Support dir on each (re)bind). If both files exist + the port is
+    // currently bound + a TCP connect succeeds, attach to the system
+    // agent and skip spawning a bundled child. Falls through to bundled
+    // spawn on any failure — defense in depth.
+    if let Some(endpoint) = try_attach_to_system_agent() {
+        log::info!("attached to system-mode hop-agent at {}", endpoint.host);
+        *state.endpoint.lock() = Some(endpoint);
         let _ = app.emit("agent-ready", ());
         return Ok(());
     }

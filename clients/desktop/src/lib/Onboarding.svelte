@@ -22,7 +22,7 @@
   );
 
   let stage = $state<
-    'idle' | 'starting' | 'pending' | 'completing' | 'done' | 'error'
+    'idle' | 'starting' | 'pending' | 'completing' | 'bgprompt' | 'bgconverting' | 'done' | 'error'
   >('idle');
   let userCode = $state('');
   let verificationUrl = $state('');
@@ -99,8 +99,20 @@
         if (r.status === 'complete') {
           stage = 'completing';
           await agent.refresh();
-          stage = 'done';
-          window.setTimeout(onDone, 1500);
+          // Decide whether to surface the post-enrollment "Run in the
+          // background" prompt. We only ask once per Mac via a
+          // localStorage flag — after the first decision the user can
+          // change their mind anytime in Settings → Preferences.
+          // Skip when already in system mode (re-enrolling on a Mac
+          // that's already converted).
+          const alreadyAsked = localStorage.getItem('hopssh.onboarding.bgPromptShown') === '1';
+          const alreadyInSystemMode = agent.status?.runMode === 'system';
+          if (!alreadyAsked && !alreadyInSystemMode) {
+            stage = 'bgprompt';
+          } else {
+            stage = 'done';
+            window.setTimeout(onDone, 1500);
+          }
           return;
         }
       } catch (e: unknown) {
@@ -140,6 +152,36 @@
   }
   function reopenBrowser() {
     if (verificationUrl) void openExternal(verificationUrl);
+  }
+
+  // ---- Post-enrollment "Run in the background" prompt handlers ----
+  // The decision is recorded so we don't nag on subsequent enrollments.
+  // Same default both branches: dismiss to Status after a short success
+  // hold time, mirroring the original onDone flow.
+  let bgPromptError = $state('');
+  async function acceptBackground() {
+    bgPromptError = '';
+    stage = 'bgconverting';
+    try {
+      // The convert flow: AppState.shutdown_agent() (kills bundled
+      // child) → osascript admin prompt → migrate enrollments to
+      // /etc/hop-agent → install LaunchDaemon → mirror token written
+      // for the .app to pick up. ~5s gap.
+      await invoke<string>('convert_to_system_service');
+      await agent.refresh();
+      localStorage.setItem('hopssh.onboarding.bgPromptShown', '1');
+      stage = 'done';
+      window.setTimeout(onDone, 1500);
+    } catch (e: unknown) {
+      bgPromptError = e instanceof Error ? e.message : String(e);
+      // Stay on the bgprompt screen so the user can retry or decline.
+      stage = 'bgprompt';
+    }
+  }
+  function declineBackground() {
+    localStorage.setItem('hopssh.onboarding.bgPromptShown', '1');
+    stage = 'done';
+    window.setTimeout(onDone, 1500);
   }
 
   // ---- Phase 2: parallel-install detection ----
@@ -287,7 +329,7 @@
         Continue with browser
       </button>
     </form>
-  {:else if stage === 'starting' || stage === 'pending' || stage === 'completing' || stage === 'done'}
+  {:else if stage === 'starting' || stage === 'pending' || stage === 'completing' || stage === 'bgprompt' || stage === 'bgconverting' || stage === 'done'}
     <!-- Progress ladder visible across the entire enrollment lifecycle.
          Replaces the previous spinner-only "waiting for approval" UX
          with a clear "you are at step N of 3". -->
@@ -386,6 +428,53 @@
       </button>
     {:else if stage === 'completing'}
       <p class="mt-6 text-sm text-zinc-300">Approved. Bringing the mesh up…</p>
+    {:else if stage === 'bgprompt'}
+      <!-- One-time post-enrollment prompt: Tailscale-style "Run in
+           background" pitch, surfaced at the natural high-commitment
+           moment (right after the user enrolled). Decision is recorded
+           in localStorage so we don't nag again. -->
+      <div class="mt-6 rounded-lg border border-emerald-900/40 bg-emerald-950/30 p-4">
+        <div class="flex items-start gap-3">
+          <span class="mt-0.5 text-xl">🔋</span>
+          <div class="min-w-0 flex-1">
+            <h3 class="text-sm font-semibold text-emerald-100">
+              Keep hopssh running in the background?
+            </h3>
+            <p class="mt-1 text-[12px] leading-relaxed text-zinc-300">
+              Recommended. hopssh reconnects automatically after restart and
+              stays connected when you log out. Screen sharing through the
+              mesh works smoothly too.
+            </p>
+            <p class="mt-1 text-[11px] text-zinc-500">
+              Triggers a one-time admin prompt. You can change this anytime
+              in Settings → Preferences.
+            </p>
+            {#if bgPromptError}
+              <div class="mt-2 rounded-md border border-red-900/50 bg-red-950/40 px-3 py-2 text-[11px] text-red-300">
+                {bgPromptError}
+              </div>
+            {/if}
+            <div class="mt-3 flex gap-2">
+              <button
+                type="button"
+                class="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400"
+                onclick={acceptBackground}
+              >
+                Allow
+              </button>
+              <button
+                type="button"
+                class="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+                onclick={declineBackground}
+              >
+                Only while hopssh is open
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    {:else if stage === 'bgconverting'}
+      <p class="mt-6 text-sm text-zinc-300">Setting up background mode…</p>
     {:else if stage === 'done'}
       <div class="mt-6 rounded-md border border-emerald-900/40 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-300">
         ✓ Connected.

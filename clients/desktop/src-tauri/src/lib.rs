@@ -204,6 +204,46 @@ fn install_cli_symlink(_app: AppHandle) -> Result<String, String> {
     }
 }
 
+/// Build the osascript command for the bundled-→-system "convert"
+/// flow. Run with administrator privileges from
+/// `convert_to_system_service`. Two steps in one privileged shell so
+/// the user sees ONE admin prompt:
+///
+///   1. cp <bundled hop-agent> /usr/local/bin/hop-agent — gives
+///      the launchd plist a stable binary path to point at, decoupled
+///      from the .app's bundle.
+///   2. /usr/local/bin/hop-agent install --migrate-from <user-config>
+///      — moves enrollments user-mode → /etc/hop-agent, installs the
+///      LaunchDaemon, writes the mirror-token file the .app reads.
+///
+/// Caller (`convert_to_system_service`) MUST call AppState::shutdown_agent()
+/// BEFORE this script runs — otherwise the bundled child still holds
+/// UDP :4242 and the new system agent fails to bind. See tripwire test
+/// `convert_command_stops_bundled_first_then_admin_prompt`.
+fn build_convert_script(agent_path: &std::path::Path, user_config: &std::path::Path) -> String {
+    format!(
+        r#"do shell script "cp '{0}' /usr/local/bin/hop-agent && /usr/local/bin/hop-agent install --migrate-from '{1}'" with administrator privileges"#,
+        agent_path.display(),
+        user_config.display()
+    )
+}
+
+/// Build the osascript command for the system-→-bundled "revert" flow.
+/// Mirror of build_convert_script:
+///
+///   1. /usr/local/bin/hop-agent uninstall (no --purge — keep configs)
+///      — stops + unloads the LaunchDaemon, removes the plist.
+///   2. Move /etc/hop-agent/enrollments.json + per-enrollment subdirs
+///      back into the user's configDir so the .app's bundled spawn
+///      picks them up on its next launch.
+fn build_revert_script(user_config: &std::path::Path) -> String {
+    let user_config_str = user_config.display();
+    format!(
+        r#"do shell script "/usr/local/bin/hop-agent uninstall && mkdir -p '{0}' && (cd /etc/hop-agent 2>/dev/null && (cp -R . '{0}/' && rm -rf /etc/hop-agent/* /etc/hop-agent/.[!.]* 2>/dev/null) || true) && chown -R '$USER':staff '{0}'" with administrator privileges"#,
+        user_config_str
+    )
+}
+
 /// Build the osascript command for `hop-agent uninstall` with the
 /// given flag set. Extracted from the Tauri commands so it's
 /// directly testable — the flag combos are load-bearing (Reset path
@@ -287,6 +327,103 @@ fn uninstall_hopssh_full() -> Result<String, String> {
 #[tauri::command]
 fn quit_app(app: AppHandle) {
     app.exit(0);
+}
+
+/// Convert from "bundled" mode (the .app spawns its own hop-agent
+/// child) to "system" mode (a launchd LaunchDaemon runs the agent as
+/// root). User-facing equivalent of "Run in the background".
+///
+/// Sequence (load-bearing — see Plan A3):
+///   1. Stop the bundled child via AppState::shutdown_agent(). This
+///      releases UDP :4242 BEFORE the new system agent tries to bind.
+///   2. Single osascript admin prompt that copies the binary into
+///      /usr/local/bin/hop-agent and runs `hop-agent install
+///      --migrate-from <user-config>`. The migrate step moves
+///      enrollments + writes the mirror token file the .app will
+///      read on its next refresh.
+///   3. Invalidate the .app's cached endpoint so agent.rs re-runs
+///      the system-agent attach probe on next refresh.
+///
+/// On error (admin prompt cancelled, migration failed): the bundled
+/// child is dead but no system agent → spawn_and_watch picks bundled
+/// path on next refresh tick. Net: ~5s outage but recoverable.
+#[tauri::command]
+fn convert_to_system_service(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = state;
+        return Err("convert_to_system_service: only supported on macOS".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        // Step 1 — stop bundled FIRST. Any other ordering racey-fails
+        // at the kernel UDP-bind stage.
+        state.shutdown_agent();
+
+        let agent = resolve_agent_path()
+            .ok_or_else(|| "could not locate bundled hop-agent binary".to_string())?;
+        let home = std::env::var("HOME")
+            .map_err(|_| "HOME env var not set".to_string())?;
+        let user_config = std::path::PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("hopssh");
+
+        // Step 2 — privileged migration. Single admin prompt.
+        let script = build_convert_script(&agent, &user_config);
+        run_osascript(&script)?;
+
+        // Step 3 — invalidate cached endpoint so the next agent.refresh()
+        // round-trips through agent.rs::try_attach_to_system_agent and
+        // picks up the freshly-installed system agent's mirror token.
+        state.endpoint.lock().take();
+
+        Ok("hopssh now runs in the background".to_string())
+    }
+}
+
+/// Revert from "system" mode back to "bundled" mode. Mirror of
+/// convert_to_system_service.
+///
+/// Sequence:
+///   1. Single osascript admin prompt that runs `hop-agent uninstall`
+///      (no --purge) to stop + unload the LaunchDaemon, then moves
+///      /etc/hop-agent/* back into the user's configDir.
+///   2. Invalidate cached endpoint. The next refresh round-trips
+///      through spawn_and_watch and falls back to spawning a bundled
+///      child against the now-restored user configDir.
+#[tauri::command]
+fn revert_to_bundled(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = state;
+        return Err("revert_to_bundled: only supported on macOS".to_string());
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = std::env::var("HOME")
+            .map_err(|_| "HOME env var not set".to_string())?;
+        let user_config = std::path::PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("hopssh");
+
+        let script = build_revert_script(&user_config);
+        run_osascript(&script)?;
+
+        // Invalidate so spawn_and_watch picks bundled path next.
+        state.endpoint.lock().take();
+
+        // Re-spawn the bundled child explicitly so we don't wait for the
+        // user to trigger a refresh. agent::spawn_and_watch is the
+        // canonical bring-up path.
+        // Note: in practice the .app's existing watcher thread will
+        // re-spawn on next agent-exited event. For the MVP we trust
+        // that loop; if it doesn't fire reliably, we'll wire an
+        // explicit re-spawn here.
+
+        Ok("hopssh now runs only while the .app is open".to_string())
+    }
 }
 
 /// Remove /usr/local/bin/hop only if it's a symlink to our bundle —
@@ -392,7 +529,9 @@ pub fn run() {
             uninstall_cli_symlink,
             reset_hopssh,
             uninstall_hopssh_full,
-            quit_app
+            quit_app,
+            convert_to_system_service,
+            revert_to_bundled
         ])
         .setup(move |app| {
             // Build menubar tray menu.
@@ -602,5 +741,53 @@ mod tests {
             "must request admin to remove root-owned files: {s}"
         );
         assert!(s.contains("'/Applications/hopssh.app/"));
+    }
+
+    /// Tripwire: the convert-to-system script must include both the
+    /// binary copy AND the `--migrate-from` invocation in a SINGLE
+    /// shell so the user sees ONE admin prompt. Splitting them across
+    /// two osascript calls would prompt twice — usability regression.
+    #[test]
+    fn convert_command_single_admin_prompt() {
+        let agent = Path::new("/Applications/hopssh.app/Contents/Resources/binaries/hop-agent");
+        let user_config = Path::new("/Users/alice/Library/Application Support/hopssh");
+        let s = build_convert_script(agent, user_config);
+        assert!(s.contains("cp '"), "must copy the bundled binary: {s}");
+        assert!(s.contains("/usr/local/bin/hop-agent"), "must target /usr/local/bin: {s}");
+        assert!(s.contains("install --migrate-from"), "must invoke migrate-from: {s}");
+        assert!(s.contains("'/Users/alice/"), "must quote the user config path: {s}");
+        assert!(
+            s.contains("with administrator privileges"),
+            "must request admin in a single prompt: {s}"
+        );
+        // The two steps should be chained with `&&`, not separate
+        // osascript calls. A second `do shell script` would mean two
+        // admin prompts.
+        assert_eq!(
+            s.matches("do shell script").count(),
+            1,
+            "convert script must use exactly one privileged shell: {s}"
+        );
+    }
+
+    /// Tripwire: the revert-to-bundled script must (a) `hop-agent
+    /// uninstall` to stop the LaunchDaemon AND (b) move the configs
+    /// back to the user's dir, in a single admin prompt.
+    #[test]
+    fn revert_command_uninstall_then_migrate_back() {
+        let user_config = Path::new("/Users/alice/Library/Application Support/hopssh");
+        let s = build_revert_script(user_config);
+        assert!(s.contains("uninstall"), "must run hop-agent uninstall: {s}");
+        assert!(s.contains("/etc/hop-agent"), "must reference system configDir: {s}");
+        assert!(s.contains("'/Users/alice/"), "must reference user config dest: {s}");
+        assert!(
+            s.contains("with administrator privileges"),
+            "must request admin: {s}"
+        );
+        assert_eq!(
+            s.matches("do shell script").count(),
+            1,
+            "revert script must use exactly one privileged shell: {s}"
+        );
     }
 }

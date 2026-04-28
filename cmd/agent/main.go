@@ -125,7 +125,9 @@ func runServe(args []string) {
 	nodeIDFile := fs.String("node-id-file", "", "Path to node ID file")
 	nebulaConfig := fs.String("nebula-config", "", "Path to Nebula config")
 	listenAddr := fs.String("listen", "", "Override listen address (bypasses mesh, uses OS stack)")
+	mirrorDir := fs.String("mirror-dir", "", "When set, mirror the local-api token + port to <mirror-dir>/system-local-api-{token,port} for the desktop .app to discover the system agent (macOS only; written by `hop-agent install --migrate-from`)")
 	fs.Parse(args)
+	systemMirrorDirOverride = strings.TrimSpace(*mirrorDir)
 
 	if *cfgDir != "" {
 		configDir = resolveConfigDir(*cfgDir)

@@ -122,6 +122,10 @@ export interface LocalStatus {
   arch: string;
   configDir: string;
   serviceStatus?: string;
+  // runMode is "bundled" (.app spawns its own child) or "system"
+  // (talks to a launchd LaunchDaemon agent). Drives the "Run in the
+  // background" toggle in Settings.
+  runMode?: 'bundled' | 'system';
   enrollments: EnrollmentStatus[];
   parallelInstall?: ParallelInstall;
 }

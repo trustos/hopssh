@@ -32,7 +32,26 @@ RestartSec=5
 WantedBy=multi-user.target
 `
 
-const agentLaunchdPlist = `<?xml version="1.0" encoding="UTF-8"?>
+// buildLaunchdPlist returns the LaunchDaemon plist content. When
+// mirrorDir is non-empty, the agent is launched with a `--mirror-dir`
+// arg telling it to write the local-api token + port file into the
+// console user's `~/Library/Application Support/hopssh/` directory.
+// The desktop .app reads from there to attach to the system agent
+// (see clients/desktop/src-tauri/src/agent.rs::try_attach_to_system_agent).
+//
+// When mirrorDir is empty (e.g. headless server install via
+// `sudo hop-agent install`), no mirror is written — the agent runs
+// purely as a CLI service.
+func buildLaunchdPlist(mirrorDir string) string {
+	args := []string{"/usr/local/bin/hop-agent", "serve"}
+	if mirrorDir != "" {
+		args = append(args, "--mirror-dir", mirrorDir)
+	}
+	var argsXML strings.Builder
+	for _, a := range args {
+		fmt.Fprintf(&argsXML, "    <string>%s</string>\n", a)
+	}
+	return fmt.Sprintf(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -40,9 +59,7 @@ const agentLaunchdPlist = `<?xml version="1.0" encoding="UTF-8"?>
   <string>com.hopssh.agent</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/hop-agent</string>
-    <string>serve</string>
-  </array>
+%s  </array>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
@@ -55,11 +72,33 @@ const agentLaunchdPlist = `<?xml version="1.0" encoding="UTF-8"?>
   <string>/var/log/hop-agent.log</string>
 </dict>
 </plist>
-`
+`, argsXML.String())
+}
 
 func runAgentInstall(args []string) {
 	fs := flag.NewFlagSet("install", flag.ExitOnError)
+	migrateFrom := fs.String("migrate-from", "", "Move enrollments from this configDir into the system configDir before installing. Used by the desktop client to convert from bundled-mode to system-mode.")
 	fs.Parse(args)
+
+	// --migrate-from path: requires root, moves enrollments before
+	// validating + installing. The migration validates structural
+	// integrity up-front; if it fails, source files stay put + we
+	// abort. See cmd/agent/migrate.go::migrateEnrollmentsToSystem.
+	if *migrateFrom != "" {
+		if !isPrivileged() {
+			fmt.Fprintln(os.Stderr, "Error: --migrate-from requires root (run via sudo).")
+			os.Exit(1)
+		}
+		// Force configDir to the system path. resolveConfigDir already
+		// picks /etc/hop-agent for uid==0, but we set it explicitly so
+		// the rest of this function operates on the post-migration dir.
+		configDir = "/etc/hop-agent"
+		if err := migrateEnrollmentsToSystem(*migrateFrom, configDir); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: migration failed: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("==> Migrated enrollments from %s -> %s\n", *migrateFrom, configDir)
+	}
 
 	loadPrimaryEnrollment()
 
@@ -76,12 +115,30 @@ func runAgentInstall(args []string) {
 		}
 	}
 
+	// On macOS as root, build the launchd plist with a --mirror-dir arg
+	// pointing at the console user's Application Support dir so the
+	// desktop .app can read the agent's local-api token + port. Skip
+	// when no console user is logged in (headless server scenario):
+	// the agent runs CLI-only without surfacing to the .app.
+	var mirrorDir string
+	if runtime.GOOS == "darwin" && isPrivileged() {
+		if user, home, err := resolveConsoleUser(); err == nil {
+			mirrorDir = systemMirrorDir(home)
+			// Pre-create the dir + chown to console user so the agent's
+			// later token writes (running as root) can chown without
+			// surprises.
+			if err := os.MkdirAll(mirrorDir, 0o755); err == nil {
+				_ = exec.Command("chown", user+":staff", mirrorDir).Run()
+			}
+		}
+	}
+
 	switch runtime.GOOS {
 	case "linux":
 		installAgentSystemd()
 	case "darwin":
 		if isPrivileged() {
-			installAgentLaunchd()
+			installAgentLaunchd(mirrorDir)
 		} else {
 			installAgentLaunchdUser()
 		}
@@ -122,13 +179,14 @@ func installAgentSystemd() {
 	fmt.Println("    Logs:    journalctl -u hop-agent -f")
 }
 
-func installAgentLaunchd() {
+func installAgentLaunchd(mirrorDir string) {
 	plistPath := agentLaunchdDaemonPath
 
 	// Unload existing service if present (ignore errors).
 	exec.Command("launchctl", "unload", plistPath).Run()
 
-	if err := os.WriteFile(plistPath, []byte(agentLaunchdPlist), 0644); err != nil {
+	plistContent := buildLaunchdPlist(mirrorDir)
+	if err := os.WriteFile(plistPath, []byte(plistContent), 0644); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: Cannot write %s: %v\n", plistPath, err)
 		fmt.Fprintf(os.Stderr, "Run with sudo: sudo hop-agent install\n")
 		os.Exit(1)
@@ -141,6 +199,9 @@ func installAgentLaunchd() {
 	fmt.Println("==> hop-agent service installed and started.")
 	fmt.Printf("    Plist:  %s\n", plistPath)
 	fmt.Println("    Logs:   /var/log/hop-agent.log")
+	if mirrorDir != "" {
+		fmt.Printf("    Mirror: %s (token + port for the desktop .app)\n", mirrorDir)
+	}
 	fmt.Println("    Stop:   sudo launchctl unload " + plistPath)
 	fmt.Println("    Start:  sudo launchctl load " + plistPath)
 }

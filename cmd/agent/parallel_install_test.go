@@ -42,21 +42,23 @@ func TestDetectParallelInstall_NotDarwin(t *testing.T) {
 	}
 }
 
-// TestDetectParallelInstall_LegacyConfigDirSelfSuppress ensures the
-// detector does NOT report `legacyConfigDir=true` when WE are the
-// /etc/hop-agent owner. A system-installed hop-agent talking to its
-// own status endpoint should not see itself as a parallel install.
-func TestDetectParallelInstall_LegacyConfigDirSelfSuppress(t *testing.T) {
+// TestDetectParallelInstall_SystemAgentSelfSuppress ensures the
+// detector returns nil ENTIRELY when the agent is the system-mode
+// install (configDir == /etc/hop-agent). After Phase A1's migration,
+// the LaunchDaemon plist exists AND /etc/hop-agent/enrollments.json
+// exists — but that's OUR install. Reporting it as a parallel install
+// would surface the warning banner on the post-conversion happy path.
+//
+// Locks in the v0.10.50 self-suppression contract.
+func TestDetectParallelInstall_SystemAgentSelfSuppress(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("darwin-specific")
 	}
-	// Build a fake "current configDir" that mimics the /etc layout AND
-	// pass it as the configDir. The detector must short-circuit before
-	// stating /etc/hop-agent.
-	fakeCurrent := "/etc/hop-agent"
-	pi := detectParallelInstall(fakeCurrent)
-	if pi != nil && pi.LegacyConfigDir {
-		t.Errorf("detector flagged legacyConfigDir while WE were /etc/hop-agent (configDir=%q): %+v", fakeCurrent, pi)
+	// When configDir == /etc/hop-agent, detector must return nil
+	// regardless of whether the plist or registry files exist.
+	pi := detectParallelInstall("/etc/hop-agent")
+	if pi != nil {
+		t.Errorf("system-mode agent reported itself as parallel install: %+v", pi)
 	}
 }
 
