@@ -1193,6 +1193,58 @@ func (h *ProxyHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// PruneOfflineNodes hard-deletes offline nodes for the given network
+// older than `olderThan` (default 0s — wipes ALL currently-offline).
+// Admin-only. Used by the Nodes-tab "Clean up offline nodes" button
+// to garbage-collect zombie rows from re-enrollments without waiting
+// for the hourly sweep.
+func (h *ProxyHandler) PruneOfflineNodes(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<10)
+	user := auth.UserFromContext(r.Context())
+	networkID := chi.URLParam(r, "networkID")
+
+	// Validate the network exists + user is admin. We don't need a
+	// node here so the requireAdmin helper isn't quite right (it
+	// also wants nodeID); inline the access check.
+	network, err := h.Networks.Get(networkID)
+	if err != nil || network == nil {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return
+	}
+	membership, _ := h.Members.GetMembership(networkID, user.ID)
+	access := authz.CheckAccess(user, network, membership)
+	if !access.CanAdmin() {
+		http.Error(w, "admin access required", http.StatusForbidden)
+		return
+	}
+
+	// Body is optional. Default = wipe all offline (cutoff = now).
+	var body struct {
+		// OlderThanSeconds: only prune offline rows whose last_seen_at
+		// is older than (now - OlderThanSeconds). 0 = wipe all.
+		OlderThanSeconds int64 `json:"olderThanSeconds"`
+	}
+	if r.Body != nil && r.ContentLength > 0 {
+		_ = json.NewDecoder(r.Body).Decode(&body) // permissive: empty body OK
+	}
+
+	cutoff := time.Now().Unix() - body.OlderThanSeconds
+	deleted, err := h.Nodes.PruneOfflineSince(networkID, cutoff)
+	if err != nil {
+		http.Error(w, "prune failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	h.audit(user.ID, "nodes.prune", &networkID, nil,
+		jsonDetails(map[string]any{"deletedCount": deleted, "olderThanSeconds": body.OlderThanSeconds}))
+	if h.Events != nil {
+		details := jsonDetails(map[string]any{"deletedCount": deleted})
+		h.Events.Record(networkID, "nodes.pruned", nil, nil, details)
+	}
+
+	writeJSON(w, map[string]int64{"deletedCount": deleted})
+}
+
 // checkOrigin validates the WebSocket Origin header against allowed origins.
 // If no AllowedOrigins are configured, falls back to same-origin check.
 func (h *ProxyHandler) checkOrigin(r *http.Request) bool {

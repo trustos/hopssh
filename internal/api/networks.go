@@ -262,6 +262,24 @@ func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 
 	nodes, _ := h.Nodes.ListForNetwork(networkID)
 
+	// Synthetic lighthouse: the Nebula lighthouse process is started by
+	// NetworkManager.StartNetwork, not enrolled as a real node row.
+	// The dashboard topology legend promises a diamond shape for it,
+	// and users intuitively expect to see "the network's hub" in the
+	// graph. Inject a virtual entry so the topology component renders
+	// it. The Nodes-tab counter filters this out by nodeType.
+	//
+	// Status is hardcoded "online" for v1: if the user can hit
+	// GetNetwork, the control plane is up and the lighthouse (co-
+	// located) is up too. Once we add a real lighthouse health probe,
+	// gate this on it.
+	lighthousePrefix, lighthouseErr := pki.ServerAddress(network.NebulaSubnet)
+	var lighthouseIP string
+	if lighthouseErr == nil && lighthousePrefix.IsValid() {
+		lighthouseIP = lighthousePrefix.Addr().String()
+	}
+	lighthouseLastSeen := time.Now().Unix()
+
 	// Map to safe DTO — never expose AgentToken, EnrollmentToken, or keys.
 	//
 	// Per-node we first compute effectiveStatus (offline if heartbeat
@@ -304,12 +322,35 @@ func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
+	// Append the synthetic lighthouse entry. ID prefix lets the
+	// frontend distinguish it from real DB rows (e.g. for the Nodes-
+	// tab filter that excludes it from the counter).
+	if lighthouseIP != "" {
+		nodeResponses = append(nodeResponses, NodeResponse{
+			ID:           "lighthouse-" + network.ID,
+			NetworkID:    network.ID,
+			Hostname:     "lighthouse",
+			NebulaIP:     lighthouseIP,
+			NodeType:     "lighthouse",
+			Status:       "online",
+			LastSeenAt:   &lighthouseLastSeen,
+			Connectivity: "direct",
+		})
+	}
+
+	// nodeCount excludes the synthetic lighthouse so the Nodes-tab
+	// counter still reflects real enrollments.
+	realNodeCount := len(nodeResponses)
+	if lighthouseIP != "" {
+		realNodeCount--
+	}
+
 	writeJSON(w, map[string]interface{}{
 		"id":             network.ID,
 		"name":           network.Name,
 		"slug":           network.Slug,
 		"subnet":         network.NebulaSubnet,
-		"nodeCount":      len(nodeResponses),
+		"nodeCount":      realNodeCount,
 		"lighthousePort": network.LighthousePort,
 		"dnsDomain":      network.DNSDomain,
 		"role":           access.Role,

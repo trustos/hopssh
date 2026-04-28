@@ -35,18 +35,53 @@
 		}
 	}
 
+	// dedupNodes collapses zombie rows from re-enrollments. Each
+	// `hop-agent enroll` creates a new UUID node row server-side
+	// (no unique constraint on hostname); when a Mac re-enrolls, the
+	// old row stays in the DB until the auto-prune kicks in (~7d
+	// default). Without dedup the topology graph shows three
+	// "yavors-macbook-pro" nodes instead of one.
+	//
+	// Predicate: collapse only when hostname AND nebulaIp match.
+	// Different IPs with the same hostname = two genuinely-different
+	// machines (e.g., corporate-imaged laptops sharing a default
+	// hostname); both must stay visible. Within a duplicate group,
+	// keep the row with the most recent lastSeenAt.
+	//
+	// Exported for testing (network-topology.dedup.test.ts).
+	export function dedupNodes(ns: NodeResponse[]): NodeResponse[] {
+		const winners = new Map<string, NodeResponse>();
+		for (const n of ns) {
+			// Synthetic lighthouse never collides; pass through.
+			if (n.nodeType === 'lighthouse') {
+				winners.set(n.id, n);
+				continue;
+			}
+			const vpn = (n.nebulaIP ?? '').split('/')[0];
+			const key = `${n.hostname}::${vpn}`;
+			const existing = winners.get(key);
+			if (!existing || (n.lastSeenAt ?? 0) > (existing.lastSeenAt ?? 0)) {
+				winners.set(key, n);
+			}
+		}
+		return Array.from(winners.values());
+	}
+
 	// Build cytoscape elements from the network's node list + each
 	// node's reported peers. Each directed edge carries the reporter's
 	// view of one peer (A→B direct OR A→B relayed). If both A and B
 	// report each other, we end up with two edges — one per direction.
 	// That IS the diagnostic signal; asymmetric views (A says direct,
 	// B says relayed) show as two different-colored edges.
-	function buildElements(ns: NodeResponse[], nowSec: number) {
+	function buildElements(allNs: NodeResponse[], nowSec: number) {
+		const ns = dedupNodes(allNs);
 		const elements: cytoscape.ElementDefinition[] = [];
 		const byVpn = new Map<string, NodeResponse>();
+		let lighthouse: NodeResponse | null = null;
 		for (const n of ns) {
 			const vpn = (n.nebulaIP ?? '').split('/')[0];
 			if (vpn) byVpn.set(vpn, n);
+			if (n.nodeType === 'lighthouse') lighthouse = n;
 			elements.push({
 				data: {
 					id: n.id,
@@ -56,18 +91,45 @@
 				},
 			});
 		}
+		const drawnEdges = new Set<string>();
 		for (const src of ns) {
 			if (!src.peers || src.peers.length === 0) continue;
 			for (const p of src.peers) {
 				const dst = byVpn.get(p.vpnAddr);
 				if (!dst) continue; // peer not in this network's nodes list (lighthouse or stale)
+				const edgeID = `${src.id}→${dst.id}`;
+				drawnEdges.add(edgeID);
 				elements.push({
 					data: {
-						id: `${src.id}→${dst.id}`,
+						id: edgeID,
 						source: src.id,
 						target: dst.id,
 						colour: p.direct ? '#10b981' : '#3b82f6',
 						kind: p.direct ? 'direct' : 'relayed',
+					},
+				});
+			}
+		}
+		// Synthetic lighthouse edges: every online peer has a path to
+		// the lighthouse (or the network wouldn't be functioning), but
+		// peer heartbeats don't always include lighthouse traffic in
+		// their `peers` list. Without these synthetic edges the
+		// lighthouse renders as an isolated diamond, which reads as
+		// "the lighthouse is broken" — wrong. Source = peer, target =
+		// lighthouse for every online peer not already edge-connected.
+		if (lighthouse) {
+			for (const n of ns) {
+				if (n.nodeType === 'lighthouse') continue;
+				if (displayStatus(n, nowSec) !== 'online') continue;
+				const edgeID = `${n.id}→${lighthouse.id}`;
+				if (drawnEdges.has(edgeID)) continue;
+				elements.push({
+					data: {
+						id: edgeID,
+						source: n.id,
+						target: lighthouse.id,
+						colour: '#64748b', // slate — distinguishes from peer-to-peer edges
+						kind: 'lighthouse',
 					},
 				});
 			}

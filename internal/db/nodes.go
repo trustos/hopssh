@@ -528,6 +528,51 @@ func (s *NodeStore) Delete(id string) error {
 	return q.DeleteNode(context.Background(), id)
 }
 
+// PruneOfflineSince hard-deletes offline nodes whose last_seen_at is
+// older than cutoff (unix seconds), scoped to a single network. Used
+// by the dashboard's "Clean up offline nodes" admin button + the
+// hourly sweeper goroutine to garbage-collect zombie rows from
+// re-enrollments. Returns the number of rows deleted.
+//
+// The schema has no unique constraint on (network_id, hostname), so
+// each `hop-agent enroll` creates a fresh UUID node row. Without
+// pruning, a Mac that's been re-enrolled five times leaves five
+// rows on the server forever — they show up as gray ghosts in the
+// topology graph and inflate the Nodes-tab counter.
+//
+// Hard-delete (consistent with NodeStore.Delete) — soft-delete adds
+// API surface without value here. Callers expect the row to actually
+// disappear from subsequent ListForNetwork responses.
+func (s *NodeStore) PruneOfflineSince(networkID string, cutoff int64) (int64, error) {
+	res, err := s.wdb.Exec(
+		`DELETE FROM nodes WHERE network_id = ? AND status = 'offline' AND last_seen_at < ?`,
+		networkID, cutoff,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("prune offline nodes: %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
+// PruneOfflineSinceAllNetworks is the cross-network variant called by
+// the periodic sweeper. Cheap on a single SQLite write since the
+// WHERE has no joins. Audit trail isn't emitted here — the sweep is
+// background maintenance, not a user action; per-network pruning
+// triggered from the dashboard goes through the audit-logging API
+// handler.
+func (s *NodeStore) PruneOfflineSinceAllNetworks(cutoff int64) (int64, error) {
+	res, err := s.wdb.Exec(
+		`DELETE FROM nodes WHERE status = 'offline' AND last_seen_at < ?`,
+		cutoff,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("prune offline nodes (all): %w", err)
+	}
+	n, _ := res.RowsAffected()
+	return n, nil
+}
+
 func (s *NodeStore) DeleteForNetwork(networkID string) error {
 	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.DeleteNodesForNetwork(context.Background(), networkID)

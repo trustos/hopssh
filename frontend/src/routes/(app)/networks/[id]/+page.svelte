@@ -163,9 +163,44 @@
 	const networkId = $derived(page.params.id!);
 
 	// All nodes including pending (pending shown with special style).
-	const visibleNodes = $derived(network?.nodes ?? []);
+	// Excludes the synthetic lighthouse entry — it's a topology-only
+	// affordance, not a real enrolled node, so the Nodes-tab counter
+	// + table mustn't include it.
+	const visibleNodes = $derived(
+		(network?.nodes ?? []).filter(n => n.nodeType !== 'lighthouse')
+	);
 
 	const hasPendingNodes = $derived(network?.nodes.some(n => n.status === 'pending') ?? false);
+
+	// Offline node count for the "Clean up offline" admin button.
+	// The dashboard's auto-prune sweeper handles the >7d case in the
+	// background; this button is for users who want to wipe zombie
+	// rows immediately (e.g. after dev-test re-enrollments).
+	const offlineCount = $derived(
+		visibleNodes.filter(n => n.status === 'offline').length
+	);
+	let pruning = $state(false);
+	let pruneError = $state('');
+	async function pruneOfflineNodes() {
+		if (!isAdmin || offlineCount === 0) return;
+		if (!confirm(`Remove ${offlineCount} offline node(s)? This is permanent.`)) return;
+		pruning = true;
+		pruneError = '';
+		try {
+			// olderThanSeconds: 0 → wipe ALL offline rows immediately.
+			const res = await fetch(`/api/networks/${networkId}/nodes/prune`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ olderThanSeconds: 0 })
+			});
+			if (!res.ok) throw new Error(`HTTP ${res.status}`);
+			await refresh();
+		} catch (e) {
+			pruneError = e instanceof Error ? e.message : 'Prune failed';
+		} finally {
+			pruning = false;
+		}
+	}
 
 	// Push node-offline status into the terminals store for every open
 	// session that targets a node on THIS network. Reactive via both
@@ -677,6 +712,26 @@
 				</div>
 			{/if}
 
+			{#if isAdmin && offlineCount > 0}
+				<!-- Admin-only "Clean up offline nodes" affordance. The
+				     server-side hourly sweeper auto-prunes nodes offline
+				     >7d; this button is for clearing the rest immediately
+				     (e.g., after dev re-enrollments leave many ghost rows
+				     within the protected 7-day window). -->
+				<div class="mb-3 flex items-center justify-between rounded-lg border border-dashed p-3 text-xs">
+					<div class="text-muted-foreground">
+						{offlineCount} offline node{offlineCount === 1 ? '' : 's'} cluttering the topology.
+						{#if pruneError}<span class="ml-2 text-destructive">{pruneError}</span>{/if}
+					</div>
+					<button
+						onclick={pruneOfflineNodes}
+						disabled={pruning}
+						class="rounded-md border border-destructive/50 px-3 py-1 text-xs text-destructive hover:bg-destructive/10 disabled:opacity-50"
+					>
+						{pruning ? 'Removing…' : 'Clean up'}
+					</button>
+				</div>
+			{/if}
 			{#if visibleNodes.length === 0}
 				<div class="rounded-lg border border-dashed p-8 text-center">
 					<p class="mb-2 text-lg font-medium">No nodes yet</p>
