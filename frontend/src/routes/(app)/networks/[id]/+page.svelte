@@ -755,6 +755,8 @@
 								<Table.Head class="hidden sm:table-cell">Capabilities</Table.Head>
 								<Table.Head class="hidden lg:table-cell">IP</Table.Head>
 								<Table.Head class="hidden md:table-cell">DNS</Table.Head>
+								<Table.Head class="hidden md:table-cell">OS</Table.Head>
+								<Table.Head class="hidden lg:table-cell">Client</Table.Head>
 								<Table.Head class="hidden sm:table-cell">Last Seen</Table.Head>
 								<Table.Head class="hidden lg:table-cell">Version</Table.Head>
 								<Table.Head class="text-right">Actions</Table.Head>
@@ -860,6 +862,30 @@
 									<td class="hidden md:table-cell px-4 py-3 font-mono text-muted-foreground text-xs">
 										{#if node.dnsName || node.hostname}
 											{node.dnsName || node.hostname}.{network.dnsDomain}
+										{:else}
+											<span class="text-muted-foreground/50">—</span>
+										{/if}
+									</td>
+									<td class="hidden md:table-cell px-4 py-3 text-xs">
+										{#if node.os === 'darwin'}
+											<span title="macOS">macOS</span>
+										{:else if node.os === 'linux'}
+											<span title="Linux">Linux</span>
+										{:else if node.os === 'windows'}
+											<span title="Windows">Windows</span>
+										{:else if node.os}
+											<span class="text-muted-foreground">{node.os}</span>
+										{:else}
+											<span class="text-muted-foreground/50">—</span>
+										{/if}
+									</td>
+									<td class="hidden lg:table-cell px-4 py-3 text-xs">
+										{#if node.nodeType === 'lighthouse'}
+											<span class="text-muted-foreground/50">—</span>
+										{:else if node.clientType === 'desktop'}
+											<span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium" title="Running the macOS desktop app">Desktop</span>
+										{:else if node.clientType === 'cli'}
+											<span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium text-muted-foreground" title="Running the standalone hop-agent CLI">CLI</span>
 										{:else}
 											<span class="text-muted-foreground/50">—</span>
 										{/if}

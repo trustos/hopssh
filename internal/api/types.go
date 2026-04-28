@@ -342,6 +342,12 @@ type NodeResponse struct {
 	PeersRelayed    *int64   `json:"peersRelayed,omitempty" example:"1"`
 	PeersReportedAt *int64   `json:"peersReportedAt,omitempty" example:"1712361600"`
 	AgentVersion    *string  `json:"agentVersion,omitempty" example:"v0.9.15"`
+	// ClientType is "desktop" (bundled in or installed by the macOS
+	// .app) or "cli" (standalone hop-agent binary). Build-baked at
+	// the agent — not affected by runtime mode (a "desktop" build
+	// running as the system LaunchDaemon still reports "desktop").
+	// Empty string for legacy / pre-v0.10.52 agents that don't report.
+	ClientType      *string  `json:"clientType,omitempty" example:"desktop"`
 	// Connectivity is derived from PeersDirect / PeersRelayed at serialize time.
 	// Values: "" (unknown — agent hasn't reported), "idle" (no peers),
 	// "direct" (all peers direct), "relayed" (all peers relayed),

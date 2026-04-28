@@ -202,6 +202,11 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		PeersRelayed *int64            `json:"peersRelayed,omitempty"`
 		Peers        []json.RawMessage `json:"peers,omitempty"` // re-serialized verbatim into peer_state
 		AgentVersion *string           `json:"agentVersion,omitempty"`
+		// ClientType: "desktop" (bundled inside / installed by the macOS
+		// .app) or "cli" (standalone CLI binary). Build-baked at the
+		// agent (-X main.clientType=...). Empty / absent on legacy
+		// agents — server treats that as unknown and renders "—".
+		ClientType   *string           `json:"clientType,omitempty"`
 		// SelfEndpoints (Phase G): agent's own observed reachable
 		// endpoints (NAT-PMP public + local interface IPs paired
 		// with listen port). Cached server-side and merged into
@@ -247,6 +252,14 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	h.Nodes.RecordHeartbeat(node.ID, captureAgentIP(r), body.PeersDirect, body.PeersRelayed, peerStatePtr, body.AgentVersion)
+
+	// Persist client_type out-of-band of the buffered heartbeat path.
+	// It's build-baked at the agent + rarely changes, so a per-heartbeat
+	// idempotent UPDATE-by-PK is the cheapest path that doesn't require
+	// regenerating the sqlc heartbeat query.
+	if body.ClientType != nil {
+		_ = h.Nodes.SetClientType(node.ID, strings.TrimSpace(*body.ClientType))
+	}
 
 	// Phase G: cache agent's self-reported endpoints. Layer 1 (v0.10.27):
 	// each endpoint carries its own expiry derived from the agent's

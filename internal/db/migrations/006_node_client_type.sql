@@ -1,0 +1,13 @@
+-- Track what kind of hop-agent client each node is running:
+--   "desktop" — bundled inside or installed by the macOS .app
+--   "cli"     — standalone hop-agent binary (curl|sh, package manager)
+--   ""        — legacy / pre-v0.10.52 agents that don't report
+--
+-- Self-reported via heartbeat (`clientType` body field in /api/renew).
+-- Baked at agent build time via -ldflags `-X main.clientType=...`,
+-- so the value reflects how the binary was packaged, not the runtime
+-- mode (a "desktop" binary moved to system-mode via the convert flow
+-- still reports "desktop"). The dashboard surfaces this as a badge in
+-- the Nodes tab so users can see at a glance which machines are GUI-
+-- managed vs CLI-managed.
+ALTER TABLE nodes ADD COLUMN client_type TEXT;

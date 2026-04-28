@@ -42,9 +42,14 @@ TARBALL="/tmp/hopssh-app-dev-$(date +%s).tar.gz"
 
 echo "==> Building universal hop-agent (arm64 + amd64 lipo)..."
 cd "${REPO_ROOT}"
-GOOS=darwin GOARCH=arm64 go build -mod=vendor -ldflags="-s -w" \
+# ClientType=desktop tells the control plane this binary is the .app
+# sidecar so the dashboard's Nodes tab can render "🖥 Desktop" instead
+# of "⌨ CLI". CLI builds via `make build` leave it empty (server
+# defaults to "cli" for empty/unknown).
+DESKTOP_LDFLAGS="-s -w -X github.com/trustos/hopssh/internal/buildinfo.ClientType=desktop"
+GOOS=darwin GOARCH=arm64 go build -mod=vendor -ldflags="${DESKTOP_LDFLAGS}" \
     -o /tmp/hop-agent-darwin-arm64 ./cmd/agent
-GOOS=darwin GOARCH=amd64 go build -mod=vendor -ldflags="-s -w" \
+GOOS=darwin GOARCH=amd64 go build -mod=vendor -ldflags="${DESKTOP_LDFLAGS}" \
     -o /tmp/hop-agent-darwin-amd64 ./cmd/agent
 lipo -create -output /tmp/hop-agent-universal \
     /tmp/hop-agent-darwin-arm64 /tmp/hop-agent-darwin-amd64

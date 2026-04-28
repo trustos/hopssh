@@ -26,7 +26,13 @@ use crate::{resolve_agent_path, AppState, LocalAgentEndpoint};
 /// File contracts (set by cmd/agent/migrate.go::writeSystemMirrorFiles):
 ///   - system-local-api-token  — bearer token, mode 0600, owned by user
 ///   - system-local-api-port   — decimal port number, mode 0644, owned by user
-fn try_attach_to_system_agent() -> Option<LocalAgentEndpoint> {
+///
+/// `pub(crate)` so the convert_to_system_service Tauri command can re-run
+/// the probe inline after a successful migration without restarting the
+/// .app. Without this, the .app's spawn_and_watch only runs ONCE at
+/// launch, leaving the WebView stranded with no endpoint after the
+/// bundled child got SIGKILLed.
+pub(crate) fn try_attach_to_system_agent() -> Option<LocalAgentEndpoint> {
     #[cfg(not(target_os = "macos"))]
     {
         return None;

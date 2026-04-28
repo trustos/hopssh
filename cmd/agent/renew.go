@@ -120,6 +120,12 @@ func sendHeartbeat(inst *meshInstance) error {
 		"nodeId":       inst.nodeID(),
 		"agentVersion": buildinfo.Version, // "vX.Y.Z" (tagged) or "vX.Y.Z-N-gSHORTSHA(-dirty)" (dev)
 	}
+	// ClientType is build-baked (-X main.clientType=...) so the dashboard
+	// can show "Desktop" vs "CLI" provenance per node. Skip when empty
+	// (legacy/dev builds) — the server treats absent as unknown.
+	if buildinfo.ClientType != "" {
+		reqBody["clientType"] = buildinfo.ClientType
+	}
 	if direct, relayed, peers, ok := collectPeerState(inst.control(), inst.pathQuality); ok {
 		reqBody["peersDirect"] = direct
 		reqBody["peersRelayed"] = relayed

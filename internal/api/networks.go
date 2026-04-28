@@ -262,6 +262,10 @@ func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 
 	nodes, _ := h.Nodes.ListForNetwork(networkID)
 
+	// client_type isn't on the sqlc-generated Node struct; pull it via
+	// a separate cheap query and inject into NodeResponse below.
+	clientTypes := h.Nodes.ClientTypesForNetwork(networkID)
+
 	// Synthetic lighthouse: the Nebula lighthouse process is started by
 	// NetworkManager.StartNetwork, not enrolled as a real node row.
 	// The dashboard topology legend promises a diamond shape for it,
@@ -298,6 +302,10 @@ func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 				status = "degraded"
 			}
 		}
+		var ct *string
+		if v, ok := clientTypes[n.ID]; ok && v != "" {
+			ct = &v
+		}
 		nodeResponses = append(nodeResponses, NodeResponse{
 			ID:              n.ID,
 			NetworkID:       n.NetworkID,
@@ -317,6 +325,7 @@ func (h *NetworkHandler) GetNetwork(w http.ResponseWriter, r *http.Request) {
 			PeersRelayed:    n.PeersRelayed,
 			PeersReportedAt: n.PeersReportedAt,
 			AgentVersion:    n.AgentVersion,
+			ClientType:      ct,
 			Connectivity:    deriveConnectivity(n.PeersDirect, n.PeersRelayed, n.NodeType),
 			Peers:           parsePeerState(n.PeerState),
 		})

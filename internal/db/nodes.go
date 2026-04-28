@@ -49,6 +49,7 @@ type Node struct {
 	PeersReportedAt     *int64 // unix seconds of the last heartbeat that carried peer state
 	PeerState           *string // JSON array: [{vpnAddr, direct, lastHandshakeSec, remoteAddr}, ...]; nil if never reported
 	AgentVersion        *string // self-reported hop-agent build (e.g. "v0.9.15"); nil for pre-v0.9.15 agents
+	ClientType          *string // "desktop" | "cli" | nil; build-baked at the agent, written once via SetClientType
 }
 
 // HasCapability checks if a node has a specific capability enabled.
@@ -521,6 +522,49 @@ func (s *NodeStore) Rename(id, hostname, dnsName string) error {
 		Hostname: hostname,
 		ID:       id,
 	})
+}
+
+// ClientTypesForNetwork returns a map from node ID to client_type for
+// every node in the network where client_type is non-null. Used by
+// GetNetwork to inject the field into NodeResponse without breaking
+// the sqlc abstraction (the existing ListForNetwork doesn't yet
+// SELECT client_type because regenerating sqlc adds friction). Cheap
+// — a single network has < 100 nodes typically.
+func (s *NodeStore) ClientTypesForNetwork(networkID string) map[string]string {
+	rows, err := s.rdb.Query(
+		`SELECT id, client_type FROM nodes WHERE network_id = ? AND client_type IS NOT NULL AND client_type != ''`,
+		networkID,
+	)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var id, ct string
+		if err := rows.Scan(&id, &ct); err != nil {
+			continue
+		}
+		out[id] = ct
+	}
+	return out
+}
+
+// SetClientType updates the client_type column for a node. Called from
+// the heartbeat handler when the agent reports its build-baked client
+// type ("desktop" or "cli"). Cheap UPDATE-by-id; bypasses the buffered
+// heartbeat path because client_type is build-baked and rarely changes
+// — the cost is one write per heartbeat which is fine at our scale.
+// Idempotent (re-writes the same value most of the time).
+func (s *NodeStore) SetClientType(nodeID, clientType string) error {
+	if clientType == "" {
+		return nil
+	}
+	_, err := s.wdb.Exec(
+		`UPDATE nodes SET client_type = ? WHERE id = ?`,
+		clientType, nodeID,
+	)
+	return err
 }
 
 func (s *NodeStore) Delete(id string) error {

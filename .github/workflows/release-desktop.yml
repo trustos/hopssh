@@ -82,9 +82,13 @@ jobs:
       - name: "Build hop-agent (universal arm64 + amd64 lipo)"
         run: |
           mkdir -p clients/desktop/src-tauri/binaries
-          GOOS=darwin GOARCH=arm64 go build -mod=vendor -ldflags='-s -w' \
+          # Bake clientType=desktop so the dashboard renders "🖥 Desktop"
+          # for nodes running this binary (vs "⌨ CLI" for `make build`
+          # standalone binaries).
+          LDFLAGS='-s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=${{ github.ref_name }} -X github.com/trustos/hopssh/internal/buildinfo.ClientType=desktop'
+          GOOS=darwin GOARCH=arm64 go build -mod=vendor -ldflags="$LDFLAGS" \
             -o /tmp/hop-agent-darwin-arm64 ./cmd/agent
-          GOOS=darwin GOARCH=amd64 go build -mod=vendor -ldflags='-s -w' \
+          GOOS=darwin GOARCH=amd64 go build -mod=vendor -ldflags="$LDFLAGS" \
             -o /tmp/hop-agent-darwin-amd64 ./cmd/agent
           lipo -create -output clients/desktop/src-tauri/binaries/hop-agent \
             /tmp/hop-agent-darwin-arm64 /tmp/hop-agent-darwin-amd64

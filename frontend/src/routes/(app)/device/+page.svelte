@@ -6,9 +6,11 @@
 	import type { NetworkResponse } from '$lib/types/api';
 	import * as Card from '$lib/components/ui/card/index.js';
 	import * as Alert from '$lib/components/ui/alert/index.js';
+	import * as Dialog from '$lib/components/ui/dialog/index.js';
 	import * as Select from '$lib/components/ui/select/index.js';
 	import * as InputOTP from '$lib/components/ui/input-otp/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
+	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { CheckCircle, Minus } from 'lucide-svelte';
@@ -33,6 +35,18 @@
 	let success = $state(false);
 	let submitting = $state(false);
 	let loadingNetworks = $state(true);
+
+	// Create-network-inline state. When the user lands at /device with
+	// a valid code but ZERO networks, we surface an inline create-
+	// network CTA so they don't have to drop the code, navigate to
+	// /, create the network, and come back. After successful create,
+	// we refresh the network list and auto-submit the device
+	// authorization.
+	let showCreateNetwork = $state(false);
+	let newNetworkName = $state('');
+	let newNetworkDomain = $state('hop');
+	let creatingNetwork = $state(false);
+	let createNetworkError = $state('');
 
 	// arrivedWithCode: the user came from the desktop app (URL had ?code=).
 	// Combined with single-admin-network and signed-in, that's the
@@ -95,6 +109,44 @@
 			error = e instanceof ApiError ? e.message : 'Authorization failed';
 		} finally {
 			submitting = false;
+		}
+	}
+
+	// Create-network inline flow: when the user has zero networks,
+	// the page offers a Create CTA. After successful create:
+	//   - reload the network list
+	//   - select the new network (it'll be the only admin entry)
+	//   - if we still have a valid code, auto-submit the device
+	//     authorization so the user doesn't have to click again
+	async function createAndAuthorize(e: Event) {
+		e.preventDefault();
+		const name = newNetworkName.trim();
+		if (!name) return;
+		creatingNetwork = true;
+		createNetworkError = '';
+		try {
+			const created = await networksApi.create(
+				name,
+				newNetworkDomain.trim() || undefined
+			);
+			// Reload — the new network should appear with role=admin.
+			networkList = await networksApi.list();
+			showCreateNetwork = false;
+			// Auto-pick + auto-submit if the code is still valid.
+			const newAdmins = networkList.filter(n => n.role === 'admin');
+			if (newAdmins.length === 1) {
+				selectedNetwork = newAdmins[0].id;
+			} else {
+				selectedNetwork = created.id;
+			}
+			if (code.length === 4 && selectedNetwork) {
+				await handleSubmit(new Event('submit'));
+			}
+		} catch (e) {
+			createNetworkError =
+				e instanceof ApiError ? e.message : 'Failed to create network';
+		} finally {
+			creatingNetwork = false;
 		}
 	}
 </script>
@@ -164,17 +216,77 @@
 			</Card.Root>
 		{:else if adminNetworks.length === 0}
 			<Card.Root class="border-dashed">
-				<Card.Content class="py-6 text-center">
+				<Card.Content class="py-6">
 					{#if networkList.length === 0}
-						<p class="mb-1 text-sm font-medium">No networks yet</p>
-						<p class="text-sm text-muted-foreground">Create a network first to authorize devices.</p>
-						<a href="/" class="mt-2 inline-block text-sm text-primary hover:underline">Go to Networks</a>
+						<div class="text-center">
+							<p class="mb-1 text-sm font-medium">No networks yet</p>
+							<p class="text-sm text-muted-foreground">
+								Create your first network to authorize this device.
+							</p>
+							{#if code.length === 4}
+								<p class="mt-2 text-[11px] text-muted-foreground">
+									Code <span class="font-mono">{fullCode}</span> stays valid
+									for ~10 minutes — we'll auto-authorize after the network
+									is created.
+								</p>
+							{/if}
+							<Button class="mt-4" onclick={() => (showCreateNetwork = true)}>
+								Create network
+							</Button>
+						</div>
 					{:else}
-						<p class="mb-1 text-sm font-medium">No admin access</p>
-						<p class="text-sm text-muted-foreground">You need admin access to a network to authorize devices.</p>
+						<div class="text-center">
+							<p class="mb-1 text-sm font-medium">No admin access</p>
+							<p class="text-sm text-muted-foreground">
+								You need admin access to a network to authorize devices.
+							</p>
+						</div>
 					{/if}
 				</Card.Content>
 			</Card.Root>
+
+			<Dialog.Root bind:open={showCreateNetwork}>
+				<Dialog.Content>
+					<Dialog.Header>
+						<Dialog.Title>Create network</Dialog.Title>
+						<Dialog.Description>
+							Pick a name + DNS suffix. After creation we'll authorize this
+							device automatically.
+						</Dialog.Description>
+					</Dialog.Header>
+					<form class="space-y-4" onsubmit={createAndAuthorize}>
+						{#if createNetworkError}
+							<Alert.Root variant="destructive">
+								<Alert.Description>{createNetworkError}</Alert.Description>
+							</Alert.Root>
+						{/if}
+						<div class="space-y-2">
+							<Label for="net-name">Name</Label>
+							<Input
+								id="net-name"
+								bind:value={newNetworkName}
+								placeholder="home"
+								required
+							/>
+						</div>
+						<div class="space-y-2">
+							<Label for="net-domain">DNS suffix</Label>
+							<Input
+								id="net-domain"
+								bind:value={newNetworkDomain}
+								placeholder="hop"
+							/>
+							<p class="text-[11px] text-muted-foreground">
+								Hosts on this network will resolve as
+								<span class="font-mono">&lt;hostname&gt;.{newNetworkDomain || 'hop'}</span>.
+							</p>
+						</div>
+						<Button type="submit" class="w-full" disabled={creatingNetwork || !newNetworkName.trim()}>
+							{creatingNetwork ? 'Creating…' : 'Create + authorize'}
+						</Button>
+					</form>
+				</Dialog.Content>
+			</Dialog.Root>
 		{:else}
 			<Card.Root>
 				<Card.Content class="space-y-6">

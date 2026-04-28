@@ -333,7 +333,7 @@ fn quit_app(app: AppHandle) {
 /// child) to "system" mode (a launchd LaunchDaemon runs the agent as
 /// root). User-facing equivalent of "Run in the background".
 ///
-/// Sequence (load-bearing — see Plan A3):
+/// Sequence (load-bearing — see Plan A3 + the C1 inline-attach fix):
 ///   1. Stop the bundled child via AppState::shutdown_agent(). This
 ///      releases UDP :4242 BEFORE the new system agent tries to bind.
 ///   2. Single osascript admin prompt that copies the binary into
@@ -341,17 +341,21 @@ fn quit_app(app: AppHandle) {
 ///      --migrate-from <user-config>`. The migrate step moves
 ///      enrollments + writes the mirror token file the .app will
 ///      read on its next refresh.
-///   3. Invalidate the .app's cached endpoint so agent.rs re-runs
-///      the system-agent attach probe on next refresh.
+///   3. Invalidate the cached endpoint AND inline-probe for the
+///      system agent's newly-written mirror token + port. Without
+///      this step the .app's spawn_and_watch only ran ONCE at launch
+///      and won't re-discover the system agent — the WebView would
+///      show "agent unreachable" until the user manually relaunches.
+///   4. Emit `agent-ready` so the JS layer's agent.refresh() fires.
 ///
 /// On error (admin prompt cancelled, migration failed): the bundled
-/// child is dead but no system agent → spawn_and_watch picks bundled
-/// path on next refresh tick. Net: ~5s outage but recoverable.
+/// child is dead but no system agent → return Err so the UI surfaces
+/// it instead of silently leaving the .app in unreachable state.
 #[tauri::command]
-fn convert_to_system_service(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+fn convert_to_system_service(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<String, String> {
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = state;
+        let _ = (app, state);
         return Err("convert_to_system_service: only supported on macOS".to_string());
     }
     #[cfg(target_os = "macos")]
@@ -373,13 +377,45 @@ fn convert_to_system_service(state: State<'_, Arc<AppState>>) -> Result<String, 
         let script = build_convert_script(&agent, &user_config);
         run_osascript(&script)?;
 
-        // Step 3 — invalidate cached endpoint so the next agent.refresh()
-        // round-trips through agent.rs::try_attach_to_system_agent and
-        // picks up the freshly-installed system agent's mirror token.
+        // Step 3 — invalidate cached endpoint, then inline-probe for
+        // the new system agent. launchd takes ~200-500ms to spawn the
+        // daemon + write the mirror-token + port file, so we retry
+        // with backoff for up to 5s.
         state.endpoint.lock().take();
+        let endpoint = wait_for_system_agent(std::time::Duration::from_secs(5))
+            .ok_or_else(|| {
+                "Migration succeeded but the system agent didn't come up within 5s. \
+                 Try toggling Run in the background again, or check Console.app for \
+                 com.hopssh.agent errors."
+                    .to_string()
+            })?;
+        log::info!("post-convert attached to system agent at {}", endpoint.host);
+        *state.endpoint.lock() = Some(endpoint);
+
+        // Step 4 — tell the JS layer the endpoint is fresh; it'll
+        // re-fetch /local/status on the next refresh.
+        let _ = app.emit("agent-ready", ());
 
         Ok("hopssh now runs in the background".to_string())
     }
+}
+
+/// wait_for_system_agent retries try_attach_to_system_agent every 200ms
+/// until it succeeds or the budget runs out. Used by the convert flow
+/// to bridge the gap between launchctl bootstrap returning and launchd
+/// actually spawning the daemon + the daemon writing its mirror files.
+#[cfg(target_os = "macos")]
+fn wait_for_system_agent(budget: std::time::Duration) -> Option<LocalAgentEndpoint> {
+    use std::time::Instant;
+    let deadline = Instant::now() + budget;
+    while Instant::now() < deadline {
+        if let Some(ep) = agent::try_attach_to_system_agent() {
+            return Some(ep);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
+    // One last try after the deadline elapsed.
+    agent::try_attach_to_system_agent()
 }
 
 /// Revert from "system" mode back to "bundled" mode. Mirror of
@@ -389,14 +425,15 @@ fn convert_to_system_service(state: State<'_, Arc<AppState>>) -> Result<String, 
 ///   1. Single osascript admin prompt that runs `hop-agent uninstall`
 ///      (no --purge) to stop + unload the LaunchDaemon, then moves
 ///      /etc/hop-agent/* back into the user's configDir.
-///   2. Invalidate cached endpoint. The next refresh round-trips
-///      through spawn_and_watch and falls back to spawning a bundled
-///      child against the now-restored user configDir.
+///   2. Invalidate cached endpoint, then inline-spawn a fresh bundled
+///      child via agent::spawn_and_watch and emit agent-ready. Same
+///      reasoning as convert_to_system_service: don't leave the .app
+///      stranded waiting for an event that may never fire.
 #[tauri::command]
-fn revert_to_bundled(state: State<'_, Arc<AppState>>) -> Result<String, String> {
+fn revert_to_bundled(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<String, String> {
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = state;
+        let _ = (app, state);
         return Err("revert_to_bundled: only supported on macOS".to_string());
     }
     #[cfg(target_os = "macos")]
@@ -411,16 +448,19 @@ fn revert_to_bundled(state: State<'_, Arc<AppState>>) -> Result<String, String> 
         let script = build_revert_script(&user_config);
         run_osascript(&script)?;
 
-        // Invalidate so spawn_and_watch picks bundled path next.
+        // Invalidate so the next attach probe sees no system agent.
         state.endpoint.lock().take();
 
-        // Re-spawn the bundled child explicitly so we don't wait for the
-        // user to trigger a refresh. agent::spawn_and_watch is the
-        // canonical bring-up path.
-        // Note: in practice the .app's existing watcher thread will
-        // re-spawn on next agent-exited event. For the MVP we trust
-        // that loop; if it doesn't fire reliably, we'll wire an
-        // explicit re-spawn here.
+        // Re-run spawn_and_watch — the system mirror files are now
+        // gone (the script's `hop-agent uninstall` removed them via
+        // the launchd uninstall path), so spawn_and_watch's probe
+        // misses the system path and falls through to spawning a
+        // fresh bundled child against the now-restored user
+        // configDir.
+        let state_clone = Arc::clone(&*state);
+        if let Err(e) = agent::spawn_and_watch(&app, &state_clone) {
+            return Err(format!("uninstalled system service but failed to restart bundled agent: {e}"));
+        }
 
         Ok("hopssh now runs only while the .app is open".to_string())
     }

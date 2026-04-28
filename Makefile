@@ -10,7 +10,10 @@ export
 # Version injection via ldflags.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 COMMIT  ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
-LDFLAGS  = -s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=$(VERSION) -X github.com/trustos/hopssh/internal/buildinfo.Commit=$(COMMIT)
+LDFLAGS  = -s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=$(VERSION) -X github.com/trustos/hopssh/internal/buildinfo.Commit=$(COMMIT) -X github.com/trustos/hopssh/internal/buildinfo.ClientType=cli
+# Desktop builds (the .app's bundled sidecar) must report ClientType=desktop
+# so the dashboard renders "🖥 Desktop" for nodes running this binary.
+DESKTOP_LDFLAGS = -s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=$(VERSION) -X github.com/trustos/hopssh/internal/buildinfo.Commit=$(COMMIT) -X github.com/trustos/hopssh/internal/buildinfo.ClientType=desktop
 
 # Default: build Go binaries only (assumes frontend already built or not needed).
 all: build
@@ -176,7 +179,7 @@ DESKTOP_APP_OUT := $(DESKTOP_DIR)/src-tauri/target/release/bundle/macos/hopssh.a
 desktop-build:
 	@test -d vendor || (echo "Run 'make setup' first." && exit 1)
 	@mkdir -p $(DESKTOP_DIR)/src-tauri/binaries
-	go build -mod=vendor -ldflags='$(LDFLAGS)' -o $(DESKTOP_AGENT) ./cmd/agent
+	go build -mod=vendor -ldflags='$(DESKTOP_LDFLAGS)' -o $(DESKTOP_AGENT) ./cmd/agent
 	@echo "==> Built $(DESKTOP_AGENT)"
 
 # Bundle the Tauri .app (debug-style: no signing, no notarization, no DMG).

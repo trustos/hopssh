@@ -39,11 +39,25 @@
 		if (auth.loading) return;
 
 		if (!auth.isAuthenticated && !isPublicRoute) {
-			goto('/login').catch(() => {});
+			// Preserve the original URL (path + query) across the login round-trip.
+			// The desktop app's "Continue with browser" flow lands at
+			// /device?code=HOP-XXXX; without this, signing in dumps the user
+			// at / and the device code is lost. The login page already reads
+			// the ?redirect= param and uses it post-auth.
+			//
+			// Sanitize: only forward same-origin paths beginning with "/" to
+			// prevent open-redirect to external URLs (e.g. attacker links
+			// like /login?redirect=https://evil.example).
+			const target = page.url.pathname + page.url.search;
+			const safe = target.startsWith('/') && !target.startsWith('//') ? target : '/';
+			goto(`/login?redirect=${encodeURIComponent(safe)}`).catch(() => {});
 		}
 		if (auth.isAuthenticated && (page.url.pathname === '/login' || page.url.pathname === '/register')) {
 			const redirect = page.url.searchParams.get('redirect');
-			goto(redirect || '/').catch(() => {});
+			// Same sanitization on the post-auth side: a hostile
+			// /login?redirect=https://evil.example must not redirect off-site.
+			const safe = redirect && redirect.startsWith('/') && !redirect.startsWith('//') ? redirect : '/';
+			goto(safe).catch(() => {});
 		}
 	});
 </script>

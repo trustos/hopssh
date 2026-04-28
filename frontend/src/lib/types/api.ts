@@ -91,6 +91,8 @@ export interface NodeResponse {
 	peers?: PeerDetail[];
 	/** Self-reported hop-agent build, e.g. "v0.9.15". Undefined for pre-v0.9.15 agents. */
 	agentVersion?: string;
+	/** "desktop" (bundled in the macOS .app) or "cli" (standalone binary). Undefined for pre-v0.10.52 agents. */
+	clientType?: 'desktop' | 'cli';
 }
 
 export interface CreateNodeResponse {
