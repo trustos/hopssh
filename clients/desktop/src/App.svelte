@@ -54,12 +54,44 @@
       ? 'rounded-md bg-zinc-800 px-2.5 py-1 text-zinc-100'
       : 'rounded-md px-2.5 py-1 text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200';
   }
+
+  // Explicit window-drag handler. Belt-and-braces alongside the
+  // header's `data-tauri-drag-region` attribute: on macOS Sequoia +
+  // Tauri 2.10 we've observed the data-attribute path miss the drag
+  // initiation when the click lands on a child element (logo / span /
+  // empty padding inside `pl-[78px]`). Calling getCurrentWindow().
+  // startDragging() programmatically from a mousedown handler bypasses
+  // the WebView's quirks and goes straight to the OS-level drag API.
+  //
+  // Skipped when the click target is interactive (button, input, anchor)
+  // so tab-switching still works. Skipped on right-click — only the
+  // primary mouse button initiates a drag.
+  async function onHeaderMousedown(e: MouseEvent) {
+    if (!('__TAURI_INTERNALS__' in window)) return;
+    if (e.button !== 0) return;
+    const target = e.target as HTMLElement | null;
+    if (!target) return;
+    // Don't drag when the click lands on something the user wants to
+    // click (tabs, links, form controls). Walking up via closest()
+    // handles nested elements (e.g. icons inside buttons).
+    if (target.closest('button, a, input, select, textarea, [role="button"]')) {
+      return;
+    }
+    try {
+      const { getCurrentWindow } = await import('@tauri-apps/api/window');
+      await getCurrentWindow().startDragging();
+    } catch {
+      // benign — falls back to the data-tauri-drag-region path.
+    }
+  }
 </script>
 
 <div class="flex h-full flex-col bg-zinc-950 text-zinc-100">
+  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <header
     class="flex shrink-0 items-center justify-between border-b border-zinc-800 py-3 pr-4 pl-[78px]"
     data-tauri-drag-region
+    onmousedown={onHeaderMousedown}
   >
     <!-- pl-[78px] reserves space for macOS traffic lights (red/yellow/green)
          which sit at top-left of the window. tauri.conf.json sets
