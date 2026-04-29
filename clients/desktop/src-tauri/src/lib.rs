@@ -624,11 +624,20 @@ pub fn run() {
             let boot_icon_bytes: &[u8] = include_bytes!("../icons/tray/tray-disconnected@2x.png");
             let boot_icon = tauri::image::Image::from_bytes(boot_icon_bytes)
                 .expect("tray-disconnected@2x.png must be valid PNG");
+            // Pure menubar-app pattern: BOTH left and right click open
+            // the menu. The window is shown only via the "Show hopssh"
+            // menu item or programmatically (App.svelte does this when
+            // there are no enrollments yet, so first-time users see
+            // onboarding without having to discover the tray).
+            // show_menu_on_left_click(true) tells muda/NSStatusItem to
+            // pop the menu on every primary-button click — same as
+            // right click. No on_tray_icon_event handler needed; the
+            // menu's on_menu_event below handles all user actions.
             let _tray = TrayIconBuilder::with_id("main")
                 .icon(boot_icon)
                 .icon_as_template(true)
                 .menu(&menu)
-                .show_menu_on_left_click(false)
+                .show_menu_on_left_click(true)
                 .on_menu_event(|app, event| {
                     let show_window = || {
                         if let Some(w) = app.get_webview_window("main") {
@@ -645,18 +654,6 @@ pub fn run() {
                         }
                         "quit" => app.exit(0),
                         _ => {}
-                    }
-                })
-                .on_tray_icon_event(|tray, event| {
-                    use tauri::tray::TrayIconEvent;
-                    if let TrayIconEvent::Click { button, .. } = event {
-                        if matches!(button, tauri::tray::MouseButton::Left) {
-                            let app = tray.app_handle();
-                            if let Some(w) = app.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
-                            }
-                        }
                     }
                 })
                 .build(app)?;
@@ -951,6 +948,57 @@ mod tests {
             "set_tray_state MUST call set_icon_as_template(true) after \
              set_icon — without it macOS renders the new NSImage as \
              plain RGBA, not template-flipped. Body: {body}"
+        );
+    }
+
+    /// Tripwire: pure menubar-app behavior — left click on the tray
+    /// icon must open the menu (same as right click), not show the
+    /// window. The window appears only via "Show hopssh" or App.svelte
+    /// programmatic show. Source-scan because a real Tauri runtime is
+    /// out of reach for unit tests.
+    #[test]
+    fn tray_left_click_opens_menu() {
+        let src = std::fs::read_to_string(file!())
+            .expect("must be able to read lib.rs source for self-scan");
+        // Find the TrayIconBuilder::with_id("main") block.
+        let block = src
+            .split("TrayIconBuilder::with_id(\"main\")")
+            .nth(1)
+            .expect("tray builder must exist");
+        // Truncate at the .build(app)?; site that ends the chain.
+        let block = block
+            .split(".build(app)?")
+            .next()
+            .expect("tray builder must call .build(app)");
+        assert!(
+            block.contains("show_menu_on_left_click(true)"),
+            "tray must call .show_menu_on_left_click(true) — left click must open the menu, not the window. Block: {block}"
+        );
+        assert!(
+            !block.contains("on_tray_icon_event"),
+            "tray must NOT define an on_tray_icon_event handler — clicks are handled by show_menu_on_left_click(true) + on_menu_event. A handler here would race with the native menu pop. Block: {block}"
+        );
+    }
+
+    /// Tripwire: the main window starts hidden — the .app is a pure
+    /// menubar app. Any first-launch onboarding UX is responsibility
+    /// of the JS layer (App.svelte calls window.show() when there are
+    /// no enrollments yet).
+    #[test]
+    fn tauri_conf_main_window_starts_hidden() {
+        let conf_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
+        let conf = std::fs::read_to_string(&conf_path)
+            .expect("tauri.conf.json must exist next to Cargo.toml");
+        // A simple substring assertion is sufficient: the config has
+        // exactly one "visible" key and it must be false.
+        assert!(
+            conf.contains("\"visible\": false"),
+            "main window must have \"visible\": false — pure menubar-app pattern, JS shows it on demand"
+        );
+        assert!(
+            !conf.contains("\"visible\": true"),
+            "main window must NOT have \"visible\": true"
         );
     }
 

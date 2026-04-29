@@ -34,7 +34,11 @@
     trayUnsub?.();
   });
 
-  // Auto-route to onboarding when no enrollments exist.
+  // Auto-route to onboarding when no enrollments exist. Also surface
+  // the window in that case — the .app starts with the window hidden
+  // (pure menubar-app pattern); first-time users would otherwise see
+  // only the tray icon and have to discover that they need to click
+  // it. Idempotent: showing an already-visible window is a no-op.
   $effect(() => {
     if (
       !agent.initialLoad &&
@@ -43,6 +47,13 @@
       view === 'main'
     ) {
       view = 'onboarding';
+      if ('__TAURI_INTERNALS__' in window) {
+        void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
+          const w = getCurrentWindow();
+          void w.show();
+          void w.setFocus();
+        });
+      }
     }
   });
 
