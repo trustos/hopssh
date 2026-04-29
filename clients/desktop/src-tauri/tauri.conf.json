@@ -25,7 +25,7 @@
         "shadow": true,
         "titleBarStyle": "Overlay",
         "hiddenTitle": true,
-        "visible": false,
+        "visible": true,
         "fullscreen": false,
         "center": true
       }

@@ -13,12 +13,25 @@
 
   let view = $state<'main' | 'onboarding' | 'settings'>('main');
   let trayUnsub: UnlistenFn | null = null;
+  // When the tray menu's "Check for updates" item is clicked, we route
+  // to Settings AND auto-trigger the manual check on the Settings panel
+  // so the user sees an immediate "Checking…" / "Update available"
+  // result without having to click again. Settings.svelte reads this
+  // signal on mount (see settingsAutoCheck logic there).
+  let pendingAutoCheck = $state(false);
 
   onMount(() => {
     agent.start();
     if ('__TAURI_INTERNALS__' in window) {
       void listen<string>('tray-action', (e) => {
-        if (e.payload === 'add') view = 'onboarding';
+        if (e.payload === 'add') {
+          view = 'onboarding';
+        } else if (e.payload === 'checkUpdate') {
+          // Tray "Check for updates" — switch to Settings and signal
+          // it to fire manualCheck() on mount.
+          pendingAutoCheck = true;
+          view = 'settings';
+        }
       }).then((u) => {
         trayUnsub = u;
       });
@@ -34,11 +47,9 @@
     trayUnsub?.();
   });
 
-  // Auto-route to onboarding when no enrollments exist. Also surface
-  // the window in that case — the .app starts with the window hidden
-  // (pure menubar-app pattern); first-time users would otherwise see
-  // only the tray icon and have to discover that they need to click
-  // it. Idempotent: showing an already-visible window is a no-op.
+  // Auto-route to onboarding when no enrollments exist. The window
+  // is already visible on launch (tauri.conf.json visible: true), so
+  // no explicit show() call is needed here.
   $effect(() => {
     if (
       !agent.initialLoad &&
@@ -47,13 +58,6 @@
       view === 'main'
     ) {
       view = 'onboarding';
-      if ('__TAURI_INTERNALS__' in window) {
-        void import('@tauri-apps/api/window').then(({ getCurrentWindow }) => {
-          const w = getCurrentWindow();
-          void w.show();
-          void w.setFocus();
-        });
-      }
     }
   });
 
@@ -150,7 +154,10 @@
     {:else if view === 'onboarding'}
       <Onboarding onDone={() => (view = 'main')} />
     {:else if view === 'settings'}
-      <Settings />
+      <Settings
+        autoCheckUpdate={pendingAutoCheck}
+        onAutoCheckConsumed={() => (pendingAutoCheck = false)}
+      />
     {:else}
       <Connected />
     {/if}

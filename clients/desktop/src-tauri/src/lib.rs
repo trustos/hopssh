@@ -609,10 +609,20 @@ pub fn run() {
             let show = MenuItem::with_id(app, "show", "Show hopssh", true, None::<&str>)?;
             let add = MenuItem::with_id(app, "add", "Add a network…", true, None::<&str>)?;
             let sep1 = PredefinedMenuItem::separator(app)?;
+            let check_update = MenuItem::with_id(
+                app,
+                "checkUpdate",
+                "Check for updates…",
+                true,
+                None::<&str>,
+            )?;
             let sep2 = PredefinedMenuItem::separator(app)?;
             let about = MenuItem::with_id(app, "about", "About hopssh", true, None::<&str>)?;
             let quit = MenuItem::with_id(app, "quit", "Quit hopssh", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &add, &sep1, &about, &sep2, &quit])?;
+            let menu = Menu::with_items(
+                app,
+                &[&show, &add, &sep1, &check_update, &sep2, &about, &quit],
+            )?;
 
             // Use the four-dots template icon at boot, NOT
             // app.default_window_icon() — that's the colorful 128px
@@ -624,11 +634,14 @@ pub fn run() {
             let boot_icon_bytes: &[u8] = include_bytes!("../icons/tray/tray-disconnected@2x.png");
             let boot_icon = tauri::image::Image::from_bytes(boot_icon_bytes)
                 .expect("tray-disconnected@2x.png must be valid PNG");
-            // Pure menubar-app pattern: BOTH left and right click open
-            // the menu. The window is shown only via the "Show hopssh"
-            // menu item or programmatically (App.svelte does this when
-            // there are no enrollments yet, so first-time users see
-            // onboarding without having to discover the tray).
+            // Tray click (left or right) opens the menu — the tray is
+            // never used to show/hide the window directly. The window
+            // appears (a) on app launch via tauri.conf.json's
+            // "visible": true, (b) via the "Show hopssh" menu item, or
+            // (c) on RunEvent::Reopen when the user clicks the Dock
+            // icon while the app is already running with the window
+            // hidden (see app.run handler below).
+            //
             // show_menu_on_left_click(true) tells muda/NSStatusItem to
             // pop the menu on every primary-button click — same as
             // right click. No on_tray_icon_event handler needed; the
@@ -651,6 +664,10 @@ pub fn run() {
                         "add" => {
                             show_window();
                             let _ = app.emit("tray-action", "add");
+                        }
+                        "checkUpdate" => {
+                            show_window();
+                            let _ = app.emit("tray-action", "checkUpdate");
                         }
                         "quit" => app.exit(0),
                         _ => {}
@@ -694,6 +711,21 @@ pub fn run() {
             tauri::RunEvent::ExitRequested { .. } => {
                 if let Some(state) = app_handle.try_state::<Arc<AppState>>() {
                     state.shutdown_agent();
+                }
+            }
+            // macOS-only: fires when the user clicks the .app icon in
+            // the Dock or double-clicks /Applications/hopssh.app while
+            // the app is already running. Without this handler, the
+            // click is a no-op when the window is hidden — making the
+            // .app feel "broken" to anyone who closes the window via
+            // the red dot (which hides on macOS, see on_window_event
+            // above).
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen { .. } => {
+                if let Some(w) = app_handle.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
                 }
             }
             _ => {}
@@ -980,25 +1012,80 @@ mod tests {
         );
     }
 
-    /// Tripwire: the main window starts hidden — the .app is a pure
-    /// menubar app. Any first-launch onboarding UX is responsibility
-    /// of the JS layer (App.svelte calls window.show() when there are
-    /// no enrollments yet).
+    /// Tripwire: the main window must show on .app launch. The tray
+    /// is for the menu only; the .app icon click should open the
+    /// window like any standard macOS app. We tried "visible": false
+    /// (pure menubar) once and immediately got user reports of "I
+    /// open the .app and nothing happens" — the window was hidden
+    /// and the only path to surface it was the tray's "Show hopssh".
+    /// Don't go back to that.
     #[test]
-    fn tauri_conf_main_window_starts_hidden() {
+    fn tauri_conf_main_window_visible_on_launch() {
         let conf_path =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
         let conf = std::fs::read_to_string(&conf_path)
             .expect("tauri.conf.json must exist next to Cargo.toml");
-        // A simple substring assertion is sufficient: the config has
-        // exactly one "visible" key and it must be false.
         assert!(
-            conf.contains("\"visible\": false"),
-            "main window must have \"visible\": false — pure menubar-app pattern, JS shows it on demand"
+            conf.contains("\"visible\": true"),
+            "main window must have \"visible\": true — clicking the .app icon should open the window"
         );
         assert!(
-            !conf.contains("\"visible\": true"),
-            "main window must NOT have \"visible\": true"
+            !conf.contains("\"visible\": false"),
+            "main window must NOT have \"visible\": false"
+        );
+    }
+
+    /// Tripwire: macOS RunEvent::Reopen must show + focus the main
+    /// window. Without this, clicking the Dock icon (while the app is
+    /// running with the window hidden via Cmd-W) is a no-op. The
+    /// red-dot Cmd-W close handler hides the window (see
+    /// on_window_event), so Reopen is the only path back.
+    #[test]
+    fn run_event_reopen_shows_main_window() {
+        let src = std::fs::read_to_string(file!())
+            .expect("must be able to read lib.rs source for self-scan");
+        // Locate the .run(...) closure body.
+        let block = src
+            .split(".run(move |app_handle, event| match event")
+            .nth(1)
+            .expect("app.run handler must exist");
+        // Truncate at the closing `});` of the run callback.
+        let block = block
+            .split("\n        });")
+            .next()
+            .unwrap_or(block);
+        assert!(
+            block.contains("RunEvent::Reopen"),
+            "app.run must handle RunEvent::Reopen so Dock-icon clicks show the window. Block: {block}"
+        );
+        assert!(
+            block.contains("get_webview_window(\"main\")"),
+            "Reopen handler must look up the \"main\" window. Block: {block}"
+        );
+        assert!(
+            block.contains(".show()"),
+            "Reopen handler must call .show() on the main window. Block: {block}"
+        );
+    }
+
+    /// Tripwire: the tray menu must include a "Check for updates"
+    /// item. Users repeatedly missed the corresponding Settings tab,
+    /// so making it tray-discoverable is the user-driven design.
+    #[test]
+    fn tray_menu_has_check_for_updates() {
+        let src = std::fs::read_to_string(file!())
+            .expect("must be able to read lib.rs source for self-scan");
+        assert!(
+            src.contains("\"checkUpdate\""),
+            "tray menu must include a checkUpdate menu item"
+        );
+        assert!(
+            src.contains("Check for updates"),
+            "tray menu must include a 'Check for updates' label"
+        );
+        assert!(
+            src.contains("emit(\"tray-action\", \"checkUpdate\")"),
+            "checkUpdate menu click must emit a tray-action event so the JS layer can route to Settings"
         );
     }
 

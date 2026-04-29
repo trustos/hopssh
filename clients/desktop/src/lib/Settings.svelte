@@ -11,6 +11,18 @@
     updateState,
   } from './updater.svelte';
 
+  // App.svelte passes autoCheckUpdate=true when the user opened
+  // Settings via the tray's "Check for updates…" item, so we fire
+  // manualCheck() on mount AND consume the flag (so subsequent
+  // navigation to Settings doesn't re-fire).
+  let {
+    autoCheckUpdate = false,
+    onAutoCheckConsumed = () => {},
+  }: {
+    autoCheckUpdate?: boolean;
+    onAutoCheckConsumed?: () => void;
+  } = $props();
+
   // ---- Per-network "Leave" state (unchanged behavior) ----
   let leavingName = $state<string | null>(null);
   let leaveError = $state<string | null>(null);
@@ -49,6 +61,13 @@
   onMount(async () => {
     if (updateState.current === null) {
       updateState.current = await appVersion();
+    }
+    if (autoCheckUpdate) {
+      // User came in via the tray's "Check for updates…" — fire the
+      // check immediately so they see the result without an extra
+      // click. Mark consumed so future Settings opens don't re-fire.
+      onAutoCheckConsumed();
+      void manualCheck();
     }
   });
 

@@ -46,7 +46,15 @@ cd "${REPO_ROOT}"
 # sidecar so the dashboard's Nodes tab can render "🖥 Desktop" instead
 # of "⌨ CLI". CLI builds via `make build` leave it empty (server
 # defaults to "cli" for empty/unknown).
-DESKTOP_LDFLAGS="-s -w -X github.com/trustos/hopssh/internal/buildinfo.ClientType=desktop"
+#
+# Bake the version + commit the same way release-desktop.yml does so
+# the agent in the dev-deployed .app reports a real version string in
+# /local/status. Without this, buildinfo.Version stays "dev" and the
+# desktop UI header shows "vdev". `git describe --dirty` gives
+# uncommitted local builds a "-dirty" suffix automatically.
+HOPSSH_VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo dev)"
+HOPSSH_COMMIT="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+DESKTOP_LDFLAGS="-s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=${HOPSSH_VERSION} -X github.com/trustos/hopssh/internal/buildinfo.Commit=${HOPSSH_COMMIT} -X github.com/trustos/hopssh/internal/buildinfo.ClientType=desktop"
 GOOS=darwin GOARCH=arm64 go build -mod=vendor -ldflags="${DESKTOP_LDFLAGS}" \
     -o /tmp/hop-agent-darwin-arm64 ./cmd/agent
 GOOS=darwin GOARCH=amd64 go build -mod=vendor -ldflags="${DESKTOP_LDFLAGS}" \
