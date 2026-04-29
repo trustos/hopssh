@@ -235,23 +235,25 @@ fn build_convert_script(agent_path: &std::path::Path, user_config: &std::path::P
 ///      stops + unloads the LaunchDaemon, removes the plist + binary.
 ///   2. Move /etc/hop-agent/enrollments.json + per-enrollment subdirs
 ///      back into the user's configDir.
-///   3. **chown back to the console user**. CRITICAL: inside
-///      `osascript ... with administrator privileges`, the shell runs
-///      as root, so `$USER` would be "root" (wrong!). osascript sets
-///      `$SUDO_USER` to the console user when escalating; that's the
-///      correct env var. Without this fix the migrated configs are
-///      root-owned 0600 and the user-level bundled child can't read
-///      its own enrollments.json — visible symptom is "hopssh isn't
-///      running" after toggling Run-in-the-background OFF.
+///   3. **chown back to the console user**. The username is BAKED IN
+///      at command-build time from the calling Tauri process's $USER
+///      env var (which IS the console user — Tauri runs as the user).
+///      We CANNOT defer to a runtime $SUDO_USER inside the privileged
+///      shell because `osascript ... with administrator privileges`
+///      uses Apple's SecurityAuthorization framework, NOT sudo —
+///      $SUDO_USER is empty there, and $USER is "root". Verified the
+///      hard way in v0.10.56: a source-scan tripwire passed, but the
+///      runtime chown was a no-op and configs stayed root-owned.
 ///   4. Remove the stale mirror token + port files so the next launch's
 ///      try_attach_to_system_agent probe correctly falls through to
 ///      bundled spawn (instead of trying to TCP-connect to a dead
 ///      system-agent port).
-fn build_revert_script(user_config: &std::path::Path) -> String {
+fn build_revert_script(user_config: &std::path::Path, console_user: &str) -> String {
     let user_config_str = user_config.display();
     format!(
-        r#"do shell script "/usr/local/bin/hop-agent uninstall && mkdir -p '{0}' && (cd /etc/hop-agent 2>/dev/null && (cp -R . '{0}/' && rm -rf /etc/hop-agent/* /etc/hop-agent/.[!.]* 2>/dev/null) || true) && rm -rf /etc/hop-agent && chown -R \"$SUDO_USER\":staff '{0}' && rm -f '{0}/system-local-api-token' '{0}/system-local-api-port'" with administrator privileges"#,
-        user_config_str
+        r#"do shell script "/usr/local/bin/hop-agent uninstall && mkdir -p '{0}' && (cd /etc/hop-agent 2>/dev/null && (cp -R . '{0}/' && rm -rf /etc/hop-agent/* /etc/hop-agent/.[!.]* 2>/dev/null) || true) && rm -rf /etc/hop-agent && chown -R '{1}':staff '{0}' && rm -f '{0}/system-local-api-token' '{0}/system-local-api-port'" with administrator privileges"#,
+        user_config_str,
+        console_user
     )
 }
 
@@ -456,7 +458,20 @@ fn revert_to_bundled(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<
             .join("Application Support")
             .join("hopssh");
 
-        let script = build_revert_script(&user_config);
+        // Resolve the console user from the calling Tauri process's
+        // env. The Tauri shell runs AS the console user, so $USER is
+        // exactly what we need to bake into the privileged osascript
+        // (where $USER would be "root" and $SUDO_USER would be empty).
+        let console_user = std::env::var("USER")
+            .map_err(|_| "USER env var not set; cannot resolve console user for chown".to_string())?;
+        if console_user == "root" || console_user.is_empty() {
+            return Err(format!(
+                "refusing to revert: $USER is {:?} (expected console user, not root)",
+                console_user
+            ));
+        }
+
+        let script = build_revert_script(&user_config, &console_user);
         run_osascript(&script)?;
 
         // Invalidate so the next attach probe sees no system agent.
@@ -837,7 +852,7 @@ mod tests {
     #[test]
     fn revert_command_uninstall_then_migrate_back() {
         let user_config = Path::new("/Users/alice/Library/Application Support/hopssh");
-        let s = build_revert_script(user_config);
+        let s = build_revert_script(user_config, "alice");
         assert!(s.contains("uninstall"), "must run hop-agent uninstall: {s}");
         assert!(s.contains("/etc/hop-agent"), "must reference system configDir: {s}");
         assert!(s.contains("'/Users/alice/"), "must reference user config dest: {s}");
@@ -852,24 +867,35 @@ mod tests {
         );
     }
 
-    /// Tripwire (locked in after the v0.10.55 broken-revert incident):
-    /// the chown step inside the privileged shell MUST use $SUDO_USER,
-    /// not $USER. Inside `osascript ... with administrator privileges`,
-    /// the shell runs as root and `$USER` == "root" — chowning files
-    /// to root:staff leaves the bundled child unable to read its own
-    /// configs. $SUDO_USER is set by osascript to the console user
-    /// who approved the admin prompt.
+    /// Tripwire (locked in after the v0.10.56 broken-revert incident):
+    /// the username for chown MUST be baked into the script string at
+    /// command-build time. We CANNOT defer to a runtime $SUDO_USER or
+    /// $USER inside `osascript ... with administrator privileges`:
+    /// Apple's SecurityAuthorization-driven privileged execution does
+    /// NOT set $SUDO_USER (only sudo does), and $USER inside the root
+    /// shell is "root". Both would chown to wrong user, leaving the
+    /// migrated configs unreadable to the bundled hop-agent child.
+    ///
+    /// This is a BEHAVIOR test: it asserts the LITERAL username is in
+    /// the script and the unexpanded-shell-var forms are NOT. The
+    /// previous v0.10.56 test was a source-scan that asserted the
+    /// presence of the (broken) "$SUDO_USER" string — passed but the
+    /// runtime chown was a silent no-op.
     #[test]
-    fn revert_command_chowns_back_to_console_user() {
+    fn revert_command_bakes_console_user_at_build_time() {
         let user_config = Path::new("/Users/alice/Library/Application Support/hopssh");
-        let s = build_revert_script(user_config);
+        let s = build_revert_script(user_config, "alice");
         assert!(
-            s.contains("$SUDO_USER"),
-            "chown must use $SUDO_USER (not $USER, which is root inside privileged shells): {s}"
+            s.contains("'alice':staff"),
+            "username must be baked in literally: {s}"
         );
         assert!(
-            !s.contains("'$USER'"),
-            "chown must NOT use $USER — that's 'root' inside privileged shells: {s}"
+            !s.contains("$SUDO_USER"),
+            "must NOT defer to runtime $SUDO_USER (osascript admin doesn't set it): {s}"
+        );
+        assert!(
+            !s.contains("$USER"),
+            "must NOT defer to runtime $USER (= 'root' inside admin shell): {s}"
         );
         assert!(s.contains("chown"), "must chown the migrated configs: {s}");
     }
@@ -883,7 +909,7 @@ mod tests {
     #[test]
     fn revert_command_removes_stale_mirror_files() {
         let user_config = Path::new("/Users/alice/Library/Application Support/hopssh");
-        let s = build_revert_script(user_config);
+        let s = build_revert_script(user_config, "alice");
         assert!(
             s.contains("system-local-api-token"),
             "must rm the stale mirror token: {s}"
