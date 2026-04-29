@@ -134,19 +134,51 @@
 			No account? <a href="/register" class="text-primary hover:underline">Create one</a>
 		</p>
 
-		<div class="border-t pt-4 text-center">
-			<a
-				href="/download/desktop/hopssh-macos-aarch64.dmg"
-				class="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-primary"
-			>
-				<svg class="size-4" viewBox="0 0 24 24" fill="currentColor">
+		<div class="border-t pt-4">
+			<div class="text-center">
+				<svg class="mx-auto size-4 text-muted-foreground" viewBox="0 0 24 24" fill="currentColor">
 					<path d="M17.05 20.28c-.98.95-2.05.8-3.08.35-1.09-.46-2.09-.48-3.24 0-1.44.62-2.2.44-3.06-.35C2.79 15.25 3.51 7.59 9.05 7.31c1.35.07 2.29.74 3.08.8 1.18-.24 2.31-.93 3.57-.84 1.51.12 2.65.72 3.4 1.8-3.12 1.87-2.38 5.98.48 7.13-.57 1.5-1.31 2.99-2.54 4.09l.01-.01zM12.03 7.25c-.15-2.23 1.66-4.07 3.74-4.25.29 2.58-2.34 4.5-3.74 4.25z"/>
 				</svg>
-				Download for macOS
-			</a>
-			<p class="mt-2 text-[11px] text-muted-foreground">
-				First launch: right-click <strong>hopssh.app</strong> &rarr; Open &rarr; Open
-			</p>
+				<p class="mt-1 text-sm font-medium">Get hopssh for macOS</p>
+			</div>
+
+			<!-- Recommended path: curl one-liner. Bypasses Gatekeeper
+			     entirely because curl-downloaded files don't get the
+			     com.apple.quarantine xattr (only browsers set that). -->
+			<div class="mt-3 rounded-md border bg-muted/30 p-3">
+				<p class="text-[11px] font-medium text-muted-foreground">Recommended (one command):</p>
+				<code class="mt-1 block break-all rounded bg-background p-2 font-mono text-[11px]">
+					curl -fsSL https://hopssh.com/install-mac.sh | bash
+				</code>
+				<p class="mt-2 text-[11px] text-muted-foreground">
+					Installs into /Applications and launches automatically.
+					Requires admin password.
+				</p>
+			</div>
+
+			<details class="mt-3 text-[11px] text-muted-foreground">
+				<summary class="cursor-pointer hover:text-foreground">
+					Or download the DMG (manual install)
+				</summary>
+				<div class="mt-2 space-y-2 rounded-md border bg-muted/20 p-3">
+					<a
+						href="/download/desktop/hopssh-macos-aarch64.dmg"
+						class="text-primary hover:underline"
+					>
+						Download hopssh.dmg →
+					</a>
+					<p class="leading-relaxed">
+						After mounting + dragging hopssh.app to Applications,
+						macOS Sequoia will say <em>"Apple could not verify
+						hopssh"</em>. To unblock once: open
+						<strong>System Settings → Privacy &amp; Security</strong>,
+						scroll to "Security", and click
+						<strong>Open Anyway</strong> next to the hopssh entry.
+						The recommended <code>curl</code> install above skips
+						this step.
+					</p>
+				</div>
+			</details>
 		</div>
 	</div>
 </div>

@@ -142,6 +142,90 @@ func (h *DistributionHandler) DownloadDesktop(w http.ResponseWriter, r *http.Req
 	http.Redirect(w, r, url, http.StatusFound)
 }
 
+// InstallDesktopScript serves a curl-pipeable shell installer for the
+// macOS .app. Bypasses the Gatekeeper notarization wall on macOS
+// Sequoia: files downloaded via curl never get the com.apple.quarantine
+// xattr (only browsers set it), so an ad-hoc-signed .app installed
+// this way launches without the "Apple could not verify..." dialog.
+//
+// GET /install-mac.sh — public, no auth.
+//
+// Usage from the user's terminal:
+//
+//	curl -fsSL https://hopssh.com/install-mac.sh | bash
+func (h *DistributionHandler) InstallDesktopScript(w http.ResponseWriter, r *http.Request) {
+	endpoint := h.Endpoint
+	if strings.Contains(endpoint, "localhost") || strings.Contains(endpoint, "127.0.0.1") {
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		} else if TrustedProxy && r.Header.Get("X-Forwarded-Proto") == "https" {
+			scheme = "https"
+		}
+		endpoint = fmt.Sprintf("%s://%s", scheme, r.Host)
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	fmt.Fprint(w, generateMacInstallScript(endpoint))
+}
+
+// generateMacInstallScript builds a bash one-liner that downloads the
+// DMG, mounts it, copies hopssh.app into /Applications, ejects the
+// DMG, strips quarantine, and launches the app. Because the script
+// runs from the user's terminal (curl-fetched), the DMG download
+// itself goes via curl too — no quarantine xattr ever gets set.
+func generateMacInstallScript(endpoint string) string {
+	return `#!/usr/bin/env bash
+# hopssh macOS installer — bypasses Gatekeeper notarization gate by
+# downloading + installing via curl (which doesn't set quarantine
+# xattrs the way browsers do).
+#
+# Usage:  curl -fsSL ` + endpoint + `/install-mac.sh | bash
+set -euo pipefail
+
+OS=$(uname -s)
+if [ "$OS" != "Darwin" ]; then
+  echo "Error: this installer is macOS-only." >&2
+  exit 1
+fi
+
+ARCH=$(uname -m)
+case "$ARCH" in
+  arm64)  ASSET="hopssh-macos-aarch64.dmg" ;;
+  x86_64) ASSET="hopssh-macos-x86_64.dmg" ;;
+  *) echo "Error: unsupported arch $ARCH" >&2; exit 1 ;;
+esac
+
+TMPDMG=$(mktemp -t hopssh-XXXXXX.dmg)
+trap "rm -f $TMPDMG; hdiutil detach /Volumes/hopssh 2>/dev/null || true" EXIT
+
+echo "==> Downloading $ASSET..."
+curl -fsSL "` + endpoint + `/download/desktop/$ASSET" -o "$TMPDMG"
+
+echo "==> Mounting DMG..."
+hdiutil attach "$TMPDMG" -nobrowse -quiet
+
+echo "==> Installing to /Applications..."
+if [ -d /Applications/hopssh.app ]; then
+  killall hopssh-desktop 2>/dev/null || true
+  sleep 1
+  sudo rm -rf /Applications/hopssh.app
+fi
+sudo /usr/bin/ditto --noextattr /Volumes/hopssh/hopssh.app /Applications/hopssh.app
+
+echo "==> Ejecting DMG..."
+hdiutil detach /Volumes/hopssh -quiet
+
+echo "==> Removing any quarantine xattr (defense-in-depth)..."
+sudo xattr -cr /Applications/hopssh.app 2>/dev/null || true
+
+echo "==> Launching hopssh..."
+open /Applications/hopssh.app
+
+echo ""
+echo "Done. hopssh is now running. Click the menubar icon to get started."
+`
+}
+
 // InstallScript serves a dynamically generated install script with the endpoint pre-baked.
 // GET /install.sh — public, no auth.
 func (h *DistributionHandler) InstallScript(w http.ResponseWriter, r *http.Request) {

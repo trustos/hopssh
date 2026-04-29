@@ -218,6 +218,7 @@ func NewRouter(
 	r.Get("/version", distH.Version)
 	r.Get("/download/SHA256SUMS", distH.DownloadChecksums)
 	r.Get("/download/desktop/{asset}", distH.DownloadDesktop)
+	r.Get("/install-mac.sh", distH.InstallDesktopScript)
 	r.Get("/download/{binary}", distH.Download)
 
 	// Serve frontend SPA (catch-all — must be last).
