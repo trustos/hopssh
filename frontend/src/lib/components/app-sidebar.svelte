@@ -81,9 +81,9 @@
 						</Sidebar.MenuButton>
 					</Sidebar.MenuItem>
 					<Sidebar.MenuItem>
-						<Sidebar.MenuButton tooltipContent="Download desktop app for macOS">
+						<Sidebar.MenuButton tooltipContent="Get the macOS desktop app">
 							{#snippet child({ props })}
-								<a href="/download/desktop/hopssh-macos-aarch64.dmg" {...props}>
+								<a href="/download" {...props}>
 									<Download class="size-4" />
 									<span>Get Desktop App</span>
 								</a>

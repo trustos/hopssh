@@ -156,29 +156,11 @@
 				</p>
 			</div>
 
-			<details class="mt-3 text-[11px] text-muted-foreground">
-				<summary class="cursor-pointer hover:text-foreground">
-					Or download the DMG (manual install)
-				</summary>
-				<div class="mt-2 space-y-2 rounded-md border bg-muted/20 p-3">
-					<a
-						href="/download/desktop/hopssh-macos-aarch64.dmg"
-						class="text-primary hover:underline"
-					>
-						Download hopssh.dmg →
-					</a>
-					<p class="leading-relaxed">
-						After mounting + dragging hopssh.app to Applications,
-						macOS Sequoia will say <em>"Apple could not verify
-						hopssh"</em>. To unblock once: open
-						<strong>System Settings → Privacy &amp; Security</strong>,
-						scroll to "Security", and click
-						<strong>Open Anyway</strong> next to the hopssh entry.
-						The recommended <code>curl</code> install above skips
-						this step.
-					</p>
-				</div>
-			</details>
+			<p class="mt-3 text-center text-[11px] text-muted-foreground">
+				Prefer a manual install? <a href="/download" class="text-primary hover:underline">
+					Download the DMG →
+				</a>
+			</p>
 		</div>
 	</div>
 </div>
