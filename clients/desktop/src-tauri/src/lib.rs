@@ -919,4 +919,27 @@ mod tests {
             "must rm the stale mirror port file: {s}"
         );
     }
+
+    /// Tripwire (locked in after the duplicate-tray-icon incident):
+    /// tauri.conf.json MUST NOT declare a `trayIcon` block. Tauri 2
+    /// does not dedupe trays by id — declarative + programmatic both
+    /// register separate NSStatusItems on macOS, producing two icons
+    /// in the menubar. The programmatic TrayIconBuilder in lib.rs::run
+    /// is the single source of truth (loads the correct template,
+    /// wires menu + click handlers, supports dynamic state swap).
+    ///
+    /// Reference: https://github.com/tauri-apps/tauri/issues/8982
+    #[test]
+    fn tauri_conf_has_no_declarative_tray_icon() {
+        let conf_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
+        let conf = std::fs::read_to_string(&conf_path)
+            .expect("tauri.conf.json must exist next to Cargo.toml");
+        assert!(
+            !conf.contains("\"trayIcon\""),
+            "tauri.conf.json must NOT declare a trayIcon block — it produces \
+             a duplicate NSStatusItem on macOS alongside the programmatic \
+             TrayIconBuilder. See https://github.com/tauri-apps/tauri/issues/8982"
+        );
+    }
 }
