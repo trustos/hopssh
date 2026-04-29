@@ -179,7 +179,7 @@
       // makes "try again or stay in userspace" obvious. Anything else
       // is a real failure worth surfacing verbatim.
       if (msg.includes('admin prompt cancelled') || msg.includes('User canceled')) {
-        bgPromptError = "Cancelled. You can try again, or stay in userspace mode (mesh works through the dashboard's web terminal).";
+        bgPromptError = "Cancelled. You can try again, or skip — the mesh will still work inside hopssh and through the dashboard's web terminal.";
       } else {
         bgPromptError = msg;
       }
@@ -447,15 +447,16 @@
           <span class="mt-0.5 text-xl">🔋</span>
           <div class="min-w-0 flex-1">
             <h3 class="text-sm font-semibold text-emerald-100">
-              Make hopssh work like Tailscale?
+              Enable system-wide networking?
             </h3>
             <p class="mt-1 text-[12px] leading-relaxed text-zinc-300">
-              Recommended. Installs a small background service so
-              <code class="rounded bg-zinc-900/60 px-1 font-mono">ping</code>
-              and <code class="rounded bg-zinc-900/60 px-1 font-mono">ssh</code>
-              to mesh hostnames work from any app. Reconnects after restart,
-              stays online when you log out, screen sharing through the
-              mesh works smoothly.
+              Recommended. Without this the mesh only works inside hopssh —
+              <code class="rounded bg-zinc-900/60 px-1 font-mono">ping</code>,
+              <code class="rounded bg-zinc-900/60 px-1 font-mono">ssh</code>,
+              browsers, and other apps can't reach mesh IPs. Installing a
+              small background service gives every app on your Mac access
+              to mesh hostnames, keeps the connection alive when you quit
+              hopssh, and reconnects after restart.
             </p>
             <p class="mt-1 text-[11px] text-zinc-500">
               Triggers a one-time admin prompt. Reversible anytime from
