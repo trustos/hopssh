@@ -36,23 +36,41 @@
     }
   });
 
+  // Peers list: fetch immediately on selection change AND poll every
+  // 5s while the component is mounted. The agent's heartbeat /
+  // peer-state aggregation runs on a similar cadence, so this is the
+  // smallest interval that surfaces real updates without churning
+  // the UI. Polling, not SSE: the agent doesn't currently push peer-
+  // detail updates over the event stream.
   $effect(() => {
     if (!selectedName) return;
     const name = selectedName;
-    peersLoading = true;
-    peersError = null;
-    local
-      .peers(name)
-      .then((r) => {
+
+    let cancelled = false;
+
+    const fetchOnce = async (showSpinner: boolean) => {
+      if (showSpinner) peersLoading = true;
+      try {
+        const r = await local.peers(name);
+        if (cancelled) return;
         peers = r.peers;
-      })
-      .catch((e: unknown) => {
+        peersError = null;
+      } catch (e: unknown) {
+        if (cancelled) return;
         peersError = e instanceof Error ? e.message : String(e);
         peers = [];
-      })
-      .finally(() => {
-        peersLoading = false;
-      });
+      } finally {
+        if (!cancelled && showSpinner) peersLoading = false;
+      }
+    };
+
+    void fetchOnce(true);
+    const handle = window.setInterval(() => void fetchOnce(false), 5000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+    };
   });
 
   function selected(): EnrollmentStatus | null {

@@ -111,6 +111,12 @@ class AgentStore {
           this.firstFailureAt = null;
           void syncTrayTooltip(this.status);
           void syncTrayState(this.status);
+          // State-based clear of stale watchdog warnings: if any
+          // enrollment is connected with at least one direct OR
+          // relayed peer, the "data-plane stuck — recovering" banner
+          // for that enrollment is contradicted by current reality
+          // and should clear. Belts-and-braces with the dismissAt TTL.
+          this.clearStaleWarningsForHealthyState(this.status);
         }
         if (
           ev.type === 'enrollment.added' ||
@@ -211,7 +217,14 @@ class AgentStore {
             : 'mesh data-plane stuck — recovering',
           detail: cycles > 0 ? `Detected after ${cycles} consecutive stuck cycles. Auto-restart in progress.` : undefined,
           enrollment,
-          dismissAt: 0 // sticky until paired with recovered/failed
+          // 10-minute TTL as a backstop. Normally cleared sooner by a
+          // paired watchdog-recovered/failed event; this guards against
+          // the case where the recovered event was emitted before the
+          // .app's SSE was subscribed (rare but happens during rapid
+          // dev-deploy cycles), or when restartFn is nil so the agent
+          // never emits a follow-up. The .scheduleBannerSweep() GC
+          // tick will expire it.
+          dismissAt: Date.now() + 10 * 60 * 1000
         });
         break;
       }
@@ -254,6 +267,24 @@ class AgentStore {
   private pushBanner(b: Omit<Banner, 'id'>) {
     const id = this.nextBannerId++;
     this.banners = [...this.banners, { id, ...b }];
+  }
+
+  // Clear watchdog warning banners for any enrollment whose live status
+  // shows it's connected with at least one peer — that's the visible
+  // proof that recovery succeeded, regardless of whether we received
+  // the paired watchdog-recovered event.
+  private clearStaleWarningsForHealthyState(s: LocalStatus | null) {
+    if (!s || s.enrollments.length === 0) return;
+    const healthy = new Set(
+      s.enrollments
+        .filter((e) => e.connected && (e.peersDirect > 0 || e.peersRelayed > 0))
+        .map((e) => e.name)
+    );
+    if (healthy.size === 0) return;
+    const next = this.banners.filter(
+      (b) => !(b.kind === 'warning' && b.enrollment && healthy.has(b.enrollment))
+    );
+    if (next.length !== this.banners.length) this.banners = next;
   }
 
   dismissBanner(id: number) {
