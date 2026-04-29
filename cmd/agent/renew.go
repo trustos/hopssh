@@ -211,6 +211,10 @@ func sendHeartbeat(inst *meshInstance) error {
 		Relays        []string            `json:"relays"`
 		AmRelay       bool                `json:"amRelay"`
 		PeerEndpoints map[string][]string `json:"peerEndpoints"`
+		// PeerInfo is human-readable per-peer identifiers (name +
+		// DNS hostnames). Optional; older server builds omit it.
+		// Stored on inst.peerInfoCache and surfaced via /local/peers.
+		PeerInfo map[string]peerInfoEntry `json:"peerInfo"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
 		if len(body.PeerEndpoints) > 0 {
@@ -219,9 +223,43 @@ func sendHeartbeat(inst *meshInstance) error {
 		if len(body.Peers) > 0 {
 			go warmPeers(body.Peers)
 		}
+		updatePeerInfoCache(inst, body.PeerInfo)
 		_ = saveRelayState(inst, body.AmRelay, body.Relays)
 	}
 	return nil
+}
+
+// peerInfoEntry mirrors the server's response shape — see RenewHandler's
+// peerInfoEntry in internal/api/renew.go. Defined here so cmd/agent can
+// decode without dragging the api package into the agent build.
+type peerInfoEntry struct {
+	Name           string   `json:"name,omitempty"`
+	DnsHostname    string   `json:"dnsHostname,omitempty"`
+	CustomDnsNames []string `json:"customDnsNames,omitempty"`
+}
+
+// updatePeerInfoCache replaces inst.peerInfoCache with the latest
+// server-reported entries. Entries for peers that disappear from the
+// server's view are evicted so /local/peers doesn't surface stale
+// names long after a peer was removed from the network.
+func updatePeerInfoCache(inst *meshInstance, info map[string]peerInfoEntry) {
+	if inst == nil {
+		return
+	}
+	// Build a set of fresh keys for eviction.
+	fresh := make(map[string]struct{}, len(info))
+	for ip, entry := range info {
+		fresh[ip] = struct{}{}
+		inst.peerInfoCache.Store(ip, entry)
+	}
+	inst.peerInfoCache.Range(func(k, _ any) bool {
+		if ip, ok := k.(string); ok {
+			if _, present := fresh[ip]; !present {
+				inst.peerInfoCache.Delete(ip)
+			}
+		}
+		return true
+	})
 }
 
 // readInstanceToken reads the bearer token from the instance's subdir.

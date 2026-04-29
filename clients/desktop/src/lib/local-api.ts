@@ -170,6 +170,14 @@ export interface PeerDetail {
   remoteAddr?: string;
   rttMs?: number;
   lastHandshakeSec?: number;
+  // Human-readable identifiers populated from the server's heartbeat
+  // peerInfo field. Optional (older agents/servers omit). Connected.svelte
+  // shows `name` as the primary label and surfaces dnsHostname /
+  // customDnsNames only in kernel-tun (system) mode where the OS
+  // resolver can actually resolve them.
+  name?: string;
+  dnsHostname?: string;
+  customDnsNames?: string[];
 }
 
 export interface PeersResponse {

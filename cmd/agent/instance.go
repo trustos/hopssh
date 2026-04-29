@@ -85,6 +85,13 @@ type meshInstance struct {
 	// heartbeat. Nil-safe via pathQuality.snapshot().
 	pathQuality *pathQuality
 
+	// peerInfoCache holds human-readable identifiers for each peer
+	// (hostname, auto-generated DNS name, user-defined DNS records),
+	// keyed by mesh IP. Refreshed every heartbeat from the server's
+	// peerInfo response field. Used by /local/peers to enrich the
+	// PeerDetail responses surfaced to the desktop client.
+	peerInfoCache sync.Map // string (mesh IP) -> peerInfoEntry
+
 	// restartFn is invoked by the v0.10.36 keepalive watchdog when it
 	// detects stuck-data-plane state (consecutive all-failed keepalive
 	// cycles). The callback closes the running svc and starts a fresh

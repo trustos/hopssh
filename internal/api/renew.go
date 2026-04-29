@@ -55,6 +55,7 @@ type endpointHint struct {
 type RenewHandler struct {
 	Networks       *db.NetworkStore
 	Nodes          *db.NodeStore
+	DNSRecords     *db.DNSRecordStore
 	EventHub       *EventHub
 	Events         *db.NetworkEventStore
 	NetworkManager *mesh.NetworkManager
@@ -328,6 +329,37 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	var peerIPs []string
 	var relayIPs []string
 	peerEndpoints := map[string][]string{}
+	// peerInfo: name + DNS hostnames keyed by mesh IP, so the agent can
+	// surface human-friendly identifiers in the desktop client's peers
+	// list. Populated alongside peerEndpoints; backwards-compatible with
+	// older agents (the field is optional in the response).
+	type peerInfoEntry struct {
+		Name           string   `json:"name,omitempty"`
+		DnsHostname    string   `json:"dnsHostname,omitempty"`
+		CustomDnsNames []string `json:"customDnsNames,omitempty"`
+	}
+	peerInfo := map[string]peerInfoEntry{}
+
+	// User-defined DNS records for this network: build an IP→[]hostname
+	// index once so the per-peer loop is O(1).
+	customDnsByIP := map[string][]string{}
+	if h.DNSRecords != nil {
+		netRow, _ := h.Networks.Get(node.NetworkID)
+		domainSuffix := ""
+		if netRow != nil {
+			domainSuffix = netRow.DNSDomain
+		}
+		records, _ := h.DNSRecords.ListForNetwork(node.NetworkID)
+		for _, r := range records {
+			ip := strings.TrimSuffix(r.NebulaIP, "/24")
+			fqdn := r.Name
+			if domainSuffix != "" {
+				fqdn = r.Name + "." + domainSuffix
+			}
+			customDnsByIP[ip] = append(customDnsByIP[ip], fqdn)
+		}
+	}
+
 	amRelay := false
 	now := time.Now().Unix()
 
@@ -372,6 +404,19 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		if merged := mergePeerEndpoints(lighthouse, hint, time.Now()); len(merged) > 0 {
 			peerEndpoints[ip] = merged
 		}
+
+		// Populate the human-readable identifiers for this peer.
+		// Hostname always present; DnsName populated only after enrollment
+		// completes (legacy nodes may have nil); custom DNS records are
+		// optional and may be empty.
+		entry := peerInfoEntry{Name: p.Hostname}
+		if p.DNSName != nil {
+			entry.DnsHostname = *p.DNSName
+		}
+		if customs := customDnsByIP[ip]; len(customs) > 0 {
+			entry.CustomDnsNames = customs
+		}
+		peerInfo[ip] = entry
 	}
 
 	resp := map[string]interface{}{}
@@ -383,6 +428,9 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(peerEndpoints) > 0 {
 		resp["peerEndpoints"] = peerEndpoints
+	}
+	if len(peerInfo) > 0 {
+		resp["peerInfo"] = peerInfo
 	}
 	if amRelay {
 		resp["amRelay"] = true

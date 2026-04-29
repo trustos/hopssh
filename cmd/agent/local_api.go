@@ -493,13 +493,43 @@ func (s *localAPIServer) handlePeers(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	direct, relayed, peers, _ := collectPeerState(ctrl, inst.pathQuality)
+	enriched := enrichPeersWithInfo(peers, inst)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enrollment": name,
 		"connected":  true,
 		"direct":     direct,
 		"relayed":    relayed,
-		"peers":      peers,
+		"peers":      enriched,
 	})
+}
+
+// peerDetailWithInfo is the response shape for /local/peers — embeds
+// the protocol-level PeerDetail and adds the human-readable identifiers
+// pulled from inst.peerInfoCache (populated by sendHeartbeat from the
+// server's peerInfo response). Only this local-API endpoint needs the
+// names; the heartbeat body and dashboard already have access to them
+// directly through the control plane.
+type peerDetailWithInfo struct {
+	PeerDetail
+	Name           string   `json:"name,omitempty"`
+	DnsHostname    string   `json:"dnsHostname,omitempty"`
+	CustomDnsNames []string `json:"customDnsNames,omitempty"`
+}
+
+func enrichPeersWithInfo(peers []PeerDetail, inst *meshInstance) []peerDetailWithInfo {
+	out := make([]peerDetailWithInfo, 0, len(peers))
+	for _, p := range peers {
+		entry := peerDetailWithInfo{PeerDetail: p}
+		if v, ok := inst.peerInfoCache.Load(p.VpnAddr); ok {
+			if info, ok2 := v.(peerInfoEntry); ok2 {
+				entry.Name = info.Name
+				entry.DnsHostname = info.DnsHostname
+				entry.CustomDnsNames = info.CustomDnsNames
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 func (s *localAPIServer) handleEvents(w http.ResponseWriter, r *http.Request) {

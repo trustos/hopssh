@@ -218,27 +218,43 @@
         {:else}
           <ul class="divide-y divide-zinc-800">
             {#each peers as p}
-              <li class="flex items-center justify-between px-4 py-2.5 text-xs">
-                <div class="flex items-center gap-2">
-                  <span
-                    class={p.direct
-                      ? 'inline-block h-2 w-2 rounded-full bg-emerald-400'
-                      : 'inline-block h-2 w-2 rounded-full bg-amber-400'}
-                  ></span>
-                  <span class="font-mono">{p.vpnAddr}</span>
-                  {#if p.direct}
-                    <span class="text-[10px] text-zinc-500">direct</span>
-                  {:else}
-                    <span class="text-[10px] text-zinc-500">via relay</span>
-                  {/if}
+              {@const inSystemMode = agent.status?.runMode === 'system'}
+              {@const dnsNames = inSystemMode
+                ? [...(p.dnsHostname ? [p.dnsHostname] : []), ...(p.customDnsNames ?? [])]
+                : []}
+              <li class="px-4 py-2.5 text-xs">
+                <div class="flex items-center justify-between">
+                  <div class="flex min-w-0 items-center gap-2">
+                    <span
+                      class={p.direct
+                        ? 'inline-block h-2 w-2 shrink-0 rounded-full bg-emerald-400'
+                        : 'inline-block h-2 w-2 shrink-0 rounded-full bg-amber-400'}
+                    ></span>
+                    <span class="truncate font-medium text-zinc-200">
+                      {p.name || p.vpnAddr}
+                    </span>
+                    {#if p.direct}
+                      <span class="shrink-0 text-[10px] text-zinc-500">direct</span>
+                    {:else}
+                      <span class="shrink-0 text-[10px] text-zinc-500">via relay</span>
+                    {/if}
+                  </div>
+                  <div class="flex shrink-0 items-center gap-3 text-zinc-500">
+                    {#if p.rttMs}
+                      <span class="font-mono">{p.rttMs}ms</span>
+                    {/if}
+                    {#if p.remoteAddr}
+                      <span class="font-mono text-[10px]">{p.remoteAddr}</span>
+                    {/if}
+                  </div>
                 </div>
-                <div class="flex items-center gap-3 text-zinc-500">
-                  {#if p.rttMs}
-                    <span class="font-mono">{p.rttMs}ms</span>
+                <div class="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-4 text-[10px] text-zinc-500">
+                  {#if p.name}
+                    <span class="font-mono">{p.vpnAddr}</span>
                   {/if}
-                  {#if p.remoteAddr}
-                    <span class="font-mono text-[10px]">{p.remoteAddr}</span>
-                  {/if}
+                  {#each dnsNames as dns}
+                    <span class="font-mono">{dns}</span>
+                  {/each}
                 </div>
               </li>
             {/each}
