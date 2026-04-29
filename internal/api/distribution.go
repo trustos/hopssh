@@ -205,7 +205,9 @@ echo "==> Mounting DMG..."
 hdiutil attach "$TMPDMG" -nobrowse -quiet
 
 echo "==> Installing to /Applications..."
+HAD_PRIOR_INSTALL=0
 if [ -d /Applications/hopssh.app ]; then
+  HAD_PRIOR_INSTALL=1
   killall hopssh-desktop 2>/dev/null || true
   sleep 1
   sudo rm -rf /Applications/hopssh.app
@@ -217,6 +219,24 @@ hdiutil detach /Volumes/hopssh -quiet
 
 echo "==> Removing any quarantine xattr (defense-in-depth)..."
 sudo xattr -cr /Applications/hopssh.app 2>/dev/null || true
+
+# When replacing an existing install we just SIGKILL'd the running .app
+# above. macOS's SystemUIServer doesn't always reap the dead process's
+# NSStatusItem; the ghost survives until logout/reboot, and the new
+# .app's tray icon registers alongside it — user sees TWO icons. Flush
+# the cache by restarting SystemUIServer + ControlCenter (both daemons
+# auto-restart via launchd in <5s with a fresh menubar that contains
+# only currently-registered status items).
+#
+# Skipped on first install (HAD_PRIOR_INSTALL=0) because there's no
+# stale registration to flush and the restart blanks the user's whole
+# menubar for ~3s — not worth it for the no-ghost case.
+if [ "$HAD_PRIOR_INSTALL" = 1 ]; then
+  echo "==> Flushing menubar (clears the prior install's tray ghost)..."
+  killall SystemUIServer 2>/dev/null || true
+  killall ControlCenter 2>/dev/null || true
+  sleep 2
+fi
 
 echo "==> Launching hopssh..."
 open /Applications/hopssh.app
