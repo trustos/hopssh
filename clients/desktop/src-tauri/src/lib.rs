@@ -556,6 +556,11 @@ fn set_tray_state(app: AppHandle, state: String) -> Result<(), String> {
     let img = tauri::image::Image::from_bytes(bytes).map_err(|e| e.to_string())?;
     if let Some(tray) = app.tray_by_id("main") {
         tray.set_icon(Some(img)).map_err(|e| e.to_string())?;
+        // set_icon replaces the NSImage; the template flag lives on the
+        // image, not on the tray, so it must be re-applied after every
+        // swap. Without this the icon renders as opaque dark RGBA on a
+        // dark menubar instead of macOS-auto-flipping with the bg.
+        tray.set_icon_as_template(true).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -917,6 +922,35 @@ mod tests {
         assert!(
             s.contains("system-local-api-port"),
             "must rm the stale mirror port file: {s}"
+        );
+    }
+
+    /// Tripwire (locked in after dark-menubar tray icon rendered opaque
+    /// dark instead of auto-flipping white): set_tray_state MUST call
+    /// set_icon_as_template(true) after every set_icon() swap. The
+    /// template flag lives on the NSImage, not on the tray; replacing
+    /// the image drops the flag.
+    #[test]
+    fn set_tray_state_reapplies_template_after_set_icon() {
+        let src = std::fs::read_to_string(file!())
+            .expect("must be able to read lib.rs source for self-scan");
+        let cmd = src
+            .split("fn set_tray_state(")
+            .nth(1)
+            .expect("set_tray_state command must exist");
+        let body = cmd
+            .split("\n}\n")
+            .next()
+            .expect("set_tray_state body must end with closing brace");
+        assert!(
+            body.contains("set_icon(Some(img))"),
+            "set_tray_state must call set_icon — body: {body}"
+        );
+        assert!(
+            body.contains("set_icon_as_template(true)"),
+            "set_tray_state MUST call set_icon_as_template(true) after \
+             set_icon — without it macOS renders the new NSImage as \
+             plain RGBA, not template-flipped. Body: {body}"
         );
     }
 
