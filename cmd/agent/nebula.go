@@ -523,6 +523,31 @@ func readTunMode(inst *meshInstance) string {
 	return "userspace"
 }
 
+// currentTunMode returns the runtime TUN mode for a live instance without
+// any side effects (no auto-upgrade, no file writes). Use from read-only
+// paths like /local/status reporting. The agent auto-upgrades to kernel
+// when running as root (see readTunMode), but the upgrade writes only the
+// tun-mode file — the enroll-time TunMode in enrollments.json is never
+// rewritten. Reading the enrollment field directly therefore lies to
+// callers about the actual mode the data plane is using.
+func currentTunMode(inst *meshInstance) string {
+	data, err := os.ReadFile(filepath.Join(inst.dir(), "tun-mode"))
+	if err != nil {
+		if isPrivileged() {
+			return "kernel"
+		}
+		return "userspace"
+	}
+	mode := strings.TrimSpace(string(data))
+	if mode == "userspace" && isPrivileged() {
+		return "kernel"
+	}
+	if mode == "kernel" {
+		return "kernel"
+	}
+	return "userspace"
+}
+
 // upgradeTunMode switches the persisted TUN mode from userspace to kernel
 // and updates nebula.yaml accordingly. Preserves all other config (including
 // which may update nebula.yaml via upgradeTunMode).

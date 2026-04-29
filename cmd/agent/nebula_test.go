@@ -145,6 +145,74 @@ func TestReadTunMode_InvalidContent(t *testing.T) {
 	}
 }
 
+// Tripwire: currentTunMode must NOT mutate the tun-mode file. /local/status
+// is a read-only path called frequently; the auto-upgrade side effect of
+// readTunMode() must not leak into status reporting.
+func TestCurrentTunMode_NoSideEffects(t *testing.T) {
+	tmpDir := t.TempDir()
+	inst := testInstance(t, "test", tmpDir)
+
+	tunModePath := filepath.Join(tmpDir, "tun-mode")
+	if err := os.WriteFile(tunModePath, []byte("userspace"), 0644); err != nil {
+		t.Fatalf("write tun-mode: %v", err)
+	}
+
+	// Call currentTunMode many times; the file MUST stay "userspace"
+	// (no rewriting, no upgrade-side-effects). Even if running as
+	// root in CI, the persisted file must be left alone.
+	for i := 0; i < 5; i++ {
+		_ = currentTunMode(inst)
+	}
+
+	got, err := os.ReadFile(tunModePath)
+	if err != nil {
+		t.Fatalf("read back tun-mode: %v", err)
+	}
+	if string(got) != "userspace" {
+		t.Fatalf("currentTunMode mutated tun-mode file: got %q, want %q", got, "userspace")
+	}
+}
+
+// Tripwire: when persisted file says "kernel", currentTunMode must
+// report "kernel" regardless of privilege — matches readTunMode's
+// behavior on the kernel branch (line 520) so /local/status agrees
+// with what startNebulaByMode actually launched.
+func TestCurrentTunMode_KernelFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	inst := testInstance(t, "test", tmpDir)
+
+	if err := os.WriteFile(filepath.Join(tmpDir, "tun-mode"), []byte("kernel"), 0644); err != nil {
+		t.Fatalf("write tun-mode: %v", err)
+	}
+
+	if mode := currentTunMode(inst); mode != "kernel" {
+		t.Fatalf("expected kernel, got %q", mode)
+	}
+}
+
+// Tripwire (the actual production bug): when persisted file says
+// "userspace" but the agent is running as root (LaunchDaemon), the
+// runtime auto-upgrade to kernel is reflected in currentTunMode so
+// /local/status agrees with the data plane.
+func TestCurrentTunMode_AutoUpgradeReflectedWhenPrivileged(t *testing.T) {
+	if os.Getuid() != 0 {
+		t.Skip("test requires root to exercise privileged branch")
+	}
+	tmpDir := t.TempDir()
+	inst := testInstance(t, "test", tmpDir)
+
+	// Persisted file says userspace (enroll-time default).
+	if err := os.WriteFile(filepath.Join(tmpDir, "tun-mode"), []byte("userspace"), 0644); err != nil {
+		t.Fatalf("write tun-mode: %v", err)
+	}
+
+	// Running as root → runtime mode is kernel even though persisted
+	// is userspace. This is the bug the v0.10.62 fix addresses.
+	if mode := currentTunMode(inst); mode != "kernel" {
+		t.Fatalf("expected kernel (root + userspace persisted = runtime kernel), got %q", mode)
+	}
+}
+
 // stubNetwork replaces package-level test doubles for the duration
 // of one test and returns a restore func.
 func stubNetwork(t *testing.T, ifaceUp bool, reloadDelay time.Duration) (fired *int32, restore func()) {

@@ -446,6 +446,11 @@ func (s *localAPIServer) enrollmentStatus(e *Enrollment) EnrollmentStatus {
 
 	// Live instance state.
 	if inst := s.instances.get(e.Name); inst != nil {
+		// Runtime TUN mode may differ from enroll-time. The agent
+		// auto-upgrades userspace→kernel when started as root; that
+		// upgrade writes the tun-mode file but NOT enrollments.json,
+		// so reading e.TunMode lies. Override with runtime truth.
+		es.TunMode = currentTunMode(inst)
 		ctrl := inst.control()
 		if ctrl != nil {
 			es.Connected = true
