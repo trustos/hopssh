@@ -232,14 +232,25 @@ fn build_convert_script(agent_path: &std::path::Path, user_config: &std::path::P
 /// Mirror of build_convert_script:
 ///
 ///   1. /usr/local/bin/hop-agent uninstall (no --purge — keep configs)
-///      — stops + unloads the LaunchDaemon, removes the plist.
+///      stops + unloads the LaunchDaemon, removes the plist + binary.
 ///   2. Move /etc/hop-agent/enrollments.json + per-enrollment subdirs
-///      back into the user's configDir so the .app's bundled spawn
-///      picks them up on its next launch.
+///      back into the user's configDir.
+///   3. **chown back to the console user**. CRITICAL: inside
+///      `osascript ... with administrator privileges`, the shell runs
+///      as root, so `$USER` would be "root" (wrong!). osascript sets
+///      `$SUDO_USER` to the console user when escalating; that's the
+///      correct env var. Without this fix the migrated configs are
+///      root-owned 0600 and the user-level bundled child can't read
+///      its own enrollments.json — visible symptom is "hopssh isn't
+///      running" after toggling Run-in-the-background OFF.
+///   4. Remove the stale mirror token + port files so the next launch's
+///      try_attach_to_system_agent probe correctly falls through to
+///      bundled spawn (instead of trying to TCP-connect to a dead
+///      system-agent port).
 fn build_revert_script(user_config: &std::path::Path) -> String {
     let user_config_str = user_config.display();
     format!(
-        r#"do shell script "/usr/local/bin/hop-agent uninstall && mkdir -p '{0}' && (cd /etc/hop-agent 2>/dev/null && (cp -R . '{0}/' && rm -rf /etc/hop-agent/* /etc/hop-agent/.[!.]* 2>/dev/null) || true) && chown -R '$USER':staff '{0}'" with administrator privileges"#,
+        r#"do shell script "/usr/local/bin/hop-agent uninstall && mkdir -p '{0}' && (cd /etc/hop-agent 2>/dev/null && (cp -R . '{0}/' && rm -rf /etc/hop-agent/* /etc/hop-agent/.[!.]* 2>/dev/null) || true) && rm -rf /etc/hop-agent && chown -R \"$SUDO_USER\":staff '{0}' && rm -f '{0}/system-local-api-token' '{0}/system-local-api-port'" with administrator privileges"#,
         user_config_str
     )
 }
@@ -838,6 +849,48 @@ mod tests {
             s.matches("do shell script").count(),
             1,
             "revert script must use exactly one privileged shell: {s}"
+        );
+    }
+
+    /// Tripwire (locked in after the v0.10.55 broken-revert incident):
+    /// the chown step inside the privileged shell MUST use $SUDO_USER,
+    /// not $USER. Inside `osascript ... with administrator privileges`,
+    /// the shell runs as root and `$USER` == "root" — chowning files
+    /// to root:staff leaves the bundled child unable to read its own
+    /// configs. $SUDO_USER is set by osascript to the console user
+    /// who approved the admin prompt.
+    #[test]
+    fn revert_command_chowns_back_to_console_user() {
+        let user_config = Path::new("/Users/alice/Library/Application Support/hopssh");
+        let s = build_revert_script(user_config);
+        assert!(
+            s.contains("$SUDO_USER"),
+            "chown must use $SUDO_USER (not $USER, which is root inside privileged shells): {s}"
+        );
+        assert!(
+            !s.contains("'$USER'"),
+            "chown must NOT use $USER — that's 'root' inside privileged shells: {s}"
+        );
+        assert!(s.contains("chown"), "must chown the migrated configs: {s}");
+    }
+
+    /// Tripwire: revert must also remove the stale mirror token + port
+    /// files. Otherwise the next launch's try_attach_to_system_agent
+    /// probe reads them, attempts a TCP-connect to the dead system
+    /// agent's port, and falls through anyway — but the visible
+    /// effect is a brief "Connecting..." stutter on every relaunch.
+    /// Cleaning them at revert time keeps the user's home dir tidy.
+    #[test]
+    fn revert_command_removes_stale_mirror_files() {
+        let user_config = Path::new("/Users/alice/Library/Application Support/hopssh");
+        let s = build_revert_script(user_config);
+        assert!(
+            s.contains("system-local-api-token"),
+            "must rm the stale mirror token: {s}"
+        );
+        assert!(
+            s.contains("system-local-api-port"),
+            "must rm the stale mirror port file: {s}"
         );
     }
 }
