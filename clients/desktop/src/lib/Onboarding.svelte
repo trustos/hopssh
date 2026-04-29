@@ -173,7 +173,16 @@
       stage = 'done';
       window.setTimeout(onDone, 1500);
     } catch (e: unknown) {
-      bgPromptError = e instanceof Error ? e.message : String(e);
+      const msg = e instanceof Error ? e.message : String(e);
+      // "admin prompt cancelled by user" is the explicit marker from
+      // run_osascript on user cancel — show a softer message that
+      // makes "try again or stay in userspace" obvious. Anything else
+      // is a real failure worth surfacing verbatim.
+      if (msg.includes('admin prompt cancelled') || msg.includes('User canceled')) {
+        bgPromptError = "Cancelled. You can try again, or stay in userspace mode (mesh works through the dashboard's web terminal).";
+      } else {
+        bgPromptError = msg;
+      }
       // Stay on the bgprompt screen so the user can retry or decline.
       stage = 'bgprompt';
     }
@@ -438,16 +447,19 @@
           <span class="mt-0.5 text-xl">🔋</span>
           <div class="min-w-0 flex-1">
             <h3 class="text-sm font-semibold text-emerald-100">
-              Keep hopssh running in the background?
+              Make hopssh work like Tailscale?
             </h3>
             <p class="mt-1 text-[12px] leading-relaxed text-zinc-300">
-              Recommended. hopssh reconnects automatically after restart and
-              stays connected when you log out. Screen sharing through the
-              mesh works smoothly too.
+              Recommended. Installs a small background service so
+              <code class="rounded bg-zinc-900/60 px-1 font-mono">ping</code>
+              and <code class="rounded bg-zinc-900/60 px-1 font-mono">ssh</code>
+              to mesh hostnames work from any app. Reconnects after restart,
+              stays online when you log out, screen sharing through the
+              mesh works smoothly.
             </p>
             <p class="mt-1 text-[11px] text-zinc-500">
-              Triggers a one-time admin prompt. You can change this anytime
-              in Settings → Preferences.
+              Triggers a one-time admin prompt. Reversible anytime from
+              Settings → Preferences.
             </p>
             {#if bgPromptError}
               <div class="mt-2 rounded-md border border-red-900/50 bg-red-950/40 px-3 py-2 text-[11px] text-red-300">

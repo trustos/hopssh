@@ -2,6 +2,7 @@
   import { agent } from './stores.svelte';
   import { local, type PeerDetail, type EnrollmentStatus } from './local-api';
   import { openExternal } from './tauri-bridge';
+  import SystemModeCTA from './SystemModeCTA.svelte';
 
   let selectedName = $state<string | null>(null);
   let peers = $state<PeerDetail[]>([]);
@@ -172,6 +173,11 @@
           </div>
         {/if}
       </div>
+
+      <!-- System-mode upsell. Only renders when in bundled mode + at
+           least one connected network + not dismissed within 7 days.
+           Self-hides once user enables system mode or dismisses. -->
+      <SystemModeCTA />
 
       <!-- Peers list -->
       <div class="rounded-lg border border-zinc-800 bg-zinc-900/40">
