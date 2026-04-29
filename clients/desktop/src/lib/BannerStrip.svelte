@@ -1,6 +1,6 @@
 <script lang="ts">
   import { agent } from './stores.svelte';
-  import { installPendingUpdate, pendingUpdateVersion } from './updater';
+  import { installPendingUpdate, pendingUpdateVersion } from './updater.svelte';
 
   let installing = $state(false);
   async function applyUpdate(id: number) {

@@ -1,7 +1,15 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { onMount } from 'svelte';
   import { agent } from './stores.svelte';
   import { local } from './local-api';
+  import {
+    appVersion,
+    isNewer,
+    manualCheck,
+    openInstallPage,
+    updateState,
+  } from './updater.svelte';
 
   // ---- Per-network "Leave" state (unchanged behavior) ----
   let leavingName = $state<string | null>(null);
@@ -31,6 +39,18 @@
   // True when the agent reports it's the launchd-spawned system daemon.
   // When false, the agent is a child of the .app (bundled mode).
   let inSystemMode = $derived(agent.status?.runMode === 'system');
+
+  // Updates — populate the .app version once on mount so the "current"
+  // line renders even before the first check. Latest version is fetched
+  // on-demand by the user via manualCheck().
+  let updateAvailable = $derived(
+    isNewer(updateState.current, updateState.latest)
+  );
+  onMount(async () => {
+    if (updateState.current === null) {
+      updateState.current = await appVersion();
+    }
+  });
 
   async function doLeave(name: string) {
     leavingName = name;
@@ -484,6 +504,84 @@
       </section>
     {/if}
   {/if}
+
+  <!-- ============================================================
+       Updates — manual check + open install page when newer.
+       Until the signed-update infra is wired up (real pubkey in
+       tauri.conf.json), the install path is the same curl-pipe
+       installer hopssh.com publishes — transparent and reversible.
+       ============================================================ -->
+  <section class="mt-6 rounded-lg border border-zinc-800 bg-zinc-900/40">
+    <header class="border-b border-zinc-800 px-4 py-2.5">
+      <h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-300">
+        Updates
+      </h3>
+    </header>
+    <div class="space-y-3 px-4 py-3">
+      <div class="flex items-center justify-between gap-3">
+        <div class="min-w-0">
+          <p class="text-sm text-zinc-200">
+            Current version
+            <span class="ml-1 font-mono text-xs text-zinc-400">
+              {updateState.current ?? 'unknown'}
+            </span>
+          </p>
+          {#if updateState.lastCheckedAt}
+            <p class="mt-0.5 text-[11px] text-zinc-500">
+              {#if updateState.latest}
+                Latest available: <span class="font-mono">{updateState.latest}</span>
+              {:else}
+                Checked just now.
+              {/if}
+            </p>
+          {:else}
+            <p class="mt-0.5 text-[11px] text-zinc-500">
+              Click below to check for a newer version.
+            </p>
+          {/if}
+        </div>
+        <button
+          type="button"
+          disabled={updateState.checking}
+          class="shrink-0 rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-200 hover:bg-zinc-800 disabled:opacity-60"
+          onclick={manualCheck}
+        >
+          {updateState.checking ? 'Checking…' : 'Check for updates'}
+        </button>
+      </div>
+
+      {#if updateState.error}
+        <div class="rounded-md border border-amber-900/40 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-300">
+          {updateState.error}
+        </div>
+      {/if}
+
+      {#if updateAvailable}
+        <div class="rounded-md border border-emerald-900/40 bg-emerald-950/30 p-3">
+          <p class="text-sm font-medium text-emerald-100">
+            Update available: <span class="font-mono">{updateState.latest}</span>
+          </p>
+          <p class="mt-1 text-[12px] leading-relaxed text-zinc-300">
+            Open hopssh.com to copy the one-line install command and run it
+            in Terminal. Re-launch hopssh after the install completes.
+          </p>
+          <div class="mt-2 flex gap-2">
+            <button
+              type="button"
+              class="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400"
+              onclick={openInstallPage}
+            >
+              Open install instructions
+            </button>
+          </div>
+        </div>
+      {:else if updateState.lastCheckedAt && !updateState.error}
+        <p class="text-[11px] text-zinc-500">
+          You're on the latest version.
+        </p>
+      {/if}
+    </div>
+  </section>
 
   <!-- ============================================================
        About — diagnostic metadata, collapsed by default. Replaces the

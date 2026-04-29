@@ -9,7 +9,7 @@
   import Disconnected from './lib/Disconnected.svelte';
   import Logo from './lib/Logo.svelte';
   import BannerStrip from './lib/BannerStrip.svelte';
-  import { checkForUpdate } from './lib/updater';
+  import { checkForUpdate } from './lib/updater.svelte';
 
   let view = $state<'main' | 'onboarding' | 'settings'>('main');
   let trayUnsub: UnlistenFn | null = null;
