@@ -52,12 +52,15 @@
   // When false, the agent is a child of the .app (bundled mode).
   let inSystemMode = $derived(agent.status?.runMode === 'system');
 
-  // Updates — populate the .app version once on mount so the "current"
-  // line renders even before the first check. Latest version is fetched
-  // on-demand by the user via manualCheck().
-  let updateAvailable = $derived(
-    isNewer(updateState.current, updateState.latest)
-  );
+  // The current version we display is whatever the running agent is
+  // reporting via /local/status — that's what's actually IN USE on
+  // this Mac, and it's correctly baked from the git tag by both CI
+  // and the dev-deploy script. Falls back to the .app's bundled
+  // version (Tauri's getVersion → tauri.conf.json::version) only if
+  // the agent hasn't reported yet, which itself is stale ("0.1.0"
+  // until we wire automatic version-bump into release-desktop.yml).
+  let displayCurrent = $derived(agent.status?.version ?? updateState.current);
+  let updateAvailable = $derived(isNewer(displayCurrent, updateState.latest));
   onMount(async () => {
     if (updateState.current === null) {
       updateState.current = await appVersion();
@@ -542,7 +545,7 @@
           <p class="text-sm text-zinc-200">
             Current version
             <span class="ml-1 font-mono text-xs text-zinc-400">
-              {updateState.current ?? 'unknown'}
+              {displayCurrent ?? 'unknown'}
             </span>
           </p>
           {#if updateState.lastCheckedAt}

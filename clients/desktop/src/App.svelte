@@ -116,7 +116,13 @@
       <Logo class="h-5 w-5 text-emerald-400" />
       <span class="text-sm font-semibold tracking-tight">hopssh</span>
       {#if agent.status?.version}
-        <span class="text-[10px] text-zinc-500">v{agent.status.version}</span>
+        <!-- Don't double-prefix: CI/release builds bake the git tag
+             which already starts with 'v' (e.g. v0.10.69). Hand-built
+             or legacy binaries may report 'dev' or '0.x.y' without
+             the prefix; normalize to a single leading 'v'. -->
+        <span class="text-[10px] text-zinc-500">
+          {agent.status.version.startsWith('v') ? agent.status.version : `v${agent.status.version}`}
+        </span>
       {/if}
     </div>
     <nav class="flex items-center gap-1 text-xs">

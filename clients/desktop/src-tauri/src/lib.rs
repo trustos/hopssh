@@ -1012,6 +1012,27 @@ mod tests {
         );
     }
 
+    /// Tripwire: the WebView CSP `connect-src` must include
+    /// https://hopssh.com so the Updates panel's manualCheck() fetch
+    /// to /version succeeds. Without this, the WebView's CSP blocks
+    /// the fetch and the UI shows "Load failed" with no diagnostic.
+    /// User-visible enough to guard with a tripwire.
+    #[test]
+    fn tauri_conf_csp_allows_hopssh_com() {
+        let conf_path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json");
+        let conf = std::fs::read_to_string(&conf_path)
+            .expect("tauri.conf.json must exist next to Cargo.toml");
+        // Find the CSP string. Must include https://hopssh.com in the
+        // connect-src directive (otherwise fetch from the WebView is
+        // blocked and the Updates panel's manualCheck shows "Load
+        // failed").
+        assert!(
+            conf.contains("https://hopssh.com"),
+            "tauri.conf.json CSP must allow https://hopssh.com so the Updates panel's fetch to /version works. WebView CSP blocks fetches that aren't in connect-src."
+        );
+    }
+
     /// Tripwire: the main window must show on .app launch. The tray
     /// is for the menu only; the .app icon click should open the
     /// window like any standard macOS app. We tried "visible": false
