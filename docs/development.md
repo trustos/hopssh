@@ -34,6 +34,59 @@ make build-linux GOARCH=arm64     # linux/arm64
 #   ./hop-server   — control plane (API + web UI + lighthouse + relay + DNS)
 ```
 
+The Makefile bakes `buildinfo.Version` (from `git describe --tags --dirty`),
+`buildinfo.Commit` (from `git rev-parse --short HEAD`), and `buildinfo.ClientType`
+(`cli` for `make build`, `desktop` for `make dev-deploy-desktop` / CI's
+`release-desktop.yml`) via `-ldflags`. Without these, the agent reports version
+`dev` and the desktop UI's header shows `vdev`. `dev-deploy-desktop.sh` mirrors
+the CI ldflags so dev-deployed builds are indistinguishable from CI ones at the
+status-reporting layer.
+
+### Desktop client (macOS Tauri 2)
+
+```bash
+# Build + ship .app to local Mac mini (and SCP to laptop) in ~2 min:
+make dev-deploy-desktop
+
+# Override:
+LAPTOP_HOST=192.168.23.18 make dev-deploy-desktop   # custom laptop IP
+SKIP_LAPTOP=1 make dev-deploy-desktop                # local-only
+SKIP_LOCAL=1 make dev-deploy-desktop                 # laptop-only
+```
+
+`dev-deploy-desktop.sh` does: universal `hop-agent` build (arm64+amd64 lipo) →
+`tauri build --bundles app` → replace bundled binary → re-sign (real ad-hoc
+inner + deep-sign bundle, NOT linker-signed — matters for AMFI under launchd) →
+tar + install on Mac mini via `ditto --noextattr` (strips quarantine xattrs that
+break LaunchDaemon AMFI) → SCP + install on laptop → `open` on each. Ship cycle
+~2 min for both Macs.
+
+### Tripwire test pattern
+
+Two flavors of "tripwire" tests guard load-bearing invariants from silent
+regression:
+
+1. **Source-scan tripwires** — open a `.go` / `.rs` / `.json` source file and
+   `grep`-style assert presence/order of specific tokens. Cheap, no runtime
+   cost, catch reorder regressions ordinary unit tests miss. Examples:
+   `cmd/agent/renew_reload_source_test.go` (asserts `oldSvc.Close()` appears
+   before `startNebulaByModeFn(`),
+   `clients/desktop/src-tauri/src/lib.rs::tests::tauri_conf_has_no_declarative_tray_icon`
+   (asserts `tauri.conf.json` doesn't reintroduce the duplicate-tray bug).
+
+2. **Behavior tripwires** — exercise the real code path against a fake/test
+   scaffold and assert observable invariants. Required when source-scan is
+   insufficient (e.g. variable-expansion behavior in privileged shells —
+   see `revert_command_bakes_console_user_at_build_time` after we got burned
+   by a source-scan tripwire that asserted `"$SUDO_USER"` was present in the
+   script string while the runtime `chown` was a silent no-op).
+
+**Rule:** when a class of bug is platform-specific or env-dependent, ship BOTH
+layers. The source-scan catches code-review reorder regressions; the behavior
+test catches runtime semantic regressions. Either alone gives false confidence
+in production (per the v0.10.56 incident — see CLAUDE.md `osascript SUDO_USER`
+entry).
+
 ## Running Locally
 
 ```bash

@@ -123,11 +123,38 @@
 - **`update`** — Self-update from GitHub releases.
 - **`healthz`** — Health probe (exits 0 if running, 1 if down). Used by container orchestrators.
 
+## Desktop Client (macOS)
+
+- **Tauri 2 menubar app (v0.10.38+)** — Native macOS app bundling the existing `hop-agent` binary as a sidecar. Pure menubar UX: left and right click both open the tray menu (`show_menu_on_left_click(true)`), window appears on `.app` launch and on Dock-icon click via `RunEvent::Reopen`. Tray icon swaps between connected (filled dots + lines), relay (mixed), and disconnected (hollow rings) — pure template-mode rendering, auto-flips for dark/light menubar. Tray menu: Show hopssh / Add a network / Check for updates / About / Quit.
+- **Onboarding & enrollment** — Device-flow enrollment with pre-filled endpoint URL, progress ladder, and port-conflict detection. Live runtime add/remove of mesh instances (no agent restart) backed by `/local/connect` + `/local/disconnect` (v0.10.34).
+- **"Run in the background" toggle** — Settings toggle silently converts between user-mode bundled agent (gvisor netstack, no admin prompt) and LaunchDaemon system-mode agent (kernel utun, root). Behind the scenes: `--migrate-from` subcommand atomically relocates `enrollments.json` + per-enrollment subdirs from user configDir to `/etc/hop-agent`; the LaunchDaemon spawns a system agent that mirrors `system-local-api-{token,port}` files to the user's home (mode 0600/0644) so the `.app` can attach without root. ONE `osascript with administrator privileges` prompt per direction. Auto-detects the upgrade and reports runtime TUN mode in `/local/status` (commit 286356e).
+- **System-mode upsell CTA** — Non-blocking card surfaces in the connected view when bundled-mode users have ≥1 active network; explains the limitation (`ping` / `ssh` from Terminal don't reach mesh IPs without system-mode) and the value prop. Dismissible for 7 days; self-hides on enable. Mirrors the Onboarding-time post-enrollment prompt for users who declined initially.
+- **Per-peer enrichment** — Peers list shows each peer's hostname as the primary label (mesh IP secondary), and renders auto-generated DNS hostnames + custom DNS records. The agent caches name + DNS data from heartbeat responses and serves it via `/local/peers`; the dashboard already had this through the control plane (commit 1892725).
+- **Settings → Danger zone** — Three-tier destructive flow: Sign out of all networks (reversible) / Reset hopssh (purge configs, keep binary) / Uninstall hopssh (purge + remove binary). Each row two-stage confirm. ONE admin prompt per destructive action; logs preserved by default.
+- **Manual "Check for updates"** — Settings panel with current-version display + manual update check against `hopssh.com/version`. Tray menu also exposes "Check for updates…" which routes to Settings with auto-fire on mount.
+- **Stuck-data-plane watchdog UI** — Banner appears when peers go silent for ≥3 cycles (~4.5 min); auto-recovery restarts the Nebula instance and writes a forensic goroutine dump to `<configDir>/<name>/stuck-state-<timestamp>.txt`. Banner clears when health is restored (commit 01812f3).
+- **Agent attached via local API** — Bundled child writes `LOCAL_API host=… port=… token=…` on stdout; system mode mirrors token + port files to the user's home dir. JS layer caches the endpoint and invalidates on `agent-ready` Tauri event (Phase D fix in c2e566f).
+
+## Server (`hop-server`)
+
+- **Single binary** — API, web UI, SQLite, lighthouse, relay, and DNS all in one process.
+- **Embedded web UI** — Svelte 5 SPA built into the Go binary. No separate frontend server.
+- **SQLite database** — Pure Go (no CGO), WAL mode, lock retry with escalating backoff. 20 read connections, 1 write connection.
+- **Flags** — `--addr`, `--data`, `--endpoint`, `--lighthouse-host`, `--trusted-proxy`, `--allowed-origins`.
+- **Environment variables** — `HOPSSH_ADDR`, `HOPSSH_DATA`, `HOPSSH_ENDPOINT`, `HOPSSH_LIGHTHOUSE_HOST`, `HOPSSH_TRUSTED_PROXY`, `HOPSSH_ALLOWED_ORIGINS`, `HOPSSH_ENCRYPTION_KEY`, `HOPSSH_NODE_PRUNE_AGE_HOURS`.
+- **`install`** — Install as a system service (systemd/launchd).
+- **`uninstall`** — Remove the system service.
+- **`update`** — Self-update from GitHub releases.
+- **`healthz`** — Health probe (exits 0 if running, 1 if down). Used by container orchestrators.
+
 ## Distribution & Updates
 
 - **Dynamic install script** — `GET /install.sh` serves a shell script with the control plane endpoint pre-baked.
-- **Self-update** — Both agent and server can update themselves. Downloads from GitHub or control plane, verifies SHA256.
-- **Cross-platform releases** — GitHub Actions builds for Linux (amd64, arm64), macOS (amd64, arm64), Windows (amd64, arm64).
+- **Curl-pipeable macOS desktop installer** — `curl https://hopssh.com/install-mac.sh | bash` installs the Tauri `.app` from a `curl`-fetched DMG. Bypasses macOS Sequoia/Tahoe Gatekeeper because curl-downloaded files have no `com.apple.quarantine` xattr (only browsers attach it). Detects CPU arch, installs via `ditto --noextattr` (strips any xattrs), strips quarantine defensively. On reinstall, also flushes `SystemUIServer` + `ControlCenter` to clear NSStatusItem ghosts left by the prior process's tray icon (commit 9be6929).
+- **DMG fallback installer** — `appdmg`-built DMG with green-arrow background and "Drag to Applications" hint. Exposed at `/download/desktop/hopssh-macos-{aarch64,x86_64}.dmg`. Manual unblock paths documented at `/download` (Terminal `xattr -cr`, System Settings → "Open Anyway", right-click → Open for older macOS).
+- **`/download` page** — Tabs ("Recommended (one command)" / "Manual (download DMG)") with copy-to-clipboard, arch-specific buttons, and three labeled unblock paths with Sequoia/Tahoe applicability notes (commit 459aa9f).
+- **Self-update** — Both agent and server can update themselves. Downloads from GitHub or control plane, verifies SHA256. Manual "Check for updates" surface in the Tauri desktop client (Settings + tray menu).
+- **Cross-platform releases** — GitHub Actions builds for Linux (amd64, arm64), macOS (amd64, arm64), Windows (amd64, arm64). Desktop `.app` built by `release-desktop.yml` with both ad-hoc-signed (default) and signed+notarized paths (activates when 5 Apple Developer secrets are populated — see `clients/desktop/SIGNING.md`).
 - **GitHub Releases** — Version endpoint (`GET /version`) and download redirects (`GET /download/{binary}`).
 - **SHA256 checksums** — Published with every release for verification.
 
