@@ -30,8 +30,16 @@ type Enrollment struct {
 	// enrollment needs a unique port so multiple Nebula instances can
 	// coexist (4242, 4243, 4244, …). 0 means "not yet assigned" — the
 	// boot path migrates these to the next available port and persists.
-	ListenPort int       `json:"listenPort,omitempty"`
-	EnrolledAt time.Time `json:"enrolledAt"`
+	ListenPort int `json:"listenPort,omitempty"`
+	// ClipboardSync controls whether this Mac participates in the
+	// network's clipboard-sync feature. Off by default — opt-in per
+	// (device, network) pair. When true, the agent (a) advertises
+	// local clipboard changes via the control-plane relay and (b)
+	// applies remote announcements to the local clipboard. Both sides
+	// honor concealed-pasteboard items (1Password, Bitwarden) and
+	// cap content at 256KB. See cmd/agent/clipboard.go.
+	ClipboardSync bool      `json:"clipboardSync,omitempty"`
+	EnrolledAt    time.Time `json:"enrolledAt"`
 }
 
 // enrollmentsFile is the registry filename inside configDir.

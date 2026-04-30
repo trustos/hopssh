@@ -219,7 +219,8 @@ func main() {
 	deviceH.Events = networkEvents
 	renewH.Events = networkEvents
 
-	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH, eventsH, netEventsH)
+	clipboardH := api.NewClipboardHandler(nodes, eventsH.Hub)
+	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH, eventsH, netEventsH, clipboardH)
 
 	// Clean up expired sessions periodically with graceful shutdown.
 	stopCleanup := make(chan struct{})

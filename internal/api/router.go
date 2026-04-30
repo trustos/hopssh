@@ -101,6 +101,7 @@ func NewRouter(
 	inviteH *InviteHandler,
 	eventsH *EventsHandler,
 	netEventsH *NetworkEventsHandler,
+	clipboardH *ClipboardHandler,
 ) chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -127,6 +128,15 @@ func NewRouter(
 	// Cert renewal + heartbeat (public — agent authenticates via bearer token).
 	r.With(publicRL.Limit, wt).Post("/api/renew", renewH.Renew)
 	r.With(publicRL.Limit, wt).Post("/api/heartbeat", renewH.Heartbeat)
+
+	// Clipboard relay (public — agent authenticates via bearer token).
+	// announce is rate-limited to a burst of 60/min per IP — clipboard
+	// changes can fire faster than heartbeats during a copy storm.
+	clipboardRL := auth.NewRateLimiter(60, 120, time.Minute, TrustedProxy)
+	if clipboardH != nil {
+		r.With(clipboardRL.Limit, wt).Post("/api/clipboard/announce", clipboardH.Announce)
+		r.With(clipboardRL.Limit, wt).Get("/api/clipboard/{clipId}", clipboardH.Content)
+	}
 
 	// Bundle download (public — token is the auth).
 	r.With(wt).Get("/api/bundles/{token}", bundleH.DownloadBundle)
