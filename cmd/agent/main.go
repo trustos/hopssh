@@ -617,6 +617,20 @@ func tryStartMeshInstance(ctx context.Context, inst *meshInstance, servers *serv
 	// see as a timeout (RFB ≈ 30s) before recovery completes.
 	go runMeshKeepalive(inst.runCtx, inst)
 
+	// Phase L slice 2: clipboard sync. Per-(device, network) opt-in
+	// — only spawn when enrollment.ClipboardSync == true. Watcher +
+	// receiver share inst.runCtx so disconnect/leave stops them.
+	if inst.enrollment != nil && inst.enrollment.ClipboardSync {
+		dir := inst.dir()
+		nodeIDBytes, _ := os.ReadFile(filepath.Join(dir, "node-id"))
+		tokenBytes, _ := os.ReadFile(filepath.Join(dir, "token"))
+		nodeID := strings.TrimSpace(string(nodeIDBytes))
+		token := strings.TrimSpace(string(tokenBytes))
+		if nodeID != "" && token != "" && inst.endpoint() != "" {
+			inst.clipboardSyncRef = startClipboardSync(inst.runCtx, inst, inst.endpoint(), nodeID, token)
+		}
+	}
+
 	// Layer 4 DISABLED in v0.10.27.1 hotfix. Two production issues:
 	// (1) Reap loop under asymmetric CGNAT (probed source-IP doesn't
 	//     match reply source-IP, endpoints falsely classified dead).

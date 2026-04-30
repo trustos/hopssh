@@ -142,6 +142,10 @@ export interface EnrollmentStatus {
   peersDirect: number;
   peersRelayed: number;
   lastError?: string;
+  // Phase L: per-(device, network) opt-in for clipboard sync. Off
+  // by default; flipped via local.setClipboardSync(). Toggle takes
+  // effect on the next agent restart in v1.
+  clipboardSync?: boolean;
 }
 
 export interface ParallelInstall {
@@ -239,6 +243,12 @@ export const local = {
     request<void>(
       'POST',
       `/local/disconnect?enrollment=${encodeURIComponent(enrollmentName)}`
+    ),
+  setClipboardSync: (enrollmentName: string, enabled: boolean) =>
+    request<{ enrollment: string; clipboardSync: boolean; restartRequired: boolean }>(
+      'POST',
+      '/local/clipboard-sync',
+      { enrollment: enrollmentName, enabled }
     )
 };
 

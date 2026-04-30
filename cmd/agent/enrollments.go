@@ -377,6 +377,26 @@ func (r *enrollmentRegistry) Names() []string {
 	return names
 }
 
+// SetClipboardSync persists Enrollment.ClipboardSync for the named
+// enrollment. Idempotent — returns nil with no write if the value
+// already matches. Caller must restart the agent for the toggle to
+// take effect on the running watcher.
+func (r *enrollmentRegistry) SetClipboardSync(name string, enabled bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.enrollments {
+		if e.Name != name {
+			continue
+		}
+		if e.ClipboardSync == enabled {
+			return nil
+		}
+		e.ClipboardSync = enabled
+		return r.saveLocked()
+	}
+	return errors.New("enrollment not found")
+}
+
 // enrollmentDir returns the per-enrollment subdirectory path
 // (<configDir>/<name>). No filesystem I/O.
 func enrollmentDir(configDir, name string) string {

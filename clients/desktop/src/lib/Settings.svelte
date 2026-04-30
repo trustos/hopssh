@@ -23,6 +23,31 @@
     onAutoCheckConsumed?: () => void;
   } = $props();
 
+  // ---- Per-network clipboard-sync toggle state (Phase L). The
+  //      flag persists in enrollments.json on the agent side; the
+  //      goroutine starts/stops on next agent restart in v1, so the
+  //      toggle copy mentions a relaunch. ----
+  let clipboardBusy = $state<string | null>(null);
+  let clipboardError = $state<string | null>(null);
+  let clipboardDone = $state<string | null>(null);
+
+  async function toggleClipboardSync(name: string, current: boolean) {
+    clipboardBusy = name;
+    clipboardError = null;
+    clipboardDone = null;
+    try {
+      await local.setClipboardSync(name, !current);
+      clipboardDone = !current
+        ? `Clipboard sync enabled for ${name}. Quit and relaunch hopssh to start the watcher.`
+        : `Clipboard sync disabled for ${name}.`;
+      await agent.refresh();
+    } catch (e: unknown) {
+      clipboardError = e instanceof Error ? e.message : String(e);
+    } finally {
+      clipboardBusy = null;
+    }
+  }
+
   // ---- Per-network "Leave" state (unchanged behavior) ----
   let leavingName = $state<string | null>(null);
   let leaveError = $state<string | null>(null);
@@ -321,6 +346,24 @@
                   <span class="truncate">{e.name}</span>
                 </div>
                 <div class="mt-0.5 truncate text-[11px] text-zinc-500">{e.endpoint}</div>
+                <div class="mt-2 flex items-center gap-2 text-[11px]">
+                  <button
+                    class={e.clipboardSync
+                      ? 'inline-flex items-center gap-1 rounded-md border border-emerald-700/60 bg-emerald-950/40 px-1.5 py-0.5 text-emerald-300 hover:border-emerald-500'
+                      : 'inline-flex items-center gap-1 rounded-md border border-zinc-700 px-1.5 py-0.5 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200'}
+                    onclick={() => toggleClipboardSync(e.name, !!e.clipboardSync)}
+                    disabled={clipboardBusy === e.name}
+                    type="button"
+                    title="Sync clipboard with peers in this network. Off by default — text only, 256 KB cap, 120s TTL, never persisted to disk. Toggle takes effect on next agent restart."
+                  >
+                    {#if clipboardBusy === e.name}
+                      <span>…</span>
+                    {:else}
+                      <span class="text-[10px]">{e.clipboardSync ? '✓' : ''}</span>
+                      <span>Clipboard sync</span>
+                    {/if}
+                  </button>
+                </div>
               </div>
               {#if confirmingName === e.name}
                 <div class="flex gap-2">
@@ -362,6 +405,16 @@
     {#if leaveDone}
       <div class="border-t border-zinc-800 px-4 py-2 text-xs text-emerald-400">
         {leaveDone}
+      </div>
+    {/if}
+    {#if clipboardError}
+      <div class="border-t border-zinc-800 px-4 py-2 text-xs text-amber-400">
+        {clipboardError}
+      </div>
+    {/if}
+    {#if clipboardDone}
+      <div class="border-t border-zinc-800 px-4 py-2 text-xs text-emerald-400">
+        {clipboardDone}
       </div>
     {/if}
   </section>

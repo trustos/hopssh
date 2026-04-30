@@ -223,6 +223,100 @@ func (h *ClipboardHandler) Announce(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// latestForNetwork returns the most-recently-cached entry for the
+// requesting network, EXCLUDING ones originated by the requesting
+// node. Used by the agent's poll-on-paste path.
+func (c *clipboardCache) latestForNetwork(networkID, excludeNodeID string, now time.Time) (clipboardEntry, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var best clipboardEntry
+	found := false
+	for _, e := range c.entries {
+		if e.NetworkID != networkID {
+			continue
+		}
+		if e.NodeID == excludeNodeID {
+			continue
+		}
+		if now.Sub(e.CreatedAt) > clipboardTTL {
+			continue
+		}
+		if !found || e.CreatedAt.After(best.CreatedAt) {
+			best = e
+			found = true
+		}
+	}
+	return best, found
+}
+
+// Poll is the short-poll endpoint agents call to fetch the most
+// recent clipboard announcement for their network from another peer.
+// GET /api/clipboard/poll?nodeId=<id>&since=<unix-ts> — returns the
+// latest entry NEWER than `since` excluding own announces. Returns
+// 204 No Content if nothing newer.
+//
+// Cadence on the agent side: every 2 s while clipboard sync is
+// enabled. The combined 2 s poll + 120 s TTL window means clips
+// linger long enough for late-joining peers but bounded enough for
+// privacy.
+func (h *ClipboardHandler) Poll(w http.ResponseWriter, r *http.Request) {
+	authHeader := r.Header.Get("Authorization")
+	if !strings.HasPrefix(authHeader, "Bearer ") {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	token := strings.TrimPrefix(authHeader, "Bearer ")
+
+	requestingNodeID := r.URL.Query().Get("nodeId")
+	if requestingNodeID == "" {
+		http.Error(w, "nodeId required", http.StatusBadRequest)
+		return
+	}
+	requestingNode, err := h.Nodes.Get(requestingNodeID)
+	if err != nil || requestingNode == nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	if subtle.ConstantTimeCompare([]byte(token), []byte(requestingNode.AgentToken)) != 1 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// since: unix seconds. 0 → return the latest regardless of age
+	// (subject to TTL). The agent will dedup by clipId on its side.
+	var since int64
+	if s := r.URL.Query().Get("since"); s != "" {
+		// Parse manually to avoid pulling in strconv elsewhere.
+		// Numeric only; non-numeric → since = 0.
+		var n int64
+		for i := 0; i < len(s); i++ {
+			d := s[i]
+			if d < '0' || d > '9' {
+				n = 0
+				break
+			}
+			n = n*10 + int64(d-'0')
+		}
+		since = n
+	}
+
+	entry, ok := h.Cache.latestForNetwork(requestingNode.NetworkID, requestingNodeID, time.Now())
+	if !ok || entry.CreatedAt.Unix() <= since {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]any{
+		"clipId":     entry.ClipID,
+		"hash":       entry.Hash,
+		"type":       entry.Type,
+		"originator": entry.NodeID,
+		"ts":         entry.CreatedAt.Unix(),
+		"content":    entry.Content,
+	})
+}
+
 // Content serves the cached payload for a specific clipId. Used by
 // peers that received an announce without inline content (size > 8KB).
 // GET /api/clipboard/{clipId} — bearer-token auth, cross-network

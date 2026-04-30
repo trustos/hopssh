@@ -134,6 +134,7 @@
 - **Manual "Check for updates"** — Settings panel with current-version display + manual update check against `hopssh.com/version`. Tray menu also exposes "Check for updates…" which routes to Settings with auto-fire on mount.
 - **Stuck-data-plane watchdog UI** — Banner appears when peers go silent for ≥3 cycles (~4.5 min); auto-recovery restarts the Nebula instance and writes a forensic goroutine dump to `<configDir>/<name>/stuck-state-<timestamp>.txt`. Banner clears when health is restored (commit 01812f3).
 - **Agent attached via local API** — Bundled child writes `LOCAL_API host=… port=… token=…` on stdout; system mode mirrors token + port files to the user's home dir. JS layer caches the endpoint and invalidates on `agent-ready` Tauri event (Phase D fix in c2e566f).
+- **Cross-platform clipboard sync (Phase L)** — Per-(device, network) opt-in via Settings → Networks → "Clipboard sync". Off by default. When enabled, the agent watches local clipboard changes via `golang.design/x/clipboard` (CGO-bound to NSPasteboard / Win32 Clipboard / X11 selection / Wayland data-control), POSTs each fresh text clip to `/api/clipboard/announce`, and short-polls `/api/clipboard/poll` every 2s for clips from other peers in the same network. Hash-based loop break + 1.5s suppression window prevents the receive→write→watch→rebroadcast loop. 256 KB content cap, 120s server-side TTL, in-memory only. Headless Linux servers gracefully no-op (clipboard.Init fails without a display server).
 
 ## Server (`hop-server`)
 

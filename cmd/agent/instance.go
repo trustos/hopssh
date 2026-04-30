@@ -92,6 +92,12 @@ type meshInstance struct {
 	// PeerDetail responses surfaced to the desktop client.
 	peerInfoCache sync.Map // string (mesh IP) -> peerInfoEntry
 
+	// clipboardSyncRef, when non-nil, is the per-instance clipboard
+	// coordinator (Phase L slice 2). Spawned at startup when
+	// enrollment.ClipboardSync == true; lifetime tied to runCtx so
+	// disconnect/leave stops it cleanly.
+	clipboardSyncRef *clipboardSync
+
 	// restartFn is invoked by the v0.10.36 keepalive watchdog when it
 	// detects stuck-data-plane state (consecutive all-failed keepalive
 	// cycles). The callback closes the running svc and starts a fresh

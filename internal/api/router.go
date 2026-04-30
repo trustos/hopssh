@@ -135,6 +135,7 @@ func NewRouter(
 	clipboardRL := auth.NewRateLimiter(60, 120, time.Minute, TrustedProxy)
 	if clipboardH != nil {
 		r.With(clipboardRL.Limit, wt).Post("/api/clipboard/announce", clipboardH.Announce)
+		r.With(clipboardRL.Limit, wt).Get("/api/clipboard/poll", clipboardH.Poll)
 		r.With(clipboardRL.Limit, wt).Get("/api/clipboard/{clipId}", clipboardH.Content)
 	}
 

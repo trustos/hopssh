@@ -184,6 +184,7 @@ func startLocalAPI(
 	mux.HandleFunc("POST /local/connect", srv.handleConnect)
 	mux.HandleFunc("POST /local/disconnect", srv.handleDisconnect)
 	mux.HandleFunc("POST /local/leave", srv.handleLeave)
+	mux.HandleFunc("POST /local/clipboard-sync", srv.handleClipboardSyncToggle)
 
 	authed := localAuthMiddleware(token, mux)
 
@@ -315,6 +316,9 @@ type EnrollmentStatus struct {
 	PeersDirect    int    `json:"peersDirect"`
 	PeersRelayed   int    `json:"peersRelayed"`
 	LastError      string `json:"lastError,omitempty"`
+	// ClipboardSync mirrors enrollment.ClipboardSync — Phase L
+	// per-(device, network) opt-in flag for clipboard sync.
+	ClipboardSync bool `json:"clipboardSync,omitempty"`
 }
 
 // LocalStatus is the GET /local/status response.
@@ -417,12 +421,13 @@ func detectParallelInstall(currentConfigDir string) *ParallelInstall {
 
 func (s *localAPIServer) enrollmentStatus(e *Enrollment) EnrollmentStatus {
 	es := EnrollmentStatus{
-		Name:       e.Name,
-		Endpoint:   e.Endpoint,
-		NodeID:     e.NodeID,
-		DNSDomain:  e.DNSDomain,
-		TunMode:    e.TunMode,
-		ListenPort: e.ListenPort,
+		Name:          e.Name,
+		Endpoint:      e.Endpoint,
+		NodeID:        e.NodeID,
+		DNSDomain:     e.DNSDomain,
+		TunMode:       e.TunMode,
+		ListenPort:    e.ListenPort,
+		ClipboardSync: e.ClipboardSync,
 	}
 
 	// Cert info (best-effort).
@@ -1122,6 +1127,52 @@ func (s *localAPIServer) handleLeave(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"removed":         target.Name,
 		"restartRequired": false, // v0.10.34: live disconnect handles teardown
+	})
+}
+
+// handleClipboardSyncToggle flips Enrollment.ClipboardSync for one
+// network. Persisted to enrollments.json. Toggle takes effect on the
+// next agent restart — runtime hot-toggling is intentionally NOT
+// supported in v1 to keep the lifecycle simple (otherwise we'd need
+// to teardown / re-spawn the clipboardSync goroutine here, which
+// also means importing context cancellation through the registry).
+//
+// POST /local/clipboard-sync
+//
+//	{ "enrollment": "home", "enabled": true }
+func (s *localAPIServer) handleClipboardSyncToggle(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req struct {
+		Enrollment string `json:"enrollment"`
+		Enabled    bool   `json:"enabled"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.Enrollment == "" {
+		writeJSONError(w, http.StatusBadRequest, "enrollment required")
+		return
+	}
+	target := s.enrolls.Get(req.Enrollment)
+	if target == nil {
+		writeJSONError(w, http.StatusNotFound, "enrollment not found")
+		return
+	}
+
+	if err := s.enrolls.SetClipboardSync(target.Name, req.Enabled); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	s.events.publish(localEvent{
+		Time: time.Now(),
+		Type: "enrollment.changed",
+		Data: map[string]any{"name": target.Name, "field": "clipboardSync", "value": req.Enabled},
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enrollment":      target.Name,
+		"clipboardSync":   req.Enabled,
+		"restartRequired": true,
 	})
 }
 
