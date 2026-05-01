@@ -1257,6 +1257,71 @@ mod tests {
         );
     }
 
+    /// Tripwire (Phase O slice O1 — jargon rewrite): default-rendered
+    /// copy in the user-facing Svelte components must NOT contain
+    /// the protocol vocabulary that fails NN/g's jargon test for
+    /// novice VPN users. Each token below has an industry-tested
+    /// plain-English replacement landed in slice O1; a regression
+    /// adding any of them back to default copy fails this test.
+    /// Power-user details may live behind a `<details>` disclosure
+    /// or in About; this scan is intentionally limited to the four
+    /// top-of-mind components.
+    #[test]
+    fn user_facing_copy_has_no_protocol_jargon() {
+        // Resolve frontend dir relative to src-tauri/Cargo.toml.
+        let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let lib_dir = manifest.join("..").join("src").join("lib");
+        let app_svelte = manifest.join("..").join("src").join("App.svelte");
+
+        let targets = [
+            ("App.svelte", app_svelte),
+            ("Connected.svelte", lib_dir.join("Connected.svelte")),
+            ("Onboarding.svelte", lib_dir.join("Onboarding.svelte")),
+            ("Settings.svelte", lib_dir.join("Settings.svelte")),
+            ("SystemModeCTA.svelte", lib_dir.join("SystemModeCTA.svelte")),
+        ];
+
+        // Forbidden tokens. Substring-match — these strings should
+        // not appear in default-rendered copy. Comments inside
+        // <script> blocks DO contain them legitimately (architecture
+        // notes), so we strip script blocks before scanning.
+        let forbidden = [
+            "P2P",        // status badge — replaced by plain "connected"
+            "TUN:",       // hero stat label — replaced by "Networking:"
+            "data-plane", // banner title — humanized in BannerStrip
+        ];
+        // Forbidden ONLY in onboarding (the flow that exposes them):
+        let onboarding_forbidden = ["Control plane"];
+
+        for (name, path) in targets.iter() {
+            let src = match std::fs::read_to_string(path) {
+                Ok(s) => s,
+                Err(_) => panic!("could not read {}", path.display()),
+            };
+            // Strip <script>…</script> so architectural comments
+            // (which legitimately reference protocol terms) don't
+            // trigger the scan. Cheap split: take everything after
+            // the first </script> tag.
+            let body = src.split("</script>").nth(1).unwrap_or(&src);
+            for needle in &forbidden {
+                assert!(
+                    !body.contains(needle),
+                    "{}: forbidden jargon token {:?} appears in default-rendered copy. Use a plain-English replacement (see Phase O slice O1 plan).",
+                    name, needle
+                );
+            }
+            if *name == "Onboarding.svelte" {
+                for needle in &onboarding_forbidden {
+                    assert!(
+                        !body.contains(needle),
+                        "{}: forbidden jargon token {:?} in default-rendered copy. Onboarding's `Control plane` legend was renamed to `Where do you want to connect?`.",
+                        name, needle
+                    );
+                }
+            }
+        }
+    }
+
     /// Tripwire: macOS RunEvent::Reopen must show + focus the main
     /// window. Without this, clicking the Dock icon (while the app is
     /// running with the window hidden via Cmd-W) is a no-op. The

@@ -93,7 +93,7 @@
         }
         if (r.status === 'error') {
           stage = 'error';
-          errorMessage = r.message ?? 'enrollment error';
+          errorMessage = r.message ?? "Couldn't connect to this network";
           return;
         }
         if (r.status === 'complete') {
@@ -247,7 +247,7 @@
 
   {#if stage === 'idle' || stage === 'error'}
     <p class="mt-1 text-sm text-zinc-400">
-      Connect this Mac to a hopssh control plane.
+      Sign in to connect this Mac to a hopssh network.
     </p>
 
     {#if parallelInstall && (parallelInstall.launchDaemon || parallelInstall.legacyConfigDir)}
@@ -263,7 +263,7 @@
           parallelInstall.legacyConfigDir
             ? ' + '
             : ''}{parallelInstall.legacyConfigDir ? 'system config files' : ''}).
-          It will conflict with new enrollments. Remove it now to avoid
+          It will conflict with new networks. Remove it now to avoid
           a port collision.
         </p>
         {#if resetError}
@@ -288,7 +288,7 @@
       }}
     >
       <fieldset class="space-y-2">
-        <legend class="text-xs uppercase tracking-wide text-zinc-400">Control plane</legend>
+        <legend class="text-xs uppercase tracking-wide text-zinc-400">Where do you want to connect?</legend>
         <label class="flex cursor-pointer items-start gap-3 rounded-md border border-zinc-800 p-3 hover:bg-zinc-900/60">
           <input
             type="radio"
@@ -310,7 +310,7 @@
           />
           <div class="flex-1">
             <div class="text-sm font-medium">Self-hosted</div>
-            <div class="text-[11px] text-zinc-500">Run your own control plane.</div>
+            <div class="text-[11px] text-zinc-500">Run your own server.</div>
             {#if endpointMode === 'selfhosted'}
               <input
                 type="text"

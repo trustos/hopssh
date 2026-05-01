@@ -78,11 +78,16 @@
   }
 
   function statusBadge(e: EnrollmentStatus) {
+    // Plain-language labels (NN/g jargon rule). "P2P" was always
+    // dropped — relay vs direct matters for performance, but a
+    // novice doesn't need a protocol acronym to know that. Use
+    // "via relay" only when relayed-only — direct peers ARE the
+    // happy path and don't need a special badge.
     if (!e.connected) return { label: 'disconnected', cls: 'bg-zinc-800 text-zinc-400' };
     if (e.peersDirect > 0)
-      return { label: 'connected · P2P', cls: 'bg-emerald-500/10 text-emerald-400' };
+      return { label: 'connected', cls: 'bg-emerald-500/10 text-emerald-400' };
     if (e.peersRelayed > 0)
-      return { label: 'connected · relay', cls: 'bg-amber-500/10 text-amber-400' };
+      return { label: 'connected · via relay', cls: 'bg-amber-500/10 text-amber-400' };
     return { label: 'connected', cls: 'bg-emerald-500/10 text-emerald-400' };
   }
 </script>
@@ -145,9 +150,9 @@
             <div class="text-[10px] text-zinc-500">until renewal</div>
           </div>
           <div>
-            <div class="text-[10px] uppercase tracking-wide text-zinc-500">TUN</div>
+            <div class="text-[10px] uppercase tracking-wide text-zinc-500">Networking</div>
             <div class="mt-0.5 font-medium text-zinc-100">
-              {e.tunMode ?? 'userspace'}
+              {(e.tunMode ?? 'userspace') === 'kernel' ? 'system-wide' : 'in-app'}
             </div>
             <div class="text-[10px] text-zinc-500">
               port {e.listenPort ?? '—'}
@@ -203,9 +208,9 @@
           <h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-300">
             Peers
           </h3>
-          {#if peersLoading}
-            <span class="text-[11px] text-zinc-500">refreshing…</span>
-          {/if}
+          <!-- "refreshing…" indicator removed: peer rows update in
+               place every 5s, the visible cadence was noise (NN/g
+               status indicator pattern). -->
         </div>
         {#if peersError}
           <div class="px-4 py-3 text-xs text-amber-400">{peersError}</div>
@@ -264,7 +269,7 @@
     </div>
   {:else}
     <div class="flex h-full items-center justify-center text-sm text-zinc-500">
-      No networks. Add one from the Add tab.
+      No networks yet. Click "Add network" above to connect this Mac.
     </div>
   {/if}
 </div>

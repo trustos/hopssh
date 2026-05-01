@@ -73,13 +73,11 @@
           Enable system-wide networking
         </h3>
         <p class="mt-1 text-[12px] leading-relaxed text-zinc-300">
-          Right now the mesh only works inside hopssh —
-          <code class="rounded bg-zinc-900/60 px-1 font-mono">ping</code>,
-          <code class="rounded bg-zinc-900/60 px-1 font-mono">ssh</code>, browsers,
-          and other apps can't reach mesh IPs. Installing a small
-          background service gives every app on your Mac access to mesh
-          hostnames and IPs, keeps the connection alive after you quit
-          hopssh, and reconnects automatically after a restart.
+          Right now hopssh's network is private to this app. Turn this
+          on so any app on your Mac — your browser, file shares, Screen
+          Sharing, Terminal — can use it. The connection stays alive
+          when you quit hopssh and reconnects automatically after a
+          restart.
         </p>
         <p class="mt-1 text-[11px] text-zinc-500">
           Triggers a one-time admin prompt. Reversible from Settings → Preferences.

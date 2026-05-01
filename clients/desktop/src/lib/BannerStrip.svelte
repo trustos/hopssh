@@ -12,6 +12,23 @@
       agent.dismissBanner(id);
     }
   }
+
+  // Translate protocol-y banner titles emitted by the agent into
+  // plain-English equivalents. Default-passthrough — anything not
+  // in the map renders as-is, so the agent can still surface
+  // brand-new alert types without a frontend change. New entries
+  // should be added here whenever a stuck-data-plane / handshake-
+  // timeout / similar-jargon banner ships agent-side.
+  const titleHumanMap: Record<string, string> = {
+    'data-plane stuck — recovering': 'Connection paused — reconnecting',
+    'data-plane stuck': 'Connection paused',
+    'handshake timeout': "Couldn't reach a peer — retrying",
+    'cert renewal failed': "Couldn't refresh security keys — will retry",
+    'agent unreachable': 'hopssh helper not responding',
+  };
+  function humanizeTitle(raw: string): string {
+    return titleHumanMap[raw] ?? raw;
+  }
 </script>
 
 {#if agent.banners.length > 0}
@@ -32,7 +49,7 @@
           class:bg-emerald-400={b.kind === 'info'}
         ></span>
         <div class="min-w-0 flex-1">
-          <div class="font-medium">{b.title}</div>
+          <div class="font-medium">{humanizeTitle(b.title)}</div>
           {#if b.detail}
             <div class="mt-0.5 text-[11px] text-zinc-400">{b.detail}</div>
           {/if}

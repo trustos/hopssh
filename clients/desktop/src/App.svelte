@@ -115,15 +115,9 @@
     <div class="flex items-center gap-2">
       <Logo class="h-5 w-5 text-emerald-400" />
       <span class="text-sm font-semibold tracking-tight">hopssh</span>
-      {#if agent.status?.version}
-        <!-- Don't double-prefix: CI/release builds bake the git tag
-             which already starts with 'v' (e.g. v0.10.69). Hand-built
-             or legacy binaries may report 'dev' or '0.x.y' without
-             the prefix; normalize to a single leading 'v'. -->
-        <span class="text-[10px] text-zinc-500">
-          {agent.status.version.startsWith('v') ? agent.status.version : `v${agent.status.version}`}
-        </span>
-      {/if}
+      <!-- Version intentionally omitted from chrome (NN/g jargon
+           rule: chrome should be brand only). The full version,
+           commit, OS, and config dir live in Settings → About. -->
     </div>
     <nav class="flex items-center gap-1 text-xs">
       <button class={tabClass(view === 'main')} onclick={() => (view = 'main')}>
@@ -135,7 +129,7 @@
         disabled={!agent.online}
         title={!agent.online ? 'Available once the agent is connected' : undefined}
       >
-        Add
+        Add network
       </button>
       <button
         class={tabClass(view === 'settings', !agent.online)}

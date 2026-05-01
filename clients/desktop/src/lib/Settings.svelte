@@ -516,10 +516,10 @@
         <div class="border-b border-red-900/60 px-4 py-3">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0 flex-1">
-              <div class="text-sm font-medium">Sign out of all networks</div>
+              <div class="text-sm font-medium">Disconnect from all networks</div>
               <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
-                Disconnects every enrollment. Re-enroll anytime — no admin
-                prompt. {agent.status?.enrollments.length ?? 0} active.
+                Removes every network from this Mac. You can sign back in
+                anytime — no admin prompt. {agent.status?.enrollments.length ?? 0} active.
               </p>
             </div>
             <div class="flex shrink-0 gap-2">
@@ -556,10 +556,10 @@
         <div class="border-b border-red-900/60 px-4 py-3">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0 flex-1">
-              <div class="text-sm font-medium">Reset hopssh</div>
+              <div class="text-sm font-medium">Reset to a clean state</div>
               <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
-                Removes all enrollments + certificates. Keeps the app
-                installed so you can re-enroll fresh. Logs preserved.
+                Removes all networks and security keys. Keeps the app
+                installed so you can sign in fresh. Logs preserved.
                 Triggers an admin prompt.
               </p>
             </div>
@@ -597,10 +597,10 @@
         <div class="px-4 py-3">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0 flex-1">
-              <div class="text-sm font-medium">Uninstall hopssh</div>
+              <div class="text-sm font-medium">Remove hopssh from this Mac</div>
               <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
-                Removes everything: enrollments, certs, the background
-                service, and the agent binary. After confirm: drag
+                Removes everything: networks, security keys, the background
+                service, and the helper. After confirm: drag
                 <span class="font-mono">/Applications/hopssh.app</span>
                 to the Trash. Triggers an admin prompt.
               </p>
