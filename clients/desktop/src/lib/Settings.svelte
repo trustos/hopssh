@@ -71,7 +71,38 @@
   let bgError = $state<string | null>(null);
   let bgDone = $state<string | null>(null);
 
+  // ---- Phase N: "Hide from Dock" toggle ----
+  // When ON, closing the window hides the Dock icon and removes
+  // hopssh from Cmd-Tab. The menubar icon stays — click it (or
+  // double-click /Applications/hopssh.app) to bring everything back.
+  // Persisted via Tauri command in ~/Library/Application Support/hopssh/desktop-prefs.json.
+  let hideFromDock = $state(false);
+  let hideFromDockBusy = $state(false);
+
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+  async function loadHideFromDock() {
+    if (!isTauri) return;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      hideFromDock = await invoke<boolean>('get_hide_from_dock');
+    } catch {
+      hideFromDock = false;
+    }
+  }
+
+  async function toggleHideFromDock() {
+    if (!isTauri) return;
+    hideFromDockBusy = true;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const next = !hideFromDock;
+      await invoke('set_hide_from_dock', { enabled: next });
+      hideFromDock = next;
+    } finally {
+      hideFromDockBusy = false;
+    }
+  }
 
   // True when the agent reports it's the launchd-spawned system daemon.
   // When false, the agent is a child of the .app (bundled mode).
@@ -90,6 +121,7 @@
     if (updateState.current === null) {
       updateState.current = await appVersion();
     }
+    void loadHideFromDock();
     if (autoCheckUpdate) {
       // User came in via the tray's "Check for updates…" — fire the
       // check immediately so they see the result without an extra
@@ -312,6 +344,39 @@
           {bgDone}
         </div>
       {/if}
+
+      <!-- Phase N: Hide from Dock toggle. Slack-style copy + the
+           same compact row layout as "Run in the background" above. -->
+      <div class="border-t border-zinc-800 px-4 py-3">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-medium">Hide hopssh from the Dock</div>
+            <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
+              Closing the window hides the Dock icon and removes
+              hopssh from Cmd-Tab. The menubar icon stays — click
+              it (or double-click hopssh in /Applications) to bring
+              the window back. Effective immediately when turning
+              off; takes effect at the next window close when
+              turning on.
+            </p>
+            <div class="mt-1 text-[11px] {hideFromDock ? 'text-emerald-400' : 'text-zinc-500'}">
+              {hideFromDock ? '● On — menubar only' : '○ Off — Dock icon visible'}
+            </div>
+          </div>
+          <div class="flex shrink-0 gap-2">
+            <button
+              class={hideFromDock
+                ? 'rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:border-amber-500 hover:text-amber-400 disabled:opacity-50'
+                : 'rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400 disabled:opacity-60'}
+              onclick={toggleHideFromDock}
+              disabled={hideFromDockBusy}
+              type="button"
+            >
+              {hideFromDockBusy ? '…' : hideFromDock ? 'Turn off' : 'Turn on'}
+            </button>
+          </div>
+        </div>
+      </div>
     </section>
   {/if}
 

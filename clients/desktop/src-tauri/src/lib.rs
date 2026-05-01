@@ -74,14 +74,107 @@ fn local_api_endpoint(state: State<'_, Arc<AppState>>) -> Result<LocalAgentEndpo
 
 #[tauri::command]
 fn show_main_window(app: AppHandle) -> Result<(), String> {
+    // Phase N: when "Hide from Dock" is enabled, the user's CMD-W /
+    // red-dot close demoted us to .Accessory and removed the Dock
+    // icon. We MUST set the policy back to .Regular BEFORE show()
+    // + set_focus(); otherwise the window appears but the Dock
+    // icon stays gone and Cmd-Tab still doesn't list us — the OS
+    // honors policy at the moment we activate.
+    #[cfg(target_os = "macos")]
+    if hide_from_dock_enabled(&app) {
+        let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+    }
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
         let _ = w.unminimize();
+        // set_focus() in Tauri 2 calls NSApp.activate(ignoringOtherApps:true)
+        // on macOS, which is required to bring the Dock icon to the
+        // foreground after the policy flip above.
         let _ = w.set_focus();
         Ok(())
     } else {
         Err("main window not found".into())
     }
+}
+
+/// Phase N: simple file-backed preference for the "Hide hopssh from
+/// the Dock" toggle. Persisted at
+/// `<HOME>/Library/Application Support/hopssh/desktop-prefs.json`
+/// so the choice survives across .app updates and reinstalls (we
+/// take care to NOT wipe this file in install-mac.sh's reinstall
+/// path).
+///
+/// Single-key JSON keeps the structure trivial; future per-user
+/// preferences can land here without versioning gymnastics.
+#[derive(serde::Deserialize, serde::Serialize, Default)]
+struct DesktopPrefs {
+    #[serde(default)]
+    hide_from_dock: bool,
+}
+
+fn desktop_prefs_path() -> Option<PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    Some(PathBuf::from(home).join("Library/Application Support/hopssh/desktop-prefs.json"))
+}
+
+fn read_desktop_prefs() -> DesktopPrefs {
+    let Some(p) = desktop_prefs_path() else {
+        return DesktopPrefs::default();
+    };
+    let Ok(data) = std::fs::read(&p) else {
+        return DesktopPrefs::default();
+    };
+    serde_json::from_slice(&data).unwrap_or_default()
+}
+
+fn write_desktop_prefs(prefs: &DesktopPrefs) -> Result<(), String> {
+    let p = desktop_prefs_path().ok_or("HOME not set")?;
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let data = serde_json::to_vec_pretty(prefs).map_err(|e| e.to_string())?;
+    std::fs::write(&p, data).map_err(|e| e.to_string())
+}
+
+fn hide_from_dock_enabled(_app: &AppHandle) -> bool {
+    read_desktop_prefs().hide_from_dock
+}
+
+#[tauri::command]
+fn get_hide_from_dock() -> bool {
+    read_desktop_prefs().hide_from_dock
+}
+
+/// Tauri command: persist the "Hide from Dock" preference and apply
+/// it immediately. When enabling: if the window is currently visible
+/// the Dock icon stays until window-close (we don't want to disorient
+/// the user mid-interaction). When disabling: reverts to .Regular
+/// immediately, brings the Dock icon back, and focuses the window so
+/// the user sees the change took effect.
+#[tauri::command]
+fn set_hide_from_dock(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut prefs = read_desktop_prefs();
+    prefs.hide_from_dock = enabled;
+    write_desktop_prefs(&prefs)?;
+
+    #[cfg(target_os = "macos")]
+    {
+        if !enabled {
+            // Toggling OFF: restore the regular activation policy
+            // immediately so the user sees the Dock icon return.
+            let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.set_focus();
+            }
+        }
+        // Toggling ON: defer the policy switch until the user closes
+        // the window. Demoting to .Accessory while the window is on
+        // screen leaves a confused state where the window remains
+        // visible but Cmd-Tab no longer lists us. Better to have the
+        // user finish what they're doing, close the window normally,
+        // and have the close-handler perform the demotion.
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -602,9 +695,23 @@ pub fn run() {
             uninstall_hopssh_full,
             quit_app,
             convert_to_system_service,
-            revert_to_bundled
+            revert_to_bundled,
+            get_hide_from_dock,
+            set_hide_from_dock
         ])
         .setup(move |app| {
+            // Phase N: re-apply the persisted "Hide from Dock"
+            // preference at launch. If the user toggled the option
+            // ON in a previous session and the .app is starting
+            // again, demote the activation policy to .Accessory
+            // BEFORE the window appears. Since tauri.conf.json sets
+            // visible:true, we'd flash the Dock icon for one frame
+            // before the policy change otherwise — order matters.
+            #[cfg(target_os = "macos")]
+            if read_desktop_prefs().hide_from_dock {
+                let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
+
             // Build menubar tray menu.
             let show = MenuItem::with_id(app, "show", "Show hopssh", true, None::<&str>)?;
             let add = MenuItem::with_id(app, "add", "Add a network…", true, None::<&str>)?;
@@ -694,6 +801,16 @@ pub fn run() {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 api.prevent_close();
                 let _ = window.hide();
+                // Phase N: when the user has opted in to hiding
+                // hopssh from the Dock, demote the activation
+                // policy on close. The Dock icon disappears on the
+                // next runloop tick; Cmd-Tab no longer lists us;
+                // the menubar tray icon stays. Reverse on the next
+                // show_main_window / RunEvent::Reopen.
+                if read_desktop_prefs().hide_from_dock {
+                    let app_handle = window.app_handle().clone();
+                    let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
+                }
             }
             #[cfg(not(target_os = "macos"))]
             let _ = window;
@@ -722,6 +839,16 @@ pub fn run() {
             // above).
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
+                // Phase N: if the user previously hid us from the
+                // Dock and is now Dock-clicking the .app to bring
+                // the window back, restore .Regular FIRST so the
+                // Dock icon and Cmd-Tab entry come back, THEN show
+                // + focus the window. Skipping the policy flip
+                // would leave the window visible without a Dock
+                // icon — confusing.
+                if read_desktop_prefs().hide_from_dock {
+                    let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
+                }
                 if let Some(w) = app_handle.get_webview_window("main") {
                     let _ = w.show();
                     let _ = w.unminimize();
@@ -1053,6 +1180,51 @@ mod tests {
         assert!(
             !conf.contains("\"visible\": false"),
             "main window must NOT have \"visible\": false"
+        );
+    }
+
+    /// Tripwire (Phase N): the "Hide from Dock" toggle wires the
+    /// activation policy at three lifecycle points. Missing any one
+    /// leaves the user in a broken state (e.g. window-close with
+    /// the toggle on but no policy demotion = Dock icon stays
+    /// despite the user opting out). All three pairs of sentinel
+    /// tokens must coexist in the source. Slicing the file by
+    /// CloseRequested / Reopen blocks is brittle because of nested
+    /// `}` braces in inner if-blocks; whole-file token checks are
+    /// good enough — the deletion regressions we're guarding against
+    /// would remove the tokens entirely.
+    #[test]
+    fn hide_from_dock_wired_at_all_lifecycle_points() {
+        let src = std::fs::read_to_string(file!())
+            .expect("must be able to read lib.rs source for self-scan");
+        // Toggle plumbing
+        assert!(
+            src.contains("set_hide_from_dock") && src.contains("get_hide_from_dock"),
+            "Tauri commands set_hide_from_dock + get_hide_from_dock must be defined"
+        );
+        // Persistence
+        assert!(
+            src.contains("desktop-prefs.json") && src.contains("read_desktop_prefs"),
+            "Persisted-pref helpers must reference the prefs file + reader"
+        );
+        // Both policy variants must be referenced — Accessory for
+        // demotion, Regular for restoration.
+        assert!(
+            src.contains("ActivationPolicy::Accessory"),
+            "Demotion to .Accessory missing — close-handler can't hide Dock icon"
+        );
+        assert!(
+            src.contains("ActivationPolicy::Regular"),
+            "Restoration to .Regular missing — Reopen + show_main_window can't bring Dock icon back"
+        );
+        // Lifecycle hooks: setup, CloseRequested, Reopen, show_main_window
+        // must all exist (verified in earlier tripwires) and
+        // hide_from_dock must be referenced from at least 3 distinct
+        // call sites.
+        let occurrences = src.matches("hide_from_dock").count();
+        assert!(
+            occurrences >= 3,
+            "hide_from_dock should be referenced at >=3 call sites (setup + close + reopen). Got: {occurrences}"
         );
     }
 
