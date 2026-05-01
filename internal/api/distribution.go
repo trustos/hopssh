@@ -209,8 +209,13 @@ fi
 
 # Keep sudo's credential cache warm for the duration of the script
 # (default 5 min timeout otherwise). Background job — killed on EXIT.
+# disown removes the job from bash's job table so the eventual
+# kill-on-EXIT does NOT print a "Terminated: 15" notice to the
+# user's Terminal — cosmetic noise from job control that looks
+# like an install failure to non-technical users.
 ( while true; do sudo -n true 2>/dev/null; sleep 30; done ) &
 SUDO_KEEPALIVE_PID=$!
+disown $SUDO_KEEPALIVE_PID 2>/dev/null || true
 
 TMPDMG=$(mktemp -t hopssh-XXXXXX.dmg)
 trap "kill $SUDO_KEEPALIVE_PID 2>/dev/null || true; rm -f $TMPDMG; hdiutil detach /Volumes/hopssh 2>/dev/null || true" EXIT
