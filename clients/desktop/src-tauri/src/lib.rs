@@ -145,6 +145,34 @@ fn get_hide_from_dock() -> bool {
     read_desktop_prefs().hide_from_dock
 }
 
+/// Fetch `<endpoint>/version` from a Rust HTTP client so the WebView's
+/// CSP / CORS doesn't gate the manual update check. The control plane
+/// at hopssh.com responds 200 to a direct `curl` but doesn't include
+/// `Access-Control-Allow-Origin: tauri://localhost`, so the WebView
+/// blocks the response. Routing through Rust bypasses both layers.
+#[tauri::command]
+async fn check_remote_version(endpoint: String) -> Result<String, String> {
+    let url = format!("{}/version", endpoint.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let body = resp.text().await.map_err(|e| e.to_string())?;
+    // Server returns {"version": "vX.Y.Z", "current": "vX.Y.Z"}.
+    // Parse the "version" field — that's the LATEST AVAILABLE per
+    // distribution.go::Version.
+    #[derive(serde::Deserialize)]
+    struct VersionResp {
+        version: String,
+    }
+    let parsed: VersionResp = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+    Ok(parsed.version)
+}
+
 /// Tauri command: persist the "Hide from Dock" preference and apply
 /// it immediately. When enabling: if the window is currently visible
 /// the Dock icon stays until window-close (we don't want to disorient
@@ -697,7 +725,8 @@ pub fn run() {
             convert_to_system_service,
             revert_to_bundled,
             get_hide_from_dock,
-            set_hide_from_dock
+            set_hide_from_dock,
+            check_remote_version
         ])
         .setup(move |app| {
             // Phase N: re-apply the persisted "Hide from Dock"

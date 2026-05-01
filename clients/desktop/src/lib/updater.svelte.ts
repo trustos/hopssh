@@ -60,7 +60,16 @@ export async function appVersion(): Promise<string | null> {
   }
 }
 
-/** User-triggered check from Settings. Updates `updateState` reactively. */
+/** User-triggered check from Settings. Updates `updateState` reactively.
+ *
+ * Routes through a Rust Tauri command (`check_remote_version`) rather
+ * than `fetch()` from the WebView because hopssh.com's `/version`
+ * endpoint doesn't include `Access-Control-Allow-Origin: tauri://localhost`
+ * in its response — the WebView blocks the response body even on a
+ * 200 OK, surfacing as "Load failed" with no diagnostic. The Rust
+ * client has no CSP / CORS gate. Browser-side dev (no Tauri runtime)
+ * keeps the original `fetch` path so testing works on plain Vite.
+ */
 export async function manualCheck(): Promise<void> {
   updateState.checking = true;
   updateState.error = null;
@@ -68,10 +77,17 @@ export async function manualCheck(): Promise<void> {
     if (updateState.current === null) {
       updateState.current = await appVersion();
     }
-    const r = await fetch(VERSION_ENDPOINT, { cache: 'no-store' });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const json = (await r.json()) as { version?: string };
-    updateState.latest = json.version ?? null;
+    let latest: string;
+    if (isTauri) {
+      const { invoke } = await import('@tauri-apps/api/core');
+      latest = await invoke<string>('check_remote_version', { endpoint: 'https://hopssh.com' });
+    } else {
+      const r = await fetch(VERSION_ENDPOINT, { cache: 'no-store' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const json = (await r.json()) as { version?: string };
+      latest = json.version ?? '';
+    }
+    updateState.latest = latest || null;
     updateState.lastCheckedAt = Date.now();
   } catch (e: unknown) {
     updateState.error = e instanceof Error ? e.message : String(e);
