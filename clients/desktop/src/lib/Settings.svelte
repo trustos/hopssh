@@ -7,7 +7,6 @@
     appVersion,
     isNewer,
     manualCheck,
-    openInstallPage,
     updateState,
   } from './updater.svelte';
 
@@ -70,6 +69,34 @@
   let bgBusy = $state(false);
   let bgError = $state<string | null>(null);
   let bgDone = $state<string | null>(null);
+
+  // ---- In-app update install state ----
+  // Old "Open install instructions" button sent users to hopssh.com
+  // homepage which doesn't even have a clear download link. Replace
+  // with a one-click installer that opens Terminal, runs install-mac.sh
+  // (which validates sudo upfront, refreshes the agent, replaces the
+  // .app, and relaunches), and returns. User just enters their
+  // admin password once — no page-hunting, no copy-paste.
+  let updateInstalling = $state(false);
+  let updateInstallError = $state<string | null>(null);
+
+  async function installUpdateNow() {
+    if (!isTauri) return;
+    updateInstalling = true;
+    updateInstallError = null;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      await invoke('install_update_mac');
+      // Terminal is now open running the install script. The
+      // script will SIGKILL hopssh-desktop and relaunch the new
+      // .app at the end. Nothing for us to do here — the next
+      // time the user sees hopssh, it'll be the new version.
+    } catch (e: unknown) {
+      updateInstallError = e instanceof Error ? e.message : String(e);
+    } finally {
+      updateInstalling = false;
+    }
+  }
 
   // ---- Phase N: "Hide from Dock" toggle ----
   // When ON, closing the window hides the Dock icon and removes
@@ -702,16 +729,23 @@
             Update available: <span class="font-mono">{updateState.latest}</span>
           </p>
           <p class="mt-1 text-[12px] leading-relaxed text-zinc-300">
-            Open hopssh.com to copy the one-line install command and run it
-            in Terminal. Re-launch hopssh after the install completes.
+            Opens Terminal to download and install the new version.
+            You'll be asked for your admin password once. hopssh
+            relaunches automatically when the install finishes.
           </p>
+          {#if updateInstallError}
+            <div class="mt-2 rounded-md border border-amber-900/40 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-300">
+              {updateInstallError}
+            </div>
+          {/if}
           <div class="mt-2 flex gap-2">
             <button
               type="button"
-              class="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400"
-              onclick={openInstallPage}
+              disabled={updateInstalling}
+              class="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400 disabled:opacity-60"
+              onclick={installUpdateNow}
             >
-              Open install instructions
+              {updateInstalling ? 'Opening Terminal…' : 'Install update now'}
             </button>
           </div>
         </div>

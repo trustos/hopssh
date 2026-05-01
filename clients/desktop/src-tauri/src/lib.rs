@@ -145,6 +145,46 @@ fn get_hide_from_dock() -> bool {
     read_desktop_prefs().hide_from_dock
 }
 
+/// Run the macOS one-line installer in a fresh Terminal window so
+/// the user sees progress + can enter their admin password. The
+/// install-mac.sh script (since v0.10.73) does sudo-validate
+/// upfront, refreshes /usr/local/bin/hop-agent for system-mode
+/// users, and SIGKILL+relaunches hopssh.app at the end — so this
+/// IS a one-click in-app updater. Replaces the old "Open install
+/// instructions" button which sent users to hopssh.com homepage.
+///
+/// Why osascript+Terminal instead of running the script directly
+/// from this process: the script kills the running hopssh-desktop
+/// (us!) mid-execution. If we ran it as a child of this process,
+/// our SIGKILL would also kill the install. Decoupling via Terminal
+/// means the install survives our own death.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn install_update_mac() -> Result<(), String> {
+    let cmd = r#"tell application "Terminal"
+    activate
+    do script "curl -fsSL https://hopssh.com/install-mac.sh | bash"
+end tell"#;
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(cmd)
+        .output()
+        .map_err(|e| format!("osascript spawn failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "osascript failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn install_update_mac() -> Result<(), String> {
+    Err("install_update_mac is macOS-only".into())
+}
+
 /// Fetch `<endpoint>/version` from a Rust HTTP client so the WebView's
 /// CSP / CORS doesn't gate the manual update check. The control plane
 /// at hopssh.com responds 200 to a direct `curl` but doesn't include
@@ -726,7 +766,8 @@ pub fn run() {
             revert_to_bundled,
             get_hide_from_dock,
             set_hide_from_dock,
-            check_remote_version
+            check_remote_version,
+            install_update_mac
         ])
         .setup(move |app| {
             // Phase N: re-apply the persisted "Hide from Dock"
