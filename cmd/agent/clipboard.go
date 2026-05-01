@@ -1,6 +1,15 @@
-//go:build cgo
+//go:build cgo && (darwin || windows)
 
 package main
+
+// Linux is intentionally excluded from this build tag because
+// golang.design/x/clipboard requires X11 development headers
+// (libx11-dev) on Linux — CI's bare ubuntu-latest builders don't
+// have them, and headless Linux servers (the dominant deployment
+// target for hop-agent on Linux) have no clipboard anyway. When
+// we ship a Linux desktop client (Phase O+), this tag should be
+// extended to include linux AND the CI Linux job updated to
+// install libx11-dev / libxrandr-dev / libxss-dev.
 
 // Phase L slice 2 — agent-side clipboard sync.
 //

@@ -1,6 +1,14 @@
-//go:build !cgo
+//go:build !cgo || linux
 
 package main
+
+// This stub catches:
+//   - Pure non-CGO cross-compile (CGO_ENABLED=0)
+//   - All Linux builds (clipboard.go is darwin/windows only — see
+//     its build tag for why). Linux server deployments never have
+//     a clipboard to sync; Linux desktop will get a real watcher
+//     in a future phase that ships X11/Wayland support together
+//     with the CI changes to install the system dev headers.
 
 // Stub for builds without CGO (cross-compile, headless static
 // servers). Clipboard sync is no-op on these targets — the OS
