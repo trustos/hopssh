@@ -195,14 +195,37 @@ case "$ARCH" in
   *) echo "Error: unsupported arch $ARCH" >&2; exit 1 ;;
 esac
 
+# Prompt for the admin password UP FRONT so failures are loud and
+# happen before we've downloaded a 25 MB DMG. Without this, the first
+# sudo call lands at the rm/ditto step mid-script — if the user has
+# wandered away from the terminal, sudo's 5s default Touch ID timeout
+# silently fails, the script aborts, and prior installs never see the
+# new bundle. We've watched this fail repeatedly in the field.
+echo "==> Requesting admin password (needed to write to /Applications)..."
+if ! sudo -v; then
+  echo "Error: admin password required to install into /Applications. Aborting." >&2
+  exit 1
+fi
+
+# Keep sudo's credential cache warm for the duration of the script
+# (default 5 min timeout otherwise). Background job — killed on EXIT.
+( while true; do sudo -n true 2>/dev/null; sleep 30; done ) &
+SUDO_KEEPALIVE_PID=$!
+
 TMPDMG=$(mktemp -t hopssh-XXXXXX.dmg)
-trap "rm -f $TMPDMG; hdiutil detach /Volumes/hopssh 2>/dev/null || true" EXIT
+trap "kill $SUDO_KEEPALIVE_PID 2>/dev/null || true; rm -f $TMPDMG; hdiutil detach /Volumes/hopssh 2>/dev/null || true" EXIT
 
 echo "==> Downloading $ASSET..."
-curl -fsSL "` + endpoint + `/download/desktop/$ASSET" -o "$TMPDMG"
+if ! curl -fsSL "` + endpoint + `/download/desktop/$ASSET" -o "$TMPDMG"; then
+  echo "Error: failed to download $ASSET from ` + endpoint + `" >&2
+  exit 1
+fi
 
 echo "==> Mounting DMG..."
-hdiutil attach "$TMPDMG" -nobrowse -quiet
+if ! hdiutil attach "$TMPDMG" -nobrowse -quiet; then
+  echo "Error: failed to mount DMG" >&2
+  exit 1
+fi
 
 echo "==> Installing to /Applications..."
 HAD_PRIOR_INSTALL=0
@@ -210,9 +233,31 @@ if [ -d /Applications/hopssh.app ]; then
   HAD_PRIOR_INSTALL=1
   killall hopssh-desktop 2>/dev/null || true
   sleep 1
-  sudo rm -rf /Applications/hopssh.app
+  if ! sudo rm -rf /Applications/hopssh.app; then
+    echo "Error: failed to remove existing /Applications/hopssh.app — install aborted" >&2
+    exit 1
+  fi
 fi
-sudo /usr/bin/ditto --noextattr /Volumes/hopssh/hopssh.app /Applications/hopssh.app
+if ! sudo /usr/bin/ditto --noextattr /Volumes/hopssh/hopssh.app /Applications/hopssh.app; then
+  echo "Error: failed to copy hopssh.app into /Applications" >&2
+  exit 1
+fi
+
+# Phase J: when the user previously enabled "Run in the background"
+# (Settings → Preferences), a LaunchDaemon at /Library/LaunchDaemons/
+# com.hopssh.agent.plist runs /usr/local/bin/hop-agent as root. The
+# .app updater only refreshes the bundle's child binary — the system
+# binary stays at whatever version the user converted at. Without
+# this step, system-mode users keep seeing the OLD agent version in
+# Settings → Updates even after a fresh install. Refresh both.
+if [ -f /Library/LaunchDaemons/com.hopssh.agent.plist ]; then
+  echo "==> Refreshing system-mode hop-agent (LaunchDaemon detected)..."
+  if ! sudo cp /Applications/hopssh.app/Contents/Resources/binaries/hop-agent /usr/local/bin/hop-agent; then
+    echo "Warning: failed to refresh /usr/local/bin/hop-agent — system mode may report stale version" >&2
+  else
+    sudo launchctl kickstart -k system/com.hopssh.agent 2>/dev/null || true
+  fi
+fi
 
 echo "==> Ejecting DMG..."
 hdiutil detach /Volumes/hopssh -quiet

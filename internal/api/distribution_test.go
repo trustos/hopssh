@@ -79,3 +79,54 @@ func TestMacInstallScript_FlushesGhostsOnReinstall(t *testing.T) {
 		t.Errorf("flush must come AFTER killall hopssh-desktop. killIdx=%d flushIdx=%d", killIdx, flushIdx)
 	}
 }
+
+// Tripwire: install-mac.sh must request sudo UP FRONT so failures
+// happen before the script has downloaded a 25 MB DMG and SIGKILL'd
+// the running .app. Field evidence (May 2026): users repeatedly ran
+// install-mac.sh without realizing sudo prompted mid-script (Touch
+// ID timed out, terminal lost focus, etc.) — install silently
+// aborted, the bundle stayed at the old version, and "Check for
+// updates" kept reporting stale.
+func TestMacInstallScript_PromptsSudoUpFront(t *testing.T) {
+	s := generateMacInstallScript("https://hopssh.com")
+
+	if !strings.Contains(s, "sudo -v") {
+		t.Errorf("install script must call `sudo -v` up front to validate admin password BEFORE downloading the DMG. Without this, sudo prompts mid-script and silent failures abort the install: %s", s)
+	}
+	// The prompt must come before the download — otherwise we waste
+	// the user's bandwidth / time on an install that can't complete.
+	sudoIdx := strings.Index(s, "sudo -v")
+	dlIdx := strings.Index(s, "==> Downloading")
+	if sudoIdx == -1 || dlIdx == -1 || sudoIdx >= dlIdx {
+		t.Errorf("sudo -v must come BEFORE the download. sudoIdx=%d dlIdx=%d", sudoIdx, dlIdx)
+	}
+}
+
+// Tripwire (Phase J): install-mac.sh must refresh /usr/local/bin/hop-agent
+// for system-mode users. The .app bundle's child binary gets
+// replaced by `ditto`, but the LaunchDaemon at
+// /Library/LaunchDaemons/com.hopssh.agent.plist runs the standalone
+// /usr/local/bin/hop-agent which the .app updater doesn't touch.
+// Without this step, system-mode users keep seeing the OLD agent
+// version in Settings → Updates even after a successful install —
+// a real bug observed on user's MBP at v0.10.66 across 6 release
+// installs.
+func TestMacInstallScript_RefreshesSystemAgentOnLaunchDaemon(t *testing.T) {
+	s := generateMacInstallScript("https://hopssh.com")
+
+	// Detection: must check for the LaunchDaemon plist before
+	// touching /usr/local/bin/hop-agent (skip cleanly on bundled-mode
+	// users who never enabled background mode).
+	if !strings.Contains(s, "com.hopssh.agent.plist") {
+		t.Errorf("install script must detect the system-mode LaunchDaemon before refreshing /usr/local/bin/hop-agent: %s", s)
+	}
+	// Refresh: copy the bundled binary to /usr/local/bin/hop-agent.
+	if !strings.Contains(s, "/usr/local/bin/hop-agent") {
+		t.Errorf("install script must refresh /usr/local/bin/hop-agent for system-mode users: %s", s)
+	}
+	// Reload: bouncing the LaunchDaemon makes the new binary
+	// effective without a reboot.
+	if !strings.Contains(s, "launchctl kickstart -k system/com.hopssh.agent") {
+		t.Errorf("install script must kickstart the LaunchDaemon after replacing the binary so the new version is effective: %s", s)
+	}
+}
