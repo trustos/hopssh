@@ -138,13 +138,18 @@
 		<Sidebar.Rail />
 	</Sidebar.Root>
 
-	<!-- Main content + terminal pane -->
-	<Sidebar.Inset>
+	<!-- Main content + terminal pane.
+	     min-w-0 on Sidebar.Inset + the inner wrappers is required so
+	     wide content (e.g. a wide Table) can't push the flex layout
+	     past the viewport. shadcn-svelte ships SidebarInset without
+	     min-w-0 so we add it here. See +layout.svelte for the matching
+	     overflow-x-hidden on the page wrapper. -->
+	<Sidebar.Inset class="min-w-0">
 		<header class="flex h-12 shrink-0 items-center gap-2 border-b px-4">
 			<Sidebar.Trigger class="-ml-1" />
 		</header>
-		<div class="flex flex-1 flex-col overflow-hidden">
-			<main class="flex-1 overflow-auto">
+		<div class="flex flex-1 flex-col min-w-0 overflow-hidden">
+			<main class="flex-1 min-w-0 overflow-auto">
 				{@render children()}
 			</main>
 			<TerminalPane />

@@ -845,7 +845,7 @@
 				</div>
 				<div class="rounded-lg border overflow-x-auto">
 					<Table.Root class="text-sm">
-						<Table.Header class="sticky top-0 z-10 bg-background">
+						<Table.Header>
 							<Table.Row>
 								<Table.Head>Status</Table.Head>
 								<Table.Head>Name</Table.Head>
