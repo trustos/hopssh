@@ -704,3 +704,56 @@ Fix C above ("`reloadNebula` try-then-swap + retry-with-backoff") was insufficie
 - `cmd/agent/renew_reload_port_release_test.go` — direct exercise of `waitForUDPPortFree` against real UDP sockets: free → fast return; held forever → respects deadline; released mid-wait → detects within one poll tick.
 
 **Architectural lesson (added to CLAUDE.md):** The v0.10.26 try-then-swap design optimized for the wrong failure mode — it protected against config-error failures (rare, transient) by accepting port-bind failures (frequent, permanent under same-port reload). For cert renewals specifically, only the cert files change; nebula.yaml is untouched, so config-error failures don't apply. Match the recovery primitive to the actual failure class of the operation. Also: any retry-loop "skip if already restored" check must distinguish "stale leftover" from "real fix" — usually requires nilling the stale before scheduling, OR a generation counter, never relying on `!= nil` alone.
+
+---
+
+## 2026-05-02 update — Phase S (renewal-loop sleep survival, v0.10.82) + macOS Screen Sharing app limitation
+
+### Phase S: monotonic-clock-anchored timers don't fire across deep sleep
+
+**Production incident (verified 2026-05-02 morning):** MBP cert renewal scheduled at `22:59:50 May 1` for `+5h49m54s` never fired. Forensic SSH probe showed:
+
+- `pmset -g log` proved Clamshell Sleep at `23:08:12 May 1` then Sleep ↔ DarkWake every ~15 min for the night (~95% of wall-clock window in deep sleep, ~5% awake).
+- The cert hard-expired at `2026-05-02 06:14:27 UTC` and Mac mini rejected every handshake with `error="certificate is expired"`.
+- `mach_absolute_time` (Darwin's monotonic clock) freezes during deep sleep — Go's `time.After(longSleep)` reads it, so a 5h49m timer needed ~5h49m of cumulative awake-time, which a sleeping laptop never accumulates.
+- The CLI agent (servers — never sleep) doesn't see this. Phase P2 watchdog had the same blind spot — `time.Since(lastRenewalActivityAt)` is also monotonic-anchored, so during sleep it doesn't grow either.
+
+**Fix (`cmd/agent/renew.go::runCertRenewal`):** replace `time.After(longSleep)` with `time.NewTicker(60s)` polling. Each tick re-reads `cert.NotAfter` (wall-clock value) and renews if `renewAt <= 0`. Post-wake, the next 60s tick fires immediately (ticker catch-up), reads the cert, sees NotAfter has passed, renews.
+
+Tailscale doesn't have this bug because they use NetworkExtension which gets explicit OS sleep/wake notifications. We don't have NE entitlement (Phase K, deferred).
+
+**Empirical validation 2026-05-02 (post-deploy on real MBP):**
+
+- `pmset -g log` confirmed real Clamshell Sleep at 23:09:10 + DarkWake/Maintenance Sleep cycles 23:10-23:14 + real lid-open Wake at 23:14:48.
+- Agent log shows `[renew home] cert OK ... next poll in 1m0s` every 60s through the entire sleep window. Renewal would have fired immediately if cert had been overdue.
+- 60s tick cadence proves the ticker survived sleep+wake.
+
+**Test coverage (`cmd/agent/renew_sleep_test.go`):**
+- `TestRenewLoop_UsesWallClockPolling` — source-scan: `time.NewTicker(renewalPollInterval)` is present; `time.After(renewAt)` (the regressed pattern) is absent. Catches refactor regressions.
+- `TestRenewalPollInterval_ShortEnough` — bounds: 30s ≤ interval ≤ 2m. Wake-to-renewal latency must be bounded.
+- `TestRenewLoop_FiresOnWallClockExpiry` — source-scan: `renewAt <= 0` branch + `renewNow := func()` closure exist. Validates the post-sleep-overdue handling.
+- `TestRenewLoop_RespondsToCtxCancelBetweenTicks` — runtime: ticker-based loop respects ctx cancellation between ticks.
+- `TestTicker_SurvivesSIGSTOP` — empirical: spawns a sub-process via `os.Executable()` + `HOPSSH_RENEW_SLEEP_TEST_CHILD=1`, SIGSTOPs for 2s, SIGCONTs, asserts ticker fires post-resume. The canonical "sleep simulation" per the existing CLAUDE.md SIGSTOP pattern (since QEMU ARM and macOS pmset don't permit programmatic sleep on dev machines).
+
+**Architectural rule (added to CLAUDE.md macOS Platform Discovery Log):** any agent timer scheduled for >5 minutes MUST poll wall-clock against an external invariant (cert NotAfter, system time, etc.), not rely on monotonic-anchored sleep. Long-duration `time.After` is safe ONLY when the absolute deadline doesn't matter (e.g. exponential-backoff retry intervals).
+
+### Application-layer limitation: macOS Screen Sharing.app does not auto-recover from sleep
+
+**Verified 2026-05-02:** after lid-close → reopen, the user's MBP-to-mini Screen Sharing window showed a frozen black frame and would not reconnect. Investigation found:
+
+- The mesh tunnel itself recovered correctly: `[heartbeat home] wake/network-change triggered out-of-cycle heartbeat` at 19:36:15 → `Tunnel status: dead vpnAddrs=[10.42.1.7]` at 19:37:07 → re-handshake completed within seconds.
+- `screensharingd` on the host kept its TCP socket idle during sleep; when the socket died (CGNAT flow expiry / interface down), Screen Sharing.app did NOT initiate a new RFB session. It shows the last received frame indefinitely.
+- This is **not a hopssh bug**. Reproducible on direct LAN screen-share with no VPN: drop a TCP connection during an active session and the same black-frame freeze occurs. Apple's built-in Screen Sharing.app simply lacks transparent reconnect for RFB.
+- Citadel, Jump Desktop, RealVNC, Microsoft RDP all handle this; macOS's built-in does not.
+
+**Workaround (user-side, no code):** ⌘W on the Screen Sharing window then reconnect from Finder via `vnc://<peer>` or the saved server. The mesh tunnel is already up, so reconnect is sub-second.
+
+**Why we won't fix this in hopssh:** the only path to fix would be inserting a reconnecting TCP proxy between Screen Sharing.app and the agent, which would (a) add an extra hop with TLS overhead, (b) break the mesh-as-flat-network UX, (c) only help one application protocol when the same problem affects every long-lived TCP app (SSH sessions, IMAP, etc.). The right fix is at the application layer — ship a Tauri-native Screen Sharing client (out of scope for now) or document the workaround.
+
+### Watchdog interaction with control-plane bounce (2026-05-02 deploy)
+
+During the v0.10.84 deploy at 23:30, the rolling container swap took ~7 minutes during which the work-network lighthouse (UDP 132.145.232.64:**42002**) was unreachable. The agent's per-network keepalive observed all probes failing, and at the 3rd consecutive stuck cycle (270s) the Phase P2 watchdog (v0.10.36) fired `restartFn`, dumped `/etc/hop-agent/work/stuck-state-20260502T204038Z.txt`, and restarted the work mesh instance. The restart reconnected within seconds once the new control plane was up.
+
+**This is functionally correct** — the watchdog can't distinguish "control plane is rolling" from "agent-side stuck-state" and shouldn't try to: a real stuck data-plane and a 7-min-server-bounce both warrant a restart. The cosmetic downside is the forensic-dump file written during a routine deploy.
+
+**Optional future polish (NOT shipped):** suppress the `stuck` counter when a recent heartbeat returned HTTP 4xx/5xx (sign of control-plane bounce, not local stuck-state). Would save the forensic-dump churn during deploys at the cost of slightly slower reaction to a real outage that coincides with a 5xx burst. Not blocking; tracked as a backlog item.
