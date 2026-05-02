@@ -522,7 +522,13 @@ func tryStartMeshInstance(ctx context.Context, inst *meshInstance, servers *serv
 	if inst.endpoint() != "" && inst.nodeID() != "" {
 		go runCertRenewal(inst.runCtx, inst)
 		go runHeartbeat(inst.runCtx, inst)
-		log.Printf("[agent %s] cert auto-renewal + heartbeat enabled (endpoint: %s)", inst.name(), inst.endpoint())
+		// Phase P: silent-renewal-death detector. Asserts on
+		// inst.lastRenewalActivityAt updates from the renewal loop;
+		// fires CRITICAL + forensic dump + restartFn if the renewal
+		// goes silent past renewalSilenceThreshold (= 6h on a 24h
+		// cert). Mirrors the v0.10.36 stuck-data-plane watchdog.
+		go runRenewalWatchdog(inst.runCtx, inst)
+		log.Printf("[agent %s] cert auto-renewal + heartbeat + watchdog enabled (endpoint: %s)", inst.name(), inst.endpoint())
 	}
 
 	// If nebula.yaml is missing, fall back to OS stack (rare — should

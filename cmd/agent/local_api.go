@@ -458,12 +458,32 @@ func (s *localAPIServer) enrollmentStatus(e *Enrollment) EnrollmentStatus {
 		es.TunMode = currentTunMode(inst)
 		ctrl := inst.control()
 		if ctrl != nil {
-			es.Connected = true
 			direct, relayed, _, ok := collectPeerState(ctrl, inst.pathQuality)
 			if ok {
 				es.PeersDirect = direct
 				es.PeersRelayed = relayed
 			}
+			// Phase P (UI honesty): Connected requires functional
+			// connectivity, not just a Nebula struct in memory. Pre-Phase-P
+			// the flag was set unconditionally on `ctrl != nil`, so a node
+			// with an expired cert and 0 peers painted a green "connected"
+			// pill — directly contradicting the inline LastError. Three
+			// gates now apply, ALL must hold:
+			//
+			//   1. ctrl != nil (existing — Nebula instance allocated)
+			//   2. cert not expired (LastError not set above)
+			//   3. peers > 0 OR recent heartbeat success
+			//
+			// Gate 3 covers the first-startup window where the agent has
+			// just come up, peers haven't done their first handshake yet,
+			// but heartbeats ARE talking to the control plane successfully.
+			// 3 minutes is generous — heartbeats fire every 60s in steady
+			// state; a connected agent will refresh well within the window.
+			const heartbeatGrace = 3 * time.Minute
+			certValid := es.LastError == ""
+			activeFlow := es.PeersDirect+es.PeersRelayed > 0
+			recentHeartbeat := inst.heartbeatSuccessAge() < heartbeatGrace
+			es.Connected = certValid && (activeFlow || recentHeartbeat)
 		}
 	}
 

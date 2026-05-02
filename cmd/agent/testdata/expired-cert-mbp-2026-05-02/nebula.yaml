@@ -1,0 +1,59 @@
+cipher: aes
+firewall:
+    inbound:
+        - groups:
+            - admin
+          port: 41820
+          proto: tcp
+        - groups:
+            - node
+          port: any
+          proto: tcp
+        - host: any
+          port: any
+          proto: icmp
+    outbound:
+        - host: any
+          port: any
+          proto: any
+handshakes:
+    try_interval: 20ms
+lighthouse:
+    am_lighthouse: false
+    hosts:
+        - 10.42.1.1
+    local_allow_list:
+        interfaces:
+            en0: true
+    preferred_ranges:
+        - 192.168.0.0/16
+        - 172.16.0.0/12
+        - 10.0.0.0/8
+listen:
+    host: 0.0.0.0
+    port: 4242
+pki:
+    ca: /etc/hop-agent/home/ca.crt
+    cert: /etc/hop-agent/home/node.crt
+    key: /etc/hop-agent/home/node.key
+punchy:
+    delay: 100ms
+    punch: true
+    punch_back: true
+    respond: true
+    respond_delay: 500ms
+    target_all_remotes: true
+relay:
+    relays:
+        - 10.42.1.1
+    use_relays: true
+routines: 1
+static_host_map:
+    10.42.1.1:
+        - 132.145.232.64:42001
+timers:
+    connection_alive_interval: 10
+    pending_deletion_interval: 30
+tun:
+    dev: hop-home
+    mtu: 1420

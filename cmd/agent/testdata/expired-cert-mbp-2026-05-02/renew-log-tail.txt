@@ -1,0 +1,66 @@
+2026/04/28 23:56:28 [agent home] cert auto-renewal + heartbeat enabled (endpoint: https://hopssh.com)
+2026/04/28 23:56:28 [renew home] next renewal in 9h53m31s
+2026/04/29 09:23:38 [agent home] cert auto-renewal + heartbeat enabled (endpoint: https://hopssh.com)
+2026/04/29 09:23:38 [renew home] next renewal in 11h40m11s
+2026/04/29 09:33:22 [agent work] cert auto-renewal + heartbeat enabled (endpoint: https://hopssh.com)
+time="2026-04-29T09:39:37+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+2026/04/29 09:47:34 [agent home] cert auto-renewal + heartbeat enabled (endpoint: https://hopssh.com)
+2026/04/29 09:47:34 [renew home] next renewal in 11h20m16s
+2026/04/29 09:47:40 [agent work] cert auto-renewal + heartbeat enabled (endpoint: https://hopssh.com)
+2026/04/29 10:31:39 [agent home] cert auto-renewal + heartbeat enabled (endpoint: https://hopssh.com)
+2026/04/29 10:31:39 [renew home] next renewal in 12h56m17s
+2026/04/29 10:31:40 [agent work] cert auto-renewal + heartbeat enabled (endpoint: https://hopssh.com)
+2026/04/29 20:31:29 [agent home] cert auto-renewal + heartbeat enabled (endpoint: https://hopssh.com)
+2026/04/29 20:31:29 [renew home] next renewal in 9h5m56s
+time="2026-04-29T22:35:12+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+time="2026-04-29T22:35:12+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+time="2026-04-29T22:35:12+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+time="2026-04-29T22:35:13+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+time="2026-04-29T22:35:14+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+2026/04/29 23:09:46 [agent home] cert auto-renewal + heartbeat enabled (endpoint: https://hopssh.com)
+2026/04/29 23:09:46 [renew home] next renewal in 8h18m25s
+time="2026-04-30T00:34:54+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+time="2026-04-30T00:34:54+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+time="2026-04-30T00:34:55+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+time="2026-04-30T00:34:56+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+time="2026-04-30T00:34:56+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+2026/04/30 07:34:43 [renew home] Nebula restarted with new certificate (mode: kernel)
+2026/04/30 07:34:43 [renew home] certificate renewed successfully
+2026/04/30 07:34:43 [renew home] next renewal in 13h30m40s
+time="2026-04-30T08:49:41+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+time="2026-04-30T21:32:49+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+time="2026-04-30T21:32:50+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+time="2026-04-30T21:32:50+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+time="2026-04-30T21:32:50+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+time="2026-04-30T21:32:50+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+time="2026-04-30T21:32:50+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+time="2026-04-30T21:32:50+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+time="2026-04-30T21:45:01+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: broken pipe"
+2026/05/01 09:14:27 [renew home] Nebula restarted with new certificate (mode: kernel)
+2026/05/01 09:14:27 [renew home] certificate renewed successfully
+2026/05/01 09:14:27 [renew home] next renewal in 13h55m47s
+time="2026-05-01T16:47:35+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: can't assign requested address"
+time="2026-05-01T16:47:35+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: network is unreachable"
+time="2026-05-01T16:47:35+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: network is unreachable"
+time="2026-05-01T16:47:36+03:00" level=warning msg="Flush failed — queued packets dropped (network may need rebind)" error="sendmsg_x: network is unreachable"
+2026/05/01 17:11:23 [agent home] cert auto-renewal + heartbeat enabled (endpoint: https://hopssh.com)
+2026/05/01 17:11:23 [renew home] next renewal in 7h22m34s
+2026/05/01 22:13:52 [agent home] cert auto-renewal + heartbeat enabled (endpoint: https://hopssh.com)
+2026/05/01 22:13:52 [renew home] next renewal in 6h7m31s
+time="2026-05-01T22:13:52+03:00" level=error msg="Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake" error="sendmsg_x: broken pipe" handshake="map[stage:1 style:ix_psk0]" initiatorIndex=4090148374 localIndex=4090148374 remoteIndex=0 udpAddrs="[46.10.240.91:4242 46.10.240.91:11093 192.168.23.3:4242]" vpnAddrs="[10.42.1.7]"
+time="2026-05-01T22:13:52+03:00" level=error msg="Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake" error="sendmsg_x: broken pipe" handshake="map[stage:1 style:ix_psk0]" initiatorIndex=2558378173 localIndex=2558378173 remoteIndex=0 udpAddrs="[132.145.232.64:42001]" vpnAddrs="[10.42.1.1]"
+time="2026-05-01T22:13:52+03:00" level=error msg="Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake" error="sendmsg_x: broken pipe" handshake="map[stage:1 style:ix_psk0]" initiatorIndex=4090148374 localIndex=4090148374 remoteIndex=0 udpAddrs="[46.10.240.91:4242 46.10.240.91:11093 192.168.23.3:4242]" vpnAddrs="[10.42.1.7]"
+time="2026-05-01T22:13:53+03:00" level=error msg="Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake" error="sendmsg_x: broken pipe" handshake="map[stage:1 style:ix_psk0]" initiatorIndex=2558378173 localIndex=2558378173 remoteIndex=0 udpAddrs="[132.145.232.64:42001]" vpnAddrs="[10.42.1.1]"
+time="2026-05-01T22:13:53+03:00" level=error msg="Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake" error="sendmsg_x: broken pipe" handshake="map[stage:1 style:ix_psk0]" initiatorIndex=4090148374 localIndex=4090148374 remoteIndex=0 udpAddrs="[46.10.240.91:4242 46.10.240.91:11093 192.168.23.3:4242]" vpnAddrs="[10.42.1.7]"
+time="2026-05-01T22:13:53+03:00" level=error msg="Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake" error="sendmsg_x: broken pipe" handshake="map[stage:1 style:ix_psk0]" initiatorIndex=2558378173 localIndex=2558378173 remoteIndex=0 udpAddrs="[132.145.232.64:42001]" vpnAddrs="[10.42.1.1]"
+time="2026-05-01T22:13:53+03:00" level=error msg="Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake" error="sendmsg_x: broken pipe" handshake="map[stage:1 style:ix_psk0]" initiatorIndex=4090148374 localIndex=4090148374 remoteIndex=0 udpAddrs="[46.10.240.91:4242 46.10.240.91:11093 192.168.23.3:4242]" vpnAddrs="[10.42.1.7]"
+time="2026-05-01T22:13:53+03:00" level=error msg="Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake" error="sendmsg_x: broken pipe" handshake="map[stage:1 style:ix_psk0]" initiatorIndex=2558378173 localIndex=2558378173 remoteIndex=0 udpAddrs="[132.145.232.64:42001]" vpnAddrs="[10.42.1.1]"
+time="2026-05-01T22:13:53+03:00" level=error msg="Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake" error="sendmsg_x: broken pipe" handshake="map[stage:1 style:ix_psk0]" initiatorIndex=4090148374 localIndex=4090148374 remoteIndex=0 udpAddrs="[46.10.240.91:4242 46.10.240.91:11093 192.168.23.3:4242]" vpnAddrs="[10.42.1.7]"
+time="2026-05-01T22:13:53+03:00" level=error msg="Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake" error="sendmsg_x: broken pipe" handshake="map[stage:1 style:ix_psk0]" initiatorIndex=2558378173 localIndex=2558378173 remoteIndex=0 udpAddrs="[132.145.232.64:42001]" vpnAddrs="[10.42.1.1]"
+time="2026-05-01T22:13:53+03:00" level=error msg="Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake" error="sendmsg_x: broken pipe" handshake="map[stage:1 style:ix_psk0]" initiatorIndex=4090148374 localIndex=4090148374 remoteIndex=0 udpAddrs="[46.10.240.91:4242 46.10.240.91:11093 192.168.23.3:4242]" vpnAddrs="[10.42.1.7]"
+time="2026-05-01T22:13:53+03:00" level=error msg="Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake" error="sendmsg_x: broken pipe" handshake="map[stage:1 style:ix_psk0]" initiatorIndex=2558378173 localIndex=2558378173 remoteIndex=0 udpAddrs="[132.145.232.64:42001]" vpnAddrs="[10.42.1.1]"
+time="2026-05-01T22:13:53+03:00" level=error msg="Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake" error="sendmsg_x: broken pipe" handshake="map[stage:1 style:ix_psk0]" initiatorIndex=4090148374 localIndex=4090148374 remoteIndex=0 udpAddrs="[46.10.240.91:4242 46.10.240.91:11093 192.168.23.3:4242]" vpnAddrs="[10.42.1.7]"
+time="2026-05-01T22:13:53+03:00" level=error msg="Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake" error="sendmsg_x: broken pipe" handshake="map[stage:1 style:ix_psk0]" initiatorIndex=2558378173 localIndex=2558378173 remoteIndex=0 udpAddrs="[132.145.232.64:42001]" vpnAddrs="[10.42.1.1]"
+time="2026-05-01T22:13:53+03:00" level=error msg="Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake" error="sendmsg_x: broken pipe" handshake="map[stage:1 style:ix_psk0]" initiatorIndex=4090148374 localIndex=4090148374 remoteIndex=0 udpAddrs="[46.10.240.91:4242 46.10.240.91:11093 192.168.23.3:4242]" vpnAddrs="[10.42.1.7]"
+2026/05/01 22:59:50 [agent home] cert auto-renewal + heartbeat enabled (endpoint: https://hopssh.com)
+2026/05/01 22:59:50 [renew home] next renewal in 5h49m54s

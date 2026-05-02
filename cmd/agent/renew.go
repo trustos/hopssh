@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime/pprof"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -226,6 +227,12 @@ func sendHeartbeat(inst *meshInstance) error {
 		updatePeerInfoCache(inst, body.PeerInfo)
 		_ = saveRelayState(inst, body.AmRelay, body.Relays)
 	}
+	// Phase P: stamp heartbeat success so enrollmentStatus.Connected
+	// has a non-peer signal of "agent is talking to the control plane
+	// successfully right now". Used to keep the green pill from going
+	// red during the first-startup window where peers haven't done
+	// their first handshake yet.
+	inst.markHeartbeatSuccess()
 	return nil
 }
 
@@ -394,6 +401,12 @@ func warmPeers(peers []string) {
 //
 // One goroutine per meshInstance; each watches its own cert.
 func runCertRenewal(ctx context.Context, inst *meshInstance) {
+	// Phase P: stamp activity at every observable point in the loop.
+	// Silent goroutine deaths past `renewCertDuration / 4` are flagged
+	// by runRenewalWatchdog. P3 verbose logging at every entry/exit
+	// makes future incidents diagnosable from the agent log alone.
+	inst.markRenewalActivity()
+	log.Printf("[renew %s] loop entered", inst.name())
 	for {
 		renewAt, err := timeUntilRenewal(inst)
 		if err != nil {
@@ -402,23 +415,31 @@ func runCertRenewal(ctx context.Context, inst *meshInstance) {
 		}
 
 		log.Printf("[renew %s] next renewal in %s", inst.name(), renewAt.Truncate(time.Second))
+		inst.markRenewalActivity()
 
 		select {
 		case <-ctx.Done():
+			log.Printf("[renew %s] loop exiting (ctx cancelled)", inst.name())
 			return
 		case <-time.After(renewAt):
 		}
 
+		log.Printf("[renew %s] woken, attempting renewal POST", inst.name())
+		inst.markRenewalActivity()
 		if err := renewCert(inst); err != nil {
 			log.Printf("[renew %s] renewal failed: %v", inst.name(), err)
+			inst.markRenewalActivity()
 			// Retry with backoff: 1m, 2m, 4m, ..., capped at 30m, max 12 attempts.
 			backoff := time.Minute
 			for attempt := 0; attempt < 12; attempt++ {
 				select {
 				case <-ctx.Done():
+					log.Printf("[renew %s] retry loop exiting (ctx cancelled)", inst.name())
 					return
 				case <-time.After(backoff):
 				}
+				inst.markRenewalActivity()
+				log.Printf("[renew %s] retry %d/12 attempting", inst.name(), attempt+1)
 				if err := renewCert(inst); err != nil {
 					log.Printf("[renew %s] retry %d failed: %v", inst.name(), attempt+1, err)
 					backoff *= 2
@@ -429,6 +450,8 @@ func runCertRenewal(ctx context.Context, inst *meshInstance) {
 				}
 				break // success
 			}
+		} else {
+			inst.markRenewalActivity()
 		}
 	}
 }
@@ -1306,4 +1329,121 @@ func readEndpointFromDisk(inst *meshInstance) string {
 		return ""
 	}
 	return strings.TrimSpace(string(data))
+}
+
+// renewalSilenceThreshold is how long lastRenewalActivityAt may sit
+// idle before runRenewalWatchdog declares the goroutine dead.
+//
+// Renewal naturally sleeps for half the cert validity (~12h on a 24h
+// cert), but it stamps activity on entry, on each iteration, BEFORE
+// sleeping, AFTER waking, and on every retry — so a healthy renewal
+// loop produces an activity stamp within ~12h plus a tiny scheduling
+// margin. We pick 1/4 of cert validity as the threshold (= 6h on a
+// 24h cert) so a real silent death is caught one full activity cycle
+// short of the half-validity wake. False positives are nearly
+// impossible because the pre-sleep stamp happens BEFORE entering
+// time.After() — the watchdog only fires after a multi-hour gap of
+// zero log/zero stamp activity.
+// Cert validity is 24h (server-side: internal/api/renew.go::renewCertDuration).
+// Agent has no compile-time link to that, so we mirror the value here. If
+// the server-side validity changes, this constant must update in lockstep.
+const expectedCertValidity = 24 * time.Hour
+var renewalSilenceThreshold = expectedCertValidity / 4
+
+// renewalWatchdogInterval is how often runRenewalWatchdog wakes to
+// check inst.renewalActivityAge(). 5 min is fine — silent deaths
+// are detected within 5m of crossing the threshold (= ~6h05m absent
+// recovery). The watchdog goroutine is one cheap timer per instance.
+const renewalWatchdogInterval = 5 * time.Minute
+
+// runRenewalWatchdog asserts that runCertRenewal is still alive by
+// checking inst.lastRenewalActivityAt. When silence exceeds
+// renewalSilenceThreshold, it (a) writes a forensic goroutine dump
+// to <configDir>/<name>/renewal-stuck-<ts>.txt, (b) logs CRITICAL
+// with the silence duration, and (c) invokes inst.restartFn — the
+// v0.10.36 lifecycle infrastructure that the stuck-data-plane
+// watchdog uses for auto-recovery.
+//
+// Mirrors the pattern in cmd/agent/keepalive.go's
+// `watchdogTrip` — same primitive, different trigger condition.
+//
+// The watchdog has a cooldown (30 min) after firing so a persistent
+// underlying issue can't restart-loop the agent.
+func runRenewalWatchdog(ctx context.Context, inst *meshInstance) {
+	const cooldown = 30 * time.Minute
+	var lastTripAt time.Time
+
+	t := time.NewTicker(renewalWatchdogInterval)
+	defer t.Stop()
+	log.Printf("[renew-watchdog %s] started (threshold=%s, check-interval=%s)",
+		inst.name(), renewalSilenceThreshold, renewalWatchdogInterval)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+
+		age := inst.renewalActivityAge()
+		if age < renewalSilenceThreshold {
+			continue
+		}
+		// Cold-start grace: if lastRenewalActivityAt was never stamped
+		// (i.e. age == math.MaxInt64-equivalent), don't fire — the
+		// goroutine may simply not have started yet. Bound by a
+		// reasonable check: if the stamp is older than 100 years,
+		// treat it as "never set".
+		if age > 100*365*24*time.Hour {
+			continue
+		}
+		// Cooldown: don't restart-loop on persistent issues.
+		if !lastTripAt.IsZero() && time.Since(lastTripAt) < cooldown {
+			continue
+		}
+		lastTripAt = time.Now()
+
+		log.Printf("[renew-watchdog %s] CRITICAL: renewal silent for %s (threshold %s) — capturing forensic dump and triggering auto-restart",
+			inst.name(), age.Truncate(time.Second), renewalSilenceThreshold)
+
+		writeRenewalStuckDump(inst, age)
+
+		if inst.restartFn != nil {
+			if err := inst.restartFn(); err != nil {
+				log.Printf("[renew-watchdog %s] auto-restart failed: %v (next attempt in %s)",
+					inst.name(), err, cooldown)
+			} else {
+				log.Printf("[renew-watchdog %s] auto-restart triggered", inst.name())
+			}
+		} else {
+			log.Printf("[renew-watchdog %s] no restartFn wired — agent will not self-recover. Manual `launchctl kickstart` needed.",
+				inst.name())
+		}
+	}
+}
+
+// writeRenewalStuckDump writes a goroutine pprof + diagnostic snapshot
+// to <configDir>/<name>/renewal-stuck-<ts>.txt. Mirrors the v0.10.36
+// stuck-data-plane dump pattern.
+func writeRenewalStuckDump(inst *meshInstance, silenceAge time.Duration) {
+	ts := time.Now().UTC().Format("20060102T150405Z")
+	path := filepath.Join(inst.dir(), fmt.Sprintf("renewal-stuck-%s.txt", ts))
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		log.Printf("[renew-watchdog %s] failed to open dump file %s: %v", inst.name(), path, err)
+		return
+	}
+	defer f.Close()
+
+	fmt.Fprintf(f, "renewal-stuck dump — %s\n", time.Now().UTC().Format(time.RFC3339))
+	fmt.Fprintf(f, "instance: %s\n", inst.name())
+	fmt.Fprintf(f, "silence: %s (threshold %s)\n", silenceAge, renewalSilenceThreshold)
+	fmt.Fprintf(f, "endpoint: %s\n", inst.endpoint())
+	fmt.Fprintf(f, "node-id: %s\n", inst.nodeID())
+	fmt.Fprintf(f, "\n--- goroutine dump ---\n")
+
+	if err := pprof.Lookup("goroutine").WriteTo(f, 2); err != nil {
+		fmt.Fprintf(f, "goroutine dump failed: %v\n", err)
+	}
+	log.Printf("[renew-watchdog %s] forensic dump: %s", inst.name(), path)
 }

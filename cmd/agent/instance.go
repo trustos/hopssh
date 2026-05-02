@@ -98,6 +98,25 @@ type meshInstance struct {
 	// disconnect/leave stops it cleanly.
 	clipboardSyncRef *clipboardSync
 
+	// Phase P: silent-renewal-death detection.
+	//
+	// lastRenewalActivityAt is updated atomically at every observable
+	// point in the renewal loop (entry, pre-sleep, post-wake, pre-POST,
+	// post-POST). The renewal watchdog fires when this stays idle past
+	// `renewCertDuration / 4` (= 6h for 24h certs). Source field for
+	// the v0.10.79 renewal watchdog mirroring the v0.10.36 stuck-data
+	// -plane pattern. Zero value means "no activity recorded yet" —
+	// the watchdog skips firing in that case (cold-start grace).
+	//
+	// lastHeartbeatSuccessAt is updated on each successful heartbeat
+	// POST. Used by enrollmentStatus.Connected — the green pill
+	// requires either active peer traffic OR a recent successful
+	// heartbeat (so the first-startup window where peers haven't
+	// handshaken yet doesn't show "disconnected").
+	lastRenewalActivityAt  time.Time
+	lastHeartbeatSuccessAt time.Time
+	activityMu             sync.Mutex // guards both fields above
+
 	// restartFn is invoked by the v0.10.36 keepalive watchdog when it
 	// detects stuck-data-plane state (consecutive all-failed keepalive
 	// cycles). The callback closes the running svc and starts a fresh
@@ -156,6 +175,59 @@ func (i *meshInstance) name() string {
 		return ""
 	}
 	return i.enrollment.Name
+}
+
+// markRenewalActivity stamps lastRenewalActivityAt to now. Called from
+// every observable point in runCertRenewal so the renewal watchdog
+// (Phase P) can detect a silent goroutine death.
+func (i *meshInstance) markRenewalActivity() {
+	if i == nil {
+		return
+	}
+	i.activityMu.Lock()
+	i.lastRenewalActivityAt = time.Now()
+	i.activityMu.Unlock()
+}
+
+// renewalActivityAge returns how long ago renewal last emitted
+// activity. Returns time.Duration(math.MaxInt64) when no activity has
+// been recorded yet (cold-start grace).
+func (i *meshInstance) renewalActivityAge() time.Duration {
+	if i == nil {
+		return 1<<62 - 1
+	}
+	i.activityMu.Lock()
+	defer i.activityMu.Unlock()
+	if i.lastRenewalActivityAt.IsZero() {
+		return 1<<62 - 1
+	}
+	return time.Since(i.lastRenewalActivityAt)
+}
+
+// markHeartbeatSuccess stamps lastHeartbeatSuccessAt to now. Called
+// from sendHeartbeat on each successful POST. Used by
+// enrollmentStatus.Connected to gate the green pill.
+func (i *meshInstance) markHeartbeatSuccess() {
+	if i == nil {
+		return
+	}
+	i.activityMu.Lock()
+	i.lastHeartbeatSuccessAt = time.Now()
+	i.activityMu.Unlock()
+}
+
+// heartbeatSuccessAge returns how long ago heartbeat last succeeded.
+// Returns time.Duration(math.MaxInt64) when no success recorded yet.
+func (i *meshInstance) heartbeatSuccessAge() time.Duration {
+	if i == nil {
+		return 1<<62 - 1
+	}
+	i.activityMu.Lock()
+	defer i.activityMu.Unlock()
+	if i.lastHeartbeatSuccessAt.IsZero() {
+		return 1<<62 - 1
+	}
+	return time.Since(i.lastHeartbeatSuccessAt)
 }
 
 // dir returns the on-disk subdirectory containing this instance's
