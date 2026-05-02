@@ -65,8 +65,9 @@ export type Connectivity = 'direct' | 'mixed' | 'relayed' | 'idle';
 export interface PeerDetail {
 	vpnAddr: string;
 	direct: boolean;
-	lastHandshakeSec?: number;
 	remoteAddr?: string;
+	/** Agent-measured EWMA TCP-connect RTT in ms to the peer's mesh API listener. Populated only for direct peers. */
+	rttMs?: number;
 }
 
 export interface NodeResponse {

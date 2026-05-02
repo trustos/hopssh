@@ -47,7 +47,7 @@ type Node struct {
 	PeersDirect         *int64 // last-reported count of direct (P2P) peers; nil if never reported
 	PeersRelayed        *int64 // last-reported count of relay-routed peers; nil if never reported
 	PeersReportedAt     *int64 // unix seconds of the last heartbeat that carried peer state
-	PeerState           *string // JSON array: [{vpnAddr, direct, lastHandshakeSec, remoteAddr}, ...]; nil if never reported
+	PeerState           *string // JSON array: [{vpnAddr, direct, remoteAddr, rttMs}, ...]; nil if never reported
 	AgentVersion        *string // self-reported hop-agent build (e.g. "v0.9.15"); nil for pre-v0.9.15 agents
 	ClientType          *string // "desktop" | "cli" | nil; build-baked at the agent, written once via SetClientType
 }

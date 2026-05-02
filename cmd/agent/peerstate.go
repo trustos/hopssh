@@ -9,10 +9,9 @@ import (
 // (JSON blob). The dashboard reads it to drive the per-peer drill-down
 // and the topology diagram.
 type PeerDetail struct {
-	VpnAddr          string `json:"vpnAddr"`                    // peer's mesh IP (e.g. "10.42.1.7")
-	Direct           bool   `json:"direct"`                     // true = P2P UDP; false = relay-routed
-	LastHandshakeSec int64  `json:"lastHandshakeSec,omitempty"` // 0 = unknown (Nebula's public API doesn't expose it today)
-	RemoteAddr       string `json:"remoteAddr,omitempty"`       // observed remote UDP endpoint when Direct
+	VpnAddr    string `json:"vpnAddr"`              // peer's mesh IP (e.g. "10.42.1.7")
+	Direct     bool   `json:"direct"`               // true = P2P UDP; false = relay-routed
+	RemoteAddr string `json:"remoteAddr,omitempty"` // observed remote UDP endpoint when Direct
 	// RTTms is the EWMA-smoothed TCP-connect round-trip in ms,
 	// measured by runPathQuality probing the peer's mesh listener
 	// (:41820). 0 means "no sample yet" (e.g. brand-new peer, or

@@ -316,10 +316,14 @@ type EnrollResponse struct {
 // from the `nodes.peer_state` JSON blob. Drives the dashboard's
 // per-peer drill-down table and the topology diagram edges.
 type PeerDetail struct {
-	VpnAddr          string `json:"vpnAddr" example:"10.42.1.7"`
-	Direct           bool   `json:"direct" example:"true"`
-	LastHandshakeSec int64  `json:"lastHandshakeSec,omitempty" example:"1712361600"`
-	RemoteAddr       string `json:"remoteAddr,omitempty" example:"203.0.113.18:4242"`
+	VpnAddr    string `json:"vpnAddr" example:"10.42.1.7"`
+	Direct     bool   `json:"direct" example:"true"`
+	RemoteAddr string `json:"remoteAddr,omitempty" example:"203.0.113.18:4242"`
+	// RTTms is the agent-measured EWMA-smoothed TCP-connect round-trip
+	// to the peer's mesh API listener (port 41820). Populated only
+	// when Direct=true; relayed peers report 0. 0 means "no sample
+	// yet" (brand-new peer, or relayed). See cmd/agent/peerstate.go.
+	RTTms int `json:"rttMs,omitempty" example:"32"`
 }
 
 // NodeResponse represents a node in API responses.

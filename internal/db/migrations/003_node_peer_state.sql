@@ -1,5 +1,5 @@
--- Per-node peer detail: JSON array of {vpnAddr, direct, lastHandshakeSec,
--- remoteAddr}, one entry per reachable peer from this node's Nebula
+-- Per-node peer detail: JSON array of {vpnAddr, direct, remoteAddr, rttMs},
+-- one entry per reachable peer from this node's Nebula
 -- hostmap. Reported via the existing heartbeat alongside the aggregate
 -- peers_direct / peers_relayed counts. Enables the per-peer drill-down
 -- and topology diagram in the dashboard.

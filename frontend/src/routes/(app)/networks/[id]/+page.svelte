@@ -10,6 +10,7 @@
 	import * as Tabs from '$lib/components/ui/tabs/index.js';
 	import * as Alert from '$lib/components/ui/alert/index.js';
 	import * as Table from '$lib/components/ui/table/index.js';
+	import * as DropdownMenu from '$lib/components/ui/dropdown-menu/index.js';
 	import { Button } from '$lib/components/ui/button/index.js';
 	import { Input } from '$lib/components/ui/input/index.js';
 	import { Label } from '$lib/components/ui/label/index.js';
@@ -17,7 +18,7 @@
 	import { Skeleton } from '$lib/components/ui/skeleton/index.js';
 	import { getTerminals } from '$lib/stores/terminals.svelte';
 	import { getServerInfo } from '$lib/stores/server-info.svelte';
-	import { Zap, Waypoints, Router } from 'lucide-svelte';
+	import { Zap, Waypoints, Router, Columns3, ChevronDown } from 'lucide-svelte';
 	import { displayStatus } from '$lib/node-status';
 	import NetworkTopology from '$lib/components/network-topology.svelte';
 	import ActivityTable from '$lib/components/activity-table.svelte';
@@ -106,6 +107,73 @@
 	// of that node's peers. Keyed by nodeId; reactive Set reassignment.
 	let expandedNodes = $state<Set<string>>(new Set());
 
+	// Nodes table column visibility — Linear/Vercel-style "Columns" menu
+	// replaces the prior Tailwind hidden-?:table-cell breakpoint hiding.
+	// Status / Name / Actions are pinned (always visible — row identity).
+	// Everything else is user-toggleable, persisted in localStorage so
+	// preferences carry across reloads. Versioned key (`v1`) so future
+	// schema changes can migrate.
+	type NodeColKey = 'capabilities' | 'ip' | 'dns' | 'os' | 'client' | 'lastSeen' | 'version';
+	const NODE_COL_LABELS: Record<NodeColKey, string> = {
+		capabilities: 'Capabilities',
+		ip: 'IP',
+		dns: 'DNS',
+		os: 'OS',
+		client: 'Client',
+		lastSeen: 'Last Seen',
+		version: 'Version'
+	};
+	const NODE_COL_ALL_ON: Record<NodeColKey, boolean> = {
+		capabilities: true, ip: true, dns: true, os: true, client: true, lastSeen: true, version: true
+	};
+	// Narrow viewport defaults: hit the columns most users won't miss.
+	// IP/Client/Version are diagnostic; lastSeen + DNS + OS are scanned
+	// every visit so they stay on by default.
+	const NODE_COL_NARROW_DEFAULTS: Record<NodeColKey, boolean> = {
+		capabilities: true, ip: false, dns: true, os: true, client: false, lastSeen: true, version: false
+	};
+	function loadNodeCols(): Record<NodeColKey, boolean> {
+		try {
+			const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('hopssh.nodes-cols-v1') : null;
+			if (raw) {
+				const parsed = JSON.parse(raw);
+				return { ...NODE_COL_ALL_ON, ...parsed };
+			}
+		} catch { /* ignore */ }
+		// First-time visit: pick a default based on viewport width so the
+		// table fits without horizontal scroll on first paint.
+		if (typeof window !== 'undefined' && !window.matchMedia('(min-width: 1280px)').matches) {
+			return { ...NODE_COL_NARROW_DEFAULTS };
+		}
+		return { ...NODE_COL_ALL_ON };
+	}
+	let nodeCols = $state<Record<NodeColKey, boolean>>(loadNodeCols());
+	$effect(() => {
+		try {
+			localStorage.setItem('hopssh.nodes-cols-v1', JSON.stringify(nodeCols));
+		} catch { /* private mode / quota — silently ignore */ }
+	});
+	// Dynamic colspan for the per-row drill-down + inline forward form:
+	// pinned (Status + Name + Actions = 3) + visible toggleables.
+	const nodeRowSpan = $derived(
+		3 + (Object.values(nodeCols) as boolean[]).filter(Boolean).length
+	);
+
+	// "Hide offline" toggle — separate from the admin-only Clean-up button.
+	// Users with read-only access (or admins who don't want to delete)
+	// can declutter the view without mutating the network.
+	function loadHideOffline(): boolean {
+		try {
+			return typeof localStorage !== 'undefined' && localStorage.getItem('hopssh.nodes-hide-offline-v1') === '1';
+		} catch { return false; }
+	}
+	let hideOffline = $state(loadHideOffline());
+	$effect(() => {
+		try {
+			localStorage.setItem('hopssh.nodes-hide-offline-v1', hideOffline ? '1' : '0');
+		} catch { /* ignore */ }
+	});
+
 	// Activity feed: in-memory ring buffer of the last 50 WS events.
 	// Not persisted — resets on page load; matches "live tail" UX.
 	interface ActivityEvent {
@@ -165,9 +233,13 @@
 	// All nodes including pending (pending shown with special style).
 	// Excludes the synthetic lighthouse entry — it's a topology-only
 	// affordance, not a real enrolled node, so the Nodes-tab counter
-	// + table mustn't include it.
+	// + table mustn't include it. When the user toggles "Hide offline"
+	// we further filter rows whose computed status (incl. stale-check)
+	// is offline, so dead rows stop drowning the live ones.
 	const visibleNodes = $derived(
-		(network?.nodes ?? []).filter(n => n.nodeType !== 'lighthouse')
+		(network?.nodes ?? [])
+			.filter(n => n.nodeType !== 'lighthouse')
+			.filter(n => !hideOffline || stateOf(n) !== 'offline')
 	);
 
 	const hasPendingNodes = $derived(network?.nodes.some(n => n.status === 'pending') ?? false);
@@ -740,25 +812,50 @@
 					</p>
 				</div>
 			{:else}
-				<!-- Column visibility: core "Status + Name + Actions" always
-				     visible. Capabilities hide below sm, IP/DNS hide below
-				     md and lg respectively, Last Seen below sm. Nested peer
-				     table + inline forward form below use colspan that
-				     counts all 7 structural columns — browsers render the
-				     spanning cell across whatever's visible without issue. -->
-				<div class="rounded-lg border overflow-hidden">
+				<!-- Toolbar: hide-offline + columns-toggle. Status / Name /
+				     Actions are pinned (row identity); everything else is
+				     user-toggleable via the Columns dropdown. State is
+				     persisted in localStorage (hopssh.nodes-cols-v1). The
+				     table itself wraps in overflow-x-auto so any user
+				     combination of visible columns degrades to scoped
+				     horizontal scroll, never page-level scroll. -->
+				<div class="mb-2 flex flex-wrap items-center justify-end gap-2">
+					{#if offlineCount > 0}
+						<label class="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
+							<input type="checkbox" bind:checked={hideOffline} class="h-3.5 w-3.5 rounded border-muted-foreground/40" />
+							Hide offline ({offlineCount})
+						</label>
+					{/if}
+					<DropdownMenu.Root>
+						<DropdownMenu.Trigger class="inline-flex items-center gap-1.5 rounded-md border bg-background px-2.5 py-1 text-xs hover:bg-accent">
+							<Columns3 class="h-3.5 w-3.5" />
+							Columns
+							<ChevronDown class="h-3 w-3 opacity-60" />
+						</DropdownMenu.Trigger>
+						<DropdownMenu.Content align="end" class="w-44">
+							<DropdownMenu.Label class="text-xs">Toggle columns</DropdownMenu.Label>
+							<DropdownMenu.Separator />
+							{#each Object.keys(NODE_COL_LABELS) as k (k)}
+								<DropdownMenu.CheckboxItem bind:checked={nodeCols[k as NodeColKey]}>
+									{NODE_COL_LABELS[k as NodeColKey]}
+								</DropdownMenu.CheckboxItem>
+							{/each}
+						</DropdownMenu.Content>
+					</DropdownMenu.Root>
+				</div>
+				<div class="rounded-lg border overflow-x-auto">
 					<Table.Root class="text-sm">
-						<Table.Header>
+						<Table.Header class="sticky top-0 z-10 bg-background">
 							<Table.Row>
 								<Table.Head>Status</Table.Head>
 								<Table.Head>Name</Table.Head>
-								<Table.Head class="hidden sm:table-cell">Capabilities</Table.Head>
-								<Table.Head class="hidden lg:table-cell">IP</Table.Head>
-								<Table.Head class="hidden md:table-cell">DNS</Table.Head>
-								<Table.Head class="hidden md:table-cell">OS</Table.Head>
-								<Table.Head class="hidden lg:table-cell">Client</Table.Head>
-								<Table.Head class="hidden sm:table-cell">Last Seen</Table.Head>
-								<Table.Head class="hidden lg:table-cell">Version</Table.Head>
+								{#if nodeCols.capabilities}<Table.Head>Capabilities</Table.Head>{/if}
+								{#if nodeCols.ip}<Table.Head>IP</Table.Head>{/if}
+								{#if nodeCols.dns}<Table.Head>DNS</Table.Head>{/if}
+								{#if nodeCols.os}<Table.Head>OS</Table.Head>{/if}
+								{#if nodeCols.client}<Table.Head>Client</Table.Head>{/if}
+								{#if nodeCols.lastSeen}<Table.Head>Last Seen</Table.Head>{/if}
+								{#if nodeCols.version}<Table.Head>Version</Table.Head>{/if}
 								<Table.Head class="text-right">Actions</Table.Head>
 							</Table.Row>
 						</Table.Header>
@@ -803,7 +900,7 @@
 											{/if}
 										</div>
 									</td>
-									<td class="px-4 py-3">
+									<td class="px-4 py-3 max-w-[220px]">
 										{#if renamingNodeId === node.id}
 											<form onsubmit={(e) => { e.preventDefault(); renameNode(node.id); }} class="flex items-center gap-1">
 												<input
@@ -820,17 +917,23 @@
 												{#if hasCap(node, 'terminal') && stateOf(node) === 'online'}
 													<button
 														onclick={() => termStore.open(networkId, node.id, node.dnsName || node.hostname || node.id.slice(0, 8))}
-														class="cursor-pointer font-mono font-medium text-primary hover:underline"
+														class="cursor-pointer truncate whitespace-nowrap font-mono font-medium text-primary hover:underline"
+														title={node.dnsName || node.hostname || node.id.slice(0, 8)}
 													>
 														{node.dnsName || node.hostname || node.id.slice(0, 8)}
 													</button>
 												{:else}
-													<span class="font-mono font-medium">{node.dnsName || node.hostname || node.id.slice(0, 8)}</span>
+													<span
+														class="truncate whitespace-nowrap font-mono font-medium"
+														title={node.dnsName || node.hostname || node.id.slice(0, 8)}
+													>
+														{node.dnsName || node.hostname || node.id.slice(0, 8)}
+													</span>
 												{/if}
 												{#if isAdmin}
 													<button
 														onclick={() => { renamingNodeId = node.id; renameValue = node.dnsName || node.hostname || ''; }}
-														class="cursor-pointer rounded px-1 text-xs text-muted-foreground/40 hover:text-foreground transition-colors"
+														class="shrink-0 cursor-pointer rounded px-1 text-xs text-muted-foreground/40 hover:text-foreground transition-colors"
 														title="Rename node"
 														aria-label="Rename node"
 													>
@@ -840,7 +943,8 @@
 											</span>
 										{/if}
 									</td>
-									<td class="hidden sm:table-cell px-4 py-3">
+									{#if nodeCols.capabilities}
+									<td class="px-4 py-3">
 										<div class="flex gap-1">
 											{#each ['terminal', 'health', 'forward'] as cap}
 												{#if isAdmin}
@@ -858,15 +962,21 @@
 											{/each}
 										</div>
 									</td>
-									<td class="hidden lg:table-cell px-4 py-3 font-mono text-muted-foreground">{node.nebulaIP}</td>
-									<td class="hidden md:table-cell px-4 py-3 font-mono text-muted-foreground text-xs">
+									{/if}
+									{#if nodeCols.ip}
+									<td class="px-4 py-3 font-mono text-muted-foreground whitespace-nowrap">{node.nebulaIP}</td>
+									{/if}
+									{#if nodeCols.dns}
+									<td class="px-4 py-3 font-mono text-muted-foreground text-xs whitespace-nowrap">
 										{#if node.dnsName || node.hostname}
 											{node.dnsName || node.hostname}.{network.dnsDomain}
 										{:else}
 											<span class="text-muted-foreground/50">—</span>
 										{/if}
 									</td>
-									<td class="hidden md:table-cell px-4 py-3 text-xs">
+									{/if}
+									{#if nodeCols.os}
+									<td class="px-4 py-3 text-xs whitespace-nowrap">
 										{#if node.os === 'darwin'}
 											<span title="macOS">macOS</span>
 										{:else if node.os === 'linux'}
@@ -879,7 +989,9 @@
 											<span class="text-muted-foreground/50">—</span>
 										{/if}
 									</td>
-									<td class="hidden lg:table-cell px-4 py-3 text-xs">
+									{/if}
+									{#if nodeCols.client}
+									<td class="px-4 py-3 text-xs whitespace-nowrap">
 										{#if node.nodeType === 'lighthouse'}
 											<span class="text-muted-foreground/50">—</span>
 										{:else if node.clientType === 'desktop'}
@@ -890,8 +1002,12 @@
 											<span class="text-muted-foreground/50">—</span>
 										{/if}
 									</td>
-									<td class="hidden sm:table-cell px-4 py-3 text-muted-foreground">{timeAgo(node.lastSeenAt)}</td>
-									<td class="hidden lg:table-cell px-4 py-3 font-mono text-xs">
+									{/if}
+									{#if nodeCols.lastSeen}
+									<td class="px-4 py-3 text-muted-foreground whitespace-nowrap">{timeAgo(node.lastSeenAt)}</td>
+									{/if}
+									{#if nodeCols.version}
+									<td class="px-4 py-3 font-mono text-xs whitespace-nowrap">
 										{#if node.nodeType === 'lighthouse' || !node.agentVersion}
 											<span class="text-muted-foreground/50">—</span>
 										{:else if serverInfo.current && node.agentVersion !== serverInfo.current}
@@ -902,6 +1018,7 @@
 											<span class="text-muted-foreground">{node.agentVersion}</span>
 										{/if}
 									</td>
+									{/if}
 									<td class="px-4 py-3 text-right">
 										<div class="flex justify-end gap-1">
 											{#if hasCap(node, 'health') && stateOf(node) === 'online'}
@@ -943,11 +1060,11 @@
 								<!-- Per-peer drill-down: expanded on chevron click above. -->
 								{#if isExpanded && canExpand}
 									<tr class="bg-muted/30">
-										<td colspan="8" class="px-6 py-3">
+										<td colspan={nodeRowSpan} class="px-6 py-3">
 											<div class="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
 												Peers ({node.peers?.length ?? 0})
 											</div>
-											<div class="rounded border overflow-hidden">
+											<div class="rounded border overflow-x-auto">
 												<Table.Root class="text-xs">
 													<Table.Header>
 														<Table.Row class="bg-background/50">
@@ -955,7 +1072,7 @@
 															<Table.Head>Mesh IP</Table.Head>
 															<Table.Head>Type</Table.Head>
 															<Table.Head class="hidden md:table-cell">Remote</Table.Head>
-															<Table.Head class="hidden lg:table-cell">Handshake</Table.Head>
+															<Table.Head class="text-right">RTT</Table.Head>
 														</Table.Row>
 													</Table.Header>
 													<Table.Body>
@@ -975,7 +1092,16 @@
 																	{/if}
 																</td>
 																<td class="hidden md:table-cell px-3 py-2 font-mono text-muted-foreground">{peer.remoteAddr || '—'}</td>
-																<td class="hidden lg:table-cell px-3 py-2 text-muted-foreground">{peer.lastHandshakeSec ? timeAgo(peer.lastHandshakeSec) : 'unknown'}</td>
+																<td
+																	class="px-3 py-2 text-right font-mono text-muted-foreground"
+																	title={peer.direct ? (peer.rttMs ? `Agent-measured TCP-connect RTT (EWMA-smoothed)` : 'No RTT sample yet') : 'RTT only measured for direct peers'}
+																>
+																	{#if peer.direct && peer.rttMs}
+																		{peer.rttMs} ms
+																	{:else}
+																		<span class="text-muted-foreground/50">—</span>
+																	{/if}
+																</td>
 															</tr>
 														{/each}
 													</Table.Body>
@@ -987,7 +1113,7 @@
 								<!-- Inline port forward form -->
 								{#if forwardNodeId === node.id}
 									<tr class="bg-muted/50">
-										<td colspan="8" class="px-4 py-3">
+										<td colspan={nodeRowSpan} class="px-4 py-3">
 											<form onsubmit={(e) => startForward(node.id, e)} class="flex items-center gap-3">
 												<span class="text-sm text-muted-foreground">Forward from {node.dnsName || node.hostname || node.id.slice(0, 8)}:</span>
 												<div class="flex items-center gap-1">
@@ -1092,7 +1218,7 @@
 					<p class="text-xs text-muted-foreground">Node hostnames are added automatically when agents enroll. You can also add custom records.</p>
 				</div>
 			{:else}
-				<div class="rounded-lg border overflow-hidden">
+				<div class="rounded-lg border overflow-x-auto">
 					<Table.Root class="text-sm">
 						<Table.Header>
 							<Table.Row>
@@ -1201,7 +1327,7 @@
 				{/if}
 
 				{#if networkMembers.length > 0}
-					<div class="rounded-lg border overflow-hidden">
+					<div class="rounded-lg border overflow-x-auto">
 						<Table.Root class="text-sm">
 							<Table.Header>
 								<Table.Row>

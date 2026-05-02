@@ -173,7 +173,6 @@ export interface PeerDetail {
   direct: boolean;
   remoteAddr?: string;
   rttMs?: number;
-  lastHandshakeSec?: number;
   // Human-readable identifiers populated from the server's heartbeat
   // peerInfo field. Optional (older agents/servers omit). Connected.svelte
   // shows `name` as the primary label and surfaces dnsHostname /
