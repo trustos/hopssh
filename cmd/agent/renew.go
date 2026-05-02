@@ -395,47 +395,60 @@ func warmPeers(peers []string) {
 	}
 }
 
+// renewalPollInterval is how often runCertRenewal wakes to check
+// the cert's wall-clock NotAfter. We DELIBERATELY do NOT use
+// time.After(longSleep) because Go's runtime timers are anchored to
+// monotonic time, which freezes during macOS deep-sleep (Darwin's
+// mach_absolute_time stops counting when the CPU TSC freezes). On a
+// laptop that closes its lid every night, time.After(5h49m) can take
+// days to fire because the awake-time accumulates slowly. Polling
+// against the cert's wall-clock NotAfter instead means: after wake,
+// the next 60s tick reads cert from disk, sees expiry approaching,
+// and renews. Catch-up cost is negligible (~one cert read + parse
+// per minute). 60s is small enough that even worst-case sleep events
+// don't push renewal past the 50% midpoint by more than a tick.
+const renewalPollInterval = 60 * time.Second
+
 // runCertRenewal runs a background loop that renews the Nebula certificate
 // before it expires. Renews at 50% lifetime (12h for a 24h cert).
 // Exits the process if the node has been deleted (HTTP 401).
 //
+// Wall-clock polling architecture (Phase S, post-2026-05-02 incident):
+// instead of time.After(longSleep) the loop polls every 60s and
+// reads the cert's NotAfter directly. This is laptop-sleep-safe —
+// monotonic clocks freeze during deep sleep but cert.NotAfter() is
+// wall-clock-anchored, so post-wake the next tick correctly
+// identifies "renewal overdue" and fires.
+//
 // One goroutine per meshInstance; each watches its own cert.
 func runCertRenewal(ctx context.Context, inst *meshInstance) {
-	// Phase P: stamp activity at every observable point in the loop.
-	// Silent goroutine deaths past `renewCertDuration / 4` are flagged
-	// by runRenewalWatchdog. P3 verbose logging at every entry/exit
-	// makes future incidents diagnosable from the agent log alone.
+	// Phase P: stamp activity at every observable point so the
+	// renewal watchdog (cmd/agent/renew.go::runRenewalWatchdog)
+	// can detect a silent goroutine death.
 	inst.markRenewalActivity()
-	log.Printf("[renew %s] loop entered", inst.name())
-	for {
-		renewAt, err := timeUntilRenewal(inst)
-		if err != nil {
-			log.Printf("[renew %s] failed to determine renewal time: %v (retrying in 5m)", inst.name(), err)
-			renewAt = 5 * time.Minute
-		}
+	log.Printf("[renew %s] loop entered (wall-clock polling, %s tick)", inst.name(), renewalPollInterval)
 
-		log.Printf("[renew %s] next renewal in %s", inst.name(), renewAt.Truncate(time.Second))
+	ticker := time.NewTicker(renewalPollInterval)
+	defer ticker.Stop()
+
+	// renewNow performs the renewal POST + retry-with-backoff
+	// sequence. Returns nil on success, or last error after exhausting
+	// 12 retries. Inline so the timer logic stays compact.
+	renewNow := func() error {
+		log.Printf("[renew %s] cert past renewal threshold, attempting renewal POST", inst.name())
 		inst.markRenewalActivity()
-
-		select {
-		case <-ctx.Done():
-			log.Printf("[renew %s] loop exiting (ctx cancelled)", inst.name())
-			return
-		case <-time.After(renewAt):
-		}
-
-		log.Printf("[renew %s] woken, attempting renewal POST", inst.name())
-		inst.markRenewalActivity()
-		if err := renewCert(inst); err != nil {
-			log.Printf("[renew %s] renewal failed: %v", inst.name(), err)
+		if err := renewCert(inst); err == nil {
 			inst.markRenewalActivity()
-			// Retry with backoff: 1m, 2m, 4m, ..., capped at 30m, max 12 attempts.
+			return nil
+		} else {
+			log.Printf("[renew %s] renewal failed: %v (entering retry-with-backoff)", inst.name(), err)
+			inst.markRenewalActivity()
 			backoff := time.Minute
 			for attempt := 0; attempt < 12; attempt++ {
 				select {
 				case <-ctx.Done():
 					log.Printf("[renew %s] retry loop exiting (ctx cancelled)", inst.name())
-					return
+					return ctx.Err()
 				case <-time.After(backoff):
 				}
 				inst.markRenewalActivity()
@@ -448,9 +461,36 @@ func runCertRenewal(ctx context.Context, inst *meshInstance) {
 					}
 					continue
 				}
-				break // success
+				inst.markRenewalActivity()
+				return nil
 			}
+			return fmt.Errorf("renewal exhausted 12 retries")
+		}
+	}
+
+	// Initial check: at startup, immediately evaluate whether the
+	// cert needs renewal. Covers the cold-start-with-expired-cert
+	// case (e.g. laptop slept past expiry, agent just respawned).
+	for {
+		renewAt, err := timeUntilRenewal(inst)
+		inst.markRenewalActivity()
+		if err != nil {
+			log.Printf("[renew %s] could not determine renewal time: %v (will retry on next poll)", inst.name(), err)
+		} else if renewAt <= 0 {
+			log.Printf("[renew %s] cert needs renewal NOW (overdue or imminent)", inst.name())
+			_ = renewNow()
 		} else {
+			log.Printf("[renew %s] cert OK, renewal due in %s (next poll in %s)",
+				inst.name(), renewAt.Truncate(time.Second), renewalPollInterval)
+			_ = err // suppress unused
+			_ = renewAt
+		}
+
+		select {
+		case <-ctx.Done():
+			log.Printf("[renew %s] loop exiting (ctx cancelled)", inst.name())
+			return
+		case <-ticker.C:
 			inst.markRenewalActivity()
 		}
 	}
