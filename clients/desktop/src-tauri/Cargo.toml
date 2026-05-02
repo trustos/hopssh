@@ -30,6 +30,14 @@ ctrlc = { version = "3", features = ["termination"] }
 # avoids a system-OpenSSL dependency on Linux. The macOS Rust ecosystem
 # also benefits from rustls being more deterministic across versions.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+# notify (Phase Q): watch system-local-api-{port,token} mirror files
+# so the .app re-attaches when an external `launchctl kickstart` (or
+# any daemon respawn — boot, crash, manual restart) rotates the
+# LaunchDaemon's local API port. Without this, the .app caches the
+# old port at launch and shows "agent unreachable" until the user
+# quits + relaunches the app. macros feature OFF — we use the
+# RecommendedWatcher API directly.
+notify = { version = "8", default-features = false, features = ["macos_kqueue"] }
 
 [features]
 # This feature is used for production builds or when a dev server is not

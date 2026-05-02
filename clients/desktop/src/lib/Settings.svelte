@@ -22,6 +22,29 @@
     onAutoCheckConsumed?: () => void;
   } = $props();
 
+  // ---- Per-network "Force renew" (Phase P4 escape hatch) ----
+  // Triggers an immediate cert renewal POST for one enrollment.
+  // Rate-limited server-side to 1/min; UI disables the button while
+  // a request is in flight.
+  let forceRenewBusy = $state<string | null>(null);
+  let forceRenewError = $state<string | null>(null);
+  let forceRenewDone = $state<string | null>(null);
+
+  async function doForceRenew(name: string) {
+    forceRenewBusy = name;
+    forceRenewError = null;
+    forceRenewDone = null;
+    try {
+      const r = await local.forceRenew(name);
+      forceRenewDone = `${name}: cert renewed, expires in ${r.certExpiresIn}`;
+      await agent.refresh();
+    } catch (e: unknown) {
+      forceRenewError = e instanceof Error ? e.message : String(e);
+    } finally {
+      forceRenewBusy = null;
+    }
+  }
+
   // ---- Per-network clipboard-sync toggle state (Phase L). The
   //      flag persists in enrollments.json on the agent side; the
   //      goroutine starts/stops on next agent restart in v1, so the
@@ -455,6 +478,15 @@
                       <span>Clipboard sync</span>
                     {/if}
                   </button>
+                  <button
+                    class="inline-flex items-center gap-1 rounded-md border border-zinc-700 px-1.5 py-0.5 text-zinc-400 hover:border-emerald-500 hover:text-emerald-300 disabled:opacity-50"
+                    onclick={() => doForceRenew(e.name)}
+                    disabled={forceRenewBusy === e.name}
+                    type="button"
+                    title="Trigger an immediate certificate renewal. Use this if Settings reports 'certificate expired' or peers aren't connecting. Rate-limited to once per minute."
+                  >
+                    {forceRenewBusy === e.name ? '…' : 'Force renew'}
+                  </button>
                 </div>
               </div>
               {#if confirmingName === e.name}
@@ -507,6 +539,16 @@
     {#if clipboardDone}
       <div class="border-t border-zinc-800 px-4 py-2 text-xs text-emerald-400">
         {clipboardDone}
+      </div>
+    {/if}
+    {#if forceRenewError}
+      <div class="border-t border-zinc-800 px-4 py-2 text-xs text-amber-400">
+        {forceRenewError}
+      </div>
+    {/if}
+    {#if forceRenewDone}
+      <div class="border-t border-zinc-800 px-4 py-2 text-xs text-emerald-400">
+        {forceRenewDone}
       </div>
     {/if}
   </section>

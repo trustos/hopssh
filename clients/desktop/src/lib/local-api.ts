@@ -249,7 +249,22 @@ export const local = {
       'POST',
       '/local/clipboard-sync',
       { enrollment: enrollmentName, enabled }
-    )
+    ),
+  /**
+   * Force a cert renewal POST for one enrollment, bypassing the
+   * timer loop. Used by the Settings → "Force renew" button (Phase
+   * P4) as an in-app escape hatch for the silent-renewal-death
+   * scenario the watchdog catches automatically. Rate-limited to
+   * 1/min per enrollment server-side; 429 on rapid-fire clicks.
+   */
+  forceRenew: (enrollmentName: string) =>
+    request<{
+      enrollment: string;
+      certNotAfter: string;
+      certExpiresIn: string;
+      peersDirect: number;
+      peersRelayed: number;
+    }>('POST', '/local/renew', { enrollment: enrollmentName })
 };
 
 /**

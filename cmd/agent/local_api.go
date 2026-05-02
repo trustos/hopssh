@@ -185,6 +185,7 @@ func startLocalAPI(
 	mux.HandleFunc("POST /local/disconnect", srv.handleDisconnect)
 	mux.HandleFunc("POST /local/leave", srv.handleLeave)
 	mux.HandleFunc("POST /local/clipboard-sync", srv.handleClipboardSyncToggle)
+	mux.HandleFunc("POST /local/renew", srv.handleForceRenew)
 
 	authed := localAuthMiddleware(token, mux)
 
@@ -1147,6 +1148,75 @@ func (s *localAPIServer) handleLeave(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"removed":         target.Name,
 		"restartRequired": false, // v0.10.34: live disconnect handles teardown
+	})
+}
+
+// handleForceRenew triggers an inline cert renewal POST for one
+// enrollment, bypassing the timer-driven loop. Used by the desktop
+// client's "Force renew" button (Phase P4) — gives the user an
+// in-app one-click recovery for the silent-renewal-death scenario
+// the watchdog (Phase P2) is also designed to catch automatically.
+//
+// Rate-limited to 1 force-renew per 60s per enrollment to prevent
+// accidental DoS of the control plane from a stuck-button click.
+//
+// POST /local/renew  { "enrollment": "home" }
+//   200 { "certNotAfter": "...", "peersDirect": N, "peersRelayed": N }
+//   429 too many requests
+//   404 enrollment not found
+//   500 renewal failed (with error string)
+var forceRenewLastAt sync.Map // enrollment name -> time.Time
+
+func (s *localAPIServer) handleForceRenew(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req struct {
+		Enrollment string `json:"enrollment"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.Enrollment == "" {
+		writeJSONError(w, http.StatusBadRequest, "enrollment required")
+		return
+	}
+	target := s.enrolls.Get(req.Enrollment)
+	if target == nil {
+		writeJSONError(w, http.StatusNotFound, "enrollment not found")
+		return
+	}
+
+	// Rate limit. 1/min per enrollment, atomic CAS via sync.Map LoadOrStore.
+	now := time.Now()
+	if v, ok := forceRenewLastAt.Load(target.Name); ok {
+		if t, ok := v.(time.Time); ok && now.Sub(t) < 60*time.Second {
+			writeJSONError(w, http.StatusTooManyRequests, "force-renew rate-limited (60s window)")
+			return
+		}
+	}
+	forceRenewLastAt.Store(target.Name, now)
+
+	inst := s.instances.get(target.Name)
+	if inst == nil {
+		writeJSONError(w, http.StatusServiceUnavailable, "instance not running")
+		return
+	}
+
+	// Reuses the timer-loop's renewCert path. Synchronous: blocks
+	// until renewal completes (or fails). Caller's HTTP handler has
+	// a 30s write timeout — renewal typically takes <2s.
+	if err := renewCert(inst); err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("renewal failed: %v", err))
+		return
+	}
+	// Read back the fresh cert NotAfter for the response.
+	es := s.enrollmentStatus(target)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enrollment":    target.Name,
+		"certNotAfter":  es.CertNotAfter,
+		"certExpiresIn": es.CertExpiresIn,
+		"peersDirect":   es.PeersDirect,
+		"peersRelayed":  es.PeersRelayed,
 	})
 }
 

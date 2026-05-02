@@ -861,6 +861,14 @@ pub fn run() {
                 }
             });
 
+            // Phase Q: watch system-local-api-{port,token} for
+            // external daemon respawns (launchctl kickstart, system
+            // boot, crash recovery). On mirror-file change, re-probe
+            // + replace endpoint + emit agent-ready so the JS layer
+            // resets its cached endpoint via the existing Phase D
+            // infrastructure.
+            agent::watch_system_mirror(app.handle().clone(), Arc::clone(&state_for_setup));
+
             Ok(())
         })
         .on_window_event(|window, event| {

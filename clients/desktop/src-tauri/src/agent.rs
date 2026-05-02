@@ -192,3 +192,117 @@ fn watch_stdout(app: AppHandle, state: Arc<AppState>, stdout: ChildStdout) {
     log::warn!("hop-agent stdout closed");
     let _ = app.emit("agent-exited", ());
 }
+
+/// Phase Q: watch the system-mode mirror files for changes and
+/// re-attach when an external `launchctl kickstart` (or any daemon
+/// respawn — boot, crash, manual restart) rotates the LaunchDaemon's
+/// local API port.
+///
+/// Without this watcher, the .app caches the endpoint at launch
+/// (in `state.endpoint`) and never re-reads the mirror files. After
+/// an external daemon respawn, the cached port points at a dead
+/// listener and the WebView surfaces "agent unreachable" until the
+/// user quits + relaunches the .app.
+///
+/// On change: re-run `try_attach_to_system_agent` to confirm the
+/// new port is reachable, replace `state.endpoint`, emit
+/// `agent-ready` so the JS layer's local-api.ts module-level
+/// cache resets (Phase D infrastructure).
+///
+/// macOS-only because mirror files only exist there. The watcher
+/// goroutine is spawned at app setup and lives until the .app
+/// quits — no per-instance lifecycle needed.
+#[cfg(target_os = "macos")]
+pub fn watch_system_mirror(app: AppHandle, state: Arc<AppState>) {
+    use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+
+    std::thread::spawn(move || {
+        let Ok(home) = std::env::var("HOME") else {
+            log::warn!("HOME not set — system-mirror watcher disabled");
+            return;
+        };
+        let mirror = PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("hopssh");
+
+        // Channel for filesystem events; debounce in the consumer
+        // because notify can deliver multiple events per single write
+        // (rename + create + chmod for atomic-rename writes).
+        let (tx, rx) = std::sync::mpsc::channel::<notify::Result<Event>>();
+        let mut watcher: RecommendedWatcher = match notify::recommended_watcher(tx) {
+            Ok(w) => w,
+            Err(e) => {
+                log::warn!("could not create mirror watcher: {e}");
+                return;
+            }
+        };
+        if let Err(e) = watcher.watch(&mirror, RecursiveMode::NonRecursive) {
+            log::warn!("could not watch {}: {e}", mirror.display());
+            return;
+        }
+        log::info!("system-mirror watcher started for {}", mirror.display());
+
+        // Debounce: rapid events (within 500ms) coalesce into a single
+        // re-attach attempt. notify can deliver 3-5 events per atomic
+        // file write on macOS kqueue.
+        let mut last_attempt = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(60))
+            .unwrap_or_else(std::time::Instant::now);
+
+        for ev in rx {
+            let Ok(ev) = ev else { continue };
+            // Filter to events on system-local-api-{port,token}. The
+            // watcher fires on every file in the mirror dir; we only
+            // care about port + token changes.
+            let relevant = ev.paths.iter().any(|p| {
+                p.file_name()
+                    .and_then(|f| f.to_str())
+                    .map(|n| n == "system-local-api-port" || n == "system-local-api-token")
+                    .unwrap_or(false)
+            });
+            if !relevant {
+                continue;
+            }
+            // Only react to writes / metadata changes — skip pure
+            // access events.
+            match ev.kind {
+                EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {}
+                _ => continue,
+            }
+            if last_attempt.elapsed() < std::time::Duration::from_millis(500) {
+                continue;
+            }
+            last_attempt = std::time::Instant::now();
+
+            // Re-probe + replace endpoint + emit agent-ready.
+            // try_attach_to_system_agent already does the TCP-connect
+            // probe so we don't hand the JS a stale endpoint.
+            match try_attach_to_system_agent() {
+                Some(ep) => {
+                    let host = ep.host.clone();
+                    *state.endpoint.lock() = Some(ep);
+                    let _ = app.emit("agent-ready", ());
+                    log::info!("re-attached to system agent at {host} (mirror file changed)");
+                }
+                None => {
+                    // Mirror files removed (revert flow) or daemon
+                    // not yet up. Don't clobber a working endpoint —
+                    // let the existing one stand until a successful
+                    // re-attach happens. The JS layer's defensive
+                    // resetCachedEndpoint on TypeError handles the
+                    // case where the OLD endpoint has already gone
+                    // dead.
+                    log::info!("mirror file changed but try_attach failed — keeping existing endpoint");
+                }
+            }
+        }
+        log::warn!("system-mirror watcher loop exited");
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn watch_system_mirror(_app: AppHandle, _state: Arc<AppState>) {
+    // Mirror files are macOS-only (system-mode = LaunchDaemon).
+    // No-op on Linux/Windows.
+}
