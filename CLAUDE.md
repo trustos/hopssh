@@ -292,6 +292,15 @@ the system works, a platform limitation, a performance finding, or a technique t
 did/didn't work — write it down here immediately. These save future sessions from
 repeating the same investigations.
 
+> **Deep-dive context lives in [`docs/wiki/`](docs/wiki/index.md).** This Discovery Log
+> stays a TL;DR ledger of unique insights (one paragraph each, cross-cutting rules).
+> When a topic has accumulated enough detail to warrant entity / concept / phase pages
+> — fleet inventory, sleep-wake architecture, cert-renewal lifecycle, watchdog,
+> per-phase post-mortems, perf baselines — those go in the wiki. See
+> [`docs/wiki/SCHEMA.md`](docs/wiki/SCHEMA.md) for the operating manual (adapted from
+> Karpathy's compile-raw-into-wiki pattern). Don't duplicate facts between here and
+> the wiki — each fact lives in one place.
+
 ### Nebula Internals
 - **Nebula's hot path is clean** — no goroutine handoffs, no channels, zero per-packet allocations. Buffers pre-allocated per routine. Crypto inline. Don't try to "optimize" the packet processing loop — it's already optimal.
 - **`f.outside` is the primary UDP conn** — `f.writers[]` are only used for `routines > 1`. When wrapping UDP connections (e.g., for FEC), must wrap `f.outside` + `f.handshakeManager.outside` + `f.writers[]` for full coverage.
