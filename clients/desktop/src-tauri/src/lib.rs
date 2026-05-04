@@ -161,9 +161,19 @@ fn get_hide_from_dock() -> bool {
 #[cfg(target_os = "macos")]
 #[tauri::command]
 fn install_update_mac() -> Result<(), String> {
+    // Order matters here. `activate` is what brings Terminal.app to the
+    // front — and if Terminal isn't already running, it launches it
+    // with a default empty window. If we then call `do script`, that
+    // opens a SECOND window for the actual command, leaving the user
+    // staring at two Terminal windows when they expected one.
+    //
+    // Putting `do script` FIRST means Terminal launches with the
+    // command-running window as its initial window. The trailing
+    // `activate` then just brings the existing window to the front
+    // without spawning a duplicate.
     let cmd = r#"tell application "Terminal"
-    activate
     do script "curl -fsSL https://hopssh.com/install-mac.sh | bash"
+    activate
 end tell"#;
     let output = std::process::Command::new("osascript")
         .arg("-e")
@@ -1214,6 +1224,41 @@ mod tests {
         assert!(
             !block.contains("on_tray_icon_event"),
             "tray must NOT define an on_tray_icon_event handler — clicks are handled by show_menu_on_left_click(true) + on_menu_event. A handler here would race with the native menu pop. Block: {block}"
+        );
+    }
+
+    /// Tripwire: the install_update_mac AppleScript must run `do script`
+    /// BEFORE `activate`. Reverse order causes a chronic two-window
+    /// glitch: when Terminal isn't already running, `activate` first
+    /// launches Terminal with a default empty window, then `do script`
+    /// opens a second window for the actual command. User-visible bug,
+    /// reported on v0.10.85 desktop client. Reordering means the
+    /// command runs in Terminal's initial window and `activate` just
+    /// brings it forward.
+    #[test]
+    fn install_update_mac_do_script_before_activate() {
+        let src = std::fs::read_to_string(file!())
+            .expect("must be able to read lib.rs source for self-scan");
+        // Find the AppleScript heredoc inside install_update_mac. The
+        // raw-string opener is unique enough to anchor on.
+        let heredoc_open = "r#\"tell application \"Terminal\"";
+        let start = src.find(heredoc_open).expect(
+            "expected AppleScript heredoc (r#\"tell application \"Terminal\") in install_update_mac"
+        );
+        // Heredoc closes with the matching r#"..."# delimiter.
+        let after = &src[start..];
+        let end = after.find("\"#").expect("heredoc end (\"#) not found");
+        let script = &after[..end];
+
+        let do_idx = script.find("do script").expect(
+            "install_update_mac AppleScript must call `do script`"
+        );
+        let act_idx = script.find("activate").expect(
+            "install_update_mac AppleScript must call `activate`"
+        );
+        assert!(
+            do_idx < act_idx,
+            "install_update_mac ORDERING REGRESSION: `do script` (offset {do_idx}) must come BEFORE `activate` (offset {act_idx}) — reverse order opens TWO Terminal windows when Terminal isn't already running. Script: {script}"
         );
     }
 
