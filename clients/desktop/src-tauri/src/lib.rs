@@ -72,6 +72,41 @@ fn local_api_endpoint(state: State<'_, Arc<AppState>>) -> Result<LocalAgentEndpo
         .ok_or_else(|| "agent endpoint not yet available; agent may still be starting".into())
 }
 
+/// Force-retry the system-agent probe. Wired to the WebView's "Retry"
+/// button on the Disconnected screen so a user staring at "hopssh
+/// isn't running" can manually kick the .app out of the stuck state
+/// instead of having to quit + relaunch.
+///
+/// v0.10.87 (Phase W). Pre-fix the Retry button only re-ran
+/// `agent.refresh()` against the same broken state.endpoint=None,
+/// which was guaranteed to keep failing. Now it explicitly re-probes.
+#[tauri::command]
+fn retry_attach_system_agent(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    if state.endpoint.lock().is_some() {
+        // Already attached — nothing to do.
+        return Ok(());
+    }
+    if !crate::agent::system_mirror_files_exist() {
+        return Err(
+            "no system-mode mirror files found — this Mac doesn't appear to be in system mode"
+                .into(),
+        );
+    }
+    match crate::agent::try_attach_to_system_agent() {
+        Some(ep) => {
+            let host = ep.host.clone();
+            *state.endpoint.lock() = Some(ep);
+            let _ = app.emit("agent-ready", ());
+            log::info!("retry_attach_system_agent: attached to {host}");
+            Ok(())
+        }
+        None => Err("system-mode daemon is not reachable yet — try again in a few seconds".into()),
+    }
+}
+
 #[tauri::command]
 fn show_main_window(app: AppHandle) -> Result<(), String> {
     // Phase N: when "Hide from Dock" is enabled, the user's CMD-W /
@@ -761,6 +796,7 @@ pub fn run() {
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             local_api_endpoint,
+            retry_attach_system_agent,
             show_main_window,
             set_tray_tooltip,
             set_tray_state,
@@ -1224,6 +1260,87 @@ mod tests {
         assert!(
             !block.contains("on_tray_icon_event"),
             "tray must NOT define an on_tray_icon_event handler — clicks are handled by show_menu_on_left_click(true) + on_menu_event. A handler here would race with the native menu pop. Block: {block}"
+        );
+    }
+
+    /// Tripwire: try_attach_to_system_agent MUST retry the TCP-connect
+    /// probe multiple times, not commit to a single 500ms shot. v0.10.87
+    /// fixes the chronic "hopssh isn't running" false-positive caused by
+    /// launch-time races between the .app and the system daemon. A
+    /// regression to single-shot probing immediately re-introduces the
+    /// stuck-state-after-restart bug.
+    #[test]
+    fn try_attach_to_system_agent_retries_probe() {
+        let src = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent.rs"),
+        )
+        .expect("must be able to read agent.rs");
+        let fn_marker = "pub(crate) fn try_attach_to_system_agent()";
+        let start = src
+            .find(fn_marker)
+            .expect("try_attach_to_system_agent must exist");
+        let body_end = src[start..].find("\npub").unwrap_or(src.len() - start);
+        let body = &src[start..start + body_end];
+        assert!(
+            body.contains("for attempt in 0..10"),
+            "try_attach_to_system_agent must retry the TCP-connect probe \
+             (look for `for attempt in 0..10`). Single-shot regressed → \
+             chronic 'hopssh isn't running' false-positive returns."
+        );
+        assert!(
+            body.contains("connect_timeout"),
+            "try_attach_to_system_agent must use connect_timeout"
+        );
+    }
+
+    /// Tripwire: spawn_and_watch MUST commit to system mode when mirror
+    /// files exist, NOT fall through to bundled spawn. Falling through
+    /// when the daemon is just slow at launch produces a permanently
+    /// stuck .app — the bundled child can't bind ports the daemon
+    /// already holds, state.endpoint stays None, UI shows "isn't
+    /// running" until quit + relaunch.
+    #[test]
+    fn spawn_and_watch_commits_to_system_mode_when_mirror_exists() {
+        let src = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent.rs"),
+        )
+        .expect("must be able to read agent.rs");
+        let fn_marker = "pub fn spawn_and_watch(";
+        let start = src.find(fn_marker).expect("spawn_and_watch must exist");
+        // Body ends at the next "pub fn" or "fn watch_stdout" marker.
+        let body_end = src[start..]
+            .find("\nfn watch_stdout")
+            .or_else(|| src[start..].find("\npub fn watch_system_mirror"))
+            .unwrap_or(src.len() - start);
+        let body = &src[start..start + body_end];
+
+        assert!(
+            body.contains("system_mirror_files_exist()"),
+            "spawn_and_watch must check system_mirror_files_exist() before \
+             falling through to bundled spawn"
+        );
+        // The commit point: when mirror files exist, we must `return Ok(())`
+        // BEFORE the agent_path / Command::spawn block.
+        let mirror_check = body
+            .find("system_mirror_files_exist()")
+            .expect("system_mirror_files_exist() expected");
+        let spawn_call = body
+            .find("Command::new(&agent_path)")
+            .expect("Command::new(&agent_path) expected");
+        assert!(
+            mirror_check < spawn_call,
+            "spawn_and_watch ORDERING REGRESSION: mirror check (offset {mirror_check}) \
+             must come BEFORE bundled Command::spawn (offset {spawn_call})"
+        );
+
+        // Confirm there's a return Ok(()) between the mirror check and
+        // the bundled spawn — otherwise we fall through.
+        let between = &body[mirror_check..spawn_call];
+        assert!(
+            between.contains("return Ok(())"),
+            "spawn_and_watch must `return Ok(())` after handling the \
+             mirror-files-exist branch, NOT fall through to bundled spawn. \
+             v0.10.87 invariant. Body between checks: {between}"
         );
     }
 

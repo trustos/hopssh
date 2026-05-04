@@ -16,12 +16,49 @@ use tauri::{AppHandle, Emitter};
 
 use crate::{resolve_agent_path, AppState, LocalAgentEndpoint};
 
+/// system_mirror_files_exist returns true if both system-mode mirror
+/// files are present on disk. This is the cheap "are we in system
+/// mode?" predicate — separate from the TCP-connect probe so callers
+/// can distinguish "we should be in system mode but the daemon
+/// hasn't bound the port yet" from "we're definitely in bundled mode".
+///
+/// Pre-v0.10.87 this distinction wasn't made — a transient TCP-connect
+/// failure caused `try_attach_to_system_agent` to return None and the
+/// .app would fall through to spawning a bundled child, permanently
+/// stuck since the bundled child can't start cleanly when the system
+/// daemon already holds /etc/hop-agent + UDP ports.
+pub(crate) fn system_mirror_files_exist() -> bool {
+    #[cfg(not(target_os = "macos"))]
+    {
+        return false;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let Ok(home) = std::env::var("HOME") else {
+            return false;
+        };
+        let mirror = PathBuf::from(home)
+            .join("Library")
+            .join("Application Support")
+            .join("hopssh");
+        mirror.join("system-local-api-token").exists()
+            && mirror.join("system-local-api-port").exists()
+    }
+}
+
 /// try_attach_to_system_agent probes for a `hop-agent install --migrate-from`
 /// LaunchDaemon by reading its mirror token + port file out of the user's
 /// `~/Library/Application Support/hopssh/`. Returns Some(endpoint) when
 /// both files exist + the loopback port accepts a TCP connection. Returns
-/// None on any failure (missing files, bad parse, port not bound) so the
-/// caller falls through to spawning the bundled child. Defense in depth.
+/// None on any failure (missing files, bad parse, port not bound).
+///
+/// **Retry budget: ~1 second** (10 attempts × 100ms TCP-connect timeouts,
+/// 50ms sleeps between). Pre-v0.10.87 this was a single 500ms shot,
+/// which lost the launch race against any transient (launchd respawning
+/// the daemon, agent still binding the port, momentary high CPU).
+/// When the probe lost the race, the .app committed to bundled mode
+/// permanently — invisible from the user's perspective except as a
+/// stuck "hopssh isn't running" screen across restarts.
 ///
 /// File contracts (set by cmd/agent/migrate.go::writeSystemMirrorFiles):
 ///   - system-local-api-token  — bearer token, mode 0600, owned by user
@@ -52,14 +89,34 @@ pub(crate) fn try_attach_to_system_agent() -> Option<LocalAgentEndpoint> {
         let token = std::fs::read_to_string(&token_path).ok()?.trim().to_string();
         let port_str = std::fs::read_to_string(&port_path).ok()?.trim().to_string();
         let port: u16 = port_str.parse().ok()?;
-        // TCP-connect probe — confirms the launchd-spawned agent is
-        // actually up before we hand the .app's UI a stale endpoint.
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().ok()?;
-        TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()?;
-        Some(LocalAgentEndpoint {
-            host: format!("127.0.0.1:{port}"),
-            token,
-        })
+
+        // Retry budget — 10 × 100ms with 50ms sleep between = ~1.5s
+        // worst case. The first attempt usually succeeds; the loop
+        // exists to win launch-time races against the daemon binding
+        // its loopback socket. This is the v0.10.87 fix for the
+        // chronic "hopssh isn't running" false-positive.
+        for attempt in 0..10 {
+            if TcpStream::connect_timeout(&addr, Duration::from_millis(100)).is_ok() {
+                if attempt > 0 {
+                    log::info!(
+                        "system-agent TCP probe succeeded on attempt {} (race won)",
+                        attempt + 1
+                    );
+                }
+                return Some(LocalAgentEndpoint {
+                    host: format!("127.0.0.1:{port}"),
+                    token,
+                });
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        log::warn!(
+            "system-agent TCP probe FAILED after 10 attempts on 127.0.0.1:{port} \
+             — daemon is slow to bind, still respawning, or wedged. \
+             Watcher + periodic re-probe will retry in the background."
+        );
+        None
     }
 }
 
@@ -82,14 +139,40 @@ pub fn spawn_and_watch(app: &AppHandle, state: &Arc<AppState>) -> Result<(), Str
     // Probe for a system-mode hop-agent installed via "Run in the
     // background" (the launchd LaunchDaemon writes a mirror of its
     // local-api token + listen port into our user-readable Application
-    // Support dir on each (re)bind). If both files exist + the port is
-    // currently bound + a TCP connect succeeds, attach to the system
-    // agent and skip spawning a bundled child. Falls through to bundled
-    // spawn on any failure — defense in depth.
-    if let Some(endpoint) = try_attach_to_system_agent() {
-        log::info!("attached to system-mode hop-agent at {}", endpoint.host);
-        *state.endpoint.lock() = Some(endpoint);
-        let _ = app.emit("agent-ready", ());
+    // Support dir on each (re)bind).
+    //
+    // v0.10.87 (Phase W): we now distinguish "mirror files exist" from
+    // "TCP probe succeeded." Pre-fix, a single 500ms TCP probe at launch
+    // decided whether to commit to system mode. A transient race (daemon
+    // mid-respawn, port not yet bound, brief CPU pressure) caused the
+    // probe to fail → fall through to bundled spawn → bundled child
+    // can't bind the daemon's already-held UDP ports → state.endpoint
+    // stays None forever → "hopssh isn't running" screen on every
+    // restart. Now: if mirror files exist on disk, COMMIT to system
+    // mode regardless of whether the immediate TCP probe wins.
+    // watch_system_mirror's periodic re-probe will attach as soon as
+    // the daemon is reachable.
+    if system_mirror_files_exist() {
+        match try_attach_to_system_agent() {
+            Some(endpoint) => {
+                log::info!("attached to system-mode hop-agent at {}", endpoint.host);
+                *state.endpoint.lock() = Some(endpoint);
+                let _ = app.emit("agent-ready", ());
+            }
+            None => {
+                log::warn!(
+                    "system-mode mirror files exist but TCP probe failed at launch — \
+                     committing to system mode and waiting for watch_system_mirror's \
+                     re-probe to attach. UI will show Connecting… until then."
+                );
+                // state.endpoint stays None for now; watch_system_mirror's
+                // periodic re-probe (added in v0.10.87) will populate it
+                // and emit agent-ready when the daemon becomes reachable.
+            }
+        }
+        // CRITICAL: do not fall through to bundled spawn. Mirror files
+        // mean the user is in system mode by intent; spawning a
+        // bundled child here would conflict with the running daemon.
         return Ok(());
     }
 
@@ -215,6 +298,48 @@ fn watch_stdout(app: AppHandle, state: Arc<AppState>, stdout: ChildStdout) {
 #[cfg(target_os = "macos")]
 pub fn watch_system_mirror(app: AppHandle, state: Arc<AppState>) {
     use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+
+    // Spawn a periodic re-probe in addition to the file-change watcher.
+    // v0.10.87 (Phase W): the file-change-only model leaves the .app
+    // stuck when the launch-time TCP probe loses a race AND no file
+    // events fire afterwards (because the daemon is stable, just was
+    // briefly slow at launch). The periodic re-probe runs every 5s for
+    // the first 60s after launch (catches launch races), then every
+    // 30s indefinitely (catches daemon-flap recovery without restart).
+    {
+        let app = app.clone();
+        let state = Arc::clone(&state);
+        std::thread::spawn(move || {
+            let launched_at = std::time::Instant::now();
+            loop {
+                let interval = if launched_at.elapsed() < std::time::Duration::from_secs(60) {
+                    std::time::Duration::from_secs(5)
+                } else {
+                    std::time::Duration::from_secs(30)
+                };
+                std::thread::sleep(interval);
+
+                // Skip the probe if we already have a working endpoint
+                // — no need to thrash. The file-change watcher below
+                // handles port rotations.
+                if state.endpoint.lock().is_some() {
+                    continue;
+                }
+                if !system_mirror_files_exist() {
+                    continue;
+                }
+                if let Some(ep) = try_attach_to_system_agent() {
+                    let host = ep.host.clone();
+                    *state.endpoint.lock() = Some(ep);
+                    let _ = app.emit("agent-ready", ());
+                    log::info!(
+                        "periodic re-probe attached to system agent at {host} \
+                         (recovered from launch race or daemon flap)"
+                    );
+                }
+            }
+        });
+    }
 
     std::thread::spawn(move || {
         let Ok(home) = std::env::var("HOME") else {

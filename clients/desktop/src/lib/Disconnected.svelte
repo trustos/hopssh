@@ -1,8 +1,44 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import { agent } from './stores.svelte';
+  import { resetCachedEndpoint } from './local-api';
 
   let { error }: { error: string } = $props();
+
+  const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+
+  // v0.10.87 (Phase W): the Retry button was previously a thin wrapper
+  // around agent.refresh(), which against a Tauri shell that lost the
+  // launch-time system-agent probe race always re-failed (state.endpoint
+  // was None and nothing in refresh() re-probes). The new
+  // retry_attach_system_agent Tauri command forces an explicit re-probe
+  // of the mirror files + TCP connect, populating state.endpoint and
+  // emitting agent-ready, before refresh() is called. The agent-ready
+  // listener in stores.svelte.ts then resets the JS-layer endpoint
+  // cache and re-subscribes to SSE.
+  let retrying = $state(false);
+  async function handleRetry() {
+    retrying = true;
+    try {
+      if (isTauri) {
+        try {
+          const { invoke } = await import('@tauri-apps/api/core');
+          await invoke('retry_attach_system_agent');
+        } catch {
+          // Either we're in bundled mode (no system mirror to re-probe)
+          // or the retry attempt itself failed (daemon truly unreachable).
+          // Fall through — agent.refresh() below at least re-attempts
+          // the WebView fetch in case the underlying issue self-cleared.
+          resetCachedEndpoint();
+        }
+      } else {
+        resetCachedEndpoint();
+      }
+      await agent.refresh();
+    } finally {
+      retrying = false;
+    }
+  }
 
   // After CONNECTING_TIMEOUT_MS of failed connects, transition from the
   // friendly "Connecting…" spinner to the hard "Can't reach hop-agent"
@@ -78,10 +114,11 @@
       The local agent didn't respond. Try quitting and reopening hopssh.
     </p>
     <button
-      class="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400"
-      onclick={() => agent.refresh()}
+      class="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400 disabled:opacity-60"
+      onclick={handleRetry}
+      disabled={retrying}
     >
-      Retry
+      {retrying ? 'Retrying…' : 'Retry'}
     </button>
     <details class="mt-6 max-w-sm text-[11px] text-zinc-500">
       <summary class="cursor-pointer hover:text-zinc-300">Show details</summary>
