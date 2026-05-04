@@ -23,6 +23,7 @@ type DeviceHandler struct {
 	DeviceCodes    *db.DeviceCodeStore
 	Networks       *db.NetworkStore
 	Nodes          *db.NodeStore
+	Members        *db.NetworkMemberStore
 	NetworkManager *mesh.NetworkManager
 	LighthouseHost string
 	EventHub       *EventHub
@@ -82,6 +83,16 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		Hostname   string `json:"hostname"`
 		OS         string `json:"os"`
 		Arch       string `json:"arch"`
+		// ExistingNetworkCAs is an optional v0.10.85+ field: the agent
+		// sends the SHA-256 fingerprints (first 12 hex chars) of every
+		// CA cert in its local enrollment registry. If the network the
+		// device-flow targets has a fingerprint in this list, the agent
+		// is already enrolled in this network and we'd be creating an
+		// orphan node row — return 409 BEFORE Nodes.Create so the
+		// orphan never exists. Old agents that don't send this field
+		// preserve the pre-fix behavior (orphan still possible — they
+		// just don't get this protection).
+		ExistingNetworkCAs []string `json:"existingNetworkCAs,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.DeviceCode == "" {
 		http.Error(w, "deviceCode is required", http.StatusBadRequest)
@@ -124,6 +135,28 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 	if err != nil || network == nil {
 		http.Error(w, "network not found", http.StatusInternalServerError)
 		return
+	}
+
+	// F2 conflict short-circuit (v0.10.85+): if the agent already has
+	// this network in its local registry, return 409 BEFORE creating
+	// any node row. Pre-fix behavior left an orphan node (status=enrolled,
+	// last_seen=null forever) every time the agent retried an already-
+	// enrolled network. Old agents that don't send ExistingNetworkCAs
+	// fall through to the original behavior.
+	if len(body.ExistingNetworkCAs) > 0 {
+		networkCAFp := caFingerprint(network.NebulaCACert)
+		for _, fp := range body.ExistingNetworkCAs {
+			if fp == networkCAFp {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"error":       "this device is already enrolled in this network",
+					"networkName": network.Name,
+					"networkId":   network.ID,
+				})
+				return
+			}
+		}
 	}
 
 	// Allocate node IP.
@@ -235,9 +268,20 @@ func (h *DeviceHandler) Authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify user owns the network.
+	// Permit owners AND members to enroll devices into the network. Pre-
+	// v0.10.85 used CanAccessNetwork (owner-only), so member-role invitees
+	// got 404 here even though they're legitimate members. See CLAUDE.md
+	// Discovery Log entry on the colleague's onboarding bug.
 	network, err := h.Networks.Get(body.NetworkID)
-	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
+	if err != nil || network == nil {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return
+	}
+	var membership *db.NetworkMember
+	if h.Members != nil {
+		membership, _ = h.Members.GetMembership(body.NetworkID, user.ID)
+	}
+	if !authz.CanEnrollNode(user, network, membership) {
 		http.Error(w, "network not found", http.StatusNotFound)
 		return
 	}

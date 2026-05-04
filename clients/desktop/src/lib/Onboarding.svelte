@@ -21,9 +21,27 @@
     typeof localStorage !== 'undefined' ? localStorage.getItem(STORAGE_KEY) ?? '' : ''
   );
 
+  // F5 (v0.10.85+): the 'enrolled-not-connected' stage exists to surface
+  // the case where enrollment succeeded server-side (cert issued, registry
+  // entry persisted) but the agent's auto-connect failed to bring the
+  // mesh up. Pre-fix the UI silently treated this as success, leaving the
+  // user staring at "Connected" while ping/ssh still failed. Now the user
+  // gets a Retry button that calls local.connect(name) directly.
   let stage = $state<
-    'idle' | 'starting' | 'pending' | 'completing' | 'bgprompt' | 'bgconverting' | 'done' | 'error'
+    | 'idle'
+    | 'starting'
+    | 'pending'
+    | 'completing'
+    | 'bgprompt'
+    | 'bgconverting'
+    | 'done'
+    | 'error'
+    | 'enrolled-not-connected'
   >('idle');
+  // Captures the enrollment name + connectError when we land in
+  // 'enrolled-not-connected' so Retry has the inputs it needs.
+  let enrollmentNotConnected = $state<{ name: string; connectError: string } | null>(null);
+  let retryingConnect = $state(false);
   let userCode = $state('');
   let verificationUrl = $state('');
   let pollDeadline = $state<number | null>(null);
@@ -97,6 +115,18 @@
           return;
         }
         if (r.status === 'complete') {
+          // F5: agent now reports whether auto-connect succeeded. When it
+          // didn't, surface a Retry CTA instead of pretending everything
+          // worked. The enrollment IS persisted on disk + in the registry
+          // — we just couldn't bring the mesh up yet.
+          if (r.connected === false && r.enrollment) {
+            stage = 'enrolled-not-connected';
+            enrollmentNotConnected = {
+              name: r.enrollment,
+              connectError: r.connectError ?? 'unknown reason'
+            };
+            return;
+          }
           stage = 'completing';
           await agent.refresh();
           // Decide whether to surface the post-enrollment "Run in the
@@ -191,6 +221,49 @@
     localStorage.setItem('hopssh.onboarding.bgPromptShown', '1');
     stage = 'done';
     window.setTimeout(onDone, 1500);
+  }
+
+  // ---- F5: retry connect for an enrolled-but-not-connected enrollment ----
+  // Calls the agent's local /local/connect for the enrollment. On success,
+  // proceeds to the bg-prompt or done flow exactly as a successful
+  // first-attempt enrollment would. On failure, stays on the same screen
+  // with the new error message so the user can try again.
+  async function retryConnect() {
+    if (!enrollmentNotConnected) return;
+    retryingConnect = true;
+    try {
+      await local.connect(enrollmentNotConnected.name);
+      await agent.refresh();
+      enrollmentNotConnected = null;
+      const alreadyAsked = localStorage.getItem('hopssh.onboarding.bgPromptShown') === '1';
+      const alreadyInSystemMode = agent.status?.runMode === 'system';
+      if (!alreadyAsked && !alreadyInSystemMode) {
+        stage = 'bgprompt';
+      } else {
+        stage = 'done';
+        window.setTimeout(onDone, 1500);
+      }
+    } catch (e: unknown) {
+      // Stay on the same screen; update the error message in-place so the
+      // user sees fresh context for what just failed (vs the original
+      // post-enrollment failure reason).
+      enrollmentNotConnected = {
+        name: enrollmentNotConnected.name,
+        connectError: e instanceof Error ? e.message : String(e)
+      };
+    } finally {
+      retryingConnect = false;
+    }
+  }
+
+  // Dismiss the not-connected stage by closing onboarding entirely. The
+  // enrollment is still persisted; the user can retry from
+  // Settings → Networks (Connected.svelte already has a per-enrollment
+  // Connect button that calls the same local.connect endpoint).
+  function dismissNotConnected() {
+    enrollmentNotConnected = null;
+    stage = 'done';
+    window.setTimeout(onDone, 200);
   }
 
   // ---- Phase 2: parallel-install detection ----
@@ -338,7 +411,7 @@
         Continue with browser
       </button>
     </form>
-  {:else if stage === 'starting' || stage === 'pending' || stage === 'completing' || stage === 'bgprompt' || stage === 'bgconverting' || stage === 'done'}
+  {:else if stage === 'starting' || stage === 'pending' || stage === 'completing' || stage === 'bgprompt' || stage === 'bgconverting' || stage === 'done' || stage === 'enrolled-not-connected'}
     <!-- Progress ladder visible across the entire enrollment lifecycle.
          Replaces the previous spinner-only "waiting for approval" UX
          with a clear "you are at step N of 3". -->
@@ -488,6 +561,38 @@
       </div>
     {:else if stage === 'bgconverting'}
       <p class="mt-6 text-sm text-zinc-300">Setting up background mode…</p>
+    {:else if stage === 'enrolled-not-connected' && enrollmentNotConnected}
+      <!-- F5 (v0.10.85+): post-enrollment auto-connect failed. The cert
+           is on disk + the registry has the entry, but the mesh isn't up.
+           User gets a Retry button that calls /local/connect directly. -->
+      <div class="mt-6 rounded-md border border-amber-900/40 bg-amber-950/40 px-4 py-3 text-sm">
+        <div class="font-medium text-amber-200">Enrolled, but couldn't bring the mesh up</div>
+        <p class="mt-1 text-[12px] leading-relaxed text-zinc-300">
+          Your device is now part of <span class="font-mono">{enrollmentNotConnected.name}</span>,
+          but we couldn't establish the secure tunnel just yet. This usually clears up on retry.
+        </p>
+        <p class="mt-1 text-[11px] text-zinc-500 break-words">
+          Reason: {enrollmentNotConnected.connectError}
+        </p>
+        <div class="mt-3 flex gap-2">
+          <button
+            type="button"
+            class="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400 disabled:opacity-60"
+            onclick={retryConnect}
+            disabled={retryingConnect}
+          >
+            {retryingConnect ? 'Retrying…' : 'Retry'}
+          </button>
+          <button
+            type="button"
+            class="rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+            onclick={dismissNotConnected}
+            disabled={retryingConnect}
+          >
+            Skip — I'll connect from Settings later
+          </button>
+        </div>
+      </div>
     {:else if stage === 'done'}
       <div class="mt-6 rounded-md border border-emerald-900/40 bg-emerald-950/40 px-4 py-3 text-sm text-emerald-300">
         ✓ Connected.

@@ -54,7 +54,12 @@
 	// onMount + the trio of conditions there.
 	const arrivedWithCode = !!rawCode;
 
-	const adminNetworks = $derived(networkList.filter(n => n.role === 'admin'));
+	// Networks this user can enroll a device into. Pre-v0.10.85 this was
+	// filtered to role === 'admin' which prevented member-role invitees
+	// from picking networks they were invited to. The server's
+	// CanEnrollNode predicate (internal/authz/authz.go) now permits any
+	// member, so we expose every network the API returns to us.
+	const enrollableNetworks = $derived(networkList);
 	const fullCode = $derived('HOP-' + code.toUpperCase());
 
 	// Stage drives the 3-step progress ladder. Mirrors the desktop's
@@ -72,8 +77,8 @@
 	onMount(async () => {
 		try {
 			networkList = await networksApi.list();
-			if (adminNetworks.length > 0) {
-				selectedNetwork = adminNetworks[0].id;
+			if (enrollableNetworks.length > 0) {
+				selectedNetwork = enrollableNetworks[0].id;
 			}
 		} catch (e) {
 			loadError = e instanceof Error ? e.message : 'Failed to load networks';
@@ -81,18 +86,18 @@
 			loadingNetworks = false;
 			// Auto-submit when the trio of conditions holds:
 			//   - user arrived with ?code= from the desktop opener
-			//   - exactly one admin network (no human decision)
+			//   - exactly one enrollable network (no human decision)
 			//   - code parses to 4 chars after the strip
 			// Anything else (multiple networks, paste-from-clipboard,
 			// signed-out round-trip) requires a click.
 			if (
 				arrivedWithCode &&
 				code.length === 4 &&
-				adminNetworks.length === 1 &&
+				enrollableNetworks.length === 1 &&
 				!error &&
 				!success
 			) {
-				selectedNetwork = adminNetworks[0].id;
+				selectedNetwork = enrollableNetworks[0].id;
 				handleSubmit(new Event('submit'));
 			}
 		}
@@ -214,7 +219,7 @@
 					<Skeleton class="h-10 w-full" />
 				</Card.Content>
 			</Card.Root>
-		{:else if adminNetworks.length === 0}
+		{:else if enrollableNetworks.length === 0}
 			<Card.Root class="border-dashed">
 				<Card.Content class="py-6">
 					{#if networkList.length === 0}
@@ -236,9 +241,9 @@
 						</div>
 					{:else}
 						<div class="text-center">
-							<p class="mb-1 text-sm font-medium">No admin access</p>
+							<p class="mb-1 text-sm font-medium">No networks available</p>
 							<p class="text-sm text-muted-foreground">
-								You need admin access to a network to authorize devices.
+								Accept an invite to a network, or create your own, to authorize this device.
 							</p>
 						</div>
 					{/if}
@@ -324,14 +329,14 @@
 							</div>
 						</div>
 
-						<!-- When there's only one admin network we lock the picker
-						     to that single option. Multi-network admins still get
+						<!-- When there's only one enrollable network we lock the picker
+						     to that single option. Multi-network users still get
 						     the full Select with their full list. -->
-						{#if adminNetworks.length === 1}
+						{#if enrollableNetworks.length === 1}
 							<div class="space-y-2">
 								<Label>Network</Label>
 								<div class="rounded-md border bg-muted/30 px-3 py-2 text-sm">
-									{adminNetworks[0].name}
+									{enrollableNetworks[0].name}
 								</div>
 							</div>
 						{:else}
@@ -339,11 +344,11 @@
 								<Label>Network</Label>
 								<Select.Root type="single" bind:value={selectedNetwork}>
 									<Select.Trigger class="w-full">
-										{@const selected = adminNetworks.find(n => n.id === selectedNetwork)}
+										{@const selected = enrollableNetworks.find(n => n.id === selectedNetwork)}
 										<span>{selected?.name || 'Select a network'}</span>
 									</Select.Trigger>
 									<Select.Content>
-										{#each adminNetworks as network}
+										{#each enrollableNetworks as network}
 											<Select.Item value={network.id}>{network.name}</Select.Item>
 										{/each}
 									</Select.Content>

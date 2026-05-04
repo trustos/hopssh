@@ -41,3 +41,21 @@ func CanAccessNetwork(user *db.UserProfile, network *db.Network) bool {
 	}
 	return network.UserID == user.ID
 }
+
+// CanEnrollNode returns true if the user is permitted to enroll a device
+// into this network. Permits the owner and any member with view access —
+// enrolling a device into a network you're a member of is the whole
+// point of being a member.
+//
+// Used by /api/device/authorize, /api/networks/{id}/nodes (CreateNode),
+// and /api/networks/{id}/join (JoinNetwork). Strictly looser than
+// CanAccessNetwork (which is owner-only); owners and admins still pass.
+//
+// Pre-fix history (v0.10.84): all three enrollment endpoints used
+// CanAccessNetwork, which rejected member-role invitees. Members could
+// be invited and could view the network but could not actually enroll
+// devices into it — the role was effectively useless. See the v0.10.85
+// Discovery Log entry in CLAUDE.md.
+func CanEnrollNode(user *db.UserProfile, network *db.Network, membership *db.NetworkMember) bool {
+	return CheckAccess(user, network, membership).CanView()
+}

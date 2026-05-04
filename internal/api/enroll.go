@@ -24,6 +24,7 @@ const nodeCertDuration = 24 * time.Hour // short-lived, auto-renewed by agent
 type EnrollHandler struct {
 	Networks       *db.NetworkStore
 	Nodes          *db.NodeStore
+	Members        *db.NetworkMemberStore
 	NetworkManager *mesh.NetworkManager
 	Endpoint       string // public URL of this server (e.g. "https://hopssh.com")
 	LighthouseHost string // public IP/host for Nebula lighthouse UDP (separate from HTTP endpoint)
@@ -46,7 +47,18 @@ func (h *EnrollHandler) CreateNode(w http.ResponseWriter, r *http.Request) {
 	networkID := chi.URLParam(r, "networkID")
 
 	network, err := h.Networks.Get(networkID)
-	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
+	if err != nil || network == nil {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return
+	}
+	// Permit owners AND members to generate enrollment tokens for this
+	// network. v0.10.85 widened from owner-only to member-inclusive — see
+	// CanEnrollNode rationale in internal/authz/authz.go.
+	var membership *db.NetworkMember
+	if h.Members != nil {
+		membership, _ = h.Members.GetMembership(networkID, user.ID)
+	}
+	if !authz.CanEnrollNode(user, network, membership) {
 		http.Error(w, "network not found", http.StatusNotFound)
 		return
 	}
@@ -111,6 +123,13 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		Hostname string `json:"hostname"`
 		OS       string `json:"os"`
 		Arch     string `json:"arch"`
+		// ExistingNetworkCAs is an optional v0.10.85+ field — same
+		// semantics as in DeviceHandler.Poll. If the network this
+		// token targets has a CA fingerprint already in the agent's
+		// registry, return 409 BEFORE updating the pending node row
+		// to status=enrolled. The pending row from CreateNode auto-
+		// expires after 10 minutes via EnrollmentExpiresAt.
+		ExistingNetworkCAs []string `json:"existingNetworkCAs,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Token == "" {
 		http.Error(w, "token is required", http.StatusBadRequest)
@@ -127,6 +146,26 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 	if err != nil || network == nil {
 		http.Error(w, "network not found", http.StatusInternalServerError)
 		return
+	}
+
+	// F2 conflict short-circuit (v0.10.85+): same logic as Poll. Note the
+	// token has already been claimed by ClaimEnrollmentToken — it can't
+	// be re-used. The pending node row from CreateNode survives but
+	// auto-expires within 10 minutes via EnrollmentExpiresAt.
+	if len(body.ExistingNetworkCAs) > 0 {
+		networkCAFp := caFingerprint(network.NebulaCACert)
+		for _, fp := range body.ExistingNetworkCAs {
+			if fp == networkCAFp {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_ = json.NewEncoder(w).Encode(map[string]string{
+					"error":       "this device is already enrolled in this network",
+					"networkName": network.Name,
+					"networkId":   network.ID,
+				})
+				return
+			}
+		}
 	}
 
 	// Parse the node's pre-allocated Nebula IP directly.
@@ -212,7 +251,18 @@ func (h *EnrollHandler) JoinNetwork(w http.ResponseWriter, r *http.Request) {
 	networkID := chi.URLParam(r, "networkID")
 
 	network, err := h.Networks.Get(networkID)
-	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
+	if err != nil || network == nil {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return
+	}
+	// Permit owners AND members to join the network as a client device.
+	// v0.10.85 widened from owner-only to member-inclusive — same rationale
+	// as CreateNode/Authorize. See CanEnrollNode in internal/authz/authz.go.
+	var membership *db.NetworkMember
+	if h.Members != nil {
+		membership, _ = h.Members.GetMembership(networkID, user.ID)
+	}
+	if !authz.CanEnrollNode(user, network, membership) {
 		http.Error(w, "network not found", http.StatusNotFound)
 		return
 	}

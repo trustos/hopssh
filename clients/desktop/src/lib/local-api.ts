@@ -203,6 +203,14 @@ export interface DeviceFlowPollResp {
   status: 'pending' | 'expired' | 'complete' | 'error';
   message?: string;
   enrollment?: string;
+  // v0.10.85+: when status === 'complete', `connected` reflects whether
+  // the agent's auto-connect (bring the mesh up immediately) actually
+  // succeeded. False means the cert is on disk and the registry has the
+  // entry, but the mesh did NOT come up — the UI should surface a Retry
+  // CTA rather than reporting "Connected". `connectError` is the
+  // underlying error message, suitable for display to the user.
+  connected?: boolean;
+  connectError?: string;
 }
 
 export interface LocalEvent {

@@ -167,7 +167,7 @@ func main() {
 	// Initialize handlers.
 	authH := &api.AuthHandler{Users: users, Sessions: sessions, Audit: audit}
 	networkH := &api.NetworkHandler{Networks: networks, Nodes: nodes, Members: members, NetworkManager: netMgr, ForwardManager: fwdMgr}
-	enrollH := &api.EnrollHandler{Networks: networks, Nodes: nodes, NetworkManager: netMgr, Endpoint: *endpoint, LighthouseHost: *lighthouseHost}
+	enrollH := &api.EnrollHandler{Networks: networks, Nodes: nodes, Members: members, NetworkManager: netMgr, Endpoint: *endpoint, LighthouseHost: *lighthouseHost}
 	proxyH := &api.ProxyHandler{
 		NetworkManager: netMgr,
 		ForwardManager: fwdMgr,
@@ -182,6 +182,7 @@ func main() {
 		DeviceCodes:    deviceCodes,
 		Networks:       networks,
 		Nodes:          nodes,
+		Members:        members,
 		NetworkManager: netMgr,
 		LighthouseHost: *lighthouseHost,
 	}

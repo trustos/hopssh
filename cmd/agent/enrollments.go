@@ -377,6 +377,31 @@ func (r *enrollmentRegistry) Names() []string {
 	return names
 }
 
+// CAFingerprints returns the deduplicated set of CA fingerprints across
+// all current enrollments. Used by the F2 conflict-detection header
+// (existingNetworkCAs) sent on every device-flow poll and token enroll
+// — the server short-circuits with 409 if the would-be network's CA
+// fingerprint matches any value here, preventing orphan node rows
+// before they're committed.
+//
+// Stable order (lexical) so request bodies are deterministic and easier
+// to audit / log.
+func (r *enrollmentRegistry) CAFingerprints() []string {
+	list := r.List()
+	seen := make(map[string]struct{}, len(list))
+	for _, e := range list {
+		if e.CAFingerprint != "" {
+			seen[e.CAFingerprint] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for fp := range seen {
+		out = append(out, fp)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // SetClipboardSync persists Enrollment.ClipboardSync for the named
 // enrollment. Idempotent — returns nil with no write if the value
 // already matches. Caller must restart the agent for the toggle to

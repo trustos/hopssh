@@ -1436,6 +1436,21 @@
 						<Dialog.Title>Create Invite</Dialog.Title>
 					</Dialog.Header>
 					<form onsubmit={createInvite} class="space-y-4">
+						<!-- Role first: it's the most consequential decision and we
+						     don't want it buried under expiry/max-uses where a hurried
+						     admin might miss it. The default 'member' is correct for
+						     ~90% of invites; admin promotion should be a deliberate
+						     choice. -->
+						<div class="space-y-2">
+							<Label for="invite-role">Role</Label>
+							<select id="invite-role" bind:value={inviteRole} class="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
+								<option value="member">Member — can join network, enroll their device, use terminal</option>
+								<option value="admin">Admin — full access, can manage nodes, DNS, invites</option>
+							</select>
+							<p class="text-[11px] text-muted-foreground">
+								Members can enroll their own devices into this network. Admins additionally manage other nodes and invites.
+							</p>
+						</div>
 						<div class="space-y-2">
 							<Label for="invite-expiry">Expires in</Label>
 							<select id="invite-expiry" bind:value={inviteExpiresIn} class="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
@@ -1449,13 +1464,6 @@
 						<div class="space-y-2">
 							<Label for="invite-max-uses">Max uses</Label>
 							<Input id="invite-max-uses" type="number" bind:value={inviteMaxUses} min="1" placeholder="Unlimited" />
-						</div>
-						<div class="space-y-2">
-							<Label for="invite-role">Role</Label>
-							<select id="invite-role" bind:value={inviteRole} class="w-full rounded-md border bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring">
-								<option value="member">Member — can view nodes, join network, use terminal</option>
-								<option value="admin">Admin — full access, can manage nodes, DNS, invites</option>
-							</select>
 						</div>
 						<Dialog.Footer>
 							<Button type="button" variant="outline" onclick={() => { showCreateInvite = false; }}>Cancel</Button>

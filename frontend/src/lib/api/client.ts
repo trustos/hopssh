@@ -196,7 +196,14 @@ export const members = {
 
 // --- Invites ---
 export const invites = {
-	create: (networkId: string, opts: { maxUses?: number; expiresIn?: number }) =>
+	// role: 'member' (default) or 'admin'. Pre-v0.10.85 the role was passed
+	// untyped via `opts as any` from the dashboard form; tightened here so
+	// future drift is caught by tsc. Server enforces the default ('member')
+	// when the field is omitted (internal/api/invites.go::CreateInvite).
+	create: (
+		networkId: string,
+		opts: { maxUses?: number; expiresIn?: number; role?: 'admin' | 'member' }
+	) =>
 		request<import('$lib/types/api').InviteResponse>(
 			'POST',
 			`/api/networks/${e(networkId)}/invites`,

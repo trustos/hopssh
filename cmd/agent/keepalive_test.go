@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/netip"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -162,6 +164,218 @@ func TestKeepalive_SourceOrder(t *testing.T) {
 	snippet := body[idx:end]
 	if !strings.Contains(snippet, "inst.runCtx") {
 		t.Errorf("runMeshKeepalive call doesn't pass inst.runCtx — disconnect/leave will leak the goroutine.\nSnippet: %q", snippet)
+	}
+}
+
+// TestReadLighthouseAddrs_ParsesHosts verifies the helper correctly
+// extracts lighthouse mesh addresses from a typical nebula.yaml.
+// Uses the exact yaml shape produced by writeNebulaConfig in enroll.go.
+func TestReadLighthouseAddrs_ParsesHosts(t *testing.T) {
+	dir := t.TempDir()
+	yaml := `cipher: aes
+lighthouse:
+  am_lighthouse: false
+  hosts:
+    - 10.42.2.1
+    - 10.42.2.99
+listen:
+  host: 0.0.0.0
+  port: 4243
+static_host_map:
+  10.42.2.1:
+    - 132.145.232.64:42002
+`
+	if err := os.WriteFile(filepath.Join(dir, "nebula.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got := readLighthouseAddrs(filepath.Join(dir, "nebula.yaml"))
+	want := []netip.Addr{netip.MustParseAddr("10.42.2.1"), netip.MustParseAddr("10.42.2.99")}
+	for _, w := range want {
+		if _, ok := got[w]; !ok {
+			t.Errorf("lighthouse %s missing from set: %v", w, got)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("got %d lighthouses, want %d: %v", len(got), len(want), got)
+	}
+}
+
+// TestReadLighthouseAddrs_MissingFile returns an empty (non-nil) set.
+// Read failures are non-fatal — the cycle falls back to old behavior
+// (probing all hostmap entries). The 90 s cycle cadence makes a
+// single-cycle stale read harmless.
+func TestReadLighthouseAddrs_MissingFile(t *testing.T) {
+	got := readLighthouseAddrs("/nonexistent/nebula.yaml")
+	if got == nil {
+		t.Fatal("expected non-nil empty set on missing file")
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty set, got %v", got)
+	}
+}
+
+// TestReadLighthouseAddrs_GarbledYAML returns an empty (non-nil) set
+// rather than nil-deref'ing or panicking. Same fall-back-to-old-
+// behavior contract as the missing-file case.
+func TestReadLighthouseAddrs_GarbledYAML(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "nebula.yaml"), []byte("not: valid: yaml: ::"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got := readLighthouseAddrs(filepath.Join(dir, "nebula.yaml"))
+	if got == nil {
+		t.Fatal("expected non-nil empty set on garbled yaml")
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty set on parse failure, got %v", got)
+	}
+}
+
+// TestReadLighthouseAddrs_NoLighthouseSection handles configs that
+// lack a lighthouse block entirely (hop-agent client ephemeral mode).
+func TestReadLighthouseAddrs_NoLighthouseSection(t *testing.T) {
+	dir := t.TempDir()
+	yaml := `cipher: aes
+listen:
+  host: 0.0.0.0
+  port: 4243
+`
+	if err := os.WriteFile(filepath.Join(dir, "nebula.yaml"), []byte(yaml), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got := readLighthouseAddrs(filepath.Join(dir, "nebula.yaml"))
+	if len(got) != 0 {
+		t.Errorf("expected empty set when no lighthouse block, got %v", got)
+	}
+}
+
+// TestPruneOldStuckStateDumps_RespectsCutoff asserts the GC drops
+// files older than retention and keeps newer ones. Also verifies it
+// only touches the stuck-state-*.txt prefix — sibling files like
+// nebula.yaml and node.crt must survive.
+func TestPruneOldStuckStateDumps_RespectsCutoff(t *testing.T) {
+	dir := t.TempDir()
+
+	// Old dumps (pre-cutoff): should be pruned.
+	oldDump1 := filepath.Join(dir, "stuck-state-20260420T120000Z.txt")
+	oldDump2 := filepath.Join(dir, "stuck-state-20260421T120000Z.txt")
+	for _, p := range []string{oldDump1, oldDump2} {
+		if err := os.WriteFile(p, []byte("old"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-stuckStateDumpRetention - time.Hour)
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Fresh dump (within retention): must survive.
+	freshDump := filepath.Join(dir, "stuck-state-20260504T120000Z.txt")
+	if err := os.WriteFile(freshDump, []byte("fresh"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Sibling files: must survive regardless of mtime.
+	for _, name := range []string{"nebula.yaml", "node.crt", "peers.json"} {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("x"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-30 * 24 * time.Hour)
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pruneOldStuckStateDumps(dir)
+
+	for _, p := range []string{oldDump1, oldDump2} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("expected %s to be pruned, still present", filepath.Base(p))
+		}
+	}
+	for _, name := range []string{"stuck-state-20260504T120000Z.txt", "nebula.yaml", "node.crt", "peers.json"} {
+		path := filepath.Join(dir, name)
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("expected %s to survive prune, got %v", name, err)
+		}
+	}
+}
+
+// TestPruneOldStuckStateDumps_EmptyDir is a no-op safe path — the
+// most common case (instance was just created, no dumps yet).
+func TestPruneOldStuckStateDumps_EmptyDir(t *testing.T) {
+	dir := t.TempDir()
+	pruneOldStuckStateDumps(dir) // must not panic
+	pruneOldStuckStateDumps("")  // edge case: empty path
+}
+
+// TestPruneOldStuckStateDumps_AllFresh keeps every file when nothing
+// is past the cutoff. Important: the GC is run at every connect so a
+// rapid restart-cycle scenario should never delete still-relevant
+// forensic state.
+func TestPruneOldStuckStateDumps_AllFresh(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 5; i++ {
+		path := filepath.Join(dir, "stuck-state-fresh-"+string(rune('A'+i))+".txt")
+		if err := os.WriteFile(path, []byte("fresh"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pruneOldStuckStateDumps(dir)
+	matches, _ := filepath.Glob(filepath.Join(dir, "stuck-state-*.txt"))
+	if len(matches) != 5 {
+		t.Errorf("expected 5 fresh dumps to survive, got %d", len(matches))
+	}
+}
+
+// TestKeepalive_OneCycle_FiltersLighthouse_SourceScan asserts that
+// keepaliveOneCycle (a) reads lighthouse addrs from the per-instance
+// nebula.yaml and (b) skips hostmap entries whose VpnAddrs[0] matches
+// a lighthouse, in the iteration loop.
+//
+// We use a source-scan tripwire (rather than mock the full
+// ctrl.ListHostmapHosts() path) because the existing fakeMeshService
+// returns nil for NebulaControl() — there's no way to feed a synthetic
+// hostmap into the cycle without a real Nebula instance. The behavior
+// is verified end-to-end by the smoke test on a deployed agent where
+// stuck-cycle counts drop from hundreds-per-day to ~0.
+//
+// This test guards against a future refactor that drops the filter
+// silently and re-introduces the watchdog churn bug.
+func TestKeepalive_OneCycle_FiltersLighthouse_SourceScan(t *testing.T) {
+	src, err := os.ReadFile("keepalive.go")
+	if err != nil {
+		t.Fatalf("read keepalive.go: %v", err)
+	}
+	body := string(src)
+
+	cycleStart := strings.Index(body, "func keepaliveOneCycle(")
+	if cycleStart < 0 {
+		t.Fatal("keepaliveOneCycle not found")
+	}
+	cycleEnd := strings.Index(body[cycleStart:], "\n}")
+	if cycleEnd < 0 {
+		t.Fatal("end of keepaliveOneCycle not found")
+	}
+	cycleBody := body[cycleStart : cycleStart+cycleEnd]
+
+	if !strings.Contains(cycleBody, "readLighthouseAddrs(") {
+		t.Error("keepaliveOneCycle does not call readLighthouseAddrs — lighthouse exclusion missing, watchdog will false-trip")
+	}
+	if !strings.Contains(cycleBody, "isLighthouse") || !strings.Contains(cycleBody, "continue") {
+		t.Error("keepaliveOneCycle does not skip lighthouse entries via isLighthouse continue — exclusion broken")
+	}
+	// Confirm the filter check runs BEFORE the peers++ increment so
+	// lighthouses don't count toward the hostmap-occupied predicate.
+	filterIdx := strings.Index(cycleBody, "isLighthouse")
+	peersIncIdx := strings.Index(cycleBody, "peers++")
+	if filterIdx < 0 || peersIncIdx < 0 {
+		t.Fatal("expected both isLighthouse check and peers++ to be present")
+	}
+	if filterIdx > peersIncIdx {
+		t.Errorf("isLighthouse filter (offset %d) appears AFTER peers++ (offset %d) — lighthouse entries are still counted as peers, defeating the fix",
+			filterIdx, peersIncIdx)
 	}
 }
 

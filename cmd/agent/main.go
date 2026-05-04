@@ -517,6 +517,13 @@ func tryStartMeshInstance(ctx context.Context, inst *meshInstance, servers *serv
 	}
 	authed := authMiddleware(authToken, mux)
 
+	// Prune accumulated stuck-state forensic dumps. The watchdog can
+	// emit one per ~5 min during persistent failures (pre-v0.10.85
+	// the lighthouse-as-peer false-positive could fire indefinitely),
+	// so the directory accumulates without bound. Runs at every
+	// instance bring-up — boot-time and runtime connect.
+	pruneOldStuckStateDumps(inst.dir())
+
 	// Start cert renewal + heartbeat regardless of Nebula outcome —
 	// even an expired-cert agent needs to renew + re-sync.
 	if inst.endpoint() != "" && inst.nodeID() != "" {

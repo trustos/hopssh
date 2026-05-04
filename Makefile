@@ -3,7 +3,7 @@
 export
 
 .PHONY: all setup vendor patch-vendor build build-all build-linux vet test \
-       generate clean clean-vendor frontend frontend-embed \
+       generate clean clean-vendor clean-stuck-dumps frontend frontend-embed \
        run dev release wifi-snapshot \
        desktop-build desktop-app desktop-dev desktop-smoke desktop-clean
 
@@ -147,6 +147,21 @@ clean:
 # Remove vendor directory (re-run `make setup` to restore).
 clean-vendor:
 	rm -rf vendor/
+
+# Remove accumulated stuck-state-*.txt forensic dumps from this Mac's
+# hop-agent config dirs. The agent prunes older-than-7-days dumps on
+# every connect, but this is the manual hammer for legacy backlogs
+# (pre-v0.10.85 deploys could accumulate hundreds of files when the
+# watchdog false-tripped on lighthouse-as-peer). Inspects both bundled
+# and system-mode config dirs.
+clean-stuck-dumps:
+	@echo "Bundled-mode dumps (~/Library/Application Support/hopssh/):"
+	@find "$$HOME/Library/Application Support/hopssh" -maxdepth 3 -name 'stuck-state-*.txt' 2>/dev/null | wc -l
+	@find "$$HOME/Library/Application Support/hopssh" -maxdepth 3 -name 'stuck-state-*.txt' -delete 2>/dev/null || true
+	@echo "System-mode dumps (/etc/hop-agent/):"
+	@sudo find /etc/hop-agent -maxdepth 3 -name 'stuck-state-*.txt' 2>/dev/null | wc -l
+	@sudo find /etc/hop-agent -maxdepth 3 -name 'stuck-state-*.txt' -delete 2>/dev/null || true
+	@echo "Done. Live dumps written by the running agent will reappear if a watchdog trip is in progress."
 
 # Capture a path-state snapshot into the running wifi_comparison.sh
 # results dir. Use during a perceived "buggy" window so the spike can

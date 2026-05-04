@@ -30,11 +30,14 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"runtime/pprof"
 	"sync/atomic"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -287,10 +290,21 @@ func keepaliveOneCycle(inst *meshInstance) (probed, succeeded, skipped, peers in
 		// reloaded). Quietly skip; the next cycle will catch it.
 		return 0, 0, 0, 0
 	}
+	// Lighthouses live in the hostmap (via static_host_map) but run the
+	// hopssh control plane, not a hop-agent — so they never listen on
+	// agentAPIPort. Treating them as peers caused the watchdog to fire
+	// constantly on configs where the hostmap was dominated by lighthouse
+	// entries (small networks, or any time Nebula's connection_manager
+	// pruned idle real-peer tunnels). Read the configured lighthouse
+	// addrs once per cycle and skip them in the iteration below.
+	lighthouses := readLighthouseAddrs(filepath.Join(inst.dir(), "nebula.yaml"))
 	hosts := ctrl.ListHostmapHosts(false)
 	now := time.Now().Unix()
 	for _, h := range hosts {
 		if len(h.VpnAddrs) == 0 {
+			continue
+		}
+		if _, isLighthouse := lighthouses[h.VpnAddrs[0]]; isLighthouse {
 			continue
 		}
 		vpn := h.VpnAddrs[0].String()
@@ -332,4 +346,81 @@ func keepaliveOneCycle(inst *meshInstance) (probed, succeeded, skipped, peers in
 // peer per 90 s.
 func pathQualityRecent(_ *pathQuality, _ string, _ int64) bool {
 	return false
+}
+
+// stuckStateDumpRetention is how long we keep stuck-state forensic
+// dumps on disk. The watchdog can write one every restart cycle (~5
+// minutes) when something is genuinely stuck for long periods, so on
+// chronic-failure deploys these files accumulate fast — pre-fix MBP
+// had ~5 days × dozens-per-day = hundreds of files per instance.
+// 7 days is enough for a human to investigate a fresh incident
+// without the directory turning into a junk drawer.
+const stuckStateDumpRetention = 7 * 24 * time.Hour
+
+// pruneOldStuckStateDumps deletes stuck-state-*.txt files in the given
+// directory whose mtime is older than stuckStateDumpRetention. Runs
+// once per instance bring-up. Best-effort — read/remove errors are
+// logged but don't block startup.
+func pruneOldStuckStateDumps(dir string) {
+	if dir == "" {
+		return
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "stuck-state-*.txt"))
+	if err != nil {
+		// Glob's only documented error is ErrBadPattern, which can't
+		// happen with our literal prefix — but be defensive anyway.
+		return
+	}
+	cutoff := time.Now().Add(-stuckStateDumpRetention)
+	pruned := 0
+	for _, path := range matches {
+		fi, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if fi.ModTime().Before(cutoff) {
+			if err := os.Remove(path); err == nil {
+				pruned++
+			}
+		}
+	}
+	if pruned > 0 {
+		log.Printf("[agent %s] pruned %d stuck-state dump(s) older than %s",
+			filepath.Base(dir), pruned, stuckStateDumpRetention)
+	}
+}
+
+// readLighthouseAddrs parses lighthouse.hosts from a nebula.yaml and
+// returns the set of mesh addresses that should be excluded from the
+// keepalive's peer-probe loop. Lighthouses live in static_host_map +
+// hostmap but run the hopssh control plane (no hop-agent on
+// agentAPIPort), so probing them always fails and erroneously trips
+// the stuck-state watchdog.
+//
+// Returns an empty (non-nil) set on any error so the caller can iterate
+// without nil-checks. Read failures are non-fatal: we'd rather over-
+// probe (the prior behavior) than under-probe and miss a real stuck
+// state. The 90 s cycle cadence makes a 1-cycle-stale read harmless.
+func readLighthouseAddrs(configPath string) map[netip.Addr]struct{} {
+	out := make(map[netip.Addr]struct{})
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return out
+	}
+	var cfg struct {
+		Lighthouse struct {
+			Hosts []string `yaml:"hosts"`
+		} `yaml:"lighthouse"`
+	}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return out
+	}
+	for _, h := range cfg.Lighthouse.Hosts {
+		addr, err := netip.ParseAddr(h)
+		if err != nil {
+			continue
+		}
+		out[addr] = struct{}{}
+	}
+	return out
 }

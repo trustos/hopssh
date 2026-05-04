@@ -755,6 +755,16 @@ type enrollDeviceFlowPollResp struct {
 	Status     string `json:"status"`               // "pending" | "expired" | "complete" | "error"
 	Message    string `json:"message,omitempty"`
 	Enrollment string `json:"enrollment,omitempty"` // populated on "complete"
+	// F5 (v0.10.85+): Connected reflects whether the auto-connect after a
+	// successful enrollment actually brought the mesh up. Pre-fix the
+	// agent always returned status="complete" even when connectFn failed,
+	// causing the desktop UI to show "Connected" while the mesh was dead.
+	// On status="complete", Connected=false means the cert is on disk and
+	// the registry has the entry, but the mesh isn't actually up yet —
+	// the desktop should surface a Retry CTA. ConnectError carries the
+	// underlying reason for context.
+	Connected    bool   `json:"connected,omitempty"`
+	ConnectError string `json:"connectError,omitempty"`
 }
 
 func (s *localAPIServer) handleEnrollDeviceFlowPoll(w http.ResponseWriter, r *http.Request) {
@@ -779,11 +789,31 @@ func (s *localAPIServer) handleEnrollDeviceFlowPoll(w http.ResponseWriter, r *ht
 		return
 	}
 
-	pollBody := fmt.Sprintf(`{"deviceCode":%q,"hostname":%q,"os":%q,"arch":%q}`,
-		state.deviceCode, state.hostname, runtime.GOOS, detectArch())
+	// F2 (v0.10.85+): include the agent's known CA fingerprints so the
+	// server can short-circuit with 409 BEFORE creating a node row when
+	// this device is already enrolled in the would-be network. Optional
+	// field — older servers ignore it.
+	pollPayload := struct {
+		DeviceCode         string   `json:"deviceCode"`
+		Hostname           string   `json:"hostname"`
+		OS                 string   `json:"os"`
+		Arch               string   `json:"arch"`
+		ExistingNetworkCAs []string `json:"existingNetworkCAs,omitempty"`
+	}{
+		DeviceCode:         state.deviceCode,
+		Hostname:           state.hostname,
+		OS:                 runtime.GOOS,
+		Arch:               detectArch(),
+		ExistingNetworkCAs: s.enrolls.CAFingerprints(),
+	}
+	pollBodyBytes, err := json.Marshal(pollPayload)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "encode poll body: "+err.Error())
+		return
+	}
 	postCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	httpReq, err := http.NewRequestWithContext(postCtx, "POST", state.endpoint+"/api/device/poll", strings.NewReader(pollBody))
+	httpReq, err := http.NewRequestWithContext(postCtx, "POST", state.endpoint+"/api/device/poll", strings.NewReader(string(pollBodyBytes)))
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -795,6 +825,28 @@ func (s *localAPIServer) handleEnrollDeviceFlowPoll(w http.ResponseWriter, r *ht
 		return
 	}
 	defer resp.Body.Close()
+
+	// F2 conflict — server detected the agent already has this network.
+	// Surface a structured user-facing error rather than a cryptic 409.
+	if resp.StatusCode == http.StatusConflict {
+		var conflict struct {
+			Error       string `json:"error"`
+			NetworkName string `json:"networkName"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&conflict)
+		deviceFlowMu.Lock()
+		delete(activeDeviceFlow, req.DeviceCode)
+		deviceFlowMu.Unlock()
+		msg := conflict.Error
+		if msg == "" {
+			msg = "this device is already enrolled in this network"
+		}
+		if conflict.NetworkName != "" {
+			msg = fmt.Sprintf("%s — open %q from the home screen, or Leave it first to start fresh", msg, conflict.NetworkName)
+		}
+		writeJSON(w, http.StatusOK, enrollDeviceFlowPollResp{Status: "error", Message: msg})
+		return
+	}
 
 	if resp.StatusCode == http.StatusForbidden {
 		body, _ := io.ReadAll(resp.Body)
@@ -849,10 +901,17 @@ func (s *localAPIServer) handleEnrollDeviceFlowPoll(w http.ResponseWriter, r *ht
 	// If connect fails (rare; bind error or transient lighthouse
 	// unreach), we still return "complete" because the enrollment is
 	// persisted; the cert-renewal loop will retry the bring-up later.
+	// F5 (v0.10.85+): the response now carries Connected + ConnectError
+	// so the desktop's Onboarding can surface a Retry CTA instead of
+	// silently lying about "Connected" when the mesh failed to come up.
+	connected := false
+	connectErrMsg := ""
 	if s.connectFn != nil {
 		if err := s.connectFn(name); err != nil {
+			connectErrMsg = err.Error()
 			log.Printf("[local-api] auto-connect after enroll %q failed: %v (enrollment persisted; retry via POST /local/connect)", name, err)
 		} else {
+			connected = true
 			s.events.publish(localEvent{
 				Time: time.Now(),
 				Type: "enrollment.connected",
@@ -861,7 +920,12 @@ func (s *localAPIServer) handleEnrollDeviceFlowPoll(w http.ResponseWriter, r *ht
 		}
 	}
 
-	writeJSON(w, http.StatusOK, enrollDeviceFlowPollResp{Status: "complete", Enrollment: name})
+	writeJSON(w, http.StatusOK, enrollDeviceFlowPollResp{
+		Status:       "complete",
+		Enrollment:   name,
+		Connected:    connected,
+		ConnectError: connectErrMsg,
+	})
 }
 
 type enrollTokenReq struct {
@@ -892,11 +956,29 @@ func (s *localAPIServer) handleEnrollToken(w http.ResponseWriter, r *http.Reques
 	}
 
 	hostname, _ := os.Hostname()
-	body := fmt.Sprintf(`{"token":%q,"hostname":%q,"os":%q,"arch":%q}`,
-		req.Token, hostname, runtime.GOOS, detectArch())
+	// F2 (v0.10.85+): include the agent's known CA fingerprints — same
+	// rationale as the device-flow poll above.
+	enrollPayload := struct {
+		Token              string   `json:"token"`
+		Hostname           string   `json:"hostname"`
+		OS                 string   `json:"os"`
+		Arch               string   `json:"arch"`
+		ExistingNetworkCAs []string `json:"existingNetworkCAs,omitempty"`
+	}{
+		Token:              req.Token,
+		Hostname:           hostname,
+		OS:                 runtime.GOOS,
+		Arch:               detectArch(),
+		ExistingNetworkCAs: s.enrolls.CAFingerprints(),
+	}
+	bodyBytes, err := json.Marshal(enrollPayload)
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, "encode enroll body: "+err.Error())
+		return
+	}
 	postCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
-	httpReq, err := http.NewRequestWithContext(postCtx, "POST", endpoint+"/api/enroll", strings.NewReader(body))
+	httpReq, err := http.NewRequestWithContext(postCtx, "POST", endpoint+"/api/enroll", strings.NewReader(string(bodyBytes)))
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -908,9 +990,26 @@ func (s *localAPIServer) handleEnrollToken(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusConflict {
+		// F2 conflict — surface as a structured error to the desktop UI.
+		var conflict struct {
+			Error       string `json:"error"`
+			NetworkName string `json:"networkName"`
+		}
+		_ = json.NewDecoder(resp.Body).Decode(&conflict)
+		msg := conflict.Error
+		if msg == "" {
+			msg = "this device is already enrolled in this network"
+		}
+		if conflict.NetworkName != "" {
+			msg = fmt.Sprintf("%s — open %q from the home screen, or Leave it first to start fresh", msg, conflict.NetworkName)
+		}
+		writeJSONError(w, http.StatusConflict, msg)
+		return
+	}
 	if resp.StatusCode != 200 {
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, bodyBytes))
+		bodyResp, _ := io.ReadAll(resp.Body)
+		writeJSONError(w, http.StatusBadGateway, fmt.Sprintf("HTTP %d: %s", resp.StatusCode, bodyResp))
 		return
 	}
 	var er enrollResponse
