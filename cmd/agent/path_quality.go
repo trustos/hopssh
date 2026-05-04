@@ -18,6 +18,7 @@ import (
 	"context"
 	"log"
 	"net"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -193,17 +194,31 @@ func runPathQuality(ctx context.Context, inst *meshInstance) {
 // probePeersOnce walks the current hostmap and fires one probe per
 // direct peer. Probes run sequentially per peer (small fleets) but
 // in parallel across peers via goroutines.
+//
+// v0.10.88 (Phase W follow-up): excludes lighthouse VPN addresses from
+// the probe loop. Lighthouses live in the hostmap (via static_host_map)
+// but run the hopssh control plane, not a hop-agent — so probes to
+// `<lighthouse-vpn>:41820` always fail with "connection refused".
+// Pre-fix this produced a steady stream of `path-quality ... probe
+// down for 3 consecutive samples` log lines and `degradation detected`
+// noise that didn't reflect any user-actionable problem. Same root
+// cause F1 fixed for the watchdog keepalive at v0.10.85; same
+// readLighthouseAddrs helper applied here.
 func probePeersOnce(inst *meshInstance, pq *pathQuality) {
 	ctrl := inst.control()
 	if ctrl == nil {
 		return
 	}
+	lighthouses := readLighthouseAddrs(filepath.Join(inst.dir(), "nebula.yaml"))
 	hosts := ctrl.ListHostmapHosts(false)
 	seen := map[string]struct{}{}
 
 	var wg sync.WaitGroup
 	for _, h := range hosts {
 		if len(h.VpnAddrs) == 0 {
+			continue
+		}
+		if _, isLighthouse := lighthouses[h.VpnAddrs[0]]; isLighthouse {
 			continue
 		}
 		vpnAddr := h.VpnAddrs[0].String()

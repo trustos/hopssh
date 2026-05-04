@@ -2,6 +2,8 @@ package main
 
 import (
 	"net"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -157,5 +159,48 @@ func TestPathQuality_DialMeasuresRoundTrip(t *testing.T) {
 	rtt, n := pq.snapshot("synthetic-peer")
 	if n != 1 || rtt < 1 {
 		t.Errorf("expected (>=1 ms, n=1), got (%d, %d)", rtt, n)
+	}
+}
+
+// v0.10.88: probePeersOnce must filter lighthouse VPN addresses out
+// of its probe loop. Lighthouses live in the hostmap (static_host_map)
+// but run the hopssh control plane, not a hop-agent — probes to
+// `<lighthouse-vpn>:41820` always return "connection refused" and
+// produced steady-state log noise + false `degradation detected`
+// signals. Same root cause F1 fixed for the keepalive watchdog at
+// v0.10.85; this tripwire guards the parallel fix in path_quality.go
+// against regression.
+func TestProbePeersOnce_FiltersLighthouse_SourceScan(t *testing.T) {
+	src, err := os.ReadFile("path_quality.go")
+	if err != nil {
+		t.Fatalf("read path_quality.go: %v", err)
+	}
+	body := string(src)
+
+	start := strings.Index(body, "func probePeersOnce(")
+	if start < 0 {
+		t.Fatal("probePeersOnce not found in path_quality.go")
+	}
+	end := strings.Index(body[start:], "\n}\n")
+	if end < 0 {
+		t.Fatal("end of probePeersOnce not found")
+	}
+	fnBody := body[start : start+end]
+
+	if !strings.Contains(fnBody, "readLighthouseAddrs(") {
+		t.Error("probePeersOnce must call readLighthouseAddrs() — lighthouse exclusion missing, expect path-quality log noise")
+	}
+	if !strings.Contains(fnBody, "isLighthouse") || !strings.Contains(fnBody, "continue") {
+		t.Error("probePeersOnce must skip lighthouse entries via isLighthouse continue")
+	}
+	// Filter must run BEFORE the goroutine spawn; otherwise lighthouse
+	// gets probed and produces log noise.
+	filterIdx := strings.Index(fnBody, "isLighthouse")
+	probeIdx := strings.Index(fnBody, "probeOnePeer(")
+	if filterIdx < 0 || probeIdx < 0 {
+		t.Fatal("expected both isLighthouse check and probeOnePeer call")
+	}
+	if filterIdx > probeIdx {
+		t.Errorf("ORDERING REGRESSION: isLighthouse filter (offset %d) appears AFTER probeOnePeer (offset %d) — lighthouse still gets probed", filterIdx, probeIdx)
 	}
 }
