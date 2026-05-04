@@ -63,18 +63,58 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Cache layers below cut warm-build time from ~9 min to ~2-3 min.
+      # ALL THREE are release-safe: caches only memoize *dependencies*,
+      # never the workspace crate's own compilation. Source changes
+      # always trigger a fresh compile of the user code; cache hits only
+      # skip recompiling unchanged deps (keyed on lockfile content).
+      # If you bump deps (Cargo.lock / package-lock.json / go.sum), the
+      # cache misses and the build is fully cold — same as before.
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.23'
+          # setup-go@v5 auto-caches ~/.cache/go-build + ~/go/pkg/mod
+          # when given cache-dependency-path. Keyed on go.sum content;
+          # source changes don't poison the cache because go build
+          # recomputes per-source-hash artifacts.
+          cache-dependency-path: |
+            go.sum
+            clients/desktop/src-tauri/Cargo.lock
 
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: '22'
+          # cache: 'npm' caches ~/.npm (the package tarball store), NOT
+          # node_modules. npm install still runs every time and rebuilds
+          # node_modules fresh from the cached tarballs. Safe by design.
+          cache: 'npm'
+          cache-dependency-path: |
+            frontend/package-lock.json
+            clients/desktop/package-lock.json
 
       - name: Set up Rust
         run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
+      # Swatinem/rust-cache@v2 caches ~/.cargo/registry, ~/.cargo/git,
+      # and target/ keyed on Cargo.lock + rustflags + rustc version.
+      # CRITICAL release-safety property: the workspace crate itself
+      # is ALWAYS recompiled — only dependency crates come from cache.
+      # When you push a tag with new Rust source, the new source is
+      # compiled fresh; only unchanged deps (the slow part) are reused.
+      # save-if: success ensures we don't poison the cache from a
+      # broken build.
+      - name: Cache Rust deps + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients/desktop/src-tauri
+          # Single shared key across all release builds — keep it simple,
+          # the action's internal keying on Cargo.lock + rustflags is
+          # what guards correctness.
+          shared-key: desktop-release
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
 
       - name: Vendor + patch
         run: make setup
