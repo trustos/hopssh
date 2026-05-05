@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -298,23 +297,19 @@ func chownMirrorFiles(mirrorDir, tokenPath, portPath string) error {
 	// Fallback: use the mirror dir's UID/GID as the chown target.
 	// `hop-agent install --migrate-from` ran as the user and created
 	// the dir, so it's owned by the user we want.
-	info, statErr := os.Stat(mirrorDir)
-	if statErr != nil {
-		return fmt.Errorf("resolveConsoleUser: %v; stat mirror dir: %w", err, statErr)
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
+	uid, gid, ok := statFileOwner(mirrorDir)
 	if !ok {
-		return fmt.Errorf("resolveConsoleUser: %v; mirror dir Stat_t unavailable", err)
+		return fmt.Errorf("resolveConsoleUser: %v; could not stat mirror dir owner", err)
 	}
-	if stat.Uid == 0 {
+	if uid == 0 {
 		// Dir is also root-owned — we have no good target. Refuse.
 		return fmt.Errorf("resolveConsoleUser: %v; mirror dir is also root-owned (no fallback available)", err)
 	}
-	chownTarget := fmt.Sprintf("%d:%d", stat.Uid, stat.Gid)
+	chownTarget := fmt.Sprintf("%d:%d", uid, gid)
 	if cerr := exec.Command("chown", chownTarget, tokenPath, portPath).Run(); cerr != nil {
 		return fmt.Errorf("chown %s -> %s: %w", chownTarget, tokenPath, cerr)
 	}
-	log.Printf("[mirror] chowned to mirror-dir owner uid=%d gid=%d (resolveConsoleUser unavailable: %v)", stat.Uid, stat.Gid, err)
+	log.Printf("[mirror] chowned to mirror-dir owner uid=%d gid=%d (resolveConsoleUser unavailable: %v)", uid, gid, err)
 	return nil
 }
 
@@ -355,15 +350,11 @@ func runMirrorChownSelfHeal(ctx context.Context, mirrorDir string) {
 		// Cheap check: are the files still root-owned? If not, no work to do.
 		needsChown := false
 		for _, p := range []string{tokenPath, portPath} {
-			info, err := os.Stat(p)
-			if err != nil {
-				continue // file missing — initial write hasn't happened, skip
-			}
-			stat, ok := info.Sys().(*syscall.Stat_t)
+			uid, _, ok := statFileOwner(p)
 			if !ok {
-				continue
+				continue // file missing or platform-unsupported
 			}
-			if stat.Uid == 0 {
+			if uid == 0 {
 				needsChown = true
 				break
 			}

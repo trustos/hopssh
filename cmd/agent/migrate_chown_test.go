@@ -61,13 +61,10 @@ func TestChownMirrorFiles_HasDirOwnerFallback(t *testing.T) {
 	}
 	fnBody := body[idx : idx+endIdx]
 
-	if !strings.Contains(fnBody, "os.Stat(mirrorDir)") {
-		t.Error("chownMirrorFiles must stat the mirror dir as the fallback chown target — without it, boot-before-login leaves files root-owned")
+	if !strings.Contains(fnBody, "statFileOwner(mirrorDir)") {
+		t.Error("chownMirrorFiles must stat the mirror dir as the fallback chown target via statFileOwner — without it, boot-before-login leaves files root-owned")
 	}
-	if !strings.Contains(fnBody, "syscall.Stat_t") {
-		t.Error("chownMirrorFiles must extract Uid/Gid via syscall.Stat_t for the fallback path")
-	}
-	if !strings.Contains(fnBody, "stat.Uid == 0") {
+	if !strings.Contains(fnBody, "uid == 0") {
 		t.Error("chownMirrorFiles must reject root-owned dir as a chown target — chowning root->root is a silent no-op")
 	}
 }
@@ -136,8 +133,8 @@ func TestRunMirrorChownSelfHeal_Has30sCadence(t *testing.T) {
 	if !strings.Contains(fnBody, "30 * time.Second") {
 		t.Error("runMirrorChownSelfHeal must use 30s cadence (slower thrashes; faster wastes cycles for a rare bug)")
 	}
-	if !strings.Contains(fnBody, "syscall.Stat_t") {
-		t.Error("runMirrorChownSelfHeal must check file ownership via Stat_t.Uid before re-chowning")
+	if !strings.Contains(fnBody, "statFileOwner(") {
+		t.Error("runMirrorChownSelfHeal must check file ownership via statFileOwner before re-chowning")
 	}
 }
 
