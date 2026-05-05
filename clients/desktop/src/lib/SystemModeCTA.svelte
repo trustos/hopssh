@@ -80,7 +80,8 @@
           restart.
         </p>
         <p class="mt-1 text-[11px] text-zinc-500">
-          Triggers a one-time admin prompt. Reversible from Settings → Preferences.
+          Asks for your admin password once. You can turn this off
+          anytime in Settings → Preferences.
         </p>
         {#if error}
           <div class="mt-2 rounded-md border border-amber-900/40 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-300">

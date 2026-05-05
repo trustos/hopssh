@@ -218,7 +218,7 @@
           <div class="px-4 py-6 text-center text-xs text-zinc-500">
             {e.connected
               ? 'No peers online yet.'
-              : 'Mesh is offline. Restart hop-agent to connect.'}
+              : 'Network is offline. Click Connect to retry.'}
           </div>
         {:else}
           <ul class="divide-y divide-zinc-800">

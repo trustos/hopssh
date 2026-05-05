@@ -209,7 +209,7 @@
       // makes "try again or stay in userspace" obvious. Anything else
       // is a real failure worth surfacing verbatim.
       if (msg.includes('admin prompt cancelled') || msg.includes('User canceled')) {
-        bgPromptError = "Cancelled. You can try again, or skip — the mesh will still work inside hopssh and through the dashboard's web terminal.";
+        bgPromptError = "Cancelled. You can try again, or skip — your network will still work inside hopssh and through the dashboard's web terminal.";
       } else {
         bgPromptError = msg;
       }
@@ -308,7 +308,7 @@
       active: stage === 'pending'
     },
     {
-      label: 'Bring mesh up',
+      label: 'Connect to network',
       done: stage === 'done',
       active: stage === 'completing'
     }
@@ -336,8 +336,8 @@
           parallelInstall.legacyConfigDir
             ? ' + '
             : ''}{parallelInstall.legacyConfigDir ? 'system config files' : ''}).
-          It will conflict with new networks. Remove it now to avoid
-          a port collision.
+          It will conflict with new connections. Remove it before
+          continuing.
         </p>
         {#if resetError}
           <div class="mt-2 text-[11px] text-red-300">{resetError}</div>
@@ -509,7 +509,7 @@
         Cancel
       </button>
     {:else if stage === 'completing'}
-      <p class="mt-6 text-sm text-zinc-300">Approved. Bringing the mesh up…</p>
+      <p class="mt-6 text-sm text-zinc-300">Approved. Setting up your network…</p>
     {:else if stage === 'bgprompt'}
       <!-- One-time post-enrollment prompt: Tailscale-style "Run in
            background" pitch, surfaced at the natural high-commitment
@@ -523,17 +523,18 @@
               Enable system-wide networking?
             </h3>
             <p class="mt-1 text-[12px] leading-relaxed text-zinc-300">
-              Recommended. Without this the mesh only works inside hopssh —
+              Recommended. Without this, only hopssh itself can use the
+              network —
               <code class="rounded bg-zinc-900/60 px-1 font-mono">ping</code>,
               <code class="rounded bg-zinc-900/60 px-1 font-mono">ssh</code>,
-              browsers, and other apps can't reach mesh IPs. Installing a
-              small background service gives every app on your Mac access
-              to mesh hostnames, keeps the connection alive when you quit
-              hopssh, and reconnects after restart.
+              browsers, and other apps won't see your hopssh devices. A
+              small background service makes every app on your Mac able
+              to reach hopssh hostnames, keeps the connection alive when
+              you quit hopssh, and reconnects after restart.
             </p>
             <p class="mt-1 text-[11px] text-zinc-500">
-              Triggers a one-time admin prompt. Reversible anytime from
-              Settings → Preferences.
+              Asks for your admin password once. You can turn this off
+              anytime in Settings → Preferences.
             </p>
             {#if bgPromptError}
               <div class="mt-2 rounded-md border border-red-900/50 bg-red-950/40 px-3 py-2 text-[11px] text-red-300">
@@ -546,7 +547,7 @@
                 class="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400"
                 onclick={acceptBackground}
               >
-                Allow
+                Turn on
               </button>
               <button
                 type="button"
@@ -566,10 +567,10 @@
            is on disk + the registry has the entry, but the mesh isn't up.
            User gets a Retry button that calls /local/connect directly. -->
       <div class="mt-6 rounded-md border border-amber-900/40 bg-amber-950/40 px-4 py-3 text-sm">
-        <div class="font-medium text-amber-200">Enrolled, but couldn't bring the mesh up</div>
+        <div class="font-medium text-amber-200">Enrolled, but couldn't connect</div>
         <p class="mt-1 text-[12px] leading-relaxed text-zinc-300">
           Your device is now part of <span class="font-mono">{enrollmentNotConnected.name}</span>,
-          but we couldn't establish the secure tunnel just yet. This usually clears up on retry.
+          but the connection didn't come up. This usually clears up on retry.
         </p>
         <p class="mt-1 text-[11px] text-zinc-500 break-words">
           Reason: {enrollmentNotConnected.connectError}
@@ -589,7 +590,7 @@
             onclick={dismissNotConnected}
             disabled={retryingConnect}
           >
-            Skip — I'll connect from Settings later
+            Skip — connect later from Settings
           </button>
         </div>
       </div>

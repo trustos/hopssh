@@ -209,13 +209,16 @@ class AgentStore {
     const enrollment = (ev.data?.name as string | undefined) ?? undefined;
     switch (ev.type) {
       case 'instance.watchdog-tripped': {
+        // Phase BB (v0.10.93): plain-English copy. "data-plane" was
+        // internal jargon. The user just needs to know hopssh is
+        // recovering from a transient connection issue.
         const cycles = (ev.data?.consecutiveStuck as number | undefined) ?? 0;
         this.pushBanner({
           kind: 'warning',
           title: enrollment
-            ? `${enrollment}: data-plane stuck — recovering`
-            : 'mesh data-plane stuck — recovering',
-          detail: cycles > 0 ? `Detected after ${cycles} consecutive stuck cycles. Auto-restart in progress.` : undefined,
+            ? `${enrollment}: connection issue — recovering automatically`
+            : 'Connection issue — recovering automatically',
+          detail: cycles > 0 ? 'Recovering automatically. This usually takes a few seconds.' : undefined,
           enrollment,
           // 10-minute TTL as a backstop. Normally cleared sooner by a
           // paired watchdog-recovered/failed event; this guards against
@@ -231,24 +234,29 @@ class AgentStore {
       case 'instance.watchdog-recovered': {
         // Replace the matching tripped banner with a transient
         // "recovered" toast.
+        // Phase BB (v0.10.93): "mesh recovered" → "connection restored"
+        // — plain English, matches the watchdog-tripped wording.
         this.banners = this.banners.filter((b) => b.kind !== 'warning' || b.enrollment !== enrollment);
         this.pushBanner({
           kind: 'info',
           title: enrollment
-            ? `${enrollment}: mesh recovered`
-            : 'mesh recovered',
+            ? `${enrollment}: connection restored`
+            : 'Connection restored',
           enrollment,
           dismissAt: Date.now() + 8000 // 8s auto-dismiss
         });
         break;
       }
       case 'instance.watchdog-recovery-failed': {
+        // Phase BB (v0.10.93): "auto-recovery failed" → "couldn't
+        // recover automatically" — friendlier phrasing for an error
+        // banner the user can't directly fix.
         this.banners = this.banners.filter((b) => b.kind !== 'warning' || b.enrollment !== enrollment);
         this.pushBanner({
           kind: 'error',
           title: enrollment
-            ? `${enrollment}: auto-recovery failed`
-            : 'auto-recovery failed',
+            ? `${enrollment}: couldn't recover automatically`
+            : "Couldn't recover automatically",
           detail: (ev.data?.error as string | undefined) ?? 'See agent logs for details.',
           enrollment,
           dismissAt: 0 // sticky — needs operator

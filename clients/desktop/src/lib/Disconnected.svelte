@@ -111,7 +111,8 @@
     </div>
     <h2 class="mb-1 text-base font-semibold">hopssh isn't running</h2>
     <p class="mb-4 max-w-sm text-sm text-zinc-400">
-      The local agent didn't respond. Try quitting and reopening hopssh.
+      hopssh's background service didn't respond. Click Retry, or quit
+      and reopen hopssh.
     </p>
     <button
       class="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400 disabled:opacity-60"

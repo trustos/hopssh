@@ -2028,10 +2028,24 @@ mod tests {
         // not appear in default-rendered copy. Comments inside
         // <script> blocks DO contain them legitimately (architecture
         // notes), so we strip script blocks before scanning.
+        //
+        // Phase BB (v0.10.93) added the latter group from a full
+        // copy audit. Each was found in user-facing surfaces and
+        // replaced with plain-English wording. A regression that
+        // re-introduces any of them fails this test.
         let forbidden = [
-            "P2P",        // status badge — replaced by plain "connected"
-            "TUN:",       // hero stat label — replaced by "Networking:"
-            "data-plane", // banner title — humanized in BannerStrip
+            "P2P",                            // status badge — replaced by plain "connected"
+            "TUN:",                           // hero stat label — replaced by "Networking:"
+            "data-plane",                     // banner title — humanized in BannerStrip
+            "Bring mesh up",                  // Onboarding step → "Connect to network"
+            "bring the mesh up",              // Onboarding completing/error states
+            "Bringing the mesh up",           // Onboarding completing message
+            "Restart hop-agent",              // Connected empty-peer offline message
+            "local agent didn't respond",    // Disconnected hard-error
+            "Hide hopssh from the Dock",      // Settings (renamed to "Show hopssh in Dock")
+            "Triggers a one-time admin prompt", // Onboarding/SystemModeCTA footnote
+            "Triggers an admin prompt",       // Settings subtitles
+            "port collision",                 // Onboarding parallel-install warning
         ];
         // Forbidden ONLY in onboarding (the flow that exposes them):
         let onboarding_forbidden = ["Control plane"];

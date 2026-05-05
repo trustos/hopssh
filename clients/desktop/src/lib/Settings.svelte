@@ -98,13 +98,24 @@
     }
   }
 
-  // ---- Phase N: "Hide from Dock" toggle ----
-  // When ON, closing the window hides the Dock icon and removes
-  // hopssh from Cmd-Tab. The menubar icon stays — click it (or
-  // double-click /Applications/hopssh.app) to bring everything back.
-  // Persisted via Tauri command in ~/Library/Application Support/hopssh/desktop-prefs.json.
+  // ---- Phase N: Dock visibility toggle ----
+  // The user-facing label (Phase BB, v0.10.93) is "Show hopssh in Dock"
+  // — affirmative phrasing matching macOS HIG and peer apps (Slack,
+  // Discord, 1Password). The underlying Tauri command + pref field
+  // are still named hide_from_dock for backward-compat; this layer
+  // inverts so the user sees "Show in Dock = on" when the Dock icon
+  // is visible.
+  //
+  //   showInDock (UI)  ⟺  !hideFromDock (storage)
+  //
+  // When the underlying flag is ON, closing the window hides the Dock
+  // icon and removes hopssh from Cmd-Tab. The menubar icon stays —
+  // click it (or double-click /Applications/hopssh.app) to bring
+  // everything back. Persisted in
+  // ~/Library/Application Support/hopssh/desktop-prefs.json.
   let hideFromDock = $state(false);
   let hideFromDockBusy = $state(false);
+  let showInDock = $derived(!hideFromDock);
 
   // ---- Phase Y (v0.10.90): "Open hopssh on login" toggle ----
   // When ON, the .app autostarts on macOS login (LaunchAgent file
@@ -352,12 +363,12 @@
           <div class="min-w-0 flex-1">
             <div class="text-sm font-medium">Run in the background</div>
             <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
-              Keep hopssh connected when you log out, and reconnect after
-              restart. Briefly disconnects (~5s) while switching modes.
-              Triggers an admin prompt.
+              Keeps your network connected even when hopssh is closed or
+              after restart. Recommended. Asks for your admin password
+              once to install.
             </p>
             <div class="mt-1 text-[11px] {inSystemMode ? 'text-emerald-400' : 'text-zinc-500'}">
-              {inSystemMode ? '● On' : '○ Off — only runs while hopssh is open'}
+              {inSystemMode ? '● On' : '○ Off — connects only while hopssh is open'}
             </div>
           </div>
           <div class="flex shrink-0 gap-2">
@@ -423,12 +434,13 @@
           <div class="min-w-0 flex-1">
             <div class="text-sm font-medium">Open hopssh on login</div>
             <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
-              Shows the menubar icon automatically when you sign in to
-              your Mac. The window stays hidden until you click the icon.
-              Toggle off to launch hopssh manually from /Applications.
+              Auto-opens the menubar icon when you sign in to your Mac.
+              Your network stays connected via "Run in the background"
+              above — this only controls whether the menubar icon
+              appears automatically.
             </p>
             <div class="mt-1 text-[11px] {startAtLogin ? 'text-emerald-400' : 'text-zinc-500'}">
-              {startAtLogin ? '● On' : '○ Off — manual launch only'}
+              {startAtLogin ? '● On' : '○ Off — open the app to see the menubar icon'}
             </div>
           </div>
           <div class="flex shrink-0 gap-2">
@@ -446,34 +458,35 @@
         </div>
       </div>
 
-      <!-- Phase N: Hide from Dock toggle. Slack-style copy + the
-           same compact row layout as "Run in the background" above. -->
+      <!-- Phase BB (v0.10.93): "Show hopssh in Dock" — affirmative
+           rename of the prior negative-phrasing Dock-visibility toggle.
+           UI layer inverts to showInDock; underlying pref keeps its
+           backward-compat name. Default ON (Dock icon visible) matches
+           the typical Mac app expectation; turning off demotes hopssh
+           to a menubar-only utility, Tailscale-style. -->
       <div class="border-t border-zinc-800 px-4 py-3">
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0 flex-1">
-            <div class="text-sm font-medium">Hide hopssh from the Dock</div>
+            <div class="text-sm font-medium">Show hopssh in Dock</div>
             <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
-              Closing the window hides the Dock icon and removes
-              hopssh from Cmd-Tab. The menubar icon stays — click
-              it (or double-click hopssh in /Applications) to bring
-              the window back. Effective immediately when turning
-              off; takes effect at the next window close when
-              turning on.
+              When off, hopssh runs as a menubar-only utility — no Dock
+              icon, hidden from Cmd-Tab. Click the menubar icon to open
+              the window.
             </p>
-            <div class="mt-1 text-[11px] {hideFromDock ? 'text-emerald-400' : 'text-zinc-500'}">
-              {hideFromDock ? '● On — menubar only' : '○ Off — Dock icon visible'}
+            <div class="mt-1 text-[11px] {showInDock ? 'text-emerald-400' : 'text-zinc-500'}">
+              {showInDock ? '● On — Dock icon visible' : '○ Off — menubar only'}
             </div>
           </div>
           <div class="flex shrink-0 gap-2">
             <button
-              class={hideFromDock
+              class={showInDock
                 ? 'rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:border-amber-500 hover:text-amber-400 disabled:opacity-50'
                 : 'rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400 disabled:opacity-60'}
               onclick={toggleHideFromDock}
               disabled={hideFromDockBusy}
               type="button"
             >
-              {hideFromDockBusy ? '…' : hideFromDock ? 'Turn off' : 'Turn on'}
+              {hideFromDockBusy ? '…' : showInDock ? 'Turn off' : 'Turn on'}
             </button>
           </div>
         </div>
@@ -539,7 +552,7 @@
                     disabled={leavingName === e.name}
                     type="button"
                   >
-                    {leavingName === e.name ? 'Leaving…' : 'Confirm'}
+                    {leavingName === e.name ? 'Leaving…' : 'Confirm leave'}
                   </button>
                   <button
                     class="rounded-md border border-zinc-700 px-2 py-1 text-[11px] hover:bg-zinc-800"
@@ -617,10 +630,11 @@
         <div class="border-b border-red-900/60 px-4 py-3">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0 flex-1">
-              <div class="text-sm font-medium">Disconnect from all networks</div>
+              <div class="text-sm font-medium">Sign out of all networks</div>
               <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
-                Removes every network from this Mac. You can sign back in
-                anytime — no admin prompt. {agent.status?.enrollments.length ?? 0} active.
+                Removes this Mac from all hopssh networks. Your other
+                devices and the networks themselves aren't affected.
+                You can sign back in anytime. {agent.status?.enrollments.length ?? 0} active.
               </p>
             </div>
             <div class="flex shrink-0 gap-2">
@@ -659,9 +673,10 @@
             <div class="min-w-0 flex-1">
               <div class="text-sm font-medium">Reset to a clean state</div>
               <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
-                Removes all networks and security keys. Keeps the app
-                installed so you can sign in fresh. Logs preserved.
-                Triggers an admin prompt.
+                Removes all networks and certificates. Keeps the app
+                installed — sign in fresh after this. Logs are kept for
+                troubleshooting if you need them. Asks for your admin
+                password once.
               </p>
             </div>
             <div class="flex shrink-0 gap-2">
@@ -700,10 +715,12 @@
             <div class="min-w-0 flex-1">
               <div class="text-sm font-medium">Remove hopssh from this Mac</div>
               <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
-                Removes everything: networks, security keys, the background
-                service, and the helper. After confirm: drag
-                <span class="font-mono">/Applications/hopssh.app</span>
-                to the Trash. Triggers an admin prompt.
+                Removes everything from this Mac: networks, certificates,
+                the background service, and the command-line tool. After
+                this finishes, drag
+                <span class="font-mono">hopssh.app</span> from
+                <span class="font-mono">/Applications</span> to the Trash
+                to complete uninstall. Asks for your admin password once.
               </p>
             </div>
             <div class="flex shrink-0 gap-2">
