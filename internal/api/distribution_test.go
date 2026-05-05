@@ -130,3 +130,44 @@ func TestMacInstallScript_RefreshesSystemAgentOnLaunchDaemon(t *testing.T) {
 		t.Errorf("install script must kickstart the LaunchDaemon after replacing the binary so the new version is effective: %s", s)
 	}
 }
+
+// Phase CC (v0.10.95) — pickNewerVersion is the helper used by /version
+// to return max(current, fetched-from-GitHub). Eliminates the confusing
+// "Latest available: v0.10.93" while running v0.10.94 window right
+// after a tag bump.
+func TestPickNewerVersion(t *testing.T) {
+	cases := []struct {
+		a, b, want string
+		desc       string
+	}{
+		{"v0.10.94", "v0.10.93", "v0.10.94", "current newer than fetched"},
+		{"v0.10.93", "v0.10.94", "v0.10.94", "fetched newer than current"},
+		{"v0.10.94", "v0.10.94", "v0.10.94", "exact tie returns first"},
+		{"v0.10.94-dirty", "v0.10.93", "v0.10.94-dirty", "dirty suffix preserved on returned string but stripped for compare"},
+		{"v0.10.94-dirty", "v0.10.94", "v0.10.94-dirty", "tie on stripped components returns first arg"},
+		{"v1.0.0", "v0.99.99", "v1.0.0", "major version dominance"},
+		{"v0.10.10", "v0.10.9", "v0.10.10", "patch numeric not lexical"},
+		// Parse-failure paths fall back to a (preserving caller's intent).
+		{"v0.10.94", "garbage", "v0.10.94", "fetched parse failure → keep current"},
+		{"garbage", "v0.10.93", "garbage", "current parse failure → return current as-is (don't fabricate newer)"},
+		{"", "v0.10.93", "v0.10.93", "empty current → return fetched"},
+		{"v0.10.94", "", "v0.10.94", "empty fetched → return current"},
+	}
+	for _, c := range cases {
+		got := pickNewerVersion(c.a, c.b)
+		if got != c.want {
+			t.Errorf("%s: pickNewerVersion(%q, %q) = %q, want %q",
+				c.desc, c.a, c.b, got, c.want)
+		}
+	}
+}
+
+// Phase CC — versionCacheTTL was reduced from 5min to 60s. Tripwire:
+// no future "let's tune this" should silently bump it back to a value
+// that defeats the freshness goal of Phase CC.
+func TestVersionCacheTTLIsTight(t *testing.T) {
+	// Anything > 5min is suspicious — that was the pre-Phase-CC value.
+	if versionCacheTTL > 2*60*1_000_000_000 { // 2 minutes in nanoseconds
+		t.Errorf("versionCacheTTL is %v, expected <= 2min for fresh /version responses post-tag-bump", versionCacheTTL)
+	}
+}

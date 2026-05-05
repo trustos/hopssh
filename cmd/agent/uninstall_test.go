@@ -137,24 +137,33 @@ func TestUninstallLogsSeparateFromPurge(t *testing.T) {
 	}
 }
 
-// TestUninstallTargetsExcludeDesktopAppData asserts the agent uninstall
-// does NOT touch the Tauri desktop client's data dirs. The .app is a
-// separate product owned by macOS Finder + the GUI installer; pulling
-// its data on `hop-agent uninstall` would be a footgun for users who
-// only want to remove the daemon.
-func TestUninstallTargetsExcludeDesktopAppData(t *testing.T) {
+// TestUninstallTargetsExcludeDesktopAppBundle asserts the agent
+// uninstall does NOT touch the Tauri .app bundle itself or its
+// /Applications/ install location. Those are owned by macOS Finder
+// + the GUI installer; pulling them on `hop-agent uninstall` would
+// be a footgun for users who want to remove the daemon while
+// keeping the .app for later reinstall.
+//
+// Phase AA (v0.10.92) intentionally ADDED
+// `com.hopssh.desktop.plist` to the uninstall list — the desktop's
+// autostart LaunchAgent (placed by tauri-plugin-autostart in
+// Phase Y) IS something hopssh installs and therefore IS
+// something a complete uninstall should remove. The pre-Phase-AA
+// test forbade any path containing "com.hopssh.desktop"; that
+// invariant is now wrong. The new invariant: forbid the .app
+// bundle and the /Applications/ install location only.
+func TestUninstallTargetsExcludeDesktopAppBundle(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("darwin-specific")
 	}
 	forbidden := []string{
-		"com.hopssh.desktop",
 		"hopssh.app",
 		"/Applications/",
 	}
 	for _, tt := range uninstallTargetsDarwin() {
 		for _, f := range forbidden {
 			if strings.Contains(tt.Path, f) {
-				t.Errorf("path %q matches forbidden substring %q — the agent uninstall must not touch desktop-client paths",
+				t.Errorf("path %q matches forbidden substring %q — the agent uninstall must not touch the .app bundle or /Applications/ (those are owned by Finder + the GUI installer)",
 					tt.Path, f)
 			}
 		}

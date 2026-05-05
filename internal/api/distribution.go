@@ -19,7 +19,11 @@ const (
 	githubRepo       = "trustos/hopssh"
 	githubReleasesURL = "https://api.github.com/repos/" + githubRepo + "/releases/latest"
 	githubDownloadURL = "https://github.com/" + githubRepo + "/releases/download"
-	versionCacheTTL  = 5 * time.Minute
+	// versionCacheTTL — Phase CC (v0.10.95): reduced from 5min to 60s.
+	// GitHub's unauthenticated API rate limit is 60/h; one call/min stays
+	// well within budget while keeping `Latest available:` fresh for
+	// users hitting Check-for-updates moments after a release ships.
+	versionCacheTTL = 60 * time.Second
 )
 
 // validBinaryName matches hop-agent-linux-amd64, hop-server-darwin-arm64, etc.
@@ -93,13 +97,96 @@ func (h *DistributionHandler) fetchLatestVersion() string {
 
 // Version returns the latest available version as JSON.
 // GET /version — public, no auth.
+//
+// Phase CC (v0.10.95): the `version` field is now max(current, fetched)
+// rather than just `fetched`. Rationale: if THIS container is running
+// tag X, then X has been built AND published as a Docker image — so X
+// is by definition a valid "latest" available. This eliminates the
+// confusing "Latest available: v0.10.93" while running v0.10.94 window
+// (~8 minutes after a tag bump while GitHub's /releases/latest catches
+// up + our 60s cache expires). Without this, users see "Latest
+// available" appear to regress for a few minutes after each release.
 func (h *DistributionHandler) Version(w http.ResponseWriter, r *http.Request) {
-	latest := h.LatestVersion()
+	fetched := h.LatestVersion()
+	current := buildinfo.Version
+	latest := pickNewerVersion(current, fetched)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{
 		"version": latest,
-		"current": buildinfo.Version,
+		"current": current,
 	})
+}
+
+// pickNewerVersion returns whichever of the two versions parses as
+// semver-newer. Falls back to `a` when either side fails to parse —
+// preserves the user's running version as a safe default.
+//
+// Strips leading `v` and any `-suffix` (e.g. `-dirty`, `-rc1`) before
+// comparing the numeric components. So `v0.10.94-dirty` compares as
+// `0.10.94` against `v0.10.93` → returns `v0.10.94-dirty` (the
+// suffix is preserved on the returned string, only the comparison
+// strips it).
+//
+// Returns `a` on tie. Returns `a` on parse failure of either side.
+func pickNewerVersion(a, b string) string {
+	if a == "" {
+		return b
+	}
+	if b == "" {
+		return a
+	}
+	pa, okA := parseSemverComponents(a)
+	pb, okB := parseSemverComponents(b)
+	if !okA || !okB {
+		return a
+	}
+	for i := 0; i < 3; i++ {
+		if pa[i] > pb[i] {
+			return a
+		}
+		if pa[i] < pb[i] {
+			return b
+		}
+	}
+	return a // exact tie
+}
+
+// parseSemverComponents extracts the [major, minor, patch] integer
+// triple from a tag string like `v0.10.94-dirty`. Returns (triple,
+// true) on success, ([0,0,0], false) on parse failure.
+func parseSemverComponents(s string) ([3]int, bool) {
+	var out [3]int
+	s = strings.TrimPrefix(s, "v")
+	if i := strings.IndexByte(s, '-'); i >= 0 {
+		s = s[:i]
+	}
+	parts := strings.SplitN(s, ".", 4)
+	if len(parts) < 3 {
+		return out, false
+	}
+	for i := 0; i < 3; i++ {
+		n, err := parseUint(parts[i])
+		if err != nil {
+			return out, false
+		}
+		out[i] = n
+	}
+	return out, true
+}
+
+// parseUint is fmt.Sscanf-free; just digits.
+func parseUint(s string) (int, error) {
+	if s == "" {
+		return 0, fmt.Errorf("empty")
+	}
+	n := 0
+	for _, c := range s {
+		if c < '0' || c > '9' {
+			return 0, fmt.Errorf("non-digit %q", c)
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n, nil
 }
 
 // Download redirects to the GitHub Release asset for the requested binary.
