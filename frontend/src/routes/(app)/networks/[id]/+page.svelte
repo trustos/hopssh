@@ -368,7 +368,14 @@
 		error = '';
 		try {
 			network = await networksApi.get(networkId);
-			dnsRecords = await dnsApi.list(networkId);
+			// v0.10.89 (F7): every sub-fetch self-degrades to []. The
+			// network-detail page is page-blocked ONLY by networksApi.get;
+			// a single failed sub-call must not 404 the whole view. Pre-fix,
+			// dnsApi.list lacked a .catch and threw the whole page into
+			// "network not found" for member-role users (when dns.go
+			// ListDNSRecords still gated on CanAccessNetwork — fixed in F6,
+			// but F7 hardens the page so a future regression can't repeat).
+			dnsRecords = await dnsApi.list(networkId).catch(() => []);
 			activeForwards = await fwdApi.list(networkId).catch(() => []);
 			networkMembers = await membersApi.list(networkId).catch(() => []);
 			if (network.role === 'admin') {

@@ -46,6 +46,33 @@ pub(crate) fn system_mirror_files_exist() -> bool {
     }
 }
 
+/// endpoint_alive probes the cached endpoint with a quick TCP-connect
+/// to confirm the loopback port is still bound. Returns true only when
+/// the connect completes within 200 ms.
+///
+/// v0.10.89 (Phase X): this exists because `state.endpoint.is_some()`
+/// alone is NOT a reliable health signal. Phase W left two gates that
+/// short-circuit on `is_some` (the periodic re-probe and the Retry
+/// button's Tauri command), but `state.endpoint` is set ONCE at
+/// attach time and only cleared by an explicit `revert_to_bundled`.
+/// When the LaunchDaemon restarts (dev-deploy, manual kickstart,
+/// daemon crash + relaunch), the loopback port + token rotate, but
+/// the cached endpoint keeps pointing at the OLD port. The notify
+/// file-change watcher SHOULD re-attach via the mirror-file rewrite
+/// event, but in practice misses some atomic-rename writes on macOS
+/// kqueue. Net: state.endpoint becomes stale-but-not-None, both
+/// recovery hooks skip, the .app stays "agent unreachable" until
+/// quit + relaunch.
+///
+/// 200 ms is generous for loopback (typical < 1ms). Connect-refused
+/// against a dead port returns instantly.
+pub(crate) fn endpoint_alive(ep: &LocalAgentEndpoint) -> bool {
+    let Ok(addr) = ep.host.parse::<SocketAddr>() else {
+        return false;
+    };
+    TcpStream::connect_timeout(&addr, Duration::from_millis(200)).is_ok()
+}
+
 /// try_attach_to_system_agent probes for a `hop-agent install --migrate-from`
 /// LaunchDaemon by reading its mirror token + port file out of the user's
 /// `~/Library/Application Support/hopssh/`. Returns Some(endpoint) when
@@ -319,15 +346,30 @@ pub fn watch_system_mirror(app: AppHandle, state: Arc<AppState>) {
                 };
                 std::thread::sleep(interval);
 
-                // Skip the probe if we already have a working endpoint
-                // — no need to thrash. The file-change watcher below
-                // handles port rotations.
-                if state.endpoint.lock().is_some() {
+                // v0.10.89 (Phase X): predicate flipped from "is_some" to
+                // "is_some AND endpoint_alive". Pre-fix, an endpoint set
+                // to a dead port (post-LaunchDaemon-restart) would skip
+                // the re-probe forever — leaving the .app stuck on
+                // "agent unreachable" until quit + relaunch. Now we
+                // TCP-probe the cached endpoint each cycle; if it's
+                // dead, we clear it and fall through to the re-attach
+                // path. Cost: 1 loopback connect per cycle (~1ms healthy,
+                // ~instant on connect-refused). Negligible.
+                let stale = match state.endpoint.lock().as_ref() {
+                    None => true,
+                    Some(ep) => !endpoint_alive(ep),
+                };
+                if !stale {
                     continue;
                 }
                 if !system_mirror_files_exist() {
                     continue;
                 }
+                // Clear the stale endpoint BEFORE re-attach so the
+                // existing log line + agent-ready emit signal a real
+                // transition. Also gives the JS layer a clean signal to
+                // re-resolve via the local_api_endpoint Tauri command.
+                *state.endpoint.lock() = None;
                 if let Some(ep) = try_attach_to_system_agent() {
                     let host = ep.host.clone();
                     *state.endpoint.lock() = Some(ep);

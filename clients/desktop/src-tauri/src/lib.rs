@@ -79,14 +79,28 @@ fn local_api_endpoint(state: State<'_, Arc<AppState>>) -> Result<LocalAgentEndpo
 ///
 /// v0.10.87 (Phase W). Pre-fix the Retry button only re-ran
 /// `agent.refresh()` against the same broken state.endpoint=None,
-/// which was guaranteed to keep failing. Now it explicitly re-probes.
+/// which was guaranteed to keep failing.
+///
+/// v0.10.89 (Phase X). The "is_some" early-return was itself a bug:
+/// when state.endpoint pointed at a DEAD port (post-LaunchDaemon-
+/// restart), the Retry button silently no-op'd and the user was
+/// stuck again. Now we TCP-probe the cached endpoint via
+/// `endpoint_alive`; if it fails the predicate, we clear and
+/// re-attach — exactly what the user expects when they click Retry.
+/// Also called by the JS SSE-failure-recovery path so the .app
+/// self-heals on daemon restart without user action (see local-api.ts
+/// subscribeEvents catch handler).
 #[tauri::command]
 fn retry_attach_system_agent(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    if state.endpoint.lock().is_some() {
-        // Already attached — nothing to do.
+    let stale = match state.endpoint.lock().as_ref() {
+        None => true,
+        Some(ep) => !crate::agent::endpoint_alive(ep),
+    };
+    if !stale {
+        // Truly attached — no-op is correct.
         return Ok(());
     }
     if !crate::agent::system_mirror_files_exist() {
@@ -95,6 +109,11 @@ fn retry_attach_system_agent(
                 .into(),
         );
     }
+    // Clear stale endpoint BEFORE re-attach. This makes the agent-ready
+    // event a real transition signal for the JS listener (which resets
+    // the module-level endpoint cache) and keeps the log line below
+    // honest.
+    *state.endpoint.lock() = None;
     match crate::agent::try_attach_to_system_agent() {
         Some(ep) => {
             let host = ep.host.clone();
@@ -1260,6 +1279,129 @@ mod tests {
         assert!(
             !block.contains("on_tray_icon_event"),
             "tray must NOT define an on_tray_icon_event handler — clicks are handled by show_menu_on_left_click(true) + on_menu_event. A handler here would race with the native menu pop. Block: {block}"
+        );
+    }
+
+    /// v0.10.89 (Phase X) — behavioral test for endpoint_alive.
+    /// Bind a local TCP listener, probe → ok. Close listener, probe →
+    /// false. Loopback connect-refused returns instantly (no flakes).
+    #[test]
+    fn endpoint_alive_handles_dead_port() {
+        use crate::LocalAgentEndpoint;
+        use std::net::TcpListener;
+
+        let ln = TcpListener::bind("127.0.0.1:0").expect("bind loopback");
+        let host = ln.local_addr().expect("local_addr").to_string();
+        let ep = LocalAgentEndpoint {
+            host: host.clone(),
+            token: "test-token".into(),
+        };
+        assert!(
+            crate::agent::endpoint_alive(&ep),
+            "endpoint_alive must return true for a bound port (host={host})"
+        );
+
+        // Close the listener; the port becomes unbound (kernel rejects
+        // SYN with RST → connect_refused, returned instantly).
+        drop(ln);
+
+        // Tiny grace for the kernel to fully release the bind. macOS
+        // is fast here; 50ms is plenty.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(
+            !crate::agent::endpoint_alive(&ep),
+            "endpoint_alive must return false after the listener is dropped (host={host})"
+        );
+    }
+
+    /// v0.10.89 (Phase X) — endpoint_alive must reject malformed host
+    /// strings without panicking. Defense against future regressions
+    /// where state.endpoint.host gets a non-SocketAddr value.
+    #[test]
+    fn endpoint_alive_rejects_malformed_host() {
+        use crate::LocalAgentEndpoint;
+        let ep = LocalAgentEndpoint {
+            host: "not-a-socket-addr".into(),
+            token: "test".into(),
+        };
+        assert!(
+            !crate::agent::endpoint_alive(&ep),
+            "endpoint_alive must return false for unparseable host"
+        );
+    }
+
+    /// v0.10.89 (Phase X) — Tripwire: retry_attach_system_agent MUST
+    /// use endpoint_alive (not bare is_some) when deciding whether to
+    /// re-probe. Without this, the Retry button no-ops against a
+    /// stale endpoint pointing at a dead daemon port — the exact
+    /// regression Phase X exists to prevent.
+    #[test]
+    fn retry_attach_system_agent_uses_endpoint_alive() {
+        let src = std::fs::read_to_string(file!())
+            .expect("must be able to read lib.rs source for self-scan");
+        let fn_marker = "fn retry_attach_system_agent(";
+        let start = src
+            .find(fn_marker)
+            .expect("retry_attach_system_agent must exist");
+        // Body ends at the next `#[tauri::command]` or `#[cfg(target_os` block,
+        // whichever comes first. Approximate by scanning for the next "\n#["
+        // marker.
+        let after = &src[start..];
+        let body_end = after.find("\n#[").unwrap_or(after.len());
+        let body = &after[..body_end];
+
+        assert!(
+            body.contains("endpoint_alive"),
+            "retry_attach_system_agent must call endpoint_alive — \
+             bare is_some leaves the .app stuck against a dead-port endpoint. \
+             Body: {body}"
+        );
+        // The clear-before-reattach invariant: state.endpoint.lock() = None
+        // must run between the stale check and try_attach_to_system_agent.
+        let stale_idx = body.find("endpoint_alive").unwrap();
+        let clear_idx = body
+            .find("state.endpoint.lock() = None")
+            .expect("retry_attach_system_agent must clear state.endpoint before re-attach");
+        let attach_idx = body
+            .find("try_attach_to_system_agent(")
+            .expect("retry_attach_system_agent must call try_attach_to_system_agent");
+        assert!(
+            stale_idx < clear_idx && clear_idx < attach_idx,
+            "ORDERING REGRESSION: expected endpoint_alive (offset {stale_idx}) → \
+             clear (offset {clear_idx}) → try_attach (offset {attach_idx}). \
+             Re-ordering breaks the Phase X invariant."
+        );
+    }
+
+    /// v0.10.89 (Phase X) — Tripwire: watch_system_mirror's periodic
+    /// re-probe uses endpoint_alive, not bare is_some. Same rationale
+    /// as retry_attach_system_agent's tripwire.
+    #[test]
+    fn watch_system_mirror_periodic_reprobe_uses_endpoint_alive() {
+        let src = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("src/agent.rs"),
+        )
+        .expect("must be able to read agent.rs");
+        // Locate the periodic re-probe block. Anchor on the unique
+        // comment phrase we wrote at the top of that block (NOT the
+        // generic "Phase X)" marker, which also appears in
+        // endpoint_alive's docstring elsewhere in the file).
+        let anchor = "Phase X): predicate flipped";
+        let start = src
+            .find(anchor)
+            .expect("Phase X periodic-reprobe anchor must exist in agent.rs");
+        // Take a window of ~1500 chars after the anchor — covers the loop body.
+        let end = (start + 1500).min(src.len());
+        let block = &src[start..end];
+
+        assert!(
+            block.contains("endpoint_alive"),
+            "periodic re-probe must call endpoint_alive — bare is_some leaves \
+             the .app stuck against a dead-port endpoint"
+        );
+        assert!(
+            block.contains("state.endpoint.lock() = None"),
+            "periodic re-probe must clear stale state.endpoint before re-attach"
         );
     }
 

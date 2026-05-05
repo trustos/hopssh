@@ -324,6 +324,27 @@ export async function subscribeEvents(
         // so the next loop iteration re-runs the Tauri command.
         cached = null;
         onStatus?.(false);
+        // v0.10.89 (Phase X): proactively kick the Rust shell to
+        // re-probe the system-agent endpoint. Without this, when the
+        // LaunchDaemon restarts (dev-deploy, kickstart, daemon flap)
+        // and rotates its loopback port, the Rust shell's
+        // state.endpoint stays pointed at the dead OLD port — the
+        // file-change watcher in agent.rs SHOULD catch the rewrite
+        // but in practice misses some atomic-rename writes on macOS
+        // kqueue, leaving the .app stuck. retry_attach_system_agent
+        // (now endpoint-alive aware) detects the stale endpoint and
+        // re-attaches, then emits agent-ready which resets THIS
+        // loop's stale cached endpoint and re-subscribes SSE on the
+        // NEW port. End-to-end recovery in ~5s without user action.
+        // Tauri-only — no-op in browser dev mode.
+        if (typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window) {
+          try {
+            await invoke('retry_attach_system_agent');
+          } catch {
+            // benign — bundled mode (no system mirror), or daemon
+            // really is down. The exponential backoff keeps trying.
+          }
+        }
         await new Promise((r) => setTimeout(r, backoff));
         backoff = Math.min(backoff * 2, 10_000);
       }

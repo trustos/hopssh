@@ -97,6 +97,88 @@ func assertCanEnrollNodeAtHandler(t *testing.T, file, marker string) {
 	}
 }
 
+// v0.10.89 (F6): ListDNSRecords MUST permit members — the dashboard's
+// network-detail page fetches /api/networks/{id}/dns in onMount, and
+// pre-fix the handler used CanAccessNetwork (owner-only) which made the
+// whole page render "network not found" for invited members. The fix
+// follows the same membership-aware predicate pattern as F3, except
+// using CheckAccess.CanView() (read paths use CanView, enrollment-write
+// paths use CanEnrollNode). DNS *mutations* (Create, Delete) intentionally
+// stay owner-only — see TestD3_DNSCreateDelete_StayOwnerOnly below.
+func TestD3_ListDNSRecords_PermitsMembers(t *testing.T) {
+	src, err := os.ReadFile("dns.go")
+	if err != nil {
+		t.Fatalf("read dns.go: %v", err)
+	}
+	body := string(src)
+	idx := strings.Index(body, "func (h *DNSHandler) ListDNSRecords(")
+	if idx < 0 {
+		t.Fatal("ListDNSRecords handler not found in dns.go")
+	}
+	end := strings.Index(body[idx:], "\n}\n")
+	if end < 0 {
+		t.Fatal("end of ListDNSRecords not found")
+	}
+	handler := body[idx : idx+end]
+
+	if !strings.Contains(handler, "h.Members.GetMembership(") {
+		t.Error("ListDNSRecords must look up membership for the access check")
+	}
+	if !strings.Contains(handler, "authz.CheckAccess(") {
+		t.Error("ListDNSRecords must call authz.CheckAccess to reach CanView")
+	}
+	if !strings.Contains(handler, ".CanView()") {
+		t.Error("ListDNSRecords must call .CanView() — members should see DNS records of networks they're a member of")
+	}
+	// The Networks.Get failure case keeps a `network == nil` 404 path
+	// at the top BEFORE the membership lookup; we don't want to enforce
+	// that the network-nil branch precedes the membership lookup.
+	// What we DO want: the access check must fail (404) before any
+	// further processing if CanView returns false.
+	canViewIdx := strings.Index(handler, ".CanView()")
+	listForNetworkIdx := strings.Index(handler, "h.DNSRecords.ListForNetwork(")
+	if listForNetworkIdx < 0 {
+		t.Fatal("ListDNSRecords must still call DNSRecords.ListForNetwork")
+	}
+	if canViewIdx > listForNetworkIdx {
+		t.Errorf("ORDERING REGRESSION: CanView at offset %d must precede ListForNetwork at offset %d", canViewIdx, listForNetworkIdx)
+	}
+}
+
+// TestD3_DNSCreateDelete_StayOwnerOnly: DNS mutations are privileged
+// operational changes (DNS naming is per-network policy; members
+// shouldn't be able to clobber the admin's records). Owner-only is
+// the correct policy and must NOT widen.
+func TestD3_DNSCreateDelete_StayOwnerOnly(t *testing.T) {
+	src, err := os.ReadFile("dns.go")
+	if err != nil {
+		t.Fatalf("read dns.go: %v", err)
+	}
+	body := string(src)
+	for _, marker := range []string{
+		"func (h *DNSHandler) CreateDNSRecord(",
+		"func (h *DNSHandler) DeleteDNSRecord(",
+	} {
+		idx := strings.Index(body, marker)
+		if idx < 0 {
+			// Not all handlers are present in every revision; skip
+			// silently for handlers that don't exist.
+			continue
+		}
+		end := strings.Index(body[idx:], "\n}\n")
+		if end < 0 {
+			t.Fatalf("end of %q not found", marker)
+		}
+		handler := body[idx : idx+end]
+		if !strings.Contains(handler, "authz.CanAccessNetwork(") {
+			t.Errorf("%s must use authz.CanAccessNetwork (owner-only) — DNS mutations are privileged", marker)
+		}
+		if strings.Contains(handler, "authz.CanEnrollNode(") {
+			t.Errorf("%s must NOT use CanEnrollNode — would let members write DNS records", marker)
+		}
+	}
+}
+
 // TestD3_DeleteNetwork_StaysOwnerOnly belt-and-braces: the destructive
 // DELETE /api/networks/{id} handler must NOT accidentally get widened
 // to allow members. Owner-only is correct for destructive ops.

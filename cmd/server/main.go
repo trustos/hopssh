@@ -195,7 +195,7 @@ func main() {
 	}
 
 	renewH := &api.RenewHandler{Networks: networks, Nodes: nodes, DNSRecords: dnsRecords, NetworkManager: netMgr}
-	dnsH := &api.DNSHandler{Networks: networks, DNSRecords: dnsRecords, NetworkManager: netMgr}
+	dnsH := &api.DNSHandler{Networks: networks, DNSRecords: dnsRecords, Members: members, NetworkManager: netMgr}
 
 	auditH := &api.AuditHandler{Audit: audit, Networks: networks, Members: members}
 

@@ -24,6 +24,7 @@ func isValidDNSName(name string) bool {
 type DNSHandler struct {
 	Networks       *db.NetworkStore
 	DNSRecords     *db.DNSRecordStore
+	Members        *db.NetworkMemberStore
 	NetworkManager *mesh.NetworkManager
 }
 
@@ -40,7 +41,23 @@ func (h *DNSHandler) ListDNSRecords(w http.ResponseWriter, r *http.Request) {
 	networkID := chi.URLParam(r, "networkID")
 
 	network, err := h.Networks.Get(networkID)
-	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
+	if err != nil || network == nil {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return
+	}
+
+	// v0.10.89 (F6): DNS records describing a network are READ-ONLY
+	// informational data — members of a network should be able to see
+	// them. DNS *mutations* (Create/Delete below) intentionally stay
+	// owner-only. Pre-fix this used CanAccessNetwork (owner-only),
+	// which made the dashboard's network-detail page 404 for invited
+	// members because /api/networks/{id}/dns is fetched in onMount.
+	var membership *db.NetworkMember
+	if h.Members != nil {
+		membership, _ = h.Members.GetMembership(networkID, user.ID)
+	}
+	access := authz.CheckAccess(user, network, membership)
+	if !access.CanView() {
 		http.Error(w, "network not found", http.StatusNotFound)
 		return
 	}
