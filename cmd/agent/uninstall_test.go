@@ -29,6 +29,12 @@ func TestUninstallTargetsCoverDarwin(t *testing.T) {
 	if home, err := os.UserHomeDir(); err == nil {
 		must = append(must,
 			filepath.Join(home, "Library", "LaunchAgents", "com.hopssh.agent.plist"),
+			// Phase AA (v0.10.92): the desktop's autostart LaunchAgent.
+			// Created by tauri-plugin-autostart in Phase Y when the user
+			// enables "Open hopssh on login". Must be in the uninstall
+			// target list — without it, uninstalling hopssh leaves a
+			// dangling LaunchAgent pointing at the deleted .app.
+			filepath.Join(home, "Library", "LaunchAgents", "com.hopssh.desktop.plist"),
 			filepath.Join(home, "Library", "Application Support", "hopssh"),
 			filepath.Join(home, "Library", "Logs", "hop-agent.log"),
 		)

@@ -626,14 +626,35 @@ fn reset_hopssh() -> Result<String, String> {
 /// itself, so the success message instructs the user to drag
 /// /Applications/hopssh.app to the Trash. The UI shows that message
 /// in a banner along with a Quit button (calls `quit_app`).
+///
+/// Phase AA (v0.10.92): also unregister the desktop's own autostart
+/// LaunchAgent BEFORE running the privileged uninstall. The agent
+/// uninstall (post Phase AA F1) ALSO removes the file via its target
+/// list, but calling `autolaunch().disable()` first is more correct:
+/// the plugin's API both deletes the file AND unloads it from launchd
+/// in a single operation, whereas the agent uninstall just rm's the
+/// file. Without `disable()` first, there's a brief window where
+/// launchd still has the plist loaded but the file is gone.
 #[tauri::command]
-fn uninstall_hopssh_full() -> Result<String, String> {
+fn uninstall_hopssh_full(app: AppHandle) -> Result<String, String> {
     #[cfg(not(target_os = "macos"))]
     {
+        let _ = app;
         return Err("uninstall_hopssh_full: only supported on macOS".to_string());
     }
     #[cfg(target_os = "macos")]
     {
+        // Phase AA: unregister the desktop's own autostart FIRST.
+        // tauri-plugin-autostart's disable() removes the LaunchAgent
+        // file AND unloads it from launchd. Best-effort — if the
+        // plugin can't unload (e.g. file already missing), proceed
+        // anyway; the agent uninstall below will rm any leftover.
+        {
+            use tauri_plugin_autostart::ManagerExt;
+            if let Err(e) = app.autolaunch().disable() {
+                log::warn!("uninstall: could not disable autostart before agent uninstall: {e} (continuing — agent uninstall will rm any leftover plist)");
+            }
+        }
         let agent = resolve_agent_path()
             .ok_or_else(|| "could not locate bundled hop-agent binary".to_string())?;
         let script = build_uninstall_script(&agent, true);
@@ -1437,6 +1458,44 @@ mod tests {
         assert!(
             !block.contains("on_tray_icon_event"),
             "tray must NOT define an on_tray_icon_event handler — clicks are handled by show_menu_on_left_click(true) + on_menu_event. A handler here would race with the native menu pop. Block: {block}"
+        );
+    }
+
+    /// Phase AA (v0.10.92) — Tripwire: uninstall_hopssh_full MUST
+    /// call `app.autolaunch().disable()` BEFORE invoking the
+    /// privileged uninstall script. Pre-fix the desktop's autostart
+    /// LaunchAgent (~/Library/LaunchAgents/com.hopssh.desktop.plist)
+    /// would survive uninstall_hopssh_full, leaving a dangling plist
+    /// pointing at the deleted .app. Disabling first is more correct
+    /// than relying on the agent uninstall to rm the file: the
+    /// plugin's API both deletes AND unloads from launchd in one op.
+    #[test]
+    fn uninstall_full_disables_autostart_first() {
+        let src = std::fs::read_to_string(file!())
+            .expect("must be able to read lib.rs source for self-scan");
+        let fn_marker = "fn uninstall_hopssh_full(";
+        let start = src
+            .find(fn_marker)
+            .expect("uninstall_hopssh_full must exist");
+        let after = &src[start..];
+        // Take everything up through the next top-level `#[tauri::command]`.
+        let body_end = after.find("\n#[tauri::command]").unwrap_or(after.len());
+        let body = &after[..body_end];
+
+        let disable_idx = body.find("autolaunch().disable()").or_else(|| body.find("autolaunch()"));
+        let osascript_idx = body.find("run_osascript(");
+
+        let disable_idx = disable_idx.expect(
+            "uninstall_hopssh_full must call app.autolaunch().disable() — without it, \
+             ~/Library/LaunchAgents/com.hopssh.desktop.plist survives uninstall and \
+             leaves a dangling LaunchAgent on the user's Mac"
+        );
+        let osascript_idx = osascript_idx.expect("uninstall_hopssh_full must call run_osascript");
+        assert!(
+            disable_idx < osascript_idx,
+            "ORDERING REGRESSION: autolaunch().disable() (offset {disable_idx}) must come \
+             BEFORE run_osascript (offset {osascript_idx}) — disable() is what cleanly \
+             unloads from launchd, the privileged uninstall script just rm's the file"
         );
     }
 

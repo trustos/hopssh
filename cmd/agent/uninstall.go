@@ -109,7 +109,17 @@ func uninstallTargetsDarwin() []cleanupTarget {
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		t = append(t,
-			cleanupTarget{Path: filepath.Join(home, "Library", "LaunchAgents", "com.hopssh.agent.plist"), Desc: "user LaunchAgent plist", Category: categoryService},
+			cleanupTarget{Path: filepath.Join(home, "Library", "LaunchAgents", "com.hopssh.agent.plist"), Desc: "user LaunchAgent plist (agent)", Category: categoryService},
+			// Phase AA (v0.10.92): the desktop client's autostart
+			// LaunchAgent. Created by tauri-plugin-autostart in
+			// Phase Y (v0.10.90) when the user enables "Open hopssh
+			// on login" in Settings. The bundle id `com.hopssh.desktop`
+			// matches `clients/desktop/src-tauri/tauri.conf.json::identifier`.
+			// Without this entry, uninstalling hopssh leaves a stale
+			// LaunchAgent that points at the deleted .app — launchd
+			// fails silently every login until the user manually
+			// removes the plist.
+			cleanupTarget{Path: filepath.Join(home, "Library", "LaunchAgents", "com.hopssh.desktop.plist"), Desc: "user LaunchAgent plist (desktop autostart)", Category: categoryService},
 			cleanupTarget{Path: filepath.Join(home, "Library", "Application Support", "hopssh"), Desc: "user config dir", Category: categoryConfig},
 			cleanupTarget{Path: filepath.Join(home, "Library", "Logs", "hop-agent.log"), Desc: "user log", Category: categoryLog},
 		)
