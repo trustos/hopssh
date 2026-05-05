@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // migrateEnrollmentsToSystem moves enrollments + per-enrollment subdirs
@@ -244,13 +247,136 @@ func writeSystemMirrorFiles(mirrorDir, token, addr string) {
 	// Chown both files to the console user IF we're running as root
 	// (which we expect for system-mode). Skip otherwise — files stay
 	// owned by whoever wrote them (the user themselves running CLI).
+	//
+	// Phase Z (v0.10.91): TWO-LAYER FALLBACK to fix the boot-order
+	// race that left mirror files root-owned across reboots.
+	//
+	// 1. resolveConsoleUser tries $SUDO_USER then `stat /dev/console`.
+	//    At BOOT time before any user logs in, /dev/console is owned
+	//    by root, resolveConsoleUser returns error, and pre-fix the
+	//    files stayed root-owned forever — even after the user logged
+	//    in. The .app, running as the user, couldn't read the mode-
+	//    0600 token and showed "agent unreachable".
+	//
+	// 2. Fallback: stat the mirror DIR's owner. The dir was created
+	//    during `hop-agent install --migrate-from` (or convert_to_
+	//    system_service via the Tauri shell), which ran AS the user.
+	//    So the dir's owner IS the right chown target — independent
+	//    of /dev/console state.
+	//
+	// Plus: runChownSelfHealLoop (called separately from main.go) re-
+	// runs this chown periodically, catching the case where this
+	// initial write happens before the dir is properly owned (rare).
 	if os.Geteuid() == 0 {
-		user, _, err := resolveConsoleUser()
-		if err != nil {
-			log.Printf("[mirror] resolveConsoleUser: %v (mirror files left root-owned)", err)
-			return
+		if err := chownMirrorFiles(mirrorDir, tokenPath, portPath); err != nil {
+			log.Printf("[mirror] chown failed: %v (mirror files left root-owned; periodic self-heal will retry)", err)
 		}
-		_ = exec.Command("chown", user+":staff", tokenPath, portPath).Run()
 	}
 	log.Printf("[mirror] wrote %s + %s", tokenPath, portPath)
+}
+
+// chownMirrorFiles chowns the mirror token + port files to the user
+// who should be able to read them. Tries `resolveConsoleUser` first
+// (covers the user-is-logged-in case), falls back to stat-ing the
+// mirror dir's owner (covers the boot-before-login case + any other
+// situation where /dev/console doesn't have a real user). Idempotent
+// — safe to call repeatedly (used by both the initial write and the
+// periodic self-heal loop).
+//
+// Returns nil if either path succeeded, error if both failed.
+func chownMirrorFiles(mirrorDir, tokenPath, portPath string) error {
+	user, _, err := resolveConsoleUser()
+	if err == nil && user != "" && user != "root" {
+		// Console user available — primary path.
+		if cerr := exec.Command("chown", user+":staff", tokenPath, portPath).Run(); cerr == nil {
+			return nil
+		} else {
+			err = cerr
+		}
+	}
+
+	// Fallback: use the mirror dir's UID/GID as the chown target.
+	// `hop-agent install --migrate-from` ran as the user and created
+	// the dir, so it's owned by the user we want.
+	info, statErr := os.Stat(mirrorDir)
+	if statErr != nil {
+		return fmt.Errorf("resolveConsoleUser: %v; stat mirror dir: %w", err, statErr)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("resolveConsoleUser: %v; mirror dir Stat_t unavailable", err)
+	}
+	if stat.Uid == 0 {
+		// Dir is also root-owned — we have no good target. Refuse.
+		return fmt.Errorf("resolveConsoleUser: %v; mirror dir is also root-owned (no fallback available)", err)
+	}
+	chownTarget := fmt.Sprintf("%d:%d", stat.Uid, stat.Gid)
+	if cerr := exec.Command("chown", chownTarget, tokenPath, portPath).Run(); cerr != nil {
+		return fmt.Errorf("chown %s -> %s: %w", chownTarget, tokenPath, cerr)
+	}
+	log.Printf("[mirror] chowned to mirror-dir owner uid=%d gid=%d (resolveConsoleUser unavailable: %v)", stat.Uid, stat.Gid, err)
+	return nil
+}
+
+// runMirrorChownSelfHeal periodically re-checks the mirror files'
+// ownership and re-chowns if they're still root-owned. Defense in
+// depth against the boot-before-login race: if writeSystemMirrorFiles
+// at boot couldn't resolve a user (no console user, no dir owner),
+// this loop catches it on the next poll cycle.
+//
+// Phase Z (v0.10.91). Spawned as a goroutine from runServe in main.go,
+// scoped to the agent-wide ctx so SIGTERM stops it cleanly.
+//
+// Cadence: 30s, intentionally slow. The bug is rare (only fires at
+// boot before login) and the fix only needs to land within ~30s of
+// user login — no reason to thrash sooner. Once chown succeeds and
+// stays correct, this loop becomes a no-op (chownMirrorFiles checks
+// state then short-circuits).
+func runMirrorChownSelfHeal(ctx context.Context, mirrorDir string) {
+	if mirrorDir == "" {
+		return
+	}
+	if os.Geteuid() != 0 {
+		// Non-root agent (CLI mode) doesn't write mirror files.
+		return
+	}
+	tokenPath := filepath.Join(mirrorDir, systemMirrorTokenFile)
+	portPath := filepath.Join(mirrorDir, systemMirrorPortFile)
+
+	t := time.NewTicker(30 * time.Second)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+
+		// Cheap check: are the files still root-owned? If not, no work to do.
+		needsChown := false
+		for _, p := range []string{tokenPath, portPath} {
+			info, err := os.Stat(p)
+			if err != nil {
+				continue // file missing — initial write hasn't happened, skip
+			}
+			stat, ok := info.Sys().(*syscall.Stat_t)
+			if !ok {
+				continue
+			}
+			if stat.Uid == 0 {
+				needsChown = true
+				break
+			}
+		}
+		if !needsChown {
+			continue
+		}
+
+		log.Printf("[mirror] self-heal: mirror files are root-owned; re-running chown")
+		if err := chownMirrorFiles(mirrorDir, tokenPath, portPath); err != nil {
+			log.Printf("[mirror] self-heal chown still failing: %v", err)
+		} else {
+			log.Printf("[mirror] self-heal chown succeeded — .app should attach within seconds")
+		}
+	}
 }

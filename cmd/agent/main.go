@@ -325,6 +325,14 @@ func runServe(args []string) {
 		return nil
 	}
 
+	// Phase Z (v0.10.91): self-heal goroutine that periodically re-
+	// chowns the system mirror files if they're still root-owned (e.g.
+	// the LaunchDaemon booted before any user logged in, leaving
+	// resolveConsoleUser unable to find a target). Only fires when
+	// systemMirrorDirOverride is set (i.e. system-mode agent launched
+	// with --mirror-dir). Bundled mode (no --mirror-dir) skips this.
+	go runMirrorChownSelfHeal(shutdownCtx, systemMirrorDirOverride)
+
 	if err := startLocalAPI(shutdownCtx, configDir, reg, instances, connectFn, disconnectFn); err != nil {
 		log.Printf("[agent] WARNING: local API not started: %v", err)
 	}

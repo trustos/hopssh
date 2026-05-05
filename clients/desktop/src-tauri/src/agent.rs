@@ -113,7 +113,30 @@ pub(crate) fn try_attach_to_system_agent() -> Option<LocalAgentEndpoint> {
         if !token_path.exists() || !port_path.exists() {
             return None;
         }
-        let token = std::fs::read_to_string(&token_path).ok()?.trim().to_string();
+        // Phase Z (v0.10.91): distinguish EACCES (ownership wrong)
+        // from ENOENT (missing file). Pre-fix the read silently
+        // returned None on either case — debugging the boot-before-
+        // login chown bug took 10× longer than necessary because the
+        // .app didn't surface a hint. Now we log a specific warning
+        // when the token is present but unreadable, pointing at the
+        // chown self-heal in the agent (Phase Z's runMirrorChownSelfHeal
+        // will fix it within 30s).
+        let token = match std::fs::read_to_string(&token_path) {
+            Ok(t) => t.trim().to_string(),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                log::warn!(
+                    "system-agent token file exists but is not readable (EACCES at {}): \
+                     mirror file ownership wrong — likely the LaunchDaemon booted \
+                     before any user logged in, so the agent couldn't chown the file \
+                     to the user. Phase Z's runMirrorChownSelfHeal in the agent will \
+                     re-chown within 30s; the .app's periodic re-probe will then \
+                     attach. If this persists past 1 minute, investigate /var/log/hop-agent.log",
+                    token_path.display()
+                );
+                return None;
+            }
+            Err(_) => return None,
+        };
         let port_str = std::fs::read_to_string(&port_path).ok()?.trim().to_string();
         let port: u16 = port_str.parse().ok()?;
         let addr: SocketAddr = format!("127.0.0.1:{port}").parse().ok()?;
