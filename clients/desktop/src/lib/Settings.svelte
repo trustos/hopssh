@@ -106,6 +106,17 @@
   let hideFromDock = $state(false);
   let hideFromDockBusy = $state(false);
 
+  // ---- Phase Y (v0.10.90): "Open hopssh on login" toggle ----
+  // When ON, the .app autostarts on macOS login (LaunchAgent file
+  // registered via tauri-plugin-autostart). When the .app autostarts
+  // it launches with --start-minimized, so the user sees only the
+  // menubar icon — no popped-up window. Click the icon to open the
+  // window. Persists in desktop-prefs.json alongside hide_from_dock;
+  // the actual on-disk state (LaunchAgent file presence) is the
+  // source of truth for the toggle's display state.
+  let startAtLogin = $state(false);
+  let startAtLoginBusy = $state(false);
+
   const isTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
   async function loadHideFromDock() {
@@ -131,6 +142,34 @@
     }
   }
 
+  async function loadStartAtLogin() {
+    if (!isTauri) return;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      // get_start_at_login returns the actual LaunchAgent state on
+      // disk (via the autostart plugin's is_enabled), not just the
+      // pref. Source of truth — if the user removed hopssh from
+      // System Settings → Login Items independently, the toggle
+      // shows reality the next time the panel mounts.
+      startAtLogin = await invoke<boolean>('get_start_at_login');
+    } catch {
+      startAtLogin = false;
+    }
+  }
+
+  async function toggleStartAtLogin() {
+    if (!isTauri) return;
+    startAtLoginBusy = true;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const next = !startAtLogin;
+      await invoke('set_start_at_login', { enabled: next });
+      startAtLogin = next;
+    } finally {
+      startAtLoginBusy = false;
+    }
+  }
+
   // True when the agent reports it's the launchd-spawned system daemon.
   // When false, the agent is a child of the .app (bundled mode).
   let inSystemMode = $derived(agent.status?.runMode === 'system');
@@ -149,6 +188,7 @@
       updateState.current = await appVersion();
     }
     void loadHideFromDock();
+    void loadStartAtLogin();
     if (autoCheckUpdate) {
       // User came in via the tray's "Check for updates…" — fire the
       // check immediately so they see the result without an extra
@@ -371,6 +411,40 @@
           {bgDone}
         </div>
       {/if}
+
+      <!-- Phase Y (v0.10.90): "Open hopssh on login" toggle.
+           Sits between Run-in-the-background and Hide-from-Dock per
+           the Phase Y plan: three lifecycle toggles in one
+           Preferences section, each independent, plain-English copy,
+           with reality reflected via get_start_at_login (LaunchAgent
+           file presence). Mirrors the "Run in the background" layout. -->
+      <div class="border-t border-zinc-800 px-4 py-3">
+        <div class="flex items-start justify-between gap-3">
+          <div class="min-w-0 flex-1">
+            <div class="text-sm font-medium">Open hopssh on login</div>
+            <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
+              Shows the menubar icon automatically when you sign in to
+              your Mac. The window stays hidden until you click the icon.
+              Toggle off to launch hopssh manually from /Applications.
+            </p>
+            <div class="mt-1 text-[11px] {startAtLogin ? 'text-emerald-400' : 'text-zinc-500'}">
+              {startAtLogin ? '● On' : '○ Off — manual launch only'}
+            </div>
+          </div>
+          <div class="flex shrink-0 gap-2">
+            <button
+              class={startAtLogin
+                ? 'rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:border-amber-500 hover:text-amber-400 disabled:opacity-50'
+                : 'rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400 disabled:opacity-60'}
+              onclick={toggleStartAtLogin}
+              disabled={startAtLoginBusy}
+              type="button"
+            >
+              {startAtLoginBusy ? '…' : startAtLogin ? 'Turn off' : 'Turn on'}
+            </button>
+          </div>
+        </div>
+      </div>
 
       <!-- Phase N: Hide from Dock toggle. Slack-style copy + the
            same compact row layout as "Run in the background" above. -->

@@ -19,6 +19,13 @@ tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-updater = "2"
+# Phase Y (v0.10.90): autostart the .app on macOS login. Plugin manages
+# ~/Library/LaunchAgents/<bundle-id>.plist on macOS; equivalent paths
+# on Linux/Windows for cross-platform support. The .app is launched with
+# `--start-minimized` arg so we can distinguish autostart from manual
+# double-click and hide the window on autostart while showing it on
+# user-initiated launch (see F7 in Phase Y plan).
+tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 log = "0.4"

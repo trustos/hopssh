@@ -164,6 +164,24 @@ fn show_main_window(app: AppHandle) -> Result<(), String> {
 struct DesktopPrefs {
     #[serde(default)]
     hide_from_dock: bool,
+
+    // Phase Y (v0.10.90): autostart the .app on macOS login. Defaults
+    // to OFF on a fresh install — the user explicitly opts in, never
+    // surprised by a LaunchAgent file appearing behind their back. The
+    // first time the user converts to "Run in the background" (system
+    // mode) we auto-flip this to ON, since opting into an always-on
+    // daemon implies wanting the tray on login too. After the user
+    // touches the toggle in Settings (start_at_login_explicit=true)
+    // their choice always wins, regardless of mode transitions.
+    #[serde(default)]
+    start_at_login: bool,
+
+    // True once the user has actively flipped the start_at_login
+    // toggle in Settings. Used by convert_to_system_service to decide
+    // whether to auto-enable autostart (only auto-enables on first
+    // convert IF the user hasn't expressed an explicit choice yet).
+    #[serde(default)]
+    start_at_login_explicit: bool,
 }
 
 fn desktop_prefs_path() -> Option<PathBuf> {
@@ -313,6 +331,73 @@ fn set_hide_from_dock(app: AppHandle, enabled: bool) -> Result<(), String> {
 fn set_tray_tooltip(app: AppHandle, tooltip: String) -> Result<(), String> {
     if let Some(tray) = app.tray_by_id("main") {
         tray.set_tooltip(Some(&tooltip)).map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+// ============================================================
+// Phase Y (v0.10.90): "Open hopssh on login" plumbing.
+//
+// `get_start_at_login` returns the ACTUAL on-disk state via the
+// tauri-plugin-autostart plugin (`is_enabled()` reads
+// ~/Library/LaunchAgents/<bundle-id>.plist existence on macOS).
+// This is the source of truth — if the user manually deletes the
+// LaunchAgent or removes hopssh from System Settings → Login Items,
+// the UI reflects reality the next time it queries.
+//
+// `set_start_at_login` (a) persists the user's intent in
+// desktop-prefs.json, (b) sets `start_at_login_explicit=true` so
+// future convert_to_system_service calls don't override the user's
+// choice, and (c) drives the plugin to write or remove the
+// LaunchAgent file so the actual on-disk state matches.
+//
+// `sync_autostart_with_pref` is the helper used by setup() (F4) and
+// convert_to_system_service (F5) to bring the plugin into agreement
+// with the persisted pref. It's idempotent — only acts when the
+// states differ.
+// ============================================================
+
+#[tauri::command]
+fn get_start_at_login(app: AppHandle) -> bool {
+    use tauri_plugin_autostart::ManagerExt;
+    // Source of truth: actual LaunchAgent file presence on disk.
+    // The pref file holds intent; if they ever drift (manual removal
+    // via System Settings, etc.) the UI shows reality.
+    app.autolaunch().is_enabled().unwrap_or(false)
+}
+
+#[tauri::command]
+fn set_start_at_login(app: AppHandle, enabled: bool) -> Result<(), String> {
+    let mut prefs = read_desktop_prefs();
+    prefs.start_at_login = enabled;
+    prefs.start_at_login_explicit = true;
+    write_desktop_prefs(&prefs)?;
+    sync_autostart_with_pref(&app, enabled)
+}
+
+/// Bring the tauri-plugin-autostart plugin's actual LaunchAgent state
+/// into agreement with the requested pref. Idempotent — only mutates
+/// when the states differ.
+///
+/// Used by:
+/// - setup() (F4): on every .app launch, sync the persisted pref
+///   to the actual LaunchAgent state. Self-healing layer for cases
+///   where the user removed the LaunchAgent via System Settings.
+/// - convert_to_system_service (F5): the first time the user opts
+///   into "Run in the background", auto-enable autostart so the
+///   tray appears on next login (the user's mental model: "always-on
+///   hopssh" includes the GUI).
+/// - set_start_at_login (F3): direct user toggle from Settings.
+fn sync_autostart_with_pref(app: &AppHandle, want_enabled: bool) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let mgr = app.autolaunch();
+    let is_enabled = mgr.is_enabled().map_err(|e| e.to_string())?;
+    if want_enabled && !is_enabled {
+        mgr.enable().map_err(|e| e.to_string())?;
+        log::info!("autostart: enabled (LaunchAgent registered)");
+    } else if !want_enabled && is_enabled {
+        mgr.disable().map_err(|e| e.to_string())?;
+        log::info!("autostart: disabled (LaunchAgent removed)");
     }
     Ok(())
 }
@@ -634,6 +719,30 @@ fn convert_to_system_service(app: AppHandle, state: State<'_, Arc<AppState>>) ->
         // re-fetch /local/status on the next refresh.
         let _ = app.emit("agent-ready", ());
 
+        // Phase Y (F5, v0.10.90): the user just opted into "Run in
+        // the background" — system mode means hopssh is meant to be
+        // always-on. The natural mental-model extension: the tray
+        // icon should appear on login too. Auto-enable autostart,
+        // BUT only if the user hasn't already explicitly toggled it
+        // (start_at_login_explicit=false). If they toggled it OFF
+        // before, respect that choice — the user wins.
+        let prefs = read_desktop_prefs();
+        if !prefs.start_at_login_explicit && !prefs.start_at_login {
+            let mut new_prefs = prefs;
+            new_prefs.start_at_login = true;
+            // start_at_login_explicit stays false here — this is an
+            // auto-default, not a user-explicit choice. If the user
+            // later flips the toggle in Settings, set_start_at_login
+            // sets the explicit flag and locks in their preference.
+            if let Err(e) = write_desktop_prefs(&new_prefs) {
+                log::warn!("failed to persist auto-enabled start_at_login: {e}");
+            } else if let Err(e) = sync_autostart_with_pref(&app, true) {
+                log::warn!("failed to register LaunchAgent for auto-enabled start_at_login: {e}");
+            } else {
+                log::info!("autostart auto-enabled on first system-mode opt-in");
+            }
+        }
+
         Ok("hopssh now runs in the background".to_string())
     }
 }
@@ -812,10 +921,24 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        // Phase Y (v0.10.90): autostart on macOS login. The plugin
+        // manages ~/Library/LaunchAgents/<bundle-id>.plist when the
+        // user enables autostart via Settings → "Open hopssh on
+        // login". The `--start-minimized` arg is passed to the .app
+        // when launchd auto-launches it; we detect the arg in
+        // setup() and hide the main window so the user only sees
+        // the menubar icon, not a popped-up window. See F7 + F4 in
+        // the Phase Y plan.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--start-minimized"]),
+        ))
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             local_api_endpoint,
             retry_attach_system_agent,
+            get_start_at_login,
+            set_start_at_login,
             show_main_window,
             set_tray_tooltip,
             set_tray_state,
@@ -845,6 +968,41 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             if read_desktop_prefs().hide_from_dock {
                 let _ = app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
+
+            // Phase Y (F7, v0.10.90): if launchd auto-launched us with
+            // `--start-minimized`, hide the main window so the user
+            // only sees the menubar icon. The tauri-plugin-autostart
+            // passes this arg when the LaunchAgent fires on login;
+            // double-clicking the .app from /Applications never
+            // includes the arg. Without this, the user gets a window
+            // popping up unprompted on every login — wrong UX for an
+            // always-on tray utility.
+            //
+            // Order: this runs AFTER the hide_from_dock policy switch
+            // so we don't fight policy + visibility at the same time.
+            // tauri.conf.json's visible:true creates the window; we
+            // hide it here BEFORE the WebView paints anything visible.
+            let started_minimized = std::env::args().any(|a| a == "--start-minimized");
+            if started_minimized {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.hide();
+                }
+                log::info!("autostart launch detected (--start-minimized); window hidden, tray only");
+            }
+
+            // Phase Y (F4, v0.10.90): self-heal autostart state.
+            // The persisted pref is the user's intent; the LaunchAgent
+            // file on disk is the actual state. They should match —
+            // sync_autostart_with_pref reconciles them. This handles
+            // cases where the user manually deleted the LaunchAgent
+            // via System Settings, or the .app upgraded across the
+            // boundary that introduced this plugin (Phase Y itself).
+            let prefs = read_desktop_prefs();
+            if let Err(e) = sync_autostart_with_pref(&app.handle(), prefs.start_at_login) {
+                // Non-fatal — log and continue. The user can fix from
+                // Settings → "Open hopssh on login".
+                log::warn!("autostart sync at startup failed: {e}");
             }
 
             // Build menubar tray menu.
@@ -1280,6 +1438,179 @@ mod tests {
             !block.contains("on_tray_icon_event"),
             "tray must NOT define an on_tray_icon_event handler — clicks are handled by show_menu_on_left_click(true) + on_menu_event. A handler here would race with the native menu pop. Block: {block}"
         );
+    }
+
+    /// Phase Y (v0.10.90) — Tripwire: Cargo.toml MUST list
+    /// tauri-plugin-autostart. Without it, the .app has no
+    /// mechanism to autostart on macOS login and we regress to the
+    /// pre-Phase-Y bug where the agent runs but the GUI doesn't.
+    #[test]
+    fn cargo_toml_includes_tauri_plugin_autostart() {
+        let toml_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let toml = std::fs::read_to_string(&toml_path)
+            .expect("Cargo.toml must be readable");
+        assert!(
+            toml.contains("tauri-plugin-autostart"),
+            "Cargo.toml must depend on tauri-plugin-autostart for Phase Y autostart"
+        );
+    }
+
+    /// Phase Y — Tripwire: get_start_at_login + set_start_at_login
+    /// Tauri commands MUST be registered in invoke_handler. Otherwise
+    /// the JS Settings panel gets "command not found" and the toggle
+    /// silently fails.
+    #[test]
+    fn start_at_login_commands_in_invoke_handler() {
+        let src = std::fs::read_to_string(file!())
+            .expect("must be able to read lib.rs source for self-scan");
+        // Locate the invoke_handler array.
+        let start = src
+            .find("invoke_handler(tauri::generate_handler![")
+            .expect("invoke_handler must exist");
+        let end = src[start..]
+            .find("])")
+            .expect("invoke_handler must terminate with `])`");
+        let handler_block = &src[start..start + end];
+        assert!(
+            handler_block.contains("get_start_at_login"),
+            "get_start_at_login must be registered in invoke_handler. Block: {handler_block}"
+        );
+        assert!(
+            handler_block.contains("set_start_at_login"),
+            "set_start_at_login must be registered in invoke_handler. Block: {handler_block}"
+        );
+    }
+
+    /// Phase Y — Tripwire: setup() MUST call sync_autostart_with_pref
+    /// at startup. This is the self-healing layer — if the pref says
+    /// ON but the LaunchAgent file is missing (or vice versa), we
+    /// reconcile. Without this, drift between pref and disk is silent.
+    #[test]
+    fn setup_syncs_autostart_with_pref() {
+        let src = std::fs::read_to_string(file!())
+            .expect("must be able to read lib.rs source for self-scan");
+        let setup_marker = ".setup(move |app|";
+        let start = src
+            .find(setup_marker)
+            .expect("setup() block must exist");
+        // Take ~6000 chars after the marker to cover the full setup body.
+        let end = (start + 6000).min(src.len());
+        let setup_body = &src[start..end];
+        assert!(
+            setup_body.contains("sync_autostart_with_pref"),
+            "setup() must call sync_autostart_with_pref so the LaunchAgent state matches the persisted pref at every launch"
+        );
+    }
+
+    /// Phase Y — Tripwire: setup() MUST detect the --start-minimized
+    /// arg and hide the main window when present. This is the
+    /// autostart-launch UX: tray icon visible, window hidden until
+    /// user clicks. Without this the user sees a window pop up on
+    /// every login — wrong UX for an always-on tray utility.
+    #[test]
+    fn setup_handles_start_minimized_arg() {
+        let src = std::fs::read_to_string(file!())
+            .expect("must be able to read lib.rs source for self-scan");
+        let setup_marker = ".setup(move |app|";
+        let start = src
+            .find(setup_marker)
+            .expect("setup() block must exist");
+        let end = (start + 6000).min(src.len());
+        let setup_body = &src[start..end];
+        assert!(
+            setup_body.contains("--start-minimized"),
+            "setup() must detect the --start-minimized arg passed by tauri-plugin-autostart on login launches"
+        );
+        // The arg-detection MUST run BEFORE any window.show() in
+        // setup() — otherwise the window flashes visible for one
+        // frame before being hidden.
+        let minimized_idx = setup_body
+            .find("--start-minimized")
+            .expect("anchor must exist");
+        if let Some(show_idx) = setup_body.find(".show()") {
+            assert!(
+                minimized_idx < show_idx,
+                "ORDERING REGRESSION: --start-minimized detection (offset {minimized_idx}) must come BEFORE any window.show() (offset {show_idx}) in setup() — otherwise the window flashes visible on autostart launches"
+            );
+        }
+    }
+
+    /// Phase Y — Tripwire: convert_to_system_service auto-enables
+    /// autostart on first opt-in. The user's mental model is
+    /// "always-on hopssh = tray on login too" — this auto-default
+    /// matches that. The auto-enable respects start_at_login_explicit
+    /// so it only fires when the user hasn't already touched the toggle.
+    #[test]
+    fn convert_auto_enables_autostart_on_first_opt_in() {
+        let src = std::fs::read_to_string(file!())
+            .expect("must be able to read lib.rs source for self-scan");
+        let fn_marker = "fn convert_to_system_service(";
+        let start = src
+            .find(fn_marker)
+            .expect("convert_to_system_service must exist");
+        // Find the next standalone "fn " or "/// " block start that
+        // marks the end of this function.
+        let after = &src[start..];
+        let body_end = after
+            .find("\n/// wait_for_system_agent")
+            .or_else(|| after.find("\n/// Revert from"))
+            .unwrap_or(after.len());
+        let body = &after[..body_end];
+
+        assert!(
+            body.contains("start_at_login_explicit"),
+            "convert_to_system_service must check start_at_login_explicit so it only auto-enables when the user hasn't already touched the toggle"
+        );
+        assert!(
+            body.contains("sync_autostart_with_pref"),
+            "convert_to_system_service must call sync_autostart_with_pref to register the LaunchAgent on first opt-in"
+        );
+    }
+
+    /// Phase Y — Behavioral: writing start_at_login=true to the prefs
+    /// file and reading it back round-trips. Belt-and-braces against
+    /// a future refactor that breaks the serde derive on DesktopPrefs.
+    #[test]
+    fn start_at_login_pref_round_trip() {
+        // Use a tempdir + override HOME via env so write_desktop_prefs
+        // doesn't pollute the real ~/Library/Application Support/hopssh.
+        let tmp = tempdir_lite();
+        let saved_home = std::env::var("HOME").ok();
+        std::env::set_var("HOME", &tmp);
+
+        let prefs = DesktopPrefs {
+            hide_from_dock: false,
+            start_at_login: true,
+            start_at_login_explicit: true,
+        };
+        write_desktop_prefs(&prefs).expect("write_desktop_prefs must succeed");
+        let loaded = read_desktop_prefs();
+        assert_eq!(loaded.start_at_login, true);
+        assert_eq!(loaded.start_at_login_explicit, true);
+        assert_eq!(loaded.hide_from_dock, false);
+
+        // Restore HOME.
+        if let Some(h) = saved_home {
+            std::env::set_var("HOME", h);
+        } else {
+            std::env::remove_var("HOME");
+        }
+
+        // Cleanup.
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Helper: create a unique tempdir-style path. Avoids pulling in
+    /// the `tempfile` crate just for one test.
+    fn tempdir_lite() -> std::path::PathBuf {
+        let pid = std::process::id();
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("hopssh-phasey-test-{pid}-{nanos}"));
+        std::fs::create_dir_all(&dir).expect("tempdir must be creatable");
+        dir
     }
 
     /// v0.10.89 (Phase X) — behavioral test for endpoint_alive.
