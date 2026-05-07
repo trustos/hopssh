@@ -112,6 +112,8 @@ The cross-platform gap is intentional: today's user base is Mac-only, and Phase 
 
 ## Backlinks
 
+- [[client-strategy]] — overall 5-platform unified Tauri delivery strategy this client is part of
+- [[../decisions/client-macos-architecture]] — the original ADR this client was built from (status: accepted, shipped v0.10.96)
 - [[macos-system-mode]] — bundled-vs-system architecture + mirror-file handoff
 - [[watchdog]] — three-watchdog architecture this client surfaces via the `watcherAlive` axis
 - [[../incidents/2026-05-07-mbp-watcher-wedge]] — Phase DD motivating incident

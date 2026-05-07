@@ -1,4 +1,41 @@
-# hopssh client apps — unified Tauri 2 delivery across iOS, Android, macOS, Windows, Linux
+---
+type: concept
+title: Client app strategy — unified Tauri 2 delivery across 5 platforms
+status: current
+last_compiled: 2026-05-07
+sources:
+  - clients/desktop/src-tauri/src/lib.rs
+  - clients/desktop/src/App.svelte
+  - cmd/agent/main.go
+  - frontend/src/lib
+---
+
+# Client app strategy — unified Tauri 2 delivery across 5 platforms
+
+## TL;DR
+
+One Tauri 2 + Svelte 5 UI codebase across iOS, Android, macOS, Windows, Linux. Desktop spawns the existing `hop-agent` binary as a sidecar; mobile uses native VPN provider extensions (NEPacketTunnelProvider on iOS, VpnService on Android) linking a gomobile-compiled shared Go core. Web terminal works in the WebView on every platform.
+
+**Status (2026-05-07):** macOS shipped (Phase V→DD); Windows and Linux desktop blocked only on Tauri-shell + packaging work (agent-side already complete); iOS and Android blocked on the `internal/client/` shared-substrate refactor.
+
+## Status snapshot
+
+| Platform | Architecture | Substrate | UI shell | Status | Shipped at |
+|---|---|---|---|---|---|
+| **macOS desktop** | Tauri + sidecar `hop-agent` | Existing `cmd/agent/` (no refactor needed) | Tauri 2 + Svelte 5 | Production | v0.10.85 → v0.10.96 |
+| **Windows desktop** | Tauri + sidecar + WinTun + WebView2 | Existing `cmd/agent/` (WinTun, SCM, NRPT all shipped) | Tauri 2 + Svelte 5 | Plan ready | — |
+| **Linux desktop** | Tauri + sidecar + AppImage / .deb / .rpm | Existing `cmd/agent/` (systemd, dnsproxy shipped) | Tauri 2 + Svelte 5 | Plan ready | — |
+| **iOS** | Tauri UI + NEPacketTunnelProvider + gomobile xcframework | NEW `internal/client/` + gomobile binding | Tauri 2 + Svelte 5 | Substrate-blocked | — |
+| **Android** | Tauri UI + VpnService + gomobile aar | NEW `internal/client/` + gomobile binding | Tauri 2 + Svelte 5 | Substrate-blocked | — |
+
+**The `internal/client/` substrate does not exist yet** — verified 2026-05-07 (`ls internal/client` returns "No such file or directory"). It's the linchpin of the mobile path. Until it lands, the iOS and Android plans are paper.
+
+## Per-platform decisions (ADRs)
+
+- [[../decisions/client-macos-architecture]] — Sidecar Tauri + userspace Nebula default + system-mode upgrade. **Shipped v0.10.96.**
+- [[../decisions/client-windows-linux-architecture]] — Sidecar Tauri delta on top of macOS for Windows + Linux desktop. Plan ready.
+- [[../decisions/client-ios-architecture]] — Tauri main app + Network Extension target + gomobile xcframework. Plan ready, substrate-blocked.
+- [[../decisions/client-android-architecture]] — Tauri + VpnService foreground + gomobile aar. Plan ready, substrate-blocked.
 
 ## Context
 
@@ -162,7 +199,7 @@ What gets reused vs newly written:
   - In a browser tab against the live control plane: directly call HTTPS endpoints (existing behavior).
   - In Tauri desktop: call `invoke("agent_request", ...)` which proxies to the local sidecar.
   - In Tauri mobile: call `invoke("tunnel_command", ...)` which routes through the native plugin to the VPN extension.
-- All UI strings, layouts, theming, and components: identical across platforms. Mobile-friendly because the dashboard is already responsive (existing 768px breakpoint via `frontend/src/lib/is-mobile.svelte.ts`).
+- All UI strings, layouts, theming, and components: identical across platforms. Mobile-friendly because the dashboard is already responsive (existing 768px breakpoint via `frontend/src/lib/hooks/is-mobile.svelte.ts`).
 
 ---
 
@@ -171,7 +208,7 @@ What gets reused vs newly written:
 When implementing:
 
 - [cmd/agent/client.go](Projects/Github.Trustos/hopssh/cmd/agent/client.go) — laptop/phone "client join" flow; the model for `mobilehop.NewClient`.
-- [cmd/agent/nebula.go](Projects/Github.Trustos/hopssh/cmd/agent/nebula.go) — `startNebula`, `watchNetworkChanges` (5s poll for sleep/wake / interface changes, calls `RebindUDPServer()` + `CloseAllTunnels(true)`). Drop straight into `internal/client/nebula.go`.
+- `cmd/agent/nebula.go` — `startNebula`, `watchNetworkChanges` (5s poll for sleep/wake / interface changes, calls `RebindUDPServer()` + `CloseAllTunnels(true)`). Will move to the new shared client package's nebula module (planned, not yet on disk).
 - [cmd/agent/enroll.go](Projects/Github.Trustos/hopssh/cmd/agent/enroll.go) — 4 enrollment modes (device flow, token-stdin, direct token, bundle). Mobile uses device flow; desktop will support all four.
 - [cmd/agent/renew.go](Projects/Github.Trustos/hopssh/cmd/agent/renew.go) — 12-hour cert renewal + 60s heartbeat loops. Must run inside the Network Extension / VpnService on mobile.
 - [cmd/agent/service_windows.go](Projects/Github.Trustos/hopssh/cmd/agent/service_windows.go), [cmd/agent/service.go](Projects/Github.Trustos/hopssh/cmd/agent/service.go) — desktop service install (reused as-is via sidecar).

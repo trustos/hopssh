@@ -1,6 +1,38 @@
-# hopssh macOS client — implementation plan
+---
+type: decision
+title: macOS client architecture — Tauri shell + sidecar hop-agent
+status: accepted
+last_compiled: 2026-05-07
+sources:
+  - clients/desktop/src-tauri/src/lib.rs
+  - clients/desktop/src-tauri/src/agent.rs
+  - clients/desktop/src/App.svelte
+  - cmd/agent/migrate.go (system-mode handoff)
+shipped: v0.10.96
+---
 
-See [client-apps-plan.md](client-apps-plan.md) for the overall Tauri-across-5-platforms strategy and shared substrate (gomobile core, `internal/client/` refactor, Svelte UI). This doc covers the macOS-specific layer of the single Tauri project.
+# macOS client architecture — Tauri shell + sidecar hop-agent
+
+## Decision basis
+
+The reasoning that produced this decision came from:
+
+- **Code I read:** `cmd/agent/client.go` (existing userspace-mode entry point), `cmd/agent/service.go` (launchd installer that became the system-mode upgrade path), `cmd/agent/nebula.go` (sleep/wake handling that the Tauri shell did not need to reimplement).
+- **External sources I fetched:** Tauri 2 sidecar docs (`externalBin`), Apple Developer notarization + hardened-runtime documentation, `SMJobBless` deprecation notes (drove choice of `osascript` + launchd over `SMJobBless`).
+- **Prior-knowledge claims (with confidence):**
+  - [HIGH] Tauri 2 sidecar pattern works on macOS — verified by shipping v0.10.85→v0.10.96.
+  - [HIGH] Userspace gvisor netstack provides functional VPN without kernel TUN — long-running practice in `cmd/agent/`.
+  - [HIGH] DMG + notarization is the standard non-App-Store macOS distribution path — verified against Tailscale's macOS distribution model.
+  - [MEDIUM] Curl-pipeable installer bypasses Sequoia/Tahoe Gatekeeper because curl-downloaded files don't get the `com.apple.quarantine` xattr — confirmed empirically during Phase F (April 2026) and shipped as the canonical path.
+  - [LOW] Apple's NEPacketTunnelProvider (Network Extension) would be the "correct" desktop-VPN architecture too — recalled from training data; deferred until iOS work needs it (carries to [[client-ios-architecture]]).
+
+## Status — SHIPPED (Phase V → DD, v0.10.85 → v0.10.96)
+
+This document was the original April 2026 implementation plan. It is now **shipped** in production on both Macs in the `dev-deploy` fleet (Mac mini + MBP). The architecture below was built almost verbatim — Tauri 2 main app spawns `hop-agent` as a sidecar in userspace mode by default, with optional one-time system-mode upgrade to a launchd daemon + kernel utun.
+
+For the **shipped state inventory** (22 Tauri commands, 30 Rust tests, all 12 Phase V→DD capabilities), see [[../concepts/desktop-client]]. The sections below are preserved for the architectural reasoning that produced them; cross-reference [[../concepts/desktop-client]] for what's currently in `clients/desktop/`.
+
+See [[../concepts/client-strategy]] for the overall Tauri-across-5-platforms strategy and shared substrate.
 
 ## Context
 
@@ -143,11 +175,11 @@ Reuse unchanged:
 - [cmd/agent/nebula.go](../cmd/agent/nebula.go) — Nebula startup; already supports `--userspace` mode.
 - [cmd/agent/service.go](../cmd/agent/service.go) — launchd service install (already works on macOS).
 - [cmd/agent/dns_darwin.go](../cmd/agent/dns_darwin.go) — macOS DNS registration via `scutil` and per-link DNS.
-- [internal/nebulacfg/nebulacfg.go](../internal/nebulacfg/nebulacfg.go) — Nebula config generation.
+- `internal/nebulacfg/defaults.go` — Nebula config generation.
 
 New, macOS-specific:
-- Tauri tray icon + menu (`src-tauri/src/tray.rs`).
-- Privilege escalation helper (`src-tauri/src/mac_helper.rs`) wrapping `AuthorizationExecuteWithPrivileges` or shelling to `osascript` for the one-time daemon install.
+- Tauri tray icon + menu (planned: `tray.rs` under `src-tauri/`).
+- Privilege escalation helper (planned: `mac_helper.rs` under `src-tauri/`) wrapping `AuthorizationExecuteWithPrivileges` or shelling to `osascript` for the one-time daemon install.
 - DMG bundling config in `tauri.conf.json` — background image, license agreement, icon layout.
 - CI pipeline additions:
   - Universal binary build (arm64 + amd64 → lipo).

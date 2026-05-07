@@ -1,6 +1,40 @@
-# hopssh Android client — implementation plan
+---
+type: decision
+title: Android client architecture — Tauri + VpnService foreground + gomobile aar
+status: proposed
+last_compiled: 2026-05-07
+sources:
+  - cmd/agent/client.go
+  - cmd/agent/nebula.go
+  - cmd/agent/renew.go
+  - patches/nebula-1031-graceful-shutdown.patch
+---
 
-See [client-apps-plan.md](client-apps-plan.md) for the overall Tauri-across-5-platforms strategy and shared substrate (gomobile core, `internal/client/` refactor, Svelte UI). See [client-ios-plan.md](client-ios-plan.md) for the iOS peer. This doc covers the Android-specific layer of the single Tauri project.
+# Android client architecture — Tauri + VpnService foreground + gomobile aar
+
+## Decision basis
+
+The reasoning that produced this decision came from:
+
+- **Code I read:** `cmd/agent/client.go`, `cmd/agent/nebula.go`, `cmd/agent/renew.go` (same Go core that gomobile compiles into the aar), `patches/nebula-1031-graceful-shutdown.patch`.
+- **Wiki pages I consulted:** [[../concepts/client-strategy]] (master strategy), [[client-ios-architecture]] (mobile sibling — Android shares everything in-process where iOS needed App Groups + Keychain sharing), [[../concepts/watchdog]] (inherited watchdogs).
+- **External sources I fetched:** [DefinedNet/mobile_nebula](https://github.com/DefinedNet/mobile_nebula) (Android `VpnService` reference), Android documentation for `VpnService`, foreground service `specialUse` type (API 28+), `EncryptedSharedPreferences` + Jetpack Security `MasterKey`, Google Play VPN policy.
+- **Prior-knowledge claims (with confidence):**
+  - [HIGH] `VpnService` foreground service runs in the same process as the main activity by default — verified against Android docs.
+  - [HIGH] `START_STICKY` causes Android to auto-restart the service after low-memory kill with a null intent — Android lifecycle docs.
+  - [HIGH] OEM battery killers (Xiaomi, OPPO, Huawei) aggressively kill background apps including foreground services with VPN — community reports + dontkillmyapp.com.
+  - [HIGH] Play Store first-submission VPN review takes 7-14 days — recalled from past Play submissions and developer community reports.
+  - [MEDIUM] `EncryptedSharedPreferences` MasterKey unwrap requires after-first-unlock — verified against Jetpack Security docs but interaction with `BootReceiver` timing is empirically tested at Phase Z analogue (see Lessons from macOS Phase V→DD § 3).
+  - [MEDIUM] ML Kit barcode scanning adds ~5 MB to APK; ZXing is lighter but less accurate — recalled from past mobile work.
+  - [LOW] `BIND_VPN_SERVICE` permission is system-declared and not user-grantable — recalled from Android security model.
+
+## Status
+
+**Proposed.** Substrate-blocked: requires `internal/client/` refactor + a new `clients/mobile-go/mobilehop/` gomobile binding compiling to `mobilehop.aar`. Verified 2026-05-07: `internal/client/` does not exist yet; no `.aar` artifacts on disk.
+
+Google Play Console ($25 one-time) + Play Store VPN policy review (1-3 days typical, 7-14 days for first submission) are external prerequisites.
+
+See [[../concepts/client-strategy]] for the overall 5-platform strategy and [[client-ios-architecture]] for the mobile peer (iOS architecture is more complex — App Groups + Keychain sharing — Android shares everything in-process).
 
 ## Context
 
@@ -411,3 +445,43 @@ On real devices spanning at least:
 5. **In-app VPN kill switch** (block non-VPN traffic at app level, separate from Android's OS-level setting): competitors don't do this (they rely on the OS toggle). **Recommend** skip for v1; rely on OS always-on.
 6. **Android Auto / Wear OS / ChromeOS compat**: out of scope for v1. Android app on ChromeOS works by default through Android Runtime — no extra work. Auto/Wear not applicable to a VPN app.
 7. **Tablet-specific UX**: responsive Svelte UI handles layout automatically. No separate tablet manifest entry needed. Confirm at Week 7 polish.
+
+---
+
+## Lessons from macOS Phase V→DD (2026-04-28 → 2026-05-07)
+
+The macOS desktop client shipped 12 versions in a tight one-week iteration ([[client-macos-architecture]] is now status: accepted, shipped v0.10.96). Six production-discovered patterns affect the Android plan when implementation begins:
+
+### 1. Service-restart recovery (Phase X)
+On macOS the cached attach endpoint went stale after `launchctl kickstart`. Android's analogue: **`HopsshVpnService` can be killed under memory pressure** and restarted via `START_STICKY` with a null intent. When that happens the service comes up but UI-side cached state may be stale.
+
+**Apply to Android:** the `TunnelPlugin.kt::observeStatus` callback fires on service state transitions. On `STARTED → null intent → STARTED` (the START_STICKY recovery path), invalidate JS-side caches AND re-fetch credentials from `CredentialStore`. The pattern mirrors Phase X's `try_attach_system_agent` retry-loop in macOS.
+
+### 2. Boot-on-completion + always-on (Phase Y)
+macOS: `tauri-plugin-autostart` LaunchAgent, default OFF on fresh install, auto-flip ON on first system-mode conversion (with `start_at_login_explicit` sentinel preserving user override).
+
+**Android already has the right primitive: `BootReceiver` + always-on preference (already in this plan).** Apply the macOS pattern: default OFF on fresh install, auto-flip ON when user first enrolls successfully (Android has no system-mode-vs-bundled distinction; enrollment IS the commitment). Once user has explicitly toggled, never auto-override.
+
+### 3. Process-crash + battery-killer race (Phase Z analogue)
+macOS hit a boot-before-login race for system-mode mirror files. Android has its own race: `BootReceiver` fires on `BOOT_COMPLETED`, BUT `EncryptedSharedPreferences` requires the device to be unlocked at least once before the AES key can be unwrapped (the `MasterKey` is hardware-keystore-backed and unwrapped after-first-unlock).
+
+**Apply to Android:** `BootReceiver.onReceive()` should NOT immediately try to start the foreground service if `CredentialStore.isAccessible()` returns false — schedule a `JobScheduler` job that retries every 30s until the keystore unwraps successfully. Same self-heal pattern as Phase Z's `runMirrorChownSelfHeal` goroutine. Aggressive OEM battery killers (Xiaomi/OPPO/Huawei) make this even more important — the service may need multiple restart attempts.
+
+### 4. Uninstall hygiene (Phase AA)
+On macOS, Phase Y's autostart LaunchAgent was missed by the uninstall sweep — left a stale launchd entry post-uninstall. **Android handles this atomically — uninstall wipes app data including `EncryptedSharedPreferences`, removes the VPN profile, removes scheduled jobs.** Same as iOS, structurally simpler.
+
+**One Android-specific gotcha:** if the user has enabled **OS-level always-on VPN** for hopssh in Android Settings, that setting persists across uninstall+reinstall (it's keyed by package name, not app-data-bundled). On reinstall the user gets reconnected automatically without re-enrolling — UX-wise this MIGHT be desirable (hopssh "just works" again) or unexpected (user thought uninstall meant fresh start). Document the behavior; tripwire test: source-scan that `MobileSettings.svelte` mentions OS-level always-on persistence.
+
+### 5. UX copy: forbidden-jargon source-scan tripwire (Phase BB)
+macOS landed `lib.rs::tests::user_facing_copy_has_no_protocol_jargon` source-scanning Svelte source for banned terms.
+
+**Apply to Android:** the Svelte UI is shared, so the same tripwire test runs automatically. Android-specific copy additions: notification text ("Connected — 3 peers"), QR scanner permission rationale, battery-optimization-prompt copy, Always-on tip in Settings. Material Design encourages plain-English ("Connect to network", not "Bring up mesh") same way Apple HIG does. Affirmative toggles ("Show notifications" not "Hide notifications") apply equally.
+
+### 6. Three independent watchdogs (Phase DD)
+The mobile gomobile core inherits the renewal + watcher watchdogs through `internal/client/`. **`debug.SetGCPercent(20)` in mobilehop is harmless on Android** (no 50 MiB cap; standard app memory budget is hundreds of MB). Three watchdog goroutines + their forensic dump infrastructure cost <5 MiB sustained — negligible on Android's heap.
+
+**Hard timeouts on vendor-Nebula calls:** Phase DD added `runWithTimeout` wrappers because deadlocks aren't panics. The same wrappers carry to `mobilehop.Rebind()` callers in `HopsshVpnService.kt`. The `ConnectivityManager.NetworkCallback → Rebind()` path MUST use the timeout-wrapped version — a wedged Rebind during a WiFi/cellular handoff would freeze the service's path-change handling indefinitely.
+
+**Forensic dump path:** `<filesDir>/<network>/<class>-stuck-<ts>.txt` (Android's app-private files dir). Existing `inst.dir()` already abstracts this — the gomobile core works without modification.
+
+See [[../concepts/watchdog]] for the three-watchdog architecture, [[../incidents/2026-05-07-mbp-watcher-wedge]] for the motivating incident, and [[../concepts/desktop-client]] for the macOS shipped state these lessons came from.

@@ -1,6 +1,39 @@
-# hopssh iOS client — implementation plan
+---
+type: decision
+title: iOS client architecture — Tauri main app + Network Extension + gomobile xcframework
+status: proposed
+last_compiled: 2026-05-07
+sources:
+  - cmd/agent/client.go (model for mobilehop.NewClient)
+  - cmd/agent/nebula.go (model for in-extension network-change handling)
+  - cmd/agent/renew.go (model for in-extension cert renewal + heartbeat)
+  - patches/nebula-1031-graceful-shutdown.patch (must apply to gomobile builds)
+---
 
-See [client-apps-plan.md](client-apps-plan.md) for the overall Tauri-across-5-platforms strategy and shared substrate (gomobile core, `internal/client/` refactor, Svelte UI). See [client-macos-plan.md](client-macos-plan.md) for the macOS peer. This doc covers the iOS-specific layer of the single Tauri project.
+# iOS client architecture — Tauri main app + Network Extension + gomobile xcframework
+
+## Decision basis
+
+The reasoning that produced this decision came from:
+
+- **Code I read:** `cmd/agent/client.go` (model for the `mobilehop.NewClient` API surface), `cmd/agent/nebula.go` (the network-change recovery path that runs unchanged inside the extension), `cmd/agent/renew.go` (cert renewal + heartbeat that runs in-extension), `patches/nebula-1031-graceful-shutdown.patch` (must apply to gomobile builds).
+- **Wiki pages I consulted:** [[../concepts/client-strategy]] (master strategy), [[client-macos-architecture]] (sibling desktop ADR), [[../concepts/watchdog]] (three-watchdog architecture the gomobile core inherits).
+- **External sources I fetched:** [DefinedNet/mobile_nebula](https://github.com/DefinedNet/mobile_nebula) (MIT-licensed reference for the gomobile + iOS NE stack), Apple's `NEPacketTunnelProvider` documentation, Tauri issues #14371 / #10074 / #14332 / #9907 / #10631 (iOS-on-Tauri readiness), Apple Developer Forums thread on iOS 15+ NE memory cap.
+- **Prior-knowledge claims (with confidence):**
+  - [HIGH] iOS NE memory cap is 50 MiB on iOS 15+ (was 15 MiB earlier) — verified against DefinedNet's published `debug.SetGCPercent(20)` workaround.
+  - [HIGH] `NEPacketTunnelProvider` runs in a separate OS-managed process — verified against Apple docs.
+  - [HIGH] App Group Keychain sharing is the standard pattern for main-app + extension credential exchange — verified against multiple WWDC sessions on app extensions.
+  - [MEDIUM] `socket.fileDescriptor` KVC hack on `packetFlow` is the standard tunFd extraction — recalled from DefinedNet `mobile_nebula` source.
+  - [MEDIUM] xcodegen `project.yml` override is the durable way to add NE targets to Tauri iOS — verified against tauri#14332 thread but pattern may shift if Tauri ships first-class extension support.
+  - [LOW] Network Extension entitlement is "routinely granted to legitimate VPN apps" — recalled from Apple developer-program lore; should be verified by submitting the request.
+
+## Status
+
+**Proposed.** Substrate-blocked: requires `internal/client/` refactor (extracting `cmd/agent/{client,enroll,nebula,renew}.go` into a shared package) + a new `clients/mobile-go/mobilehop/` gomobile binding that compiles to `MobileHop.xcframework`. Verified 2026-05-07: `internal/client/` does not exist yet; no `.xcframework` artifacts on disk.
+
+Apple Developer Program ($99/yr) + Network Extension entitlement (1-2 week separate review beyond App Store review) are external prerequisites.
+
+See [[../concepts/client-strategy]] for the overall 5-platform strategy and [[client-macos-architecture]] for the desktop peer.
 
 ## Context
 
@@ -372,3 +405,41 @@ On a real iPhone AND a real iPad (simulator does not support NEPacketTunnelProvi
 5. **Branding assets**: app icon (1024×1024 master), launch screen storyboard, in-app status icons. Reuse/adapt from macOS branding. Commission Week 2 if not already in hand.
 6. **Server-side `/api/networks/{id}/enroll-token` endpoint**: does it exist with the wrapper URL shape, or is this a small new endpoint? Confirm by reading existing `internal/api/enroll.go`. If a small addition, factor in 2-3 days of server-side work.
 7. **QR code display in dashboard**: need a Svelte QR component (`qrcode` npm package, ~5kb). Standard addition to the existing admin dashboard.
+
+---
+
+## Lessons from macOS Phase V→DD (2026-04-28 → 2026-05-07)
+
+The macOS desktop client shipped 12 versions in a tight one-week iteration ([[client-macos-architecture]] is now status: accepted, shipped v0.10.96). Six production-discovered patterns affect the iOS plan when implementation begins:
+
+### 1. Daemon/extension-restart recovery (Phase X)
+On macOS the cached attach endpoint went stale after `launchctl kickstart`. iOS's exact analogue: **the Network Extension process gets killed routinely by the OS** (memory pressure, on-demand rule re-arm, system update). When the extension respawns it gets a NEW process state — any cached references in the main Tauri app become stale.
+
+**Apply to iOS:** the main app's status observer on `NETunnelProviderSession.status` already gives us "extension is up/down" but doesn't surface "extension restarted with fresh state". Add an explicit `observeStatus` handler that on `.connected → .disconnected → .connected` transitions invalidates JS-side endpoint caches AND triggers `agent.refresh()` in the Svelte layer. Mirror Phase X's `clients/desktop/src-tauri/src/agent.rs::endpoint_alive` TCP-probe pattern, but for the App Group keychain handle instead of a loopback port.
+
+### 2. Autostart-on-login (Phase Y)
+macOS plan was: `tauri-plugin-autostart` writes `~/Library/LaunchAgents/com.hopssh.desktop.plist`, default OFF on fresh install, auto-flip ON on first system-mode conversion (with `start_at_login_explicit` sentinel preserving user override).
+
+**iOS analogue is `NEOnDemandRule`** (already in this plan). The `start_at_login_explicit` sentinel pattern still applies: don't auto-toggle the user's Always-on preference once they've explicitly touched it. Default ON for fresh installs (matches the macOS first-system-mode-conversion behavior + matches Tailscale/WireGuard/DefinedNet user expectation on iOS).
+
+### 3. Boot-before-login race (Phase Z)
+macOS hit this for system-mode mirror files at `~/Library/Application Support/hopssh/` left root-owned because `/dev/console` was root-owned at boot. **iOS has an analogous but different race:** App Group container access requires the user to have unlocked the device at least once after boot (kSecAttrAccessibleAfterFirstUnlock). On first boot the extension may try to start before the user unlocks, fail to read keychain, and end up in a "started but credential-less" state.
+
+**Apply to iOS:** the `PacketTunnelProvider.startTunnel()` path must handle "keychain access denied because device not yet unlocked" cleanly — log + sleep 5s + retry until keychain becomes accessible, OR fail and let `NEOnDemandRule` retry on next path change. Don't crash the extension; iOS will exponentially back off on extension crashes.
+
+### 4. Uninstall hygiene (Phase AA)
+On macOS, Phase Y's autostart LaunchAgent was missed by the uninstall sweep — left a stale launchd entry post-uninstall.
+
+**On iOS, "uninstall" = the user deletes the app**, which iOS handles atomically: removes the VPN profile, removes the App Group, wipes the Keychain Access Group. **No code-side uninstall sweep needed** — the OS handles it. This is structurally simpler than desktop AA. **But:** verify in QA that `kSecAttrAccessibleAfterFirstUnlock` keychain items DO get wiped on app delete (they should, but historically there were edge cases where re-installing on the same Team ID kept old keychain items by design — confirm whether this is desirable for hopssh or whether we want explicit pre-uninstall key removal).
+
+### 5. UX copy: forbidden-jargon source-scan tripwire (Phase BB)
+macOS landed `lib.rs::tests::user_facing_copy_has_no_protocol_jargon` — banned `mesh`, `hop-agent`, `data-plane`, `Hide hopssh from the Dock`, etc. Replaced with `network`, `background service`, `Show hopssh in Dock`. Affirmative phrasing per Apple HIG.
+
+**Apply to iOS:** the Svelte UI is shared, so the same tripwire test runs against the same source files automatically. iOS-specific copy additions (Settings → Always-on toggle subtitle, NSCameraUsageDescription string, App Store screenshots) need the same forbidden-token review at PR time. The `NSCameraUsageDescription` already says "scan network join codes" (not "scan mesh codes") — good. Audit the rest of the Info.plist and App Store metadata.
+
+### 6. Three independent watchdogs (Phase DD)
+The mobile gomobile core inherits the renewal + watcher watchdogs through `internal/client/`. **`debug.SetGCPercent(20)` in mobilehop init must coexist with the watchdog goroutines** — verify under Xcode Instruments that the three watchdog goroutines each cost <1 MiB sustained (3 × 1 MiB = under the 50 MiB extension cap with comfortable headroom). The three-watchdog architecture is documented at [[../concepts/watchdog]]; the motivating incident is at [[../incidents/2026-05-07-mbp-watcher-wedge]].
+
+**Hard timeouts on vendor-Nebula calls:** Phase DD added `runWithTimeout` wrappers around `RebindUDPServer` + `CloseAllTunnels` because deadlocks aren't panics and `defer recover()` doesn't catch them. The same wrappers carry over to `mobilehop.Rebind()` callers. The Network Extension's NWPathMonitor → Rebind path MUST use the timeout-wrapped version to prevent a wedged Rebind from killing the entire extension's path-change handling.
+
+See [[../concepts/desktop-client]] for the macOS shipped state these lessons came from.

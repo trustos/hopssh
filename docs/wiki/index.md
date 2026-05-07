@@ -35,12 +35,17 @@ Architectural ideas the code embodies but doesn't explain.
 - [[concepts/watchdog]] — Phase P2 stuck-data-plane watchdog, restartFn, forensic dumps
 - [[concepts/macos-system-mode]] — bundled gvisor vs LaunchDaemon kernel-utun, mirror-token + mirror-port handoff
 - [[concepts/desktop-client]] — Tauri 2 + Svelte 5 macOS app: shipped capabilities (Phase V→DD), 22 commands, forward gaps
+- [[concepts/client-strategy]] — unified Tauri 2 delivery across iOS/Android/macOS/Windows/Linux: shared Svelte UI + gomobile core, status table
 
 ## Decisions (ADRs)
 
 Why we chose Y over Z. Status: proposed / accepted / superseded.
 
 - [[decisions/phase-s-renewal-ticker]] — `time.NewTicker(60s)` over `time.After(longSleep)` for cert renewal across macOS sleep (accepted, shipped v0.10.82)
+- [[decisions/client-macos-architecture]] — macOS Tauri shell + sidecar `hop-agent` (accepted, shipped Phase V→DD = v0.10.96)
+- [[decisions/client-windows-linux-architecture]] — Windows + Linux desktop delta on top of macOS baseline (proposed, agent-side ready)
+- [[decisions/client-ios-architecture]] — iOS Tauri main app + Network Extension + gomobile xcframework (proposed, substrate-blocked)
+- [[decisions/client-android-architecture]] — Android Tauri + VpnService foreground + gomobile aar (proposed, substrate-blocked)
 
 ## Incidents
 

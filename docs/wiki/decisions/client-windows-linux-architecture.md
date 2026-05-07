@@ -1,6 +1,41 @@
-# hopssh Windows + Linux client — desktop supplement plan
+---
+type: decision
+title: Windows + Linux desktop client architecture (delta on top of macOS)
+status: proposed
+last_compiled: 2026-05-07
+sources:
+  - cmd/agent/wintun
+  - cmd/agent/service_windows.go
+  - cmd/agent/dnsproxy_windows.go
+  - cmd/agent/dns_linux.go
+  - cmd/agent/service.go
+---
 
-See [client-apps-plan.md](client-apps-plan.md) for the overall strategy. See [client-macos-plan.md](client-macos-plan.md) for the desktop architecture baseline. **This doc is a delta document** — it covers Windows and Linux as platform-specific additions on top of the macOS plan, not full re-specifications.
+# Windows + Linux desktop client architecture (delta on top of macOS)
+
+## Decision basis
+
+The reasoning that produced this decision came from:
+
+- **Code I read:** `cmd/agent/wintun/` (Windows kernel TUN integration, already shipped), `cmd/agent/service_windows.go` (SCM service, shipped v0.9.9), `cmd/agent/dnsproxy_windows.go` (NRPT-bypass DNS forwarder, shipped), `cmd/agent/dns_linux.go` (systemd-resolved drop-in fallback, shipped), `internal/selfupdate/selfupdate.go` (Windows rename-swap trick).
+- **Wiki pages I consulted:** [[client-macos-architecture]] (the inherited desktop baseline), [[../concepts/desktop-client]] (shipped state from which lessons are derived).
+- **External sources I fetched:** Tauri 2 docs for NSIS/MSI/AppImage/.deb/.rpm bundling, Microsoft Authenticode + EV cert documentation, freedesktop.org autostart spec, Ubuntu/Fedora/Debian package signing conventions.
+- **Prior-knowledge claims (with confidence):**
+  - [HIGH] WinTun + SCM service work in production — shipped agent-side since v0.9.9.
+  - [HIGH] systemd-resolved per-link DNS with non-53 ports is broken across Ubuntu LTS line — verified empirically (CLAUDE.md Discovery Log entry).
+  - [HIGH] GNOME 3.26+ removed legacy tray icons; AppIndicator extension required — verified against GNOME release notes.
+  - [MEDIUM] Standard Authenticode reputation builds in ~30 days / few thousand downloads — recalled from Microsoft SmartScreen documentation.
+  - [LOW] Snap VPN permissions model is "awkward" — recalled from training data; not directly verified in 2026.
+
+## Status
+
+**Proposed.** Agent-side platform plumbing (WinTun, SCM, NRPT-bypass DNS proxy on Windows; systemd, dnsproxy on Linux) is already shipped via the existing `cmd/agent/` codebase — see `cmd/agent/service_windows.go`, `cmd/agent/dnsproxy_windows.go`, `cmd/agent/dns_linux.go`. **The Tauri shell + per-OS installers (NSIS/MSI/AppImage/.deb/.rpm) + signing pipelines have not been built.**
+
+Implementation can start immediately after [[client-macos-architecture]]'s shell stabilizes (already shipped at v0.10.96); the delta here describes only what changes vs the macOS ADR, NOT a full re-specification.
+
+See [[../concepts/client-strategy]] for the overall 5-platform strategy and [[client-macos-architecture]] for the inherited desktop baseline.
+
+**This doc is a delta document** — it covers Windows and Linux as platform-specific additions on top of the macOS plan.
 
 All of the following are inherited from the macOS plan unchanged:
 - Sidecar-based architecture (Tauri app spawns `hop-agent` child process; agent ↔ UI talk over a local HTTP API on `127.0.0.1:<random-port>` with a `HOPSSH_READY:` stdout handshake).
@@ -208,6 +243,54 @@ Linux:
 8. **NixOS flake**: single file, low effort if we have a Nix user on the team. Ship as a community contribution opportunity.
 9. **Snap packages**: explicitly skip. Snap's VPN permissions model is awkward and the Snap ecosystem is Canonical-centric; AppImage + .deb cover Ubuntu users adequately.
 10. **tray fallback on GNOME**: is the in-app banner + "install extension" link sufficient, or ship with a bundled wrapper that pokes at the GNOME Shell extension API? **Recommend** banner only — most GNOME-savvy users already have the extension.
+
+---
+
+## Lessons from macOS Phase V→DD (2026-04-28 → 2026-05-07)
+
+The macOS desktop client shipped via Phases V through DD (12 versions, v0.10.85 → v0.10.96). Six production-discovered patterns belong in this plan when implementation begins for Windows + Linux:
+
+### 1. State-endpoint TCP probe (Phase X)
+After daemon restart (dev-deploy, manual `sc.exe restart` / `systemctl restart`, crash + relaunch), the cached attach endpoint may point at a now-dead loopback port. macOS shipped a single-shot TCP-connect with retry-loop that validates before reuse + clears stale endpoint to None before re-attaching.
+
+**Apply to Windows + Linux:** the `agent.rs::watch_system_mirror` periodic re-probe pattern carries over identically. The mirror file path differs: Windows uses `%LOCALAPPDATA%\hopssh\system-local-api-{port,token}`, Linux uses `~/.config/hopssh/system-local-api-{port,token}`.
+
+See [[../incidents/2026-05-07-mbp-watcher-wedge]] for related daemon-restart concerns.
+
+### 2. Autostart-on-login per OS (Phase Y)
+macOS uses `tauri-plugin-autostart` writing `~/Library/LaunchAgents/com.hopssh.desktop.plist`. Default OFF on fresh install; auto-flip ON when user converts to system mode (with `start_at_login_explicit` sentinel so user-overrides win forever after).
+
+**Windows mapping:** `tauri-plugin-autostart` writes to `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. Add `--start-minimized` arg to the autostart entry. Don't ALSO use Task Scheduler — pick one mechanism.
+
+**Linux mapping:** `tauri-plugin-autostart` writes a freedesktop.org `.desktop` file at `~/.config/autostart/hopssh-desktop.desktop`. systemd user units are an alternative for system-mode-with-Tauri-shell; prefer the autostart .desktop for consistency with other tray apps.
+
+### 3. Privileged daemon writing user-readable files (Phase Z)
+macOS hit a boot-before-login race where mirror files at `~/Library/Application Support/hopssh/` were left root-owned because `/dev/console` was root-owned at boot, so `resolveConsoleUser()` returned error and the chown was skipped. Self-heal goroutine (`runMirrorChownSelfHeal`) re-chowns every 30s using mirror-DIR owner as fallback target.
+
+**Apply to Linux** if running system-mode systemd unit that writes to `/var/run/hopssh/` or similar — derive ownership from a stable user-controlled path (the dir's owner), not from "who's logged in right now". Boot-before-login is a real OS state on Linux too.
+
+**Windows is exempt** — SCM service runs as LocalSystem; mirror files for the user-side Tauri app go to `%LOCALAPPDATA%` which is per-user from the start. No cross-process ownership race.
+
+### 4. Uninstall hygiene tripwire (Phase AA)
+Phase Y added an autostart LaunchAgent. Phase AA discovered the uninstall sweep didn't include it — left a stale launchd entry post-uninstall pointing at a deleted .app. Fixed by adding the path to `uninstallTargetsDarwin()` AND making `uninstall_hopssh_full` call `app.autolaunch().disable()` BEFORE the privileged uninstall script.
+
+**Apply to Windows:** uninstall sweep must include registry Run keys, scheduled tasks (if used), the SCM service entry, and `%LOCALAPPDATA%\hopssh\`.
+
+**Apply to Linux:** uninstall sweep must include `~/.config/autostart/hopssh-desktop.desktop`, systemd user unit, systemd system unit (if installed), `~/.config/hopssh/` data dir.
+
+**General rule (codify as tripwire test in each ADR-to-implementation):** every artifact-creating feature must update the uninstall sweep + a tripwire test that locks it in.
+
+### 5. UX copy: forbidden-jargon source-scan tripwire + affirmative phrasing (Phase BB)
+macOS landed `lib.rs::tests::user_facing_copy_has_no_protocol_jargon` source-scanning every Svelte file's body (post-`</script>` strip) for banned terms: `mesh`, `data-plane`, `hop-agent` (binary name), `local agent didn't respond`, `Hide hopssh from the Dock`, etc. Replaced with `network`, `background service`, `command-line tool`, `Show hopssh in Dock`. Affirmative toggles ("Show in Dock") beat negative ("Hide hopssh from the Dock") per Apple HIG; invert at UI layer, not storage layer.
+
+**Apply universally:** the tripwire test must run against the same Svelte source on every platform — the UI is shared. Add per-platform copy variants (Windows: "Open hopssh on sign-in" instead of "Open hopssh on login"; Linux: same as macOS) without losing the jargon-source-scan invariant.
+
+### 6. Three independent watchdogs (Phase DD)
+Stamp + threshold + cooldown + restartFn for each long-running goroutine doing load-bearing work. macOS now has three watchdogs covering renewal-goroutine death (Phase P), data-plane stuck (v0.10.36), and watcher-goroutine wedge (Phase DD). Hard timeouts on vendor-Nebula calls (`RebindUDPServer`, `CloseAllTunnels`) — `defer recover()` only catches panics, not deadlocks.
+
+**Apply universally:** the agent code is identical across desktop platforms — the three watchdogs already work on Windows + Linux. The only Windows/Linux delta: forensic dump path conventions. macOS writes to `<configDir>/<network>/<class>-stuck-<ts>.txt`; Windows uses `%PROGRAMDATA%\hopssh\<network>\` for system-mode service, Linux uses `/var/lib/hopssh/<network>/`. Existing `inst.dir()` already abstracts this.
+
+See [[../concepts/watchdog]] for the three-watchdog architecture, [[../incidents/2026-05-07-mbp-watcher-wedge]] for the motivating incident, and [[../concepts/desktop-client]] for the macOS shipped state these lessons came from.
 
 Shared:
 11. **Download page layout at hopssh.com**: one "Download" button that sniffs UA and offers the right file, vs a table with all 5 platforms + architectures explicit. **Recommend** smart default + explicit table below for "other platforms". Matches Tailscale's pattern.
