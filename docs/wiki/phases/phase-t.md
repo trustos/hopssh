@@ -64,7 +64,7 @@ Fix:
 
 ## Optional polish (deferred)
 
-- **T4** — apply the Columns pattern to DNS Records / Members / Audit Log tables. Same primitive, extracted into `frontend/src/lib/columns-state.svelte.ts`. Skip until those tables actually outgrow the breakpoint pattern.
+- **T4** — apply the Columns pattern to DNS Records / Members / Audit Log tables. Same primitive, would be extracted into a shared Svelte store. Skip until those tables actually outgrow the breakpoint pattern.
 
 ## Postscript: watchdog noise during deploy bounce
 

@@ -1,17 +1,20 @@
 # hopssh wiki — index
 
-> **Read [SCHEMA.md](SCHEMA.md) before maintaining or extending this wiki.** It's the operating manual.
+> **Read [SCHEMA.md](SCHEMA.md) before maintaining or extending this wiki.** It's the operating manual. Wiki bootstrapped via the [dev-wiki framework](https://github.com/trustos/dev-wiki) (vendored — see `docs/wiki/.framework-version`).
 
 ## Page types in use
 
-Karpathy's gist enumerates 6 canonical page types (summary, entity, concept, comparison, synthesis, overview). For a code project we collapsed them to 4 with one domain-specific addition:
+Karpathy's gist enumerates 6 canonical page types (summary, entity, concept, comparison, synthesis, overview). For a code project we use seven (4 carried + 3 dev-domain additions):
 
 | Our type | Maps to gist type(s) | Examples |
 |---|---|---|
 | `entity` | entity | machines, networks, services |
 | `concept` | concept, overview | architectural ideas (sleep-wake, watchdog) |
+| `decision` (ADR) | (new — dev-domain) | why we chose Y over Z |
+| `incident` | (new — dev-domain) | forensic post-mortems |
 | `phase` | synthesis + summary, dated | per-phase post-mortems with shipped version |
 | `benchmark` | comparison + summary | perf baselines, regression markers |
+| `runbook` | (new — dev-domain) | symptom → action operational wisdom |
 
 Per-source `summary` pages (Karpathy's pattern for an article-research wiki) don't fit because our raw sources are forensic dumps and code commits — synthesis happens at the incident or phase level, not per-document.
 
@@ -31,6 +34,20 @@ Architectural ideas the code embodies but doesn't explain.
 - [[concepts/cert-renewal]] — 24h cert lifecycle, Phase S 60s ticker, retry-with-backoff
 - [[concepts/watchdog]] — Phase P2 stuck-data-plane watchdog, restartFn, forensic dumps
 - [[concepts/macos-system-mode]] — bundled gvisor vs LaunchDaemon kernel-utun, mirror-token + mirror-port handoff
+- [[concepts/desktop-client]] — Tauri 2 + Svelte 5 macOS app: shipped capabilities (Phase V→DD), 22 commands, forward gaps
+
+## Decisions (ADRs)
+
+Why we chose Y over Z. Status: proposed / accepted / superseded.
+
+- [[decisions/phase-s-renewal-ticker]] — `time.NewTicker(60s)` over `time.After(longSleep)` for cert renewal across macOS sleep (accepted, shipped v0.10.82)
+
+## Incidents
+
+Forensic post-mortems of specific failure events.
+
+- [[incidents/2026-05-02-mbp-watchdog-deploy-bounce]] — work-network watchdog tripped during v0.10.84 control-plane rollout; auto-recovered (resolved)
+- [[incidents/2026-05-07-mbp-watcher-wedge]] — watchNetworkChanges deadlocked in vendor Nebula call; third watchdog class added in Phase DD (v0.10.96, resolved)
 
 ## Phases
 
@@ -44,6 +61,13 @@ Per-phase shipped state, post-mortems, what was learned.
 Empirical perf snapshots, baselines for regression comparison.
 
 - [[benchmarks/cellular-baseline]] — Yettel BG cellular cold-start direct-P2P (placeholder; populate next session)
+
+## Runbooks
+
+Symptom → action operational wisdom.
+
+- [[runbooks/mesh-dead-kickstart]] — kick the LaunchDaemon when the mesh appears dead but the agent is running
+- [[runbooks/refresh-system-mode-binary]] — Phase J workaround: manually refresh `/usr/local/bin/hop-agent` from the .app
 
 ## How this maps to existing files
 

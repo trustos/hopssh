@@ -108,6 +108,36 @@ for json in "$OUTDIR"/pass*-iperf3-udp.json; do
 done
 
 emit ""
+
+# -------- Optional: raw LAN ceiling and multi-stream summary --------------
+
+if [ -f "$OUTDIR/lan-ceiling.json" ]; then
+  lan_peak=$(jq -r '.end.sum_received.bits_per_second // 0' "$OUTDIR/lan-ceiling.json" 2>/dev/null \
+             | awk '{printf "%.0f", $1/1e6}')
+  emit "RAW LAN CEILING (no VPN): ${lan_peak} Mb/s — upper bound for VPN single-stream"
+  emit ""
+fi
+
+multi_files=( "$OUTDIR"/passM-*-iperf3-tcp-multi.json )
+if [ -f "${multi_files[0]}" ]; then
+  emit "MULTI-STREAM AGGREGATE (warm, -P parallel) — parallelism headroom"
+  emit ""
+  emit "  Net       | Streams | Aggregate (sum_received) | Per-stream avg"
+  emit "  ----------|---------|--------------------------|---------------"
+  for json in "${multi_files[@]}"; do
+    [ -f "$json" ] || continue
+    base="$(basename "$json" -iperf3-tcp-multi.json)"
+    net="$(echo "$base" | sed -nE 's/^passM-(.+)/\1/p')"
+    streams=$(jq -r '.start.test_start.num_streams // 0' "$json" 2>/dev/null)
+    agg=$(jq -r '.end.sum_received.bits_per_second // 0' "$json" 2>/dev/null \
+          | awk '{printf "%.1f", $1/1e6}')
+    per=$(awk -v a="$agg" -v s="$streams" 'BEGIN{ if(s>0) printf "%.1f", a/s; else print "n/a"}')
+    printf "  %-9s | %-7s | %22s Mb/s | %s Mb/s\n" "$net" "$streams" "$agg" "$per" \
+      | tee -a "$SUMMARY"
+  done
+  emit ""
+fi
+
 emit "TCP RAMP (single-stream, 30s) — captures cold-start curve shape"
 emit "(Tailscale should ramp to peak in ≤5s; slow ramp on hopssh = path issue.)"
 emit ""

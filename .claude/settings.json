@@ -1,6 +1,42 @@
 {
+  "_comment": "dev-wiki framework v0.3.0 hooks merged with hopssh permissions. Hooks fire at session boundaries (SessionStart / PreCompact / Stop), never per-tool-call. See /Users/tenevi/Projects/Github.Trustos/dev-wiki/templates/hooks.settings.json.example for the source template + the optional Tier 3 UserPromptSubmit block.",
   "permissions": {
     "allow": [],
     "deny": []
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [ -f docs/wiki/index.md ]; then echo '<dev-wiki-session-start>'; echo 'This project uses the dev-wiki framework. Operating contract:'; echo '  1. For non-trivial tasks (refactor / bug investigation / entity config change), READ docs/wiki/index.md FIRST. Walk to relevant decisions/, incidents/, runbooks/.'; echo '  2. On long tasks (>5 tool calls or >30 min), maintain a plan-of-record file in ~/.claude/plans/<slug>.md and rewrite it after each meaningful step.'; echo '  3. On substantive findings, file ingest-diff to wiki BEFORE session ends.'; echo 'Read docs/wiki/USAGE.md for the full playbook.'; echo '</dev-wiki-session-start>'; fi"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '<dev-wiki-precompact>'; echo 'Context is about to be compacted. BEFORE truncation:'; echo '  1. File any substantive findings from this session to docs/wiki/ (decisions/, incidents/, concepts/, etc.) so they survive.'; echo '  2. Update the active plan-of-record file in ~/.claude/plans/ with current state.'; echo '  3. Append cross-cutting unresolved items to docs/wiki/open-questions.md.'; echo 'After compaction, only what is on disk persists. Save what matters NOW.'; echo '</dev-wiki-precompact>'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '<dev-wiki-session-end>'; echo 'Session is wrapping up. Consider:'; echo '  - Did anything substantive happen this session worth filing to the wiki? If yes, propose an ingest-diff (decision / incident / runbook / phase / benchmark) before exiting.'; echo '  - If you touched code, run: bash scripts/wiki-lint.sh --all'; echo '  - If a decision was made and filed as an ADR, verify the ## Decision basis section is populated.'; echo '</dev-wiki-session-end>'"
+          }
+        ]
+      }
+    ]
   }
 }

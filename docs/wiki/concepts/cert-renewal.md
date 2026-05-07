@@ -35,7 +35,7 @@ sources:
 
 ## Phase history
 
-- **Phase P (v0.10.79)** — UI honesty fix + watchdog. `Connected = certValid && (peers > 0 || recentHeartbeat)`. Watchdog catches silent goroutine death. See [[../phases/phase-p]] (TBD).
+- **Phase P (v0.10.79)** — UI honesty fix + watchdog. `Connected = certValid && (peers > 0 || recentHeartbeat)`. Watchdog catches silent goroutine death. See [[concepts/watchdog]] for the watchdog architecture (Phase P shipped before the wiki bootstrap; details live in CLAUDE.md).
 - **Phase P4 → R (v0.10.80 → v0.10.81)** — added then removed user-visible "Force renew" button. Engineering capability preserved at `POST /local/renew`; just no UI.
 - **Phase Q (v0.10.80)** — FS watcher detects daemon respawn (e.g. `launchctl kickstart`) and re-attaches WebView to new endpoint. Sub-second.
 - **Phase S (v0.10.82)** — 60s wall-clock ticker. Survives Clamshell Sleep cycles. See [[../phases/phase-s]].

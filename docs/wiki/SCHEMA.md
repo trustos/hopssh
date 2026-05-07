@@ -112,6 +112,32 @@ Run when something feels stale. Check:
 
 This is the same pattern as the v0.7.3 DPLPMTUD ghost claim that lived for months in `features.md` without code: lint catches it.
 
+### Sources discipline (decision-basis tracking) — added in framework v0.2.0
+
+Every wiki page **must** justify its claims via at least one of:
+
+1. **`sources:` frontmatter populated** with paths to code files, raw artifacts, or URLs that back the page's content.
+2. **Inline citation** in the body — a code path, a `raw/<topic>/<filename>` reference, or a `> Cached from URL on YYYY-MM-DD:` block.
+3. **Prior-knowledge marker** for content the LLM authored from training-data priors without verifying against the codebase or sources:
+
+   ```
+   > Reasoned from training-data priors, not verified against this codebase as of YYYY-MM-DD.
+   ```
+
+   This is a release valve, not an excuse — use it only when external citation is unavailable AND verification against code would be expensive. The marker makes the basis honest; lint passes pages that carry it. A page with NO sources AND no marker is a lint failure (run `bash scripts/wiki-lint.sh --missing-sources`).
+
+### Session handoff — three layers of memory (added in framework v0.2.0)
+
+Different work belongs in different places:
+
+| Layer | What goes here | Lifetime |
+|---|---|---|
+| **In-flight working memory** — `~/.claude/plans/<slug>.md` | The active session's plan-of-record. Rewrite after each meaningful step (Manus's `todo.md` rewrite-loop pattern) so the plan stays in recent context. | Single session, until ship |
+| **Cross-cutting unresolved** — `docs/wiki/open-questions.md` | Items that span multiple pages or sessions, not yet resolved. Acts as the durable handoff between sessions. | Until resolved |
+| **Durable wiki** — `docs/wiki/{entities,concepts,decisions,incidents,phases,benchmarks,runbooks}/` | Compiled synthesis. Survives forever. | Project lifetime |
+
+When a plan ships, the *result* moves to a `phases/` page; the plan itself does not. When a session ends with substantive findings, the agent files them to the wiki *before* compaction truncates the conversation.
+
 ## Anti-patterns (DON'T do these)
 
 - **Don't mirror the code.** "How does runCertRenewal work" → read renew.go. The wiki page for `concepts/cert-renewal.md` should describe the *invariants and the post-Phase-S architecture*, not the function bodies.
