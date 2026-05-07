@@ -543,7 +543,15 @@ func tryStartMeshInstance(ctx context.Context, inst *meshInstance, servers *serv
 		// goes silent past renewalSilenceThreshold (= 6h on a 24h
 		// cert). Mirrors the v0.10.36 stuck-data-plane watchdog.
 		go runRenewalWatchdog(inst.runCtx, inst)
-		log.Printf("[agent %s] cert auto-renewal + heartbeat + watchdog enabled (endpoint: %s)", inst.name(), inst.endpoint())
+		// Phase DD (v0.10.96): silent watchNetworkChanges-death detector.
+		// Asserts on inst.lastWatcherActivityAt updates from the watcher
+		// loop; fires CRITICAL + forensic dump + restartFn if the watcher
+		// goes silent past watcherSilenceThreshold (= 3 min). Catches
+		// vendor Nebula deadlocks in RebindUDPServer / CloseAllTunnels
+		// that the recover() block can't handle (deadlocks are not
+		// panics).
+		go runWatcherWatchdog(inst.runCtx, inst)
+		log.Printf("[agent %s] cert auto-renewal + heartbeat + watchdogs enabled (endpoint: %s)", inst.name(), inst.endpoint())
 	}
 
 	// If nebula.yaml is missing, fall back to OS stack (rare — should

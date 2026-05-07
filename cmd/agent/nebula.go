@@ -228,6 +228,12 @@ func watchNetworkChanges(ctx context.Context, inst *meshInstance, ctrl *nebula.C
 		tickCount++
 		now := time.Now()
 
+		// Phase DD (v0.10.96): stamp at the TOP of the tick body so the
+		// watcher watchdog can detect a wedge inside the rebind block
+		// below. Stamps are guarded by activityMu (~ns lock); the cost
+		// is negligible compared to the 5s tick cadence.
+		inst.markWatcherActivity()
+
 		// Detect sleep/wake: if the ticker fires and the gap since the
 		// last tick is >15s (3× the 5s interval), the process was suspended
 		// — almost certainly a macOS/Windows sleep cycle. Force a rebind
@@ -269,8 +275,16 @@ func watchNetworkChanges(ctx context.Context, inst *meshInstance, ctrl *nebula.C
 				reason = fmt.Sprintf("sleep/wake detected (tick gap %v)", tickGap.Round(time.Second))
 			}
 			log.Printf("[agent %s] %s detected (iface: %s→%s), rebinding Nebula", inst.name(), reason, lastIface, currentIface)
-			ctrl.RebindUDPServer()
-			closed := ctrl.CloseAllTunnels(true)
+			// Phase DD (v0.10.96): hard timeouts on vendor Nebula calls.
+			// In production a wedge in CloseAllTunnels (likely contending
+			// with an in-flight handshake's HostMap lock) hung the watcher
+			// for 3.5+ hours, breaking lighthouse selfEndpoint refresh and
+			// stranding a peer (mini ⇄ MBP). Bounding to 5s converts the
+			// failure mode from "watcher dies, mesh dead until reboot" to
+			// "watcher logs WARN, continues normally".
+			runWithTimeout(inst.name(), "RebindUDPServer", 5*time.Second, ctrl.RebindUDPServer)
+			var closed int
+			runWithTimeout(inst.name(), "CloseAllTunnels", 5*time.Second, func() { closed = ctrl.CloseAllTunnels(true) })
 			if closed > 0 {
 				log.Printf("[agent %s] closed %d tunnels to force re-handshake on new network", inst.name(), closed)
 			}

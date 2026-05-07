@@ -484,7 +484,24 @@ func (s *localAPIServer) enrollmentStatus(e *Enrollment) EnrollmentStatus {
 			certValid := es.LastError == ""
 			activeFlow := es.PeersDirect+es.PeersRelayed > 0
 			recentHeartbeat := inst.heartbeatSuccessAge() < heartbeatGrace
-			es.Connected = certValid && (activeFlow || recentHeartbeat)
+			// Phase DD (v0.10.96): UI honesty axis. Without this gate,
+			// a wedged watchNetworkChanges goroutine leaves the UI
+			// reporting "connected" indefinitely while the data plane
+			// is dead — heartbeat is on a separate goroutine and stays
+			// fresh. Adding watcherAlive flips the indicator to
+			// "connection issue" within ~30s of detection (the
+			// watcher-watchdog interval) and stays false until the
+			// auto-restart spawns a fresh watcher that begins stamping.
+			//
+			// Cold-start grace: the watcher is only spawned when Nebula
+			// is up AND endpoint is non-empty (cmd/agent/main.go:611).
+			// Bundled mode pre-attach, OS-stack fallback, or empty
+			// endpoint enrollments never stamp — treat "never stamped"
+			// as alive (no watcher to wedge). The 100-year threshold
+			// matches runWatcherWatchdog's own cold-start exclusion.
+			watcherAge := inst.watcherActivityAge()
+			watcherAlive := watcherAge < heartbeatGrace || watcherAge > 100*365*24*time.Hour
+			es.Connected = certValid && watcherAlive && (activeFlow || recentHeartbeat)
 		}
 	}
 

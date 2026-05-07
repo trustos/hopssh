@@ -115,7 +115,15 @@ type meshInstance struct {
 	// handshaken yet doesn't show "disconnected").
 	lastRenewalActivityAt  time.Time
 	lastHeartbeatSuccessAt time.Time
-	activityMu             sync.Mutex // guards both fields above
+	// Phase DD (v0.10.96): silent watchNetworkChanges-death detection.
+	// Stamped at the TOP of every tick body in watchNetworkChanges. The
+	// watcher watchdog fires when this stays idle past
+	// watcherSilenceThreshold (= 3 min, 36× the 5s tick + 3× the 60s
+	// alive-log cadence). Catches deadlocks inside vendor Nebula's
+	// RebindUDPServer / CloseAllTunnels — the third class of silent
+	// goroutine failure (renewal + data-plane already covered).
+	lastWatcherActivityAt time.Time
+	activityMu            sync.Mutex // guards all three fields above
 
 	// restartFn is invoked by the v0.10.36 keepalive watchdog when it
 	// detects stuck-data-plane state (consecutive all-failed keepalive
@@ -228,6 +236,34 @@ func (i *meshInstance) heartbeatSuccessAge() time.Duration {
 		return 1<<62 - 1
 	}
 	return time.Since(i.lastHeartbeatSuccessAt)
+}
+
+// markWatcherActivity stamps lastWatcherActivityAt to now. Called at
+// the TOP of every tick body in watchNetworkChanges so the watcher
+// watchdog (Phase DD) detects silent deadlocks inside vendor Nebula
+// calls (RebindUDPServer / CloseAllTunnels).
+func (i *meshInstance) markWatcherActivity() {
+	if i == nil {
+		return
+	}
+	i.activityMu.Lock()
+	i.lastWatcherActivityAt = time.Now()
+	i.activityMu.Unlock()
+}
+
+// watcherActivityAge returns how long ago the network-change watcher
+// last emitted activity. Returns time.Duration(math.MaxInt64) when no
+// activity has been recorded yet (cold-start grace).
+func (i *meshInstance) watcherActivityAge() time.Duration {
+	if i == nil {
+		return 1<<62 - 1
+	}
+	i.activityMu.Lock()
+	defer i.activityMu.Unlock()
+	if i.lastWatcherActivityAt.IsZero() {
+		return 1<<62 - 1
+	}
+	return time.Since(i.lastWatcherActivityAt)
 }
 
 // dir returns the on-disk subdirectory containing this instance's
