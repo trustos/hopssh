@@ -3,6 +3,7 @@
   import { local, type PeerDetail, type EnrollmentStatus } from './local-api';
   import { openExternal } from './tauri-bridge';
   import SystemModeCTA from './SystemModeCTA.svelte';
+  import { invoke } from '@tauri-apps/api/core';
 
   let selectedName = $state<string | null>(null);
   let peers = $state<PeerDetail[]>([]);
@@ -10,6 +11,27 @@
   let peersError = $state<string | null>(null);
   let toggling = $state(false);
   let toggleError = $state<string | null>(null);
+  // Phase II (v0.11.1): track which peer is mid-SSH so we can show
+  // a brief disabled state on the button (osascript spawn is fast but
+  // not instantaneous; double-click would launch two Terminal windows).
+  let sshingPeer = $state<string | null>(null);
+  let sshError = $state<string | null>(null);
+
+  async function openSSHToPeer(peer: PeerDetail) {
+    if (sshingPeer) return;
+    sshingPeer = peer.vpnAddr;
+    sshError = null;
+    try {
+      await invoke('open_ssh_to_peer', { peerAddr: peer.vpnAddr, user: null });
+    } catch (e: unknown) {
+      sshError = e instanceof Error ? e.message : String(e);
+    } finally {
+      // Brief lock so a double-click doesn't fire a second Terminal.
+      window.setTimeout(() => {
+        if (sshingPeer === peer.vpnAddr) sshingPeer = null;
+      }, 1000);
+    }
+  }
 
   let enrollments = $derived(agent.status?.enrollments ?? []);
 
@@ -284,6 +306,9 @@
                place every 5s, the visible cadence was noise (NN/g
                status indicator pattern). -->
         </div>
+        {#if sshError}
+          <div class="px-4 py-2 text-[11px] text-amber-400">SSH: {sshError}</div>
+        {/if}
         {#if peersError}
           <div class="px-4 py-3 text-xs text-amber-400">{peersError}</div>
         {:else if peers.length === 0}
@@ -323,6 +348,19 @@
                     {#if p.remoteAddr}
                       <span class="font-mono text-[10px]">{p.remoteAddr}</span>
                     {/if}
+                    <!-- Phase II (v0.11.1): SSH-to-peer button. Opens
+                         Terminal.app with `ssh $USER@<mesh-IP>`. The
+                         in-app web terminal lives in the dashboard
+                         (shell proxy needs session-cookie auth). -->
+                    <button
+                      type="button"
+                      class="rounded-md border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:border-emerald-500 hover:text-emerald-400 disabled:opacity-50"
+                      onclick={() => openSSHToPeer(p)}
+                      disabled={sshingPeer !== null}
+                      title={`SSH to ${p.name || p.vpnAddr} in Terminal.app`}
+                    >
+                      {sshingPeer === p.vpnAddr ? '…' : 'SSH'}
+                    </button>
                   </div>
                 </div>
                 <div class="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-4 text-[10px] text-zinc-500">

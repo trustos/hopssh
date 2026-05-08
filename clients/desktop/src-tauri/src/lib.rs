@@ -313,6 +313,67 @@ fn open_agent_logs() -> Result<(), String> {
     Err("open_agent_logs is macOS-only".into())
 }
 
+/// Phase II (v0.11.1): one-click SSH from the desktop client. Opens
+/// Terminal.app and runs `ssh user@<peer-mesh-IP>`. Username defaults
+/// to `$USER` (the host user) so it matches the convention "I'm
+/// SSHing into another Mac with the same login as my local user". The
+/// in-app web terminal (xterm.js + WebSocket proxy through the agent)
+/// is the dashboard's territory — it requires session-cookie auth to
+/// the control plane that the desktop client doesn't have. Opening
+/// Terminal.app + ssh uses the user's own ssh keys + the peer's own
+/// sshd, no extra auth surface to maintain.
+///
+/// peer_addr is the peer's mesh IP (e.g. "10.42.1.7"). user is
+/// optional — if empty, defaults to the host user via $USER.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn open_ssh_to_peer(peer_addr: String, user: Option<String>) -> Result<(), String> {
+    if peer_addr.is_empty() {
+        return Err("peer_addr is required".into());
+    }
+    // Validate peer_addr is a plausible mesh IP — restrict to
+    // alphanumerics + dots/colons to prevent shell-injection if the
+    // peer field is ever populated from untrusted input. Mesh IPs are
+    // IPv4-only in current hopssh deployments; keep the regex tight.
+    if !peer_addr
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == ':')
+    {
+        return Err("invalid peer_addr".into());
+    }
+    let host_user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+    let username = user
+        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+        .unwrap_or(host_user);
+    // osascript pattern mirrors install_update_mac (see docstring there
+    // for the do-script-then-activate ordering).
+    let cmd = format!(
+        r#"tell application "Terminal"
+    do script "ssh {}@{}"
+    activate
+end tell"#,
+        username, peer_addr
+    );
+    let output = std::process::Command::new("osascript")
+        .arg("-e")
+        .arg(&cmd)
+        .output()
+        .map_err(|e| format!("osascript spawn failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "osascript failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn open_ssh_to_peer(_peer_addr: String, _user: Option<String>) -> Result<(), String> {
+    Err("open_ssh_to_peer is macOS-only".into())
+}
+
 /// Phase GG (v0.10.99): one-click diagnostic info dump for support
 /// tickets. Returns a short plain-text summary of the agent's current
 /// state (version, commit, run mode, hostname, OS, enrollments) the
@@ -1136,7 +1197,8 @@ pub fn run() {
             check_remote_version,
             install_update_mac,
             open_agent_logs,
-            copy_diagnostic_info
+            copy_diagnostic_info,
+            open_ssh_to_peer
         ])
         .setup(move |app| {
             // Phase N: re-apply the persisted "Hide from Dock"
@@ -2430,6 +2492,61 @@ mod tests {
             src.contains("Check that the control plane URL is correct"),
             "Onboarding.svelte must include an actionable fallback \
              message that points the user at the URL field (Phase EE F4)."
+        );
+    }
+
+    /// Phase II tripwire: open_ssh_to_peer must be registered + a
+    /// per-peer SSH button must exist in Connected.svelte.
+    #[test]
+    fn ssh_to_peer_command_is_wired() {
+        let src = std::fs::read_to_string(file!())
+            .expect("lib.rs must be readable");
+        let invoke_idx = src.find("invoke_handler(tauri::generate_handler![")
+            .expect("invoke_handler block must exist");
+        let block_end = src[invoke_idx..]
+            .find("])")
+            .expect("invoke_handler block must close");
+        let block = &src[invoke_idx..invoke_idx + block_end];
+        assert!(
+            block.contains("open_ssh_to_peer"),
+            "Phase II: open_ssh_to_peer must be registered in invoke_handler."
+        );
+
+        let svelte_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("src")
+            .join("lib")
+            .join("Connected.svelte");
+        let svelte_src = std::fs::read_to_string(&svelte_path)
+            .expect("Connected.svelte must exist");
+        assert!(
+            svelte_src.contains("invoke('open_ssh_to_peer'"),
+            "Phase II: Connected.svelte must invoke open_ssh_to_peer \
+             from a per-peer button handler."
+        );
+    }
+
+    /// Phase II tripwire: open_ssh_to_peer must validate peer_addr and
+    /// user input — they're concatenated into an osascript shell
+    /// command, so an unvalidated colon-or-space-bearing string would
+    /// be a shell-injection footgun.
+    #[test]
+    fn ssh_to_peer_validates_input() {
+        let src = std::fs::read_to_string(file!())
+            .expect("lib.rs must be readable");
+        let idx = src.find("fn open_ssh_to_peer(")
+            .expect("open_ssh_to_peer must exist");
+        let body_end = src[idx..].find("\nfn ").unwrap_or(src.len() - idx);
+        let body = &src[idx..idx + body_end];
+        // Must reject empty peer_addr.
+        assert!(
+            body.contains("peer_addr is required"),
+            "open_ssh_to_peer must reject empty peer_addr."
+        );
+        // Must validate peer_addr character set.
+        assert!(
+            body.contains("invalid peer_addr"),
+            "open_ssh_to_peer must validate peer_addr to ASCII alphanumerics + dot/colon."
         );
     }
 
