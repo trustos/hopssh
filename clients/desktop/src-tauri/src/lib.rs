@@ -2640,20 +2640,22 @@ mod tests {
         }
     }
 
-    /// Phase II.2/II.3 tripwire: peers list must show OS as PLAIN TEXT
-    /// labels (matching the dashboard's network-detail OS column —
-    /// frontend/src/routes/(app)/networks/[id]/+page.svelte:987-994)
-    /// AND treat lighthouses specially (label "Lighthouse", no
-    /// Terminal button).
+    /// Phase II.4 tripwire: peers list must show OS as brand-mark
+    /// SVG icons with `title` attribute (native HTML tooltip — the
+    /// desktop client has no shadcn dep so this is the native
+    /// tooltip primitive). The dashboard equivalent at
+    /// frontend/src/lib/components/os-icon.svelte uses shadcn Tooltip;
+    /// both render the SAME SVG paths so visual consistency holds.
     ///
-    /// Phase II.2 originally shipped with inline-SVG OS icons. Phase
-    /// II.3 dropped them for dashboard consistency — the dashboard
-    /// uses text labels everywhere. This tripwire enforces that:
-    /// (a) the SVG-icon helpers don't sneak back in
-    /// (b) the text-label pattern stays
+    /// Lifecycle: Phase II.2 shipped icons; Phase II.3 reverted to
+    /// text for dashboard parity; Phase II.4 brought icons back to
+    /// BOTH surfaces (with tooltips on both) for visual density.
+    /// Tripwire enforces:
+    /// (a) brand-mark SVGs present per OS branch
+    /// (b) `title=` attribute on each branch (native tooltip)
     /// (c) lighthouse special-casing still applies
     #[test]
-    fn peer_row_uses_text_labels_consistent_with_dashboard() {
+    fn peer_row_uses_os_icons_with_native_tooltip() {
         let svelte_path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("src")
@@ -2661,19 +2663,7 @@ mod tests {
             .join("Connected.svelte");
         let src = std::fs::read_to_string(&svelte_path)
             .expect("Connected.svelte must exist");
-        // SVG-icon helpers from the original II.2 must be gone — they
-        // were inconsistent with the dashboard's text-label rendering.
-        for forbidden in &["function osIcon(", "function osLabel(", "function lighthouseIcon("] {
-            assert!(
-                !src.contains(forbidden),
-                "Phase II.3: Connected.svelte must NOT contain {} — \
-                 these were dropped in v0.11.3 for dashboard \
-                 consistency. Use plain text labels instead.",
-                forbidden
-            );
-        }
-        // Text-label pattern: same shape as
-        // frontend/src/routes/(app)/networks/[id]/+page.svelte:987-994.
+        // Per-OS branches present.
         for needle in &[
             "{#if p.os === 'darwin'}",
             "{:else if p.os === 'linux'}",
@@ -2681,11 +2671,36 @@ mod tests {
         ] {
             assert!(
                 src.contains(needle),
-                "Phase II.3: Connected.svelte must render OS as plain \
-                 text labels (mirroring dashboard exactly). Missing: {}",
+                "Phase II.4: Connected.svelte must render OS via per-\
+                 OS branches. Missing: {}",
                 needle
             );
         }
+        // Native HTML tooltip on each known-OS branch (title=).
+        for needle in &[
+            "title=\"macOS\"",
+            "title=\"Linux\"",
+            "title=\"Windows\"",
+        ] {
+            assert!(
+                src.contains(needle),
+                "Phase II.4: Connected.svelte must include native \
+                 title-attribute tooltip on the OS icon. Missing: {}",
+                needle
+            );
+        }
+        // Brand-mark SVGs present (signature path-data fragments
+        // that uniquely identify each logo).
+        assert!(
+            src.contains("M17.05 12.04c-.03-3.18 2.6-4.7"),
+            "Phase II.4: Connected.svelte must include the macOS \
+             (Apple) SVG brand mark."
+        );
+        assert!(
+            src.contains("M3 5.5L10.5 4.5V11"),
+            "Phase II.4: Connected.svelte must include the Windows \
+             SVG brand mark."
+        );
         // Lighthouse rows must still label as "Lighthouse".
         assert!(
             src.contains("{#if p.isLighthouse}\n                        Lighthouse"),

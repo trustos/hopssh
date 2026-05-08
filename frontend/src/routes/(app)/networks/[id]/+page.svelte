@@ -22,6 +22,7 @@
 	import { displayStatus } from '$lib/node-status';
 	import NetworkTopology from '$lib/components/network-topology.svelte';
 	import ActivityTable from '$lib/components/activity-table.svelte';
+	import OsIcon from '$lib/components/os-icon.svelte';
 
 	const termStore = getTerminals();
 	const serverInfo = getServerInfo();
@@ -984,17 +985,16 @@
 									{/if}
 									{#if nodeCols.os}
 									<td class="px-4 py-3 text-xs whitespace-nowrap">
-										{#if node.os === 'darwin'}
-											<span title="macOS">macOS</span>
-										{:else if node.os === 'linux'}
-											<span title="Linux">Linux</span>
-										{:else if node.os === 'windows'}
-											<span title="Windows">Windows</span>
-										{:else if node.os}
-											<span class="text-muted-foreground">{node.os}</span>
-										{:else}
-											<span class="text-muted-foreground/50">—</span>
-										{/if}
+										<!-- Phase II.4 (v0.11.4): OS rendered as brand-mark
+										     icon with shadcn Tooltip on hover. Saves
+										     ~33px column width vs the previous text labels
+										     (macOS / Linux / Windows / em-dash) and matches
+										     the device-list pattern of Tailscale, Slack,
+										     1Password. The OsIcon component is shared with
+										     any future surface that needs the same
+										     rendering — see frontend/src/lib/components/
+										     os-icon.svelte. -->
+										<OsIcon os={node.os} />
 									</td>
 									{/if}
 									{#if nodeCols.client}
