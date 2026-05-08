@@ -67,6 +67,11 @@
   // agent. Better: replace the whole panel with a blocking view +
   // auto-quit so the user doesn't have to click anything.
   let uninstallCountdown = $state<number>(0);
+  // Phase GG (v0.10.99): diagnostics state. diagnosticCopied flips
+  // briefly to "Copied!" after the clipboard write succeeds; reset
+  // after 2s so the button re-affords another copy.
+  let diagnosticCopied = $state(false);
+  let diagnosticError = $state<string | null>(null);
 
   // ---- Background-mode toggle state ----
   // Drives the "Run in the background" preference. Reads runMode from
@@ -307,6 +312,30 @@
     } finally {
       dangerBusy = null;
       dangerConfirm = null;
+    }
+  }
+
+  // Phase GG: diagnostics handlers.
+  async function doViewLogs() {
+    diagnosticError = null;
+    try {
+      await invoke('open_agent_logs');
+    } catch (e: unknown) {
+      diagnosticError = e instanceof Error ? e.message : String(e);
+    }
+  }
+
+  async function doCopyDiagnostic() {
+    diagnosticError = null;
+    try {
+      const text = await invoke<string>('copy_diagnostic_info');
+      await navigator.clipboard.writeText(text);
+      diagnosticCopied = true;
+      window.setTimeout(() => {
+        diagnosticCopied = false;
+      }, 2000);
+    } catch (e: unknown) {
+      diagnosticError = e instanceof Error ? e.message : String(e);
     }
   }
 
@@ -907,6 +936,33 @@
           {agent.status?.configDir}
         </dd>
       </div>
+      <!-- Phase GG (v0.10.99): diagnostics tools. View agent logs
+           opens Console.app (macOS native log viewer). Copy diagnostic
+           info concatenates version + run mode + enrollment state into
+           a paste-friendly block for support tickets. -->
+      {#if isTauri}
+        <div class="flex flex-col gap-2 px-4 py-3">
+          <button
+            type="button"
+            class="rounded-md bg-zinc-800 px-3 py-1.5 text-xs hover:bg-zinc-700"
+            onclick={doViewLogs}
+            title="Open the agent's log file in Console.app"
+          >
+            View agent logs
+          </button>
+          <button
+            type="button"
+            class="rounded-md bg-zinc-800 px-3 py-1.5 text-xs hover:bg-zinc-700"
+            onclick={doCopyDiagnostic}
+            title="Copy a short version + state summary you can paste into a support ticket"
+          >
+            {diagnosticCopied ? 'Copied!' : 'Copy diagnostic info'}
+          </button>
+          {#if diagnosticError}
+            <div class="text-[11px] text-amber-400">{diagnosticError}</div>
+          {/if}
+        </div>
+      {/if}
     </dl>
   </details>
   {/if}

@@ -279,6 +279,152 @@ fn install_update_mac() -> Result<(), String> {
     Err("install_update_mac is macOS-only".into())
 }
 
+/// Phase GG (v0.10.99): open Console.app pointing at the agent's log
+/// file so users can diagnose connection issues without dropping into
+/// Terminal. System-mode writes to `/var/log/hop-agent.log`; bundled
+/// mode writes to the .app's stderr → Console.app's "default" shows
+/// it under the hopssh process. We try the system-mode path first; if
+/// the file doesn't exist (bundled mode), fall back to opening Console
+/// without a target so the user can filter manually.
+#[cfg(target_os = "macos")]
+#[tauri::command]
+fn open_agent_logs() -> Result<(), String> {
+    let system_log = "/var/log/hop-agent.log";
+    let mut cmd = std::process::Command::new("open");
+    cmd.arg("-a").arg("Console");
+    if std::path::Path::new(system_log).exists() {
+        cmd.arg(system_log);
+    }
+    let output = cmd
+        .output()
+        .map_err(|e| format!("open Console failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "open Console failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+#[tauri::command]
+fn open_agent_logs() -> Result<(), String> {
+    Err("open_agent_logs is macOS-only".into())
+}
+
+/// Phase GG (v0.10.99): one-click diagnostic info dump for support
+/// tickets. Returns a short plain-text summary of the agent's current
+/// state (version, commit, run mode, hostname, OS, enrollments) the
+/// user can paste into a bug report. NOT a full log dump — that's
+/// `open_agent_logs`. This is for "I can't connect to my home
+/// network" / "the icon won't go green" kinds of reports where
+/// version + run mode + cert status + endpoint cover most root cause.
+///
+/// All data here is already visible in the UI; this command just
+/// concatenates it into a copyable block so the user doesn't have to
+/// click around to compose it.
+#[tauri::command]
+async fn copy_diagnostic_info(
+    state: tauri::State<'_, AppState>,
+) -> Result<String, String> {
+    let endpoint = state
+        .endpoint
+        .lock()
+        .as_ref()
+        .map(|e| e.host.clone())
+        .unwrap_or_default();
+    if endpoint.is_empty() {
+        return Err("agent endpoint not yet available".into());
+    }
+    let token = state
+        .endpoint
+        .lock()
+        .as_ref()
+        .map(|e| e.token.clone())
+        .unwrap_or_default();
+    let url = format!("http://{}/local/status", endpoint);
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let resp = client
+        .get(&url)
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if !resp.status().is_success() {
+        return Err(format!("HTTP {}", resp.status()));
+    }
+    let body = resp.text().await.map_err(|e| e.to_string())?;
+
+    // Parse just enough to summarize. Keep the JSON compact in the
+    // output too — paste-friendly + complete.
+    #[derive(serde::Deserialize)]
+    struct StatusResp {
+        version: String,
+        commit: String,
+        os: String,
+        arch: String,
+        #[serde(rename = "runMode", default)]
+        run_mode: String,
+        #[serde(default)]
+        hostname: String,
+        #[serde(default)]
+        enrollments: Vec<EnrollmentSummary>,
+    }
+    #[derive(serde::Deserialize)]
+    struct EnrollmentSummary {
+        name: String,
+        endpoint: String,
+        #[serde(default)]
+        connected: bool,
+        #[serde(rename = "certExpiresIn", default)]
+        cert_expires_in: String,
+        #[serde(rename = "peersDirect", default)]
+        peers_direct: u32,
+        #[serde(rename = "peersRelayed", default)]
+        peers_relayed: u32,
+        #[serde(rename = "lastError", default)]
+        last_error: String,
+    }
+    let s: StatusResp = serde_json::from_str(&body).map_err(|e| e.to_string())?;
+
+    let mut out = String::new();
+    out.push_str(&format!("hopssh diagnostic info\n"));
+    out.push_str(&format!("======================\n"));
+    out.push_str(&format!("agent: {} ({}) on {}/{}\n", s.version, s.commit, s.os, s.arch));
+    if !s.hostname.is_empty() {
+        out.push_str(&format!("device: {}\n", s.hostname));
+    }
+    if !s.run_mode.is_empty() {
+        out.push_str(&format!("run mode: {}\n", s.run_mode));
+    }
+    out.push_str(&format!("\nenrollments ({}):\n", s.enrollments.len()));
+    for e in &s.enrollments {
+        out.push_str(&format!(
+            "  - {} @ {}: connected={} peers={}direct/{}relayed cert={}{}\n",
+            e.name,
+            e.endpoint,
+            e.connected,
+            e.peers_direct,
+            e.peers_relayed,
+            if e.cert_expires_in.is_empty() {
+                "?".to_string()
+            } else {
+                format!("expires in {}", e.cert_expires_in)
+            },
+            if e.last_error.is_empty() {
+                String::new()
+            } else {
+                format!(" lastError={}", e.last_error)
+            },
+        ));
+    }
+    Ok(out)
+}
+
 /// Fetch `<endpoint>/version` from a Rust HTTP client so the WebView's
 /// CSP / CORS doesn't gate the manual update check. The control plane
 /// at hopssh.com responds 200 to a direct `curl` but doesn't include
@@ -988,7 +1134,9 @@ pub fn run() {
             get_hide_from_dock,
             set_hide_from_dock,
             check_remote_version,
-            install_update_mac
+            install_update_mac,
+            open_agent_logs,
+            copy_diagnostic_info
         ])
         .setup(move |app| {
             // Phase N: re-apply the persisted "Hide from Dock"
@@ -2283,6 +2431,30 @@ mod tests {
             "Onboarding.svelte must include an actionable fallback \
              message that points the user at the URL field (Phase EE F4)."
         );
+    }
+
+    /// Phase GG tripwire: open_agent_logs + copy_diagnostic_info must
+    /// be registered in invoke_handler — without registration the
+    /// diagnostic buttons in Settings throw "command not found" at
+    /// runtime instead of compile time.
+    #[test]
+    fn diagnostic_commands_are_registered() {
+        let src = std::fs::read_to_string(file!())
+            .expect("lib.rs must be readable");
+        let invoke_idx = src.find("invoke_handler(tauri::generate_handler![")
+            .expect("invoke_handler block must exist");
+        let block_end = src[invoke_idx..]
+            .find("])")
+            .expect("invoke_handler block must close");
+        let block = &src[invoke_idx..invoke_idx + block_end];
+        for cmd in &["open_agent_logs", "copy_diagnostic_info"] {
+            assert!(
+                block.contains(cmd),
+                "Phase GG: '{}' must be registered in invoke_handler — \
+                 the Settings → About diagnostic buttons depend on it.",
+                cmd
+            );
+        }
     }
 
     /// Phase FF tripwire: Activity.svelte must exist and be wired into
