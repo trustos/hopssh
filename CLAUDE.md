@@ -471,6 +471,76 @@ Verified end-to-end with `hop-agent migration` against a deployed QUIC echo serv
 - **`docker logs` defaults to InfoLevel for quic-go internal logger.** When wrapping `net.PacketConn` for visibility (e.g., logging new src/dst addrs), the wrapper's logrus must default to InfoLevel — `nil` log defaults to WarnLevel and silently drops Info messages, which silently broke our packet logger on the first deploy.
 - **Don't trust Docker tag pulls in dev-deploy unless the tag changes.** With `image_pull_policy = "missing"` (the Nomad default), Nomad re-pulls only when the cached tag is absent. If you push a new image with the same tag, Nomad keeps the cached old image. Bumping the commit hash (so the tag becomes `dev-NEWHASH`) forces a real pull. Check via `docker inspect <container> | jq '.[0].Created'` — should be after your push.
 
+- **Adopted Karpathy behavioral guidelines (Phase KK, 2026-05-09).** Vendored [forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills) (MIT) into the project as both an always-on rule set in CLAUDE.md (§ Behavioral guidelines, above § Coding Principles) and an explicitly-invocable skill at `.claude/skills/karpathy-guidelines/SKILL.md`. Two layers, two roles: the CLAUDE.md section sets background discipline for every turn (Think Before Coding / Simplicity First / Surgical Changes / Goal-Driven Execution); the skill is for explicit `/karpathy-guidelines` invocation when the user wants to spotlight these principles for a specific PR or refactor. The system prompt's "# Doing tasks" + our existing `## Coding Principles` already overlap on points 2 (Simplicity) and 3 (Surgical) — the Karpathy version is treated as the canonical concise statement (reinforcement, not duplication). Points 1 (Think Before Coding) and 4 (Goal-Driven Execution) are genuinely additive — they push the agent toward asking before silently picking between interpretations and toward defining verifiable success criteria up-front. Marketplace install was deliberately skipped — vendor-copy keeps the adoption project-local + reproducible across clones. Architectural lesson: when codifying behavioral rules, prefer per-project vendoring over global plugin install — same machinery (Claude Code skill auto-discovery in `.claude/skills/`), better reproducibility, no cross-project version drift.
+
+---
+
+## Behavioral guidelines (Karpathy)
+
+> Adopted from [forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills) (MIT). General behavioral rules; project-specific code rules live in § Coding Principles below. Also vendored as `.claude/skills/karpathy-guidelines/SKILL.md` for explicit `/karpathy-guidelines` invocation.
+
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
+
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+
+### 1. Think Before Coding
+
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
+
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
+
+### 2. Simplicity First
+
+**Minimum code that solves the problem. Nothing speculative.**
+
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
+
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
+
+### 3. Surgical Changes
+
+**Touch only what you must. Clean up only your own mess.**
+
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+### 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
+
 ---
 
 ## Coding Principles
