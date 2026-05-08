@@ -217,6 +217,63 @@
            Self-hides once user enables system mode or dismisses. -->
       <SystemModeCTA />
 
+      <!-- Phase HH (v0.11.0): DNS records section. Flattens peer
+           hostnames + user-defined DNS records into a single sortable
+           list. Read-only — the dashboard's network-detail page is
+           where create/delete lives (server's DNS endpoints use
+           session auth, not the agent's bearer token). -->
+      {#if e.dnsDomain}
+        {@const dnsRows = peers.flatMap((p) => {
+          const rows: { name: string; peer: string; vpnAddr: string; isCustom: boolean }[] = [];
+          if (p.dnsHostname) {
+            rows.push({ name: p.dnsHostname, peer: p.name || p.vpnAddr, vpnAddr: p.vpnAddr, isCustom: false });
+          }
+          for (const custom of p.customDnsNames ?? []) {
+            rows.push({ name: custom, peer: p.name || p.vpnAddr, vpnAddr: p.vpnAddr, isCustom: true });
+          }
+          return rows;
+        }).sort((a, b) => a.name.localeCompare(b.name))}
+        <div class="rounded-lg border border-zinc-800 bg-zinc-900/40">
+          <div class="flex items-center justify-between border-b border-zinc-800 px-4 py-2.5">
+            <h3 class="text-xs font-semibold uppercase tracking-wide text-zinc-300">
+              DNS records
+            </h3>
+            <button
+              type="button"
+              class="text-[10px] text-zinc-400 hover:text-zinc-200"
+              onclick={() => openExternal(e.endpoint)}
+              title="Add or remove DNS records in the web dashboard"
+            >
+              Manage in dashboard ↗
+            </button>
+          </div>
+          {#if dnsRows.length === 0}
+            <div class="px-4 py-6 text-center text-xs text-zinc-500">
+              No DNS records yet for <code class="rounded bg-zinc-800 px-1 py-0.5 font-mono">{e.dnsDomain}</code>.
+            </div>
+          {:else}
+            <ul class="divide-y divide-zinc-800">
+              {#each dnsRows as r}
+                <li class="flex items-center justify-between px-4 py-2 text-xs">
+                  <div class="flex min-w-0 items-center gap-2">
+                    <span class="truncate font-mono text-zinc-200">{r.name}</span>
+                    {#if r.isCustom}
+                      <span class="shrink-0 rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-emerald-400">
+                        custom
+                      </span>
+                    {/if}
+                  </div>
+                  <div class="flex shrink-0 items-center gap-3 text-zinc-500">
+                    <span class="font-mono">{r.vpnAddr}</span>
+                    <span class="text-[10px]">{r.peer}</span>
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {/if}
+
       <!-- Peers list -->
       <div class="rounded-lg border border-zinc-800 bg-zinc-900/40">
         <div class="flex items-center justify-between border-b border-zinc-800 px-4 py-2.5">

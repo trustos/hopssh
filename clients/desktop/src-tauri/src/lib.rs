@@ -2433,6 +2433,34 @@ mod tests {
         );
     }
 
+    /// Phase HH tripwire: Connected.svelte must include a DNS records
+    /// section that flattens peer dnsHostname + customDnsNames into a
+    /// single list. Today's read-only cut — write operations (create/
+    /// delete) live in the dashboard until the agent gains admin-level
+    /// auth to the server's DNS endpoints (out of scope for current
+    /// architecture).
+    #[test]
+    fn dns_records_section_exists() {
+        let svelte_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("src")
+            .join("lib")
+            .join("Connected.svelte");
+        let src = std::fs::read_to_string(&svelte_path)
+            .expect("Connected.svelte must exist");
+        assert!(
+            src.contains("DNS records"),
+            "Phase HH: Connected.svelte must include a 'DNS records' \
+             section header."
+        );
+        assert!(
+            src.contains("Manage in dashboard"),
+            "Phase HH: Connected.svelte must have a 'Manage in \
+             dashboard' link for DNS record write operations \
+             (acknowledges the cut to read-only)."
+        );
+    }
+
     /// Phase GG tripwire: open_agent_logs + copy_diagnostic_info must
     /// be registered in invoke_handler — without registration the
     /// diagnostic buttons in Settings throw "command not found" at
