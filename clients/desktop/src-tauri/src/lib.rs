@@ -2284,4 +2284,42 @@ mod tests {
              message that points the user at the URL field (Phase EE F4)."
         );
     }
+
+    /// Phase FF tripwire: Activity.svelte must exist and be wired into
+    /// App.svelte's view router. The buffered SSE events (capped at 200
+    /// in stores.svelte.ts) are useless without a UI surface.
+    #[test]
+    fn activity_view_is_wired_into_app() {
+        let activity_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("src")
+            .join("lib")
+            .join("Activity.svelte");
+        assert!(
+            activity_path.exists(),
+            "Phase FF: clients/desktop/src/lib/Activity.svelte must \
+             exist — without it the SSE event buffer in \
+             stores.svelte.ts::events has no UI surface."
+        );
+
+        let app_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("src")
+            .join("App.svelte");
+        let app_src = std::fs::read_to_string(&app_path)
+            .expect("App.svelte must exist");
+        assert!(
+            app_src.contains("import Activity from './lib/Activity.svelte'"),
+            "App.svelte must import Activity.svelte (Phase FF)."
+        );
+        assert!(
+            app_src.contains("view === 'activity'"),
+            "App.svelte's view router must handle the 'activity' view \
+             (Phase FF)."
+        );
+        assert!(
+            app_src.contains(">\n        Activity\n      </button>"),
+            "App.svelte must render an Activity tab button (Phase FF)."
+        );
+    }
 }

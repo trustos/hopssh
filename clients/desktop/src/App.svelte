@@ -9,9 +9,10 @@
   import Disconnected from './lib/Disconnected.svelte';
   import Logo from './lib/Logo.svelte';
   import BannerStrip from './lib/BannerStrip.svelte';
+  import Activity from './lib/Activity.svelte';
   import { checkForUpdate } from './lib/updater.svelte';
 
-  let view = $state<'main' | 'onboarding' | 'settings'>('main');
+  let view = $state<'main' | 'onboarding' | 'activity' | 'settings'>('main');
   let trayUnsub: UnlistenFn | null = null;
   // When the tray menu's "Check for updates" item is clicked, we route
   // to Settings AND auto-trigger the manual check on the Settings panel
@@ -132,6 +133,14 @@
         Add network
       </button>
       <button
+        class={tabClass(view === 'activity', !agent.online)}
+        onclick={() => agent.online && (view = 'activity')}
+        disabled={!agent.online}
+        title={!agent.online ? 'Available once the agent is connected' : 'Recent events from this session'}
+      >
+        Activity
+      </button>
+      <button
         class={tabClass(view === 'settings', !agent.online)}
         onclick={() => agent.online && (view = 'settings')}
         disabled={!agent.online}
@@ -153,6 +162,8 @@
       <Disconnected error={agent.lastError ?? 'agent unreachable'} />
     {:else if view === 'onboarding'}
       <Onboarding onDone={() => (view = 'main')} />
+    {:else if view === 'activity'}
+      <Activity />
     {:else if view === 'settings'}
       <Settings
         autoCheckUpdate={pendingAutoCheck}
