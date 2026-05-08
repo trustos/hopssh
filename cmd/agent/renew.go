@@ -243,6 +243,11 @@ type peerInfoEntry struct {
 	Name           string   `json:"name,omitempty"`
 	DnsHostname    string   `json:"dnsHostname,omitempty"`
 	CustomDnsNames []string `json:"customDnsNames,omitempty"`
+	// OS mirrors the server-side peerInfoEntry.OS (Phase II.2,
+	// v0.11.2). Used by the desktop client's peers list to render
+	// per-peer OS icons. Backwards-compatible: omitempty so older
+	// servers that don't include this field don't break decoding.
+	OS string `json:"os,omitempty"`
 }
 
 // updatePeerInfoCache replaces inst.peerInfoCache with the latest

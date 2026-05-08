@@ -17,6 +17,45 @@
   let sshingPeer = $state<string | null>(null);
   let sshError = $state<string | null>(null);
 
+  // Phase II.2 (v0.11.2): per-peer OS icons + lighthouse icon.
+  // Inline SVGs (no new dep) sized to the chip cluster. currentColor
+  // ties them to the peer-name foreground tone for hover/dark-mode.
+  function osLabel(os: string): string {
+    switch (os) {
+      case 'darwin':
+        return 'macOS';
+      case 'linux':
+        return 'Linux';
+      case 'windows':
+        return 'Windows';
+      default:
+        return os;
+    }
+  }
+
+  function osIcon(os: string): string {
+    // Apple "command-key"-style mark stays recognizable at 12px;
+    // Linux Tux-silhouette + Windows 4-pane logo round out the trio.
+    // Other OS values fall back to a neutral monitor outline.
+    const c = 'class="h-3 w-3 text-zinc-500"';
+    switch (os) {
+      case 'darwin':
+        return `<svg ${c} viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M17.05 12.04c-.03-3.18 2.6-4.7 2.72-4.78-1.49-2.17-3.8-2.47-4.62-2.5-1.97-.2-3.84 1.16-4.84 1.16-1.01 0-2.55-1.13-4.19-1.1-2.16.03-4.15 1.25-5.26 3.18-2.24 3.88-.57 9.62 1.62 12.78 1.07 1.55 2.34 3.28 4.01 3.22 1.61-.07 2.22-1.04 4.17-1.04 1.94 0 2.49 1.04 4.2 1 1.74-.03 2.83-1.57 3.89-3.13 1.23-1.79 1.74-3.54 1.77-3.63-.04-.02-3.39-1.3-3.42-5.16zM14.13 3.3c.88-1.07 1.48-2.55 1.32-4.03-1.27.05-2.81.85-3.72 1.92-.81.95-1.53 2.46-1.34 3.91 1.42.11 2.85-.72 3.74-1.8z"/></svg>`;
+      case 'linux':
+        return `<svg ${c} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M12 4c2.5 0 4 2.5 4 6 0 2.5-1 4.5-1 6 0 2 1.8 3 1.8 5H7.2c0-2 1.8-3 1.8-5 0-1.5-1-3.5-1-6 0-3.5 1.5-6 4-6z"/><circle cx="10.5" cy="9" r="0.6" fill="currentColor"/><circle cx="13.5" cy="9" r="0.6" fill="currentColor"/></svg>`;
+      case 'windows':
+        return `<svg ${c} viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M3 5.5L10.5 4.5V11H3V5.5zM10.5 12V19L3 18V12H10.5zM11.5 4.4L21 3v9h-9.5V4.4zM21 13v8L11.5 19.7V13H21z"/></svg>`;
+      default:
+        return `<svg ${c} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="5" width="18" height="12" rx="1.5"/><path d="M9 19h6"/><path d="M12 17v2"/></svg>`;
+    }
+  }
+
+  function lighthouseIcon(): string {
+    // Stylized lighthouse: trapezoid base + dot light. Amber tone
+    // distinguishes infrastructure from peer machines at a glance.
+    return `<svg class="h-3 w-3 text-amber-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M9 21h6M10 21l1-7M14 21l-1-7M11 14h2"/><path d="M9 14h6l-1-3h-4z"/><circle cx="12" cy="6.5" r="2"/><path d="M12 4.5V3M14 5.5h1.5M10 5.5H8.5"/></svg>`;
+  }
+
   async function openSSHToPeer(peer: PeerDetail) {
     if (sshingPeer) return;
     sshingPeer = peer.vpnAddr;
@@ -332,8 +371,24 @@
                         ? 'inline-block h-2 w-2 shrink-0 rounded-full bg-emerald-400'
                         : 'inline-block h-2 w-2 shrink-0 rounded-full bg-amber-400'}
                     ></span>
+                    <!-- Phase II.2 (v0.11.2): OS icon. Hidden for
+                         lighthouse rows — they're control-plane
+                         infrastructure, not a peer machine. -->
+                    {#if !p.isLighthouse && p.os}
+                      <span class="shrink-0" title={osLabel(p.os)} aria-label={osLabel(p.os)}>
+                        {@html osIcon(p.os)}
+                      </span>
+                    {:else if p.isLighthouse}
+                      <span class="shrink-0" title="Lighthouse" aria-label="Lighthouse">
+                        {@html lighthouseIcon()}
+                      </span>
+                    {/if}
                     <span class="truncate font-medium text-zinc-200">
-                      {p.name || p.vpnAddr}
+                      {#if p.isLighthouse}
+                        Lighthouse
+                      {:else}
+                        {p.name || p.vpnAddr}
+                      {/if}
                     </span>
                     {#if p.direct}
                       <span class="shrink-0 text-[10px] text-zinc-500">direct</span>
@@ -348,19 +403,20 @@
                     {#if p.remoteAddr}
                       <span class="font-mono text-[10px]">{p.remoteAddr}</span>
                     {/if}
-                    <!-- Phase II (v0.11.1): SSH-to-peer button. Opens
-                         Terminal.app with `ssh $USER@<mesh-IP>`. The
-                         in-app web terminal lives in the dashboard
-                         (shell proxy needs session-cookie auth). -->
-                    <button
-                      type="button"
-                      class="rounded-md border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:border-emerald-500 hover:text-emerald-400 disabled:opacity-50"
-                      onclick={() => openSSHToPeer(p)}
-                      disabled={sshingPeer !== null}
-                      title={`SSH to ${p.name || p.vpnAddr} in Terminal.app`}
-                    >
-                      {sshingPeer === p.vpnAddr ? '…' : 'SSH'}
-                    </button>
+                    <!-- Phase II.2 (v0.11.2): SSH button hidden for
+                         lighthouses (no shell available — lighthouse is
+                         a control-plane component, not a user machine). -->
+                    {#if !p.isLighthouse}
+                      <button
+                        type="button"
+                        class="rounded-md border border-zinc-700 px-1.5 py-0.5 text-[10px] text-zinc-400 hover:border-emerald-500 hover:text-emerald-400 disabled:opacity-50"
+                        onclick={() => openSSHToPeer(p)}
+                        disabled={sshingPeer !== null}
+                        title={`SSH to ${p.name || p.vpnAddr} in Terminal.app`}
+                      >
+                        {sshingPeer === p.vpnAddr ? '…' : 'SSH'}
+                      </button>
+                    {/if}
                   </div>
                 </div>
                 <div class="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-0.5 pl-4 text-[10px] text-zinc-500">

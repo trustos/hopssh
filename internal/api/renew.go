@@ -337,6 +337,11 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		Name           string   `json:"name,omitempty"`
 		DnsHostname    string   `json:"dnsHostname,omitempty"`
 		CustomDnsNames []string `json:"customDnsNames,omitempty"`
+		// OS is the peer's operating system (runtime.GOOS — "darwin",
+		// "linux", "windows", etc). Phase II.2 (v0.11.2): surfaced so
+		// the desktop client can render a per-peer OS icon. Backwards-
+		// compatible: omitempty + older agents simply ignore it.
+		OS string `json:"os,omitempty"`
 	}
 	peerInfo := map[string]peerInfoEntry{}
 
@@ -409,7 +414,7 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		// Hostname always present; DnsName populated only after enrollment
 		// completes (legacy nodes may have nil); custom DNS records are
 		// optional and may be empty.
-		entry := peerInfoEntry{Name: p.Hostname}
+		entry := peerInfoEntry{Name: p.Hostname, OS: p.OS}
 		if p.DNSName != nil {
 			entry.DnsHostname = *p.DNSName
 		}

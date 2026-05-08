@@ -185,6 +185,13 @@ export interface PeerDetail {
   name?: string;
   dnsHostname?: string;
   customDnsNames?: string[];
+  // os is the peer's runtime.GOOS ("darwin", "linux", "windows", etc.).
+  // Phase II.2 (v0.11.2): drives the per-peer OS icon in Connected.svelte.
+  os?: string;
+  // isLighthouse marks a peer as a lighthouse for this network.
+  // Lighthouses are control-plane infrastructure — the UI labels the
+  // row "Lighthouse" instead of the bare IP and hides the SSH button.
+  isLighthouse?: boolean;
 }
 
 export interface PeersResponse {

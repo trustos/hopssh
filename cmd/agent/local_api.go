@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -571,9 +572,25 @@ type peerDetailWithInfo struct {
 	Name           string   `json:"name,omitempty"`
 	DnsHostname    string   `json:"dnsHostname,omitempty"`
 	CustomDnsNames []string `json:"customDnsNames,omitempty"`
+	// OS is the peer's runtime.GOOS ("darwin", "linux", "windows").
+	// Phase II.2 (v0.11.2): drives per-peer OS icons in the desktop
+	// client's peer list.
+	OS string `json:"os,omitempty"`
+	// IsLighthouse marks this peer as a lighthouse for the network.
+	// Detected by checking the peer's vpnAddr against the
+	// lighthouse.hosts list in the instance's nebula.yaml. Phase II.2:
+	// the desktop client uses this to (a) label the row "Lighthouse"
+	// instead of just "10.42.1.1", and (b) hide the SSH button —
+	// lighthouses are control-plane infrastructure, not user-operable
+	// peers.
+	IsLighthouse bool `json:"isLighthouse,omitempty"`
 }
 
 func enrichPeersWithInfo(peers []PeerDetail, inst *meshInstance) []peerDetailWithInfo {
+	// Read the lighthouse address set once per /local/peers call.
+	// readLighthouseAddrs is best-effort + fast (single yaml parse);
+	// no caching needed for the call frequency this endpoint sees.
+	lighthouses := readLighthouseAddrs(filepath.Join(inst.dir(), "nebula.yaml"))
 	out := make([]peerDetailWithInfo, 0, len(peers))
 	for _, p := range peers {
 		entry := peerDetailWithInfo{PeerDetail: p}
@@ -582,6 +599,12 @@ func enrichPeersWithInfo(peers []PeerDetail, inst *meshInstance) []peerDetailWit
 				entry.Name = info.Name
 				entry.DnsHostname = info.DnsHostname
 				entry.CustomDnsNames = info.CustomDnsNames
+				entry.OS = info.OS
+			}
+		}
+		if addr, err := netip.ParseAddr(p.VpnAddr); err == nil {
+			if _, isLH := lighthouses[addr]; isLH {
+				entry.IsLighthouse = true
 			}
 		}
 		out = append(out, entry)

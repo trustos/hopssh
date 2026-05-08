@@ -2550,6 +2550,46 @@ mod tests {
         );
     }
 
+    /// Phase II.2 tripwire: peers list must show OS icons for regular
+    /// peers AND treat lighthouses specially (label "Lighthouse", no
+    /// SSH button). Source-scan Connected.svelte for both invariants.
+    #[test]
+    fn peer_row_has_os_icon_and_lighthouse_special_case() {
+        let svelte_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("src")
+            .join("lib")
+            .join("Connected.svelte");
+        let src = std::fs::read_to_string(&svelte_path)
+            .expect("Connected.svelte must exist");
+        // OS icon helpers must exist.
+        for needle in &["function osIcon(", "function osLabel(", "function lighthouseIcon("] {
+            assert!(
+                src.contains(needle),
+                "Phase II.2: Connected.svelte must define {} (OS / lighthouse icon helper).",
+                needle
+            );
+        }
+        // OS icon must render in the peer row when not a lighthouse.
+        assert!(
+            src.contains("{#if !p.isLighthouse && p.os}"),
+            "Phase II.2: Connected.svelte must render OS icon only \
+             for non-lighthouse peers with an os field."
+        );
+        // Lighthouse rows must label as "Lighthouse" (not the bare IP).
+        assert!(
+            src.contains("{#if p.isLighthouse}\n                        Lighthouse"),
+            "Phase II.2: Connected.svelte must render the literal label 'Lighthouse' for is\
+             Lighthouse rows instead of the bare peer name/IP."
+        );
+        // SSH button must be hidden for lighthouses.
+        assert!(
+            src.contains("{#if !p.isLighthouse}\n                      <button"),
+            "Phase II.2: Connected.svelte must hide the SSH button \
+             for lighthouse rows (lighthouses have no shell to SSH into)."
+        );
+    }
+
     /// Phase HH tripwire: Connected.svelte must include a DNS records
     /// section that flattens peer dnsHostname + customDnsNames into a
     /// single list. Today's read-only cut — write operations (create/
