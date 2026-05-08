@@ -60,6 +60,13 @@
   let dangerBusy = $state<'signout' | 'reset' | 'uninstall' | null>(null);
   let dangerError = $state<string | null>(null);
   let uninstallDone = $state<string | null>(null);
+  // Phase EE F5: auto-dismiss countdown after uninstall succeeds.
+  // Replaces the prior UX where the rest of Settings (Preferences,
+  // About, Clipboard) kept rendering above an "Uninstall complete"
+  // banner — those toggles would silently no-op against a now-removed
+  // agent. Better: replace the whole panel with a blocking view +
+  // auto-quit so the user doesn't have to click anything.
+  let uninstallCountdown = $state<number>(0);
 
   // ---- Background-mode toggle state ----
   // Drives the "Run in the background" preference. Reads runMode from
@@ -283,6 +290,18 @@
       await leaveAllNetworks();
       const out = await invoke<string>('uninstall_hopssh_full');
       uninstallDone = out;
+      // Phase EE F5: auto-quit after a short countdown so the user
+      // doesn't have to click "Quit hopssh" — the rest of Settings is
+      // now meaningless (no agent to configure) and lingering would
+      // be confusing.
+      uninstallCountdown = 5;
+      const tick = window.setInterval(() => {
+        uninstallCountdown -= 1;
+        if (uninstallCountdown <= 0) {
+          window.clearInterval(tick);
+          void doQuitApp();
+        }
+      }, 1000);
     } catch (e: unknown) {
       dangerError = e instanceof Error ? e.message : String(e);
     } finally {
@@ -341,6 +360,29 @@
 </script>
 
 <div class="mx-auto max-w-md p-6">
+  {#if uninstallDone}
+    <!-- Phase EE F5: post-uninstall blocking view. Replaces the entire
+         Settings panel so the user can't fiddle with toggles that no
+         longer have an agent behind them. Auto-quits after 5s. -->
+    <section class="mt-6 rounded-lg border border-emerald-800 bg-emerald-950/40 p-6 text-center">
+      <h2 class="text-base font-semibold text-emerald-100">Uninstall complete</h2>
+      <p class="mt-3 text-xs leading-relaxed text-emerald-100/90">
+        To finish removing hopssh from this Mac, drag
+        <span class="font-semibold">hopssh.app</span> from
+        <span class="font-mono">/Applications</span> to the Trash.
+      </p>
+      <p class="mt-3 text-[11px] text-emerald-100/70">
+        Closing automatically in {uninstallCountdown}s…
+      </p>
+      <button
+        class="mt-4 rounded-md bg-emerald-500 px-4 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400"
+        onclick={doQuitApp}
+        type="button"
+      >
+        Quit now
+      </button>
+    </section>
+  {:else}
   <h2 class="text-base font-semibold">Settings</h2>
 
   <!-- ============================================================
@@ -600,26 +642,12 @@
 
   <!-- ============================================================
        Danger zone — Sign out / Reset / Uninstall.
-       Replaced by the post-uninstall banner once Uninstall succeeds.
+       (Phase EE F5: the post-uninstall blocking view at the top of
+       this file replaces the Settings panel entirely once Uninstall
+       succeeds, so this section never has to render the completion
+       banner inline.)
        ============================================================ -->
   {#if isTauri}
-    {#if uninstallDone}
-      <section class="mt-6 rounded-lg border border-emerald-800 bg-emerald-950/40 p-4">
-        <h3 class="text-sm font-semibold text-emerald-200">Uninstall complete</h3>
-        <p class="mt-2 text-xs leading-relaxed text-emerald-100/90">
-          To finish removing hopssh from this Mac, quit the app and drag
-          <span class="font-semibold">hopssh.app</span> from
-          <span class="font-mono">/Applications</span> to the Trash.
-        </p>
-        <button
-          class="mt-3 rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400"
-          onclick={doQuitApp}
-          type="button"
-        >
-          Quit hopssh
-        </button>
-      </section>
-    {:else}
       <section class="mt-6 rounded-lg border border-red-900/60 bg-red-950/20">
         <div class="border-b border-red-900/60 px-4 py-2.5">
           <h3 class="text-xs font-semibold uppercase tracking-wide text-red-300">
@@ -760,7 +788,6 @@
           </div>
         {/if}
       </section>
-    {/if}
   {/if}
 
   <!-- ============================================================
@@ -882,4 +909,5 @@
       </div>
     </dl>
   </details>
+  {/if}
 </div>

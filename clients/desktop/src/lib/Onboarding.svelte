@@ -111,7 +111,15 @@
         }
         if (r.status === 'error') {
           stage = 'error';
-          errorMessage = r.message ?? "Couldn't connect to this network";
+          // Phase EE F4: surface the agent's specific error message
+          // (e.g., "certificate signed by unknown CA", "endpoint
+          // unreachable", "rate limited") whenever it provides one.
+          // Only fall back to a generic message when the agent itself
+          // gave us nothing — and even then, point the user at an
+          // actionable next step instead of a dead-end string.
+          errorMessage = r.message
+            ? r.message
+            : "Couldn't connect to this network. Check that the control plane URL is correct and reachable, then try again.";
           return;
         }
         if (r.status === 'complete') {

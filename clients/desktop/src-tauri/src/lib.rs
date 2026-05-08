@@ -196,7 +196,19 @@ fn read_desktop_prefs() -> DesktopPrefs {
     let Ok(data) = std::fs::read(&p) else {
         return DesktopPrefs::default();
     };
-    serde_json::from_slice(&data).unwrap_or_default()
+    // Phase EE F1: don't silently eat parse failures. A corrupt
+    // desktop-prefs.json was previously masked by `unwrap_or_default()`,
+    // making "Show in Dock" / "Open on login" preferences silently
+    // disappear. Log a clear warning so the corruption is visible in
+    // the agent log + Console.app.
+    serde_json::from_slice(&data).unwrap_or_else(|err| {
+        eprintln!(
+            "[desktop-prefs] WARN: parse failed for {}: {} — falling back to defaults",
+            p.display(),
+            err
+        );
+        DesktopPrefs::default()
+    })
 }
 
 fn write_desktop_prefs(prefs: &DesktopPrefs) -> Result<(), String> {
@@ -2153,6 +2165,123 @@ mod tests {
             "tauri.conf.json must NOT declare a trayIcon block — it produces \
              a duplicate NSStatusItem on macOS alongside the programmatic \
              TrayIconBuilder. See https://github.com/tauri-apps/tauri/issues/8982"
+        );
+    }
+
+    /// Phase EE F1 tripwire: read_desktop_prefs MUST log a warning when
+    /// JSON parsing fails. Pre-fix `unwrap_or_default()` silently
+    /// swallowed the error, so a corrupt prefs file made user
+    /// preferences ("Show in Dock", "Open on login") silently disappear.
+    #[test]
+    fn read_desktop_prefs_logs_on_parse_failure() {
+        let src = std::fs::read_to_string(file!())
+            .expect("lib.rs must be readable");
+        // Locate the read_desktop_prefs body.
+        let idx = src.find("fn read_desktop_prefs(")
+            .expect("read_desktop_prefs function must exist");
+        let body_end = src[idx..].find("\nfn ").unwrap_or(src.len() - idx);
+        let body = &src[idx..idx + body_end];
+        assert!(
+            body.contains("[desktop-prefs] WARN"),
+            "read_desktop_prefs must log a [desktop-prefs] WARN line on \
+             parse failure (Phase EE F1). Pre-fix unwrap_or_default() \
+             silently swallowed corruption."
+        );
+        assert!(
+            !body.contains(".unwrap_or_default()"),
+            "read_desktop_prefs must NOT use .unwrap_or_default() — it \
+             masks JSON parse errors. Use unwrap_or_else(|e| ...) so the \
+             corruption is visible in logs (Phase EE F1)."
+        );
+    }
+
+    /// Phase EE F3 tripwire: the connect/disconnect button on Connected.svelte
+    /// must carry a title attribute so disabled / busy states have user-visible
+    /// explanations instead of a silent grey button.
+    #[test]
+    fn connected_button_has_title_attribute() {
+        let svelte_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("src")
+            .join("lib")
+            .join("Connected.svelte");
+        let src = std::fs::read_to_string(&svelte_path)
+            .expect("Connected.svelte must exist next to src-tauri");
+        // Look for a `title={...}` near the `toggleConnect(e)` onclick.
+        let idx = src.find("onclick={() => toggleConnect(e)}")
+            .expect("Connected.svelte must have a connect/disconnect button");
+        // Search backwards 600 chars for the title= attribute.
+        let start = idx.saturating_sub(600);
+        let region = &src[start..idx];
+        assert!(
+            region.contains("title="),
+            "Connected.svelte's connect/disconnect button must have a \
+             title attribute explaining its current state (Phase EE F3 — \
+             tooltip on disabled/busy button)."
+        );
+    }
+
+    /// Phase EE F5 tripwire: the post-uninstall view must auto-quit.
+    /// Pre-fix the user had to click "Quit hopssh" manually while the
+    /// rest of Settings (Preferences toggles) kept rendering above it.
+    #[test]
+    fn settings_post_uninstall_auto_quits() {
+        let svelte_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("src")
+            .join("lib")
+            .join("Settings.svelte");
+        let src = std::fs::read_to_string(&svelte_path)
+            .expect("Settings.svelte must exist");
+        assert!(
+            src.contains("uninstallCountdown"),
+            "Settings.svelte must use uninstallCountdown for auto-quit \
+             after uninstall (Phase EE F5)."
+        );
+        assert!(
+            src.contains("doQuitApp()"),
+            "Settings.svelte must call doQuitApp() from the auto-quit \
+             countdown timer (Phase EE F5)."
+        );
+        // The blocking view (replaces the entire Settings panel) must
+        // appear at the TOP of the panel template, before any other
+        // sections. Source-scan the order — but only against the
+        // template body (post-</script>) to avoid matching comment
+        // text in the <script> block.
+        let template_start = src.find("</script>")
+            .expect("Settings.svelte must have a script tag");
+        let template = &src[template_start..];
+        let blocking_view = template.find("Closing automatically in")
+            .expect("Phase EE F5 blocking view text must exist in template");
+        // The Preferences section header text appears as `>Preferences<`
+        // (between an HTML opening tag end and the next opening tag).
+        let preferences_header = template.find(">\n          Preferences\n");
+        if let Some(prefs_idx) = preferences_header {
+            assert!(
+                blocking_view < prefs_idx,
+                "Phase EE F5: the post-uninstall blocking view must \
+                 render BEFORE (and replace) the Preferences section, \
+                 not as a sibling appended after it."
+            );
+        }
+    }
+
+    /// Phase EE F4 tripwire: Onboarding.svelte must surface the agent's
+    /// specific error message when available, with an actionable
+    /// fallback string otherwise (not just "Couldn't connect").
+    #[test]
+    fn onboarding_error_is_actionable() {
+        let svelte_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("src")
+            .join("lib")
+            .join("Onboarding.svelte");
+        let src = std::fs::read_to_string(&svelte_path)
+            .expect("Onboarding.svelte must exist");
+        assert!(
+            src.contains("Check that the control plane URL is correct"),
+            "Onboarding.svelte must include an actionable fallback \
+             message that points the user at the URL field (Phase EE F4)."
         );
     }
 }

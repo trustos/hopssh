@@ -126,6 +126,16 @@
             <p class="mt-0.5 font-mono text-xs text-zinc-400">
               {e.nebulaIp ?? e.meshIp ?? '—'}
             </p>
+            <!-- Phase EE F2: device-identity affordance. For a self-
+                 hosted product the relevant identity is "which device,
+                 against which control plane" — we surface the hostname
+                 here so multi-device users can verify they're looking
+                 at the right Mac in this network's roster. -->
+            {#if agent.status?.hostname}
+              <p class="mt-0.5 text-[10px] text-zinc-500">
+                this device: <span class="font-mono text-zinc-400">{agent.status.hostname}</span>
+              </p>
+            {/if}
           </div>
           <span class={`shrink-0 rounded-md px-2 py-1 text-[11px] font-medium ${badge.cls}`}>
             {badge.label}
@@ -170,6 +180,11 @@
           <button
             type="button"
             disabled={toggling}
+            title={toggling
+              ? 'Switching network state — please wait'
+              : e.connected
+              ? 'Disconnect from this network'
+              : 'Connect to this network'}
             class={e.connected
               ? 'rounded-md border border-zinc-700 px-3 py-1.5 text-xs text-zinc-300 hover:border-amber-500 hover:text-amber-400 disabled:opacity-50'
               : 'rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400 disabled:opacity-60'}

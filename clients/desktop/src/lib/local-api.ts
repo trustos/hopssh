@@ -160,6 +160,10 @@ export interface LocalStatus {
   arch: string;
   configDir: string;
   serviceStatus?: string;
+  // hostname is the device's os.Hostname(). Phase EE F2: surfaced so
+  // the UI can render the device-identity affordance ("device: X ·
+  // endpoint: Y").
+  hostname?: string;
   // runMode is "bundled" (.app spawns its own child) or "system"
   // (talks to a launchd LaunchDaemon agent). Drives the "Run in the
   // background" toggle in Settings.

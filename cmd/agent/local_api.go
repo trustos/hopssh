@@ -324,12 +324,19 @@ type EnrollmentStatus struct {
 
 // LocalStatus is the GET /local/status response.
 type LocalStatus struct {
-	Version         string             `json:"version"`
-	Commit          string             `json:"commit"`
-	OS              string             `json:"os"`
-	Arch            string             `json:"arch"`
-	ConfigDir       string             `json:"configDir"`
-	ServiceStatus   string             `json:"serviceStatus,omitempty"`
+	Version       string `json:"version"`
+	Commit        string `json:"commit"`
+	OS            string `json:"os"`
+	Arch          string `json:"arch"`
+	ConfigDir     string `json:"configDir"`
+	ServiceStatus string `json:"serviceStatus,omitempty"`
+	// Hostname is the device's hostname (os.Hostname()). Phase EE F2:
+	// surfaced so the desktop UI can render an account-identity-style
+	// affordance ("device: Yavors-MacBook-Pro · endpoint: hopssh.com")
+	// — for a self-hosted product the relevant identity is "which
+	// device am I, against which control plane", not a user email.
+	// Best-effort: empty string on os.Hostname() failure.
+	Hostname string `json:"hostname,omitempty"`
 	// RunMode is "bundled" when the agent is a child of a desktop .app
 	// (or otherwise running out of a user configDir) and "system" when
 	// it's the launchd-spawned daemon out of /etc/hop-agent. The
@@ -368,6 +375,7 @@ func (s *localAPIServer) statusSnapshot() map[string]any {
 }
 
 func (s *localAPIServer) buildStatus() LocalStatus {
+	hostname, _ := os.Hostname() // Phase EE F2: best-effort; "" on failure.
 	out := LocalStatus{
 		Version:       buildinfo.Version,
 		Commit:        buildinfo.Commit,
@@ -375,6 +383,7 @@ func (s *localAPIServer) buildStatus() LocalStatus {
 		Arch:          runtime.GOARCH,
 		ConfigDir:     s.configDir,
 		ServiceStatus: readServiceStatus(),
+		Hostname:      hostname,
 		RunMode:       deriveRunMode(s.configDir),
 		Enrollments:   []EnrollmentStatus{},
 	}
