@@ -307,6 +307,12 @@ type EnrollmentStatus struct {
 	Name           string `json:"name"`
 	Endpoint       string `json:"endpoint"`
 	NodeID         string `json:"nodeId"`
+	// NetworkID is the server-side UUID for this enrollment's network.
+	// Phase II.3 (v0.11.3): surfaced so the desktop client can
+	// construct the dashboard's terminal URL (/terminal/{networkId}/
+	// {nodeId}). Populated lazily from the heartbeat response — empty
+	// until the first heartbeat completes after enrollment.
+	NetworkID      string `json:"networkId,omitempty"`
 	DNSDomain      string `json:"dnsDomain,omitempty"`
 	TunMode        string `json:"tunMode,omitempty"`
 	ListenPort     int    `json:"listenPort,omitempty"`
@@ -435,6 +441,7 @@ func (s *localAPIServer) enrollmentStatus(e *Enrollment) EnrollmentStatus {
 		Name:          e.Name,
 		Endpoint:      e.Endpoint,
 		NodeID:        e.NodeID,
+		NetworkID:     e.NetworkID,
 		DNSDomain:     e.DNSDomain,
 		TunMode:       e.TunMode,
 		ListenPort:    e.ListenPort,
@@ -573,14 +580,18 @@ type peerDetailWithInfo struct {
 	DnsHostname    string   `json:"dnsHostname,omitempty"`
 	CustomDnsNames []string `json:"customDnsNames,omitempty"`
 	// OS is the peer's runtime.GOOS ("darwin", "linux", "windows").
-	// Phase II.2 (v0.11.2): drives per-peer OS icons in the desktop
-	// client's peer list.
+	// Phase II.2 (v0.11.2): drives the per-peer OS label in the
+	// desktop client's peer list.
 	OS string `json:"os,omitempty"`
+	// NodeID is the peer's server-side UUID. Phase II.3 (v0.11.3):
+	// used by the desktop client's "Terminal" button to construct
+	// the dashboard's per-node terminal URL.
+	NodeID string `json:"nodeId,omitempty"`
 	// IsLighthouse marks this peer as a lighthouse for the network.
 	// Detected by checking the peer's vpnAddr against the
 	// lighthouse.hosts list in the instance's nebula.yaml. Phase II.2:
 	// the desktop client uses this to (a) label the row "Lighthouse"
-	// instead of just "10.42.1.1", and (b) hide the SSH button —
+	// instead of just "10.42.1.1", and (b) hide the Terminal button —
 	// lighthouses are control-plane infrastructure, not user-operable
 	// peers.
 	IsLighthouse bool `json:"isLighthouse,omitempty"`
@@ -600,6 +611,7 @@ func enrichPeersWithInfo(peers []PeerDetail, inst *meshInstance) []peerDetailWit
 				entry.DnsHostname = info.DnsHostname
 				entry.CustomDnsNames = info.CustomDnsNames
 				entry.OS = info.OS
+				entry.NodeID = info.NodeID
 			}
 		}
 		if addr, err := netip.ParseAddr(p.VpnAddr); err == nil {

@@ -208,6 +208,13 @@ func sendHeartbeat(inst *meshInstance) error {
 	// can handshake directly with peers even when the UDP lighthouse is
 	// unreachable (e.g. carrier-filtered cellular to Oracle Cloud).
 	var body struct {
+		// NetworkID is the server's UUID for this enrollment's network.
+		// Phase II.3 (v0.11.3): persisted lazily into the Enrollment
+		// registry so the desktop client can build the dashboard's
+		// terminal URL (/terminal/{networkId}/{nodeId}). Backwards-
+		// compatible: older server builds omit it, the agent leaves
+		// the existing value alone.
+		NetworkID     string              `json:"networkId"`
 		Peers         []string            `json:"peers"`
 		Relays        []string            `json:"relays"`
 		AmRelay       bool                `json:"amRelay"`
@@ -226,6 +233,18 @@ func sendHeartbeat(inst *meshInstance) error {
 		}
 		updatePeerInfoCache(inst, body.PeerInfo)
 		_ = saveRelayState(inst, body.AmRelay, body.Relays)
+		// Persist networkId on first successful heartbeat (or refresh
+		// if the registry value drifted — defensive). Idempotent for
+		// stable enrollments; SetNetworkID returns nil with no write
+		// if the value already matches.
+		if body.NetworkID != "" && inst.enrollment.NetworkID != body.NetworkID {
+			inst.enrollment.NetworkID = body.NetworkID
+			if reg, err := loadEnrollmentRegistry(configDir); err == nil {
+				if err := reg.SetNetworkID(inst.name(), body.NetworkID); err != nil {
+					log.Printf("[renew %s] failed to persist networkId: %v", inst.name(), err)
+				}
+			}
+		}
 	}
 	// Phase P: stamp heartbeat success so enrollmentStatus.Connected
 	// has a non-peer signal of "agent is talking to the control plane
@@ -245,9 +264,13 @@ type peerInfoEntry struct {
 	CustomDnsNames []string `json:"customDnsNames,omitempty"`
 	// OS mirrors the server-side peerInfoEntry.OS (Phase II.2,
 	// v0.11.2). Used by the desktop client's peers list to render
-	// per-peer OS icons. Backwards-compatible: omitempty so older
+	// per-peer OS labels. Backwards-compatible: omitempty so older
 	// servers that don't include this field don't break decoding.
 	OS string `json:"os,omitempty"`
+	// NodeID mirrors the server-side peerInfoEntry.NodeID (Phase II.3,
+	// v0.11.3). Used by the desktop client's "Terminal" button to
+	// route to the dashboard's per-node terminal page.
+	NodeID string `json:"nodeId,omitempty"`
 }
 
 // updatePeerInfoCache replaces inst.peerInfoCache with the latest

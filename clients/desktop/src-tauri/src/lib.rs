@@ -313,65 +313,98 @@ fn open_agent_logs() -> Result<(), String> {
     Err("open_agent_logs is macOS-only".into())
 }
 
-/// Phase II (v0.11.1): one-click SSH from the desktop client. Opens
-/// Terminal.app and runs `ssh user@<peer-mesh-IP>`. Username defaults
-/// to `$USER` (the host user) so it matches the convention "I'm
-/// SSHing into another Mac with the same login as my local user". The
-/// in-app web terminal (xterm.js + WebSocket proxy through the agent)
-/// is the dashboard's territory — it requires session-cookie auth to
-/// the control plane that the desktop client doesn't have. Opening
-/// Terminal.app + ssh uses the user's own ssh keys + the peer's own
-/// sshd, no extra auth surface to maintain.
+/// Phase II.3 (v0.11.3): open the dashboard's xterm.js terminal page
+/// for a peer in a NEW Tauri webview window. Replaces the Phase II
+/// osascript SSH path entirely — that was a stopgap. The dashboard
+/// already serves the full WebSocket-to-PTY terminal at
+/// /terminal/{networkId}/{nodeId}; this just points a new webview at
+/// it. Cookie storage is shared across Tauri webviews in the same
+/// app — first open prompts dashboard login; subsequent opens reuse
+/// the persisted session. Cross-platform: works on Linux + Windows
+/// when those builds land (no macOS-specific code here).
 ///
-/// peer_addr is the peer's mesh IP (e.g. "10.42.1.7"). user is
-/// optional — if empty, defaults to the host user via $USER.
-#[cfg(target_os = "macos")]
+/// Inputs validated to prevent open-redirect and URL injection:
+///  - endpoint: must start with http:// or https://
+///  - network_id, node_id: must look like UUIDs (hex + dashes only)
+///  - hostname: percent-encoded into the `h=` query parameter so
+///    spaces / special chars in `os.Hostname()` output don't break
+///    the URL (e.g. "Yavor's-MBP.local" would have an apostrophe).
 #[tauri::command]
-fn open_ssh_to_peer(peer_addr: String, user: Option<String>) -> Result<(), String> {
-    if peer_addr.is_empty() {
-        return Err("peer_addr is required".into());
+async fn open_terminal_webview(
+    app: tauri::AppHandle,
+    endpoint: String,
+    network_id: String,
+    node_id: String,
+    hostname: String,
+) -> Result<(), String> {
+    if !endpoint.starts_with("https://") && !endpoint.starts_with("http://") {
+        return Err("invalid endpoint (must start with http:// or https://)".into());
     }
-    // Validate peer_addr is a plausible mesh IP — restrict to
-    // alphanumerics + dots/colons to prevent shell-injection if the
-    // peer field is ever populated from untrusted input. Mesh IPs are
-    // IPv4-only in current hopssh deployments; keep the regex tight.
-    if !peer_addr
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == ':')
-    {
-        return Err("invalid peer_addr".into());
+    if !is_uuid_like(&network_id) {
+        return Err("invalid networkId".into());
     }
-    let host_user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
-    let username = user
-        .filter(|s| !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
-        .unwrap_or(host_user);
-    // osascript pattern mirrors install_update_mac (see docstring there
-    // for the do-script-then-activate ordering).
-    let cmd = format!(
-        r#"tell application "Terminal"
-    do script "ssh {}@{}"
-    activate
-end tell"#,
-        username, peer_addr
+    if !is_uuid_like(&node_id) {
+        return Err("invalid nodeId".into());
+    }
+
+    // Build URL: <endpoint>/terminal/<networkId>/<nodeId>?h=<hostname>
+    let base = format!(
+        "{}/terminal/{}/{}",
+        endpoint.trim_end_matches('/'),
+        network_id,
+        node_id
     );
-    let output = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(&cmd)
-        .output()
-        .map_err(|e| format!("osascript spawn failed: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "osascript failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+    let url = tauri::Url::parse_with_params(&base, &[("h", hostname.as_str())])
+        .map_err(|e| format!("url parse failed: {e}"))?;
+
+    let label = format!("terminal-{}", node_id);
+    let title = format!("Terminal — {}", hostname);
+
+    // If a terminal window for this peer is already open, just bring
+    // it to focus. This dedup covers the common case where the user
+    // clicks "Terminal" twice without realizing the first window is
+    // already up behind the main app window.
+    if let Some(existing) = app.get_webview_window(&label) {
+        existing.show().map_err(|e| e.to_string())?;
+        existing.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
     }
+
+    tauri::WebviewWindowBuilder::new(
+        &app,
+        &label,
+        tauri::WebviewUrl::External(url),
+    )
+    .title(&title)
+    .inner_size(960.0, 640.0)
+    .min_inner_size(640.0, 400.0)
+    .resizable(true)
+    .focused(true)
+    .build()
+    .map_err(|e| e.to_string())?;
+
     Ok(())
 }
 
-#[cfg(not(target_os = "macos"))]
-#[tauri::command]
-fn open_ssh_to_peer(_peer_addr: String, _user: Option<String>) -> Result<(), String> {
-    Err("open_ssh_to_peer is macOS-only".into())
+/// Validate that a string looks like a UUID — hex digits + dashes,
+/// length 36, in the canonical 8-4-4-4-12 layout. The agent + server
+/// always issue node/network IDs in this shape; we use this as a
+/// lightweight injection guard before formatting them into a URL.
+fn is_uuid_like(s: &str) -> bool {
+    if s.len() != 36 {
+        return false;
+    }
+    for (i, c) in s.chars().enumerate() {
+        let want_dash = i == 8 || i == 13 || i == 18 || i == 23;
+        if want_dash {
+            if c != '-' {
+                return false;
+            }
+        } else if !c.is_ascii_hexdigit() {
+            return false;
+        }
+    }
+    true
 }
 
 /// Phase GG (v0.10.99): one-click diagnostic info dump for support
@@ -1198,7 +1231,7 @@ pub fn run() {
             install_update_mac,
             open_agent_logs,
             copy_diagnostic_info,
-            open_ssh_to_peer
+            open_terminal_webview
         ])
         .setup(move |app| {
             // Phase N: re-apply the persisted "Hide from Dock"
@@ -2495,10 +2528,13 @@ mod tests {
         );
     }
 
-    /// Phase II tripwire: open_ssh_to_peer must be registered + a
-    /// per-peer SSH button must exist in Connected.svelte.
+    /// Phase II.3 tripwire: open_terminal_webview must be registered
+    /// in invoke_handler + Connected.svelte must invoke it. Replaces
+    /// the Phase II osascript SSH tripwires (open_ssh_to_peer was
+    /// dropped in v0.11.3 — its UX wasn't consistent with the
+    /// dashboard's xterm.js terminal).
     #[test]
-    fn ssh_to_peer_command_is_wired() {
+    fn terminal_webview_command_is_wired() {
         let src = std::fs::read_to_string(file!())
             .expect("lib.rs must be readable");
         let invoke_idx = src.find("invoke_handler(tauri::generate_handler![")
@@ -2508,8 +2544,14 @@ mod tests {
             .expect("invoke_handler block must close");
         let block = &src[invoke_idx..invoke_idx + block_end];
         assert!(
-            block.contains("open_ssh_to_peer"),
-            "Phase II: open_ssh_to_peer must be registered in invoke_handler."
+            block.contains("open_terminal_webview"),
+            "Phase II.3: open_terminal_webview must be registered in invoke_handler."
+        );
+        assert!(
+            !block.contains("open_ssh_to_peer"),
+            "Phase II.3: the obsolete osascript SSH command \
+             open_ssh_to_peer must NOT be in invoke_handler — it was \
+             dropped in v0.11.3 in favor of the dashboard webview path."
         );
 
         let svelte_path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -2520,41 +2562,98 @@ mod tests {
         let svelte_src = std::fs::read_to_string(&svelte_path)
             .expect("Connected.svelte must exist");
         assert!(
-            svelte_src.contains("invoke('open_ssh_to_peer'"),
-            "Phase II: Connected.svelte must invoke open_ssh_to_peer \
-             from a per-peer button handler."
+            svelte_src.contains("invoke('open_terminal_webview'"),
+            "Phase II.3: Connected.svelte must invoke open_terminal_webview \
+             from a per-peer Terminal button handler."
+        );
+        assert!(
+            !svelte_src.contains("invoke('open_ssh_to_peer'"),
+            "Phase II.3: Connected.svelte must NOT invoke the obsolete \
+             open_ssh_to_peer command — replaced by Terminal button."
         );
     }
 
-    /// Phase II tripwire: open_ssh_to_peer must validate peer_addr and
-    /// user input — they're concatenated into an osascript shell
-    /// command, so an unvalidated colon-or-space-bearing string would
-    /// be a shell-injection footgun.
+    /// Phase II.3 tripwire: open_terminal_webview must validate inputs
+    /// (UUID-shape for IDs, http(s):// prefix for endpoint) before
+    /// formatting them into a URL or constructing a webview window.
+    /// Without these gates, a malformed nodeId string would break
+    /// URL parsing OR (worse) be embedded into a URL the webview
+    /// then opens.
     #[test]
-    fn ssh_to_peer_validates_input() {
+    fn terminal_webview_validates_input() {
         let src = std::fs::read_to_string(file!())
             .expect("lib.rs must be readable");
-        let idx = src.find("fn open_ssh_to_peer(")
-            .expect("open_ssh_to_peer must exist");
+        let idx = src.find("async fn open_terminal_webview(")
+            .expect("open_terminal_webview must exist");
         let body_end = src[idx..].find("\nfn ").unwrap_or(src.len() - idx);
         let body = &src[idx..idx + body_end];
-        // Must reject empty peer_addr.
         assert!(
-            body.contains("peer_addr is required"),
-            "open_ssh_to_peer must reject empty peer_addr."
+            body.contains("invalid endpoint"),
+            "open_terminal_webview must reject endpoints not starting with http(s)://."
         );
-        // Must validate peer_addr character set.
         assert!(
-            body.contains("invalid peer_addr"),
-            "open_ssh_to_peer must validate peer_addr to ASCII alphanumerics + dot/colon."
+            body.contains("invalid networkId"),
+            "open_terminal_webview must reject non-UUID-shaped networkId."
+        );
+        assert!(
+            body.contains("invalid nodeId"),
+            "open_terminal_webview must reject non-UUID-shaped nodeId."
+        );
+        // The is_uuid_like helper enforces the 36-char + dash-positions invariant.
+        assert!(
+            src.contains("fn is_uuid_like(s: &str) -> bool"),
+            "Phase II.3: is_uuid_like helper must exist (UUID-shape \
+             validation guard for IDs going into URLs)."
         );
     }
 
-    /// Phase II.2 tripwire: peers list must show OS icons for regular
-    /// peers AND treat lighthouses specially (label "Lighthouse", no
-    /// SSH button). Source-scan Connected.svelte for both invariants.
+    /// Phase II.3 tripwire: peerDetailWithInfo on the agent side must
+    /// surface NodeID + IsLighthouse + OS so the desktop client's
+    /// Terminal button (and lighthouse special-casing) have the data
+    /// they need.
     #[test]
-    fn peer_row_has_os_icon_and_lighthouse_special_case() {
+    fn local_api_peer_detail_includes_terminal_fields() {
+        let local_api = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("..")
+            .join("cmd")
+            .join("agent")
+            .join("local_api.go");
+        let src = std::fs::read_to_string(&local_api)
+            .expect("cmd/agent/local_api.go must be readable");
+        for needle in &[
+            "type peerDetailWithInfo struct",
+            "NodeID string",
+            "IsLighthouse bool",
+            "OS string",
+            "entry.NodeID = info.NodeID",
+            "entry.OS = info.OS",
+        ] {
+            assert!(
+                src.contains(needle),
+                "Phase II.3: cmd/agent/local_api.go must contain {:?} \
+                 — peerDetailWithInfo wires NodeID/IsLighthouse/OS \
+                 to /local/peers responses.",
+                needle
+            );
+        }
+    }
+
+    /// Phase II.2/II.3 tripwire: peers list must show OS as PLAIN TEXT
+    /// labels (matching the dashboard's network-detail OS column —
+    /// frontend/src/routes/(app)/networks/[id]/+page.svelte:987-994)
+    /// AND treat lighthouses specially (label "Lighthouse", no
+    /// Terminal button).
+    ///
+    /// Phase II.2 originally shipped with inline-SVG OS icons. Phase
+    /// II.3 dropped them for dashboard consistency — the dashboard
+    /// uses text labels everywhere. This tripwire enforces that:
+    /// (a) the SVG-icon helpers don't sneak back in
+    /// (b) the text-label pattern stays
+    /// (c) lighthouse special-casing still applies
+    #[test]
+    fn peer_row_uses_text_labels_consistent_with_dashboard() {
         let svelte_path = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("src")
@@ -2562,31 +2661,43 @@ mod tests {
             .join("Connected.svelte");
         let src = std::fs::read_to_string(&svelte_path)
             .expect("Connected.svelte must exist");
-        // OS icon helpers must exist.
-        for needle in &["function osIcon(", "function osLabel(", "function lighthouseIcon("] {
+        // SVG-icon helpers from the original II.2 must be gone — they
+        // were inconsistent with the dashboard's text-label rendering.
+        for forbidden in &["function osIcon(", "function osLabel(", "function lighthouseIcon("] {
+            assert!(
+                !src.contains(forbidden),
+                "Phase II.3: Connected.svelte must NOT contain {} — \
+                 these were dropped in v0.11.3 for dashboard \
+                 consistency. Use plain text labels instead.",
+                forbidden
+            );
+        }
+        // Text-label pattern: same shape as
+        // frontend/src/routes/(app)/networks/[id]/+page.svelte:987-994.
+        for needle in &[
+            "{#if p.os === 'darwin'}",
+            "{:else if p.os === 'linux'}",
+            "{:else if p.os === 'windows'}",
+        ] {
             assert!(
                 src.contains(needle),
-                "Phase II.2: Connected.svelte must define {} (OS / lighthouse icon helper).",
+                "Phase II.3: Connected.svelte must render OS as plain \
+                 text labels (mirroring dashboard exactly). Missing: {}",
                 needle
             );
         }
-        // OS icon must render in the peer row when not a lighthouse.
-        assert!(
-            src.contains("{#if !p.isLighthouse && p.os}"),
-            "Phase II.2: Connected.svelte must render OS icon only \
-             for non-lighthouse peers with an os field."
-        );
-        // Lighthouse rows must label as "Lighthouse" (not the bare IP).
+        // Lighthouse rows must still label as "Lighthouse".
         assert!(
             src.contains("{#if p.isLighthouse}\n                        Lighthouse"),
-            "Phase II.2: Connected.svelte must render the literal label 'Lighthouse' for is\
-             Lighthouse rows instead of the bare peer name/IP."
+            "Phase II.2: Connected.svelte must render the literal \
+             label 'Lighthouse' for isLighthouse rows."
         );
-        // SSH button must be hidden for lighthouses.
+        // Terminal button (replaces SSH button as of II.3) must be
+        // hidden for lighthouses.
         assert!(
             src.contains("{#if !p.isLighthouse}\n                      <button"),
-            "Phase II.2: Connected.svelte must hide the SSH button \
-             for lighthouse rows (lighthouses have no shell to SSH into)."
+            "Phase II.3: Connected.svelte must hide the Terminal \
+             button for lighthouse rows (no shell to attach to)."
         );
     }
 

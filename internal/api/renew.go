@@ -339,9 +339,13 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		CustomDnsNames []string `json:"customDnsNames,omitempty"`
 		// OS is the peer's operating system (runtime.GOOS — "darwin",
 		// "linux", "windows", etc). Phase II.2 (v0.11.2): surfaced so
-		// the desktop client can render a per-peer OS icon. Backwards-
+		// the desktop client can render a per-peer OS label. Backwards-
 		// compatible: omitempty + older agents simply ignore it.
 		OS string `json:"os,omitempty"`
+		// NodeID is the peer's node UUID. Phase II.3 (v0.11.3):
+		// surfaced so the desktop client can route to the dashboard's
+		// per-node terminal page (/terminal/{networkId}/{nodeId}).
+		NodeID string `json:"nodeId,omitempty"`
 	}
 	peerInfo := map[string]peerInfoEntry{}
 
@@ -414,7 +418,7 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		// Hostname always present; DnsName populated only after enrollment
 		// completes (legacy nodes may have nil); custom DNS records are
 		// optional and may be empty.
-		entry := peerInfoEntry{Name: p.Hostname, OS: p.OS}
+		entry := peerInfoEntry{Name: p.Hostname, OS: p.OS, NodeID: p.ID}
 		if p.DNSName != nil {
 			entry.DnsHostname = *p.DNSName
 		}
@@ -425,6 +429,12 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := map[string]interface{}{}
+	// Phase II.3 (v0.11.3): include the network's UUID so the agent can
+	// surface it via /local/status. The desktop client uses it to
+	// construct the dashboard's terminal URL (/terminal/{networkId}/
+	// {nodeId}). Agent persists the value once received; idempotent for
+	// stable enrollments.
+	resp["networkId"] = node.NetworkID
 	if len(peerIPs) > 0 {
 		resp["peers"] = peerIPs
 	}
@@ -439,10 +449,6 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 	if amRelay {
 		resp["amRelay"] = true
-	}
-	if len(resp) == 0 {
-		w.WriteHeader(http.StatusNoContent)
-		return
 	}
 	writeJSON(w, resp)
 }

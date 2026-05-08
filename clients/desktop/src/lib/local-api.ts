@@ -131,6 +131,11 @@ export interface EnrollmentStatus {
   name: string;
   endpoint: string;
   nodeId: string;
+  // networkId is the server-side UUID for this enrollment's network.
+  // Phase II.3 (v0.11.3): populated lazily from the heartbeat
+  // response. The Terminal button uses this to build the dashboard's
+  // /terminal/{networkId}/{nodeId} URL.
+  networkId?: string;
   dnsDomain?: string;
   tunMode?: string;
   listenPort?: number;
@@ -186,11 +191,17 @@ export interface PeerDetail {
   dnsHostname?: string;
   customDnsNames?: string[];
   // os is the peer's runtime.GOOS ("darwin", "linux", "windows", etc.).
-  // Phase II.2 (v0.11.2): drives the per-peer OS icon in Connected.svelte.
+  // Phase II.2 (v0.11.2): drives the per-peer OS label in Connected.svelte
+  // (text-only, matches the dashboard's network-detail OS column).
   os?: string;
+  // nodeId is the peer's server-side UUID. Phase II.3 (v0.11.3):
+  // used by the Terminal button to construct the dashboard's
+  // /terminal/{networkId}/{nodeId} URL.
+  nodeId?: string;
   // isLighthouse marks a peer as a lighthouse for this network.
   // Lighthouses are control-plane infrastructure — the UI labels the
-  // row "Lighthouse" instead of the bare IP and hides the SSH button.
+  // row "Lighthouse" instead of the bare IP and hides the Terminal
+  // button.
   isLighthouse?: boolean;
 }
 

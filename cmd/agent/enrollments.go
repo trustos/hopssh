@@ -22,6 +22,14 @@ import (
 type Enrollment struct {
 	Name          string    `json:"name"`                    // local label, e.g. "home"; unique within the registry
 	NodeID        string    `json:"nodeId"`                  // server-assigned node id (opaque string)
+	// NetworkID is the server-side UUID of the network this enrollment
+	// joined. Phase II.3 (v0.11.3): persisted lazily — populated from
+	// the heartbeat response after the first successful POST. Used by
+	// the desktop client to construct the dashboard's terminal URL
+	// (/terminal/{networkId}/{nodeId}). Backwards-compatible: empty
+	// for enrollments that pre-date this field; refreshed on next
+	// heartbeat.
+	NetworkID     string    `json:"networkId,omitempty"`
 	Endpoint      string    `json:"endpoint"`                // control plane URL (per-enrollment so one agent can span planes)
 	TunMode       string    `json:"tunMode"`                 // "kernel" or "userspace"
 	CAFingerprint string    `json:"caFingerprint,omitempty"` // sha256 of ca.crt bytes (hex), used as fallback name
@@ -417,6 +425,26 @@ func (r *enrollmentRegistry) SetClipboardSync(name string, enabled bool) error {
 			return nil
 		}
 		e.ClipboardSync = enabled
+		return r.saveLocked()
+	}
+	return errors.New("enrollment not found")
+}
+
+// SetNetworkID persists Enrollment.NetworkID. Phase II.3 (v0.11.3):
+// the agent receives the network's UUID in heartbeat responses and
+// stores it lazily so the desktop client can construct dashboard URLs
+// (e.g. /terminal/{networkId}/{nodeId}). Idempotent.
+func (r *enrollmentRegistry) SetNetworkID(name string, networkID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.enrollments {
+		if e.Name != name {
+			continue
+		}
+		if e.NetworkID == networkID {
+			return nil
+		}
+		e.NetworkID = networkID
 		return r.saveLocked()
 	}
 	return errors.New("enrollment not found")
