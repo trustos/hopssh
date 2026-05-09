@@ -106,7 +106,7 @@ func (c *Client) connect(name string) error {
 	// chosen UDP port.
 	es := lastErr.Error()
 	if strings.Contains(es, "address already in use") || strings.Contains(es, "device or resource busy") {
-		return fmt.Errorf("connect failed after 4 attempts: another hop-agent on this Mac is using the network port. Open Settings → Danger zone → Reset to remove the conflicting install, then try Connect again. (underlying: %s)", es)
+		return fmt.Errorf("connect failed after 4 attempts: another hop-agent on this device is using the network port. Open Settings → Danger zone → Reset to remove the conflicting install, then try Connect again. (underlying: %s)", es)
 	}
 	return fmt.Errorf("connect failed after 4 attempts: %w", lastErr)
 }

@@ -102,7 +102,7 @@ func TestPortConflictMessageHasReset(t *testing.T) {
 	if !strings.Contains(string(src), "Settings → Danger zone → Reset") {
 		t.Error("Client.connect retry-loop error must mention 'Settings → Danger zone → Reset' to point users at cleanup")
 	}
-	if !strings.Contains(string(src), "another hop-agent on this Mac") {
+	if !strings.Contains(string(src), "another hop-agent on this device") {
 		t.Error("Client.connect retry-loop error must explain port-conflict in user terms")
 	}
 }
