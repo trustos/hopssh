@@ -312,9 +312,20 @@ jobs:
           - runner: ubuntu-22.04
             goarch: amd64
             tauri_arch: x86_64
+            # Full bundle set on x86_64 — appimagetool ships a native
+            # x86_64 AppImage that Tauri can use to build the bundle.
+            bundles: "deb,rpm,appimage"
           - runner: ubuntu-22.04-arm
             goarch: arm64
             tauri_arch: aarch64
+            # AppImage bundler skipped on aarch64 — Tauri's AppImage
+            # path drives appimagetool which historically ships only
+            # an x86_64 AppImage that can't `exec` on arm64 hosts. We
+            # ship .deb + .rpm only on aarch64 (sufficient for the
+            # Ubuntu / Fedora / RHEL / openSUSE user base on ARM64
+            # Linux). AppImage on aarch64 = follow-up phase that
+            # downloads appimagetool-aarch64 explicitly.
+            bundles: "deb,rpm"
     steps:
       - uses: actions/checkout@v4
 
@@ -367,11 +378,11 @@ jobs:
           GOOS=linux GOARCH=${{ matrix.goarch }} go build -mod=vendor -ldflags="$LDFLAGS" \
             -o clients/desktop/src-tauri/binaries/hop-agent ./cmd/agent
 
-      - name: Build Tauri .deb + .rpm + AppImage
+      - name: Build Tauri bundles (${{ matrix.bundles }})
         working-directory: clients/desktop
         run: |
           npm install --no-audit --no-fund
-          npm run tauri build -- --bundles deb,rpm,appimage
+          npm run tauri build -- --bundles ${{ matrix.bundles }}
 
       # Stable-rename so the dashboard /download page can link to a
       # version-stable URL. Per-arch suffix lets x86_64 + aarch64
@@ -382,16 +393,17 @@ jobs:
         run: |
           set -x
           BUNDLE=clients/desktop/src-tauri/target/release/bundle
-          DEB=$(find "$BUNDLE/deb" -name "*.deb" -print -quit)
-          RPM=$(find "$BUNDLE/rpm" -name "*.rpm" -print -quit)
-          APPIMAGE=$(find "$BUNDLE/appimage" -name "*.AppImage" -print -quit)
+          DEB=$(find "$BUNDLE/deb" -name "*.deb" -print -quit 2>/dev/null || true)
+          RPM=$(find "$BUNDLE/rpm" -name "*.rpm" -print -quit 2>/dev/null || true)
+          APPIMAGE=$(find "$BUNDLE/appimage" -name "*.AppImage" -print -quit 2>/dev/null || true)
           if [ -n "$DEB" ]; then cp "$DEB" "$BUNDLE/deb/hopssh-linux-${ARCH}.deb"; fi
           if [ -n "$RPM" ]; then cp "$RPM" "$BUNDLE/rpm/hopssh-linux-${ARCH}.rpm"; fi
           if [ -n "$APPIMAGE" ]; then
             cp "$APPIMAGE" "$BUNDLE/appimage/hopssh-linux-${ARCH}.AppImage"
             chmod +x "$BUNDLE/appimage/hopssh-linux-${ARCH}.AppImage"
           fi
-          ls -la "$BUNDLE/deb/" "$BUNDLE/rpm/" "$BUNDLE/appimage/"
+          ls -la "$BUNDLE/deb/" "$BUNDLE/rpm/" 2>/dev/null || true
+          ls -la "$BUNDLE/appimage/" 2>/dev/null || true
 
       - name: Upload Linux artifacts (${{ matrix.tauri_arch }})
         uses: softprops/action-gh-release@v2

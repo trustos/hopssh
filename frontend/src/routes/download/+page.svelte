@@ -256,11 +256,20 @@
 						>aarch64 (ARM64)</button>
 					</div>
 
-					<div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
-						<Button variant="default" href="/download/desktop/hopssh-linux-{linuxArch}.AppImage">
-							AppImage (universal)
-						</Button>
-						<Button variant="outline" href="/download/desktop/hopssh-linux-{linuxArch}.deb">
+					<div
+						class={linuxArch === 'aarch64'
+							? 'grid grid-cols-1 gap-2 sm:grid-cols-2'
+							: 'grid grid-cols-1 gap-2 sm:grid-cols-3'}
+					>
+						{#if linuxArch === 'x86_64'}
+							<Button variant="default" href="/download/desktop/hopssh-linux-{linuxArch}.AppImage">
+								AppImage (universal)
+							</Button>
+						{/if}
+						<Button
+							variant={linuxArch === 'aarch64' ? 'default' : 'outline'}
+							href="/download/desktop/hopssh-linux-{linuxArch}.deb"
+						>
 							.deb (Debian / Ubuntu)
 						</Button>
 						<Button variant="outline" href="/download/desktop/hopssh-linux-{linuxArch}.rpm">
@@ -268,11 +277,24 @@
 						</Button>
 					</div>
 
-					<div class="space-y-3 rounded-md border bg-muted/20 p-4 text-xs">
-						<p class="font-medium text-foreground">After downloading the AppImage:</p>
-						<pre class="overflow-x-auto rounded bg-background p-2 font-mono text-[11px]">{`chmod +x hopssh-linux-${linuxArch}.AppImage
+					{#if linuxArch === 'aarch64'}
+						<div class="space-y-2 rounded-md border border-amber-500/20 bg-amber-500/5 p-4 text-xs">
+							<p class="font-medium text-foreground">No AppImage on aarch64 yet</p>
+							<p class="text-muted-foreground">
+								Tauri's AppImage builder relies on
+								<code class="font-mono">appimagetool</code>, which historically
+								ships only an x86_64 binary. On ARM64 Linux, install via the
+								<code class="font-mono">.deb</code> or <code class="font-mono">.rpm</code> below.
+								AppImage support for aarch64 is on the follow-up list.
+							</p>
+						</div>
+					{:else}
+						<div class="space-y-3 rounded-md border bg-muted/20 p-4 text-xs">
+							<p class="font-medium text-foreground">After downloading the AppImage:</p>
+							<pre class="overflow-x-auto rounded bg-background p-2 font-mono text-[11px]">{`chmod +x hopssh-linux-${linuxArch}.AppImage
 ./hopssh-linux-${linuxArch}.AppImage`}</pre>
-					</div>
+						</div>
+					{/if}
 
 					<div class="space-y-3 rounded-md border bg-muted/20 p-4 text-xs">
 						<p class="font-medium text-foreground">.deb (Debian / Ubuntu):</p>
