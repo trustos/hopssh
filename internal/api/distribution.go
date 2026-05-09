@@ -38,7 +38,7 @@ var validBinaryName = regexp.MustCompile(`^hop-(agent|server)-(linux|darwin|wind
 // macOS dropped Intel (x86_64) on 2026-05-09 — Apple Silicon only.
 // Windows MSI + Linux .deb/.rpm/AppImage land here once the build-windows /
 // build-linux jobs in release-desktop.yml emit them with these stable names.
-var validDesktopAsset = regexp.MustCompile(`^hopssh-(?:macos-aarch64\.dmg|windows-(?:x86_64|aarch64)(?:\.msi|-setup\.exe)|linux-x86_64\.(?:AppImage|deb|rpm))$`)
+var validDesktopAsset = regexp.MustCompile(`^hopssh-(?:macos-aarch64\.dmg|windows-(?:x86_64|aarch64)(?:\.msi|-setup\.exe)|linux-(?:x86_64|aarch64)\.(?:AppImage|deb|rpm))$`)
 
 // DistributionHandler serves install scripts, binary downloads, and version info.
 type DistributionHandler struct {

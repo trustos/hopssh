@@ -292,12 +292,29 @@ jobs:
           fail_on_unmatched_files: false
 
   # Stage 6 — Linux desktop foundation. Builds .deb + .rpm + AppImage
-  # via Tauri 2's bundle pipeline. STATUS: foundation only.
-  # INFORMATIONAL — same reasoning as build-windows above.
+  # for BOTH x86_64 + aarch64 via Tauri 2's bundle pipeline.
+  # STATUS: foundation only — informational on failure (the macOS
+  # release path is the production user-facing channel until these are
+  # hardware-verified).
+  #
+  # ARM64 added 2026-05-09 after a real Linux/aarch64 user (UTM Ubuntu
+  # 25.10 on Apple Silicon) hit "cannot execute binary file: Exec format
+  # error" trying to run the x86_64 AppImage. ARM64 Linux runners are
+  # GitHub-hosted (ubuntu-22.04-arm); free for public repos.
   build-linux:
-    name: Build Linux .deb + .rpm + AppImage (informational)
+    name: Build Linux ${{ matrix.tauri_arch }} .deb + .rpm + AppImage (informational)
     continue-on-error: true
-    runs-on: ubuntu-22.04
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            goarch: amd64
+            tauri_arch: x86_64
+          - runner: ubuntu-22.04-arm
+            goarch: arm64
+            tauri_arch: aarch64
     steps:
       - uses: actions/checkout@v4
 
@@ -335,17 +352,19 @@ jobs:
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: clients/desktop/src-tauri
-          shared-key: desktop-release-linux
+          # Distinct cache key per arch — x86_64 and aarch64 build
+          # different Rust toolchains' compiled artifacts.
+          shared-key: desktop-release-linux-${{ matrix.tauri_arch }}
           save-if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
 
       - name: Vendor + patch
         run: make setup
 
-      - name: Build hop-agent (Linux amd64)
+      - name: Build hop-agent (Linux ${{ matrix.goarch }})
         run: |
           mkdir -p clients/desktop/src-tauri/binaries
           LDFLAGS='-s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=${{ github.ref_name }} -X github.com/trustos/hopssh/internal/buildinfo.ClientType=desktop'
-          GOOS=linux GOARCH=amd64 go build -mod=vendor -ldflags="$LDFLAGS" \
+          GOOS=linux GOARCH=${{ matrix.goarch }} go build -mod=vendor -ldflags="$LDFLAGS" \
             -o clients/desktop/src-tauri/binaries/hop-agent ./cmd/agent
 
       - name: Build Tauri .deb + .rpm + AppImage
@@ -354,32 +373,38 @@ jobs:
           npm install --no-audit --no-fund
           npm run tauri build -- --bundles deb,rpm,appimage
 
-      # Same stable-rename pattern as the Windows job — copy Tauri's
-      # version-tagged output to dashboard-linkable stable names.
-      - name: Stable rename Linux artifacts
+      # Stable-rename so the dashboard /download page can link to a
+      # version-stable URL. Per-arch suffix lets x86_64 + aarch64
+      # uploads coexist on the GitHub release page.
+      - name: Stable rename Linux artifacts (${{ matrix.tauri_arch }})
+        env:
+          ARCH: ${{ matrix.tauri_arch }}
         run: |
           set -x
           BUNDLE=clients/desktop/src-tauri/target/release/bundle
           DEB=$(find "$BUNDLE/deb" -name "*.deb" -print -quit)
           RPM=$(find "$BUNDLE/rpm" -name "*.rpm" -print -quit)
           APPIMAGE=$(find "$BUNDLE/appimage" -name "*.AppImage" -print -quit)
-          if [ -n "$DEB" ]; then cp "$DEB" "$BUNDLE/deb/hopssh-linux-x86_64.deb"; fi
-          if [ -n "$RPM" ]; then cp "$RPM" "$BUNDLE/rpm/hopssh-linux-x86_64.rpm"; fi
+          if [ -n "$DEB" ]; then cp "$DEB" "$BUNDLE/deb/hopssh-linux-${ARCH}.deb"; fi
+          if [ -n "$RPM" ]; then cp "$RPM" "$BUNDLE/rpm/hopssh-linux-${ARCH}.rpm"; fi
           if [ -n "$APPIMAGE" ]; then
-            cp "$APPIMAGE" "$BUNDLE/appimage/hopssh-linux-x86_64.AppImage"
-            chmod +x "$BUNDLE/appimage/hopssh-linux-x86_64.AppImage"
+            cp "$APPIMAGE" "$BUNDLE/appimage/hopssh-linux-${ARCH}.AppImage"
+            chmod +x "$BUNDLE/appimage/hopssh-linux-${ARCH}.AppImage"
           fi
           ls -la "$BUNDLE/deb/" "$BUNDLE/rpm/" "$BUNDLE/appimage/"
 
-      - name: Upload Linux artifacts
+      - name: Upload Linux artifacts (${{ matrix.tauri_arch }})
         uses: softprops/action-gh-release@v2
         with:
+          # Stable-named (dashboard-linkable) + Tauri-tagged (archival).
+          # Both sit on the same GitHub release; per-arch suffix means
+          # the matrix slots don't clobber each other's uploads.
           files: |
-            clients/desktop/src-tauri/target/release/bundle/deb/hopssh-linux-x86_64.deb
+            clients/desktop/src-tauri/target/release/bundle/deb/hopssh-linux-${{ matrix.tauri_arch }}.deb
             clients/desktop/src-tauri/target/release/bundle/deb/*.deb
-            clients/desktop/src-tauri/target/release/bundle/rpm/hopssh-linux-x86_64.rpm
+            clients/desktop/src-tauri/target/release/bundle/rpm/hopssh-linux-${{ matrix.tauri_arch }}.rpm
             clients/desktop/src-tauri/target/release/bundle/rpm/*.rpm
-            clients/desktop/src-tauri/target/release/bundle/appimage/hopssh-linux-x86_64.AppImage
+            clients/desktop/src-tauri/target/release/bundle/appimage/hopssh-linux-${{ matrix.tauri_arch }}.AppImage
             clients/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
           tag_name: ${{ github.ref_name }}
           fail_on_unmatched_files: false

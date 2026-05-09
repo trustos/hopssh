@@ -26,6 +26,19 @@
 		return 'macos';
 	}
 	const initialPlatform = detectPlatform();
+
+	// Detect aarch64 (ARM64) Linux so we recommend the right AppImage.
+	// navigator.userAgentData.platform is the modern accessor (Chrome 90+);
+	// userAgent.includes('aarch64') / 'arm64' is the fallback for Firefox
+	// and anything without the new API. Default to x86_64 if uncertain —
+	// it's the more common case on desktop Linux.
+	function detectLinuxArch(): 'x86_64' | 'aarch64' {
+		if (typeof navigator === 'undefined') return 'x86_64';
+		const ua = navigator.userAgent.toLowerCase();
+		if (ua.includes('aarch64') || ua.includes('arm64')) return 'aarch64';
+		return 'x86_64';
+	}
+	let linuxArch = $state(detectLinuxArch());
 </script>
 
 <svelte:head>
@@ -212,39 +225,63 @@
 
 			<Card.Root class="mt-4">
 				<Card.Header>
-					<Card.Title>Download for Linux</Card.Title>
+					<Card.Title>Download for Linux ({linuxArch})</Card.Title>
 					<Card.Description>
-						x86_64 (64-bit). ARM64 / Raspberry Pi builds are deferred — use
-						the CLI agent for now.
+						{#if linuxArch === 'aarch64'}
+							Detected ARM64 (aarch64) browser — the buttons below default
+							to the ARM64 build. Switch to x86_64 if you need the Intel/AMD
+							desktop build instead.
+						{:else}
+							Detected x86_64 browser — the buttons below default to the
+							64-bit Intel/AMD build. Switch to aarch64 if you're on an
+							ARM machine (Raspberry Pi 4/5, AWS Graviton, Apple Silicon
+							running Linux in a VM).
+						{/if}
 					</Card.Description>
 				</Card.Header>
 				<Card.Content class="space-y-4">
+					<div class="flex gap-2 text-xs">
+						<span class="font-medium text-muted-foreground">Architecture:</span>
+						<button
+							class={linuxArch === 'x86_64'
+								? 'rounded bg-primary/15 px-2 py-0.5 font-medium text-primary'
+								: 'rounded bg-transparent px-2 py-0.5 text-muted-foreground hover:bg-muted'}
+							onclick={() => (linuxArch = 'x86_64')}
+						>x86_64</button>
+						<button
+							class={linuxArch === 'aarch64'
+								? 'rounded bg-primary/15 px-2 py-0.5 font-medium text-primary'
+								: 'rounded bg-transparent px-2 py-0.5 text-muted-foreground hover:bg-muted'}
+							onclick={() => (linuxArch = 'aarch64')}
+						>aarch64 (ARM64)</button>
+					</div>
+
 					<div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
-						<Button variant="default" href="/download/desktop/hopssh-linux-x86_64.AppImage">
+						<Button variant="default" href="/download/desktop/hopssh-linux-{linuxArch}.AppImage">
 							AppImage (universal)
 						</Button>
-						<Button variant="outline" href="/download/desktop/hopssh-linux-x86_64.deb">
+						<Button variant="outline" href="/download/desktop/hopssh-linux-{linuxArch}.deb">
 							.deb (Debian / Ubuntu)
 						</Button>
-						<Button variant="outline" href="/download/desktop/hopssh-linux-x86_64.rpm">
+						<Button variant="outline" href="/download/desktop/hopssh-linux-{linuxArch}.rpm">
 							.rpm (Fedora / RHEL)
 						</Button>
 					</div>
 
 					<div class="space-y-3 rounded-md border bg-muted/20 p-4 text-xs">
 						<p class="font-medium text-foreground">After downloading the AppImage:</p>
-						<pre class="overflow-x-auto rounded bg-background p-2 font-mono text-[11px]">{`chmod +x hopssh-linux-x86_64.AppImage
-./hopssh-linux-x86_64.AppImage`}</pre>
+						<pre class="overflow-x-auto rounded bg-background p-2 font-mono text-[11px]">{`chmod +x hopssh-linux-${linuxArch}.AppImage
+./hopssh-linux-${linuxArch}.AppImage`}</pre>
 					</div>
 
 					<div class="space-y-3 rounded-md border bg-muted/20 p-4 text-xs">
 						<p class="font-medium text-foreground">.deb (Debian / Ubuntu):</p>
-						<pre class="overflow-x-auto rounded bg-background p-2 font-mono text-[11px]">{`sudo apt install ./hopssh-linux-x86_64.deb`}</pre>
+						<pre class="overflow-x-auto rounded bg-background p-2 font-mono text-[11px]">{`sudo apt install ./hopssh-linux-${linuxArch}.deb`}</pre>
 					</div>
 
 					<div class="space-y-3 rounded-md border bg-muted/20 p-4 text-xs">
 						<p class="font-medium text-foreground">.rpm (Fedora / RHEL / openSUSE):</p>
-						<pre class="overflow-x-auto rounded bg-background p-2 font-mono text-[11px]">{`sudo dnf install ./hopssh-linux-x86_64.rpm`}</pre>
+						<pre class="overflow-x-auto rounded bg-background p-2 font-mono text-[11px]">{`sudo dnf install ./hopssh-linux-${linuxArch}.rpm`}</pre>
 					</div>
 
 					<div class="space-y-3 rounded-md border border-amber-500/20 bg-amber-500/5 p-4 text-xs">

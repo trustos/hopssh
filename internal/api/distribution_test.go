@@ -19,10 +19,15 @@ func TestValidDesktopAssetRegex(t *testing.T) {
 		{"hopssh-windows-x86_64-setup.exe", true},
 		{"hopssh-windows-aarch64-setup.exe", true},
 
-		// Linux — AppImage + .deb + .rpm. x86_64 only for v1.
+		// Linux — AppImage + .deb + .rpm. Both x86_64 + aarch64 (added
+		// 2026-05-09 after a real ARM64 user hit "Exec format error"
+		// trying to run the x86_64 AppImage on UTM Ubuntu 25.10).
 		{"hopssh-linux-x86_64.AppImage", true},
 		{"hopssh-linux-x86_64.deb", true},
 		{"hopssh-linux-x86_64.rpm", true},
+		{"hopssh-linux-aarch64.AppImage", true},
+		{"hopssh-linux-aarch64.deb", true},
+		{"hopssh-linux-aarch64.rpm", true},
 
 		// macOS Intel was dropped — must now be rejected.
 		{"hopssh-macos-x86_64.dmg", false},
@@ -36,7 +41,7 @@ func TestValidDesktopAssetRegex(t *testing.T) {
 		{"hopssh-macos-amd64.dmg", false},        // wrong arch encoding
 		{"hopssh-macos-aarch64.dmg.sig", false},  // unsupported ext
 		{"HOPSSH-MACOS-AARCH64.DMG", false},      // wrong case
-		{"hopssh-linux-aarch64.AppImage", false}, // ARM64 Linux not built today
+		// (hopssh-linux-aarch64.* is now BUILT — moved from rejected to accepted above.)
 		{"", false},
 		{"hopssh.dmg", false},
 	}
