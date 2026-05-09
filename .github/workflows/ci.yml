@@ -84,3 +84,53 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: make check-patches
         continue-on-error: true
+
+  # Phase NN+1 tripwire — verify the gomobile-bind path against
+  # internal/client/. Catches FFI-shape regressions in api.go before
+  # they break the iOS / Android targets (NN+2 / NN+3). The Android
+  # target is fast (~30s); iOS needs full Xcode which Ubuntu runners
+  # don't have, so we exercise Android only — sufficient because
+  # gomobile rejects the same incompatible types regardless of target.
+  gomobile-bind:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-33 build-tools;33.0.2 ndk;26.1.10909125'
+
+      - name: Vendor dependencies + apply patches
+        run: make setup
+
+      - name: Install gomobile
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
+
+      - name: Build mobilehop AAR
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/26.1.10909125
+        run: |
+          cd clients/mobile-go
+          make verify
+          make android-aar
+
+      - name: Upload AAR artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobilehop-aar
+          path: clients/mobile-go/dist/mobilehop.aar
+          retention-days: 7
