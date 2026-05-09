@@ -70,6 +70,9 @@ Single source of truth for every shipped phase: letter → version → commit �
 | II.3 | v0.11.3 | `ed81147` | 2026-05-08 | In-app Terminal via dashboard webview + dashboard UX consistency (text-label OS, networkId data-flow, `open_terminal_webview` Tauri command) | Live |
 | II.4 | v0.11.4 | `1de32ef` | 2026-05-09 | OS brand-mark icons with tooltips on desktop + dashboard (shadcn Tooltip in dashboard, native HTML `title=` in desktop) | Live |
 | KK | v0.11.0+ | `866fea4` | 2026-05-09 | Adopt Karpathy behavioral guidelines (CLAUDE.md + skill) | Live |
+| LL | v0.11.4+ | `564165f`, `98457da`, `ca61d21` | 2026-05-09 | Pre-release docs audit (3 tiers: phase-ledger, log backfill, README+competitive+architecture+checklist) | Docs only |
+| MM | v0.11.4+ | `4473db5` | 2026-05-09 | Architecture body refresh + CHANGELOG + notarization runbook + ADR back-propagation | Docs only |
+| **NN** | **v0.11.5** | (this release) | **2026-05-09** | **`internal/client/` substrate extraction** — 22k LOC moved from `cmd/agent/` (`package main`) to `internal/client/` package. FFI-clean public API surface (`Client`, `Config`, `EnrollOptions`, `Snapshot`, etc.). Unblocks iOS + Android via gomobile (NN+1 → NN+3). Documented in `docs/wiki/decisions/client-{ios,android}-architecture.md` (status: substrate-built). | **Live** |
 
 ## Status legend
 

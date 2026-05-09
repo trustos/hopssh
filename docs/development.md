@@ -120,21 +120,44 @@ echo '<token>' | sudo ./hop-agent enroll --token-stdin --endpoint http://192.168
 
 ## Project Structure
 
+Phase NN (2026-05-09) extracted client-lifecycle Go from `cmd/agent/` into a new `internal/client/` package so iOS + Android via gomobile become possible. `cmd/agent/` is now a thin shell.
+
 ```
 cmd/
-  agent/                Agent + client binary
-    main.go             Subcommand dispatch: serve, enroll, client
-    nebula.go           meshService interface (userspace + kernel TUN)
-    enroll.go           Agent enrollment (device flow, token, bundle)
-    renew.go            Certificate auto-renewal goroutine
-    dns.go              DNS split-tunnel configuration (shared)
-    dns_darwin.go       macOS DNS: /etc/resolver/<domain>
-    dns_linux.go        Linux DNS: systemd-resolved / fallback
-    client.go           Client join mode (planned)
+  agent/                Agent + client binary entry (~9 thin-shell files)
+    main.go             Subcommand dispatch: serve, enroll, client, leave, status, ...
+                        runServe constructs *client.Client and wires HTTP via InstanceHTTPHook
+    proxy.go            HTTP proxy handler (mux-attached: /proxy/*)
+    shell_unix.go       Interactive WebSocket terminal (mux-attached: /shell)
+    shell_windows.go    ConPTY equivalent for Windows
+    migration.go        QUIC connection-migration probe subcommand
   server/
     main.go             Control plane entry point
 
 internal/
+  client/               BUILT (Phase NN) — shared agent-lifecycle substrate (~22k LOC, 89 files)
+    api.go              FFI-clean public API: Client, Config, EnrollOptions, Snapshot, ...
+    api_constraints_test.go  gomobile-compat tripwires (no chan/func/interface{} fields)
+    client.go           Client.connect / Client.startInstance (was main.go::tryStartMeshInstance)
+    enroll.go           Device flow + token + bundle enrollment (RunEnroll exported entry)
+    enrollments.go      enrollmentRegistry + atomic save + .bak fallback
+    instance.go         meshInstance lifecycle (runCtx, watchdog stamps, restartFn)
+    nebula.go           meshService abstraction over Nebula, watchNetworkChanges, ensureP2PConfig
+    renew.go            Cert renewal + heartbeat POST + reloadNebula
+    keepalive.go        Mesh keepalive watchdog (v0.10.36)
+    watcher_watchdog.go Phase DD watcher-wedge detector
+    peerstate.go, peer_cache.go, self_endpoints.go, path_quality.go, clock_check.go
+    endpoint_probe.go, relay_state.go, serverset.go
+    dns.go, dns_darwin.go, dns_linux.go, dns_other.go, dns_windows.go, dnsproxy_windows.go
+    clipboard.go        Phase L per-(device, network) clipboard sync
+    privilege_unix.go, privilege_windows.go, wintun_*.go
+    legacy_migrate.go, migrate.go, migrate_chown_*.go
+    service.go, service_other.go, service_windows.go (RunAgentInstall etc.)
+    uninstall.go        RunAgentUninstall
+    cli_help.go, cli_info.go, cli_status.go, cli_leave.go, cli_join.go, cli_update.go
+    local_api.go        Loopback HTTP API on 127.0.0.1 (StartLocalAPI exported)
+    pprof.go            Optional loopback pprof listener
+
   api/                  HTTP handlers
     router.go           Route definitions + middleware wiring
     auth.go             Register, login, logout, me

@@ -2,6 +2,13 @@
 
 *2026-04-17. Follows the sleep/wake fix in v0.9.6 (commit 606384b).*
 
+> **Phase NN path note (2026-05-09):** any `cmd/agent/<file>.go` reference
+> in this document (e.g. `cmd/agent/nebula.go:175-187` tick-gap fix,
+> `cmd/agent/renew.go:539-541`, `cmd/agent/renew.go::reloadNebula`) now
+> lives at `internal/client/<same>.go`. The line ranges are unchanged
+> (the move was `git mv`, no body edits). Test procedures (T1–T6) remain
+> valid; only the file paths shifted.
+
 ---
 
 ## What we shipped (v0.9.6)

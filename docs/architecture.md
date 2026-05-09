@@ -180,7 +180,7 @@ Three independent watchdogs cover three distinct silent-failure modes. All three
 | **Stuck data plane** | Mesh has peers but every probe fails | `peers > 0 && probed > 0 && succeeded == 0` for `watchdogStuckThreshold` (3) cycles | ~4.5 min of confirmed stuck-state | v0.10.36 |
 | **watcher wedge** | `watchNetworkChanges` deadlocked inside vendor Nebula call | `lastWatcherActivityAt` (top of every tick body) | 3 minutes | Phase DD (v0.10.96) |
 
-### Common shape (cmd/agent/{renew,keepalive,watcher}_watchdog.go)
+### Common shape (internal/client/{renew_watchdog,keepalive,watcher_watchdog}.go)
 
 ```go
 // All three follow the same structure:
@@ -194,7 +194,7 @@ Three independent watchdogs cover three distinct silent-failure modes. All three
 
 ### Why three separate watchdogs
 
-The three classes can fail independently. Phase P's renewal watchdog protects only `lastRenewalActivityAt`. v0.10.36's keepalive watchdog requires `peers > 0` (false for hours after the lighthouse-filter post-Phase V left only one peer that drifted offline). Phase DD's watcher wedge at `cmd/agent/nebula.go:272-273` (vendor `RebindUDPServer` / `CloseAllTunnels` deadlock) leaves heartbeat firing fine — UI shows green, mesh is dead. Each pair of stamps is orthogonal; one watchdog cannot substitute for another.
+The three classes can fail independently. Phase P's renewal watchdog protects only `lastRenewalActivityAt`. v0.10.36's keepalive watchdog requires `peers > 0` (false for hours after the lighthouse-filter post-Phase V left only one peer that drifted offline). Phase DD's watcher wedge at `internal/client/nebula.go:272-273` (vendor `RebindUDPServer` / `CloseAllTunnels` deadlock) leaves heartbeat firing fine — UI shows green, mesh is dead. Each pair of stamps is orthogonal; one watchdog cannot substitute for another.
 
 ### Hard timeouts on vendor Nebula calls (Phase DD F2)
 

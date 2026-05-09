@@ -3,6 +3,14 @@
 *Created: 2026-04-19. **Status: historical — implemented. Shipped
 v0.10.0 with follow-up polish in v0.10.1 and v0.10.2.***
 
+> **Phase NN path note (2026-05-09):** code pointers in this brief
+> (`cmd/agent/nebula.go:46`, `cmd/agent/main.go:217-265`,
+> `cmd/agent/renew.go:runHeartbeat`, etc.) reference pre-Phase-NN
+> locations. Phase NN moved client-lifecycle Go into `internal/client/`.
+> Read any `cmd/agent/{enroll,enrollments,instance,nebula,renew,…}.go`
+> citation as `internal/client/<same>.go`. See `docs/wiki/log.md`
+> § 2026-05-09 ingest for the full extraction ledger.
+
 **For the current state of the feature, see:**
 - `docs/multi-network-per-agent-execution.md` — phased execution
   plan (Phases A–F) derived from this brief.

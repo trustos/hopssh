@@ -1,0 +1,558 @@
+package client
+
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"sync"
+	"time"
+)
+
+// Enrollment is one mesh membership held by the agent. The agent can
+// hold N of these simultaneously (roadmap #29). Stored in
+// <configDir>/enrollments.json as part of an enrollmentRegistry.
+type Enrollment struct {
+	Name          string    `json:"name"`                    // local label, e.g. "home"; unique within the registry
+	NodeID        string    `json:"nodeId"`                  // server-assigned node id (opaque string)
+	// NetworkID is the server-side UUID of the network this enrollment
+	// joined. Phase II.3 (v0.11.3): persisted lazily — populated from
+	// the heartbeat response after the first successful POST. Used by
+	// the desktop client to construct the dashboard's terminal URL
+	// (/terminal/{networkId}/{nodeId}). Backwards-compatible: empty
+	// for enrollments that pre-date this field; refreshed on next
+	// heartbeat.
+	NetworkID     string    `json:"networkId,omitempty"`
+	Endpoint      string    `json:"endpoint"`                // control plane URL (per-enrollment so one agent can span planes)
+	TunMode       string    `json:"tunMode"`                 // "kernel" or "userspace"
+	CAFingerprint string    `json:"caFingerprint,omitempty"` // sha256 of ca.crt bytes (hex), used as fallback name
+	DNSDomain     string    `json:"dnsDomain,omitempty"`     // e.g. "home"; empty if the network has no mesh DNS
+	// ListenPort is the per-enrollment Nebula UDP listen port. Each
+	// enrollment needs a unique port so multiple Nebula instances can
+	// coexist (4242, 4243, 4244, …). 0 means "not yet assigned" — the
+	// boot path migrates these to the next available port and persists.
+	ListenPort int `json:"listenPort,omitempty"`
+	// ClipboardSync controls whether this Mac participates in the
+	// network's clipboard-sync feature. Off by default — opt-in per
+	// (device, network) pair. When true, the agent (a) advertises
+	// local clipboard changes via the control-plane relay and (b)
+	// applies remote announcements to the local clipboard. Both sides
+	// honor concealed-pasteboard items (1Password, Bitwarden) and
+	// cap content at 256KB. See cmd/agent/clipboard.go.
+	ClipboardSync bool      `json:"clipboardSync,omitempty"`
+	EnrolledAt    time.Time `json:"enrolledAt"`
+}
+
+// enrollmentsFile is the registry filename inside configDir.
+// enrollmentsBackupFile is the one-generation-behind copy written
+// after every successful save. If the main file ever parses as
+// corrupt (truncated mid-write on an atypical FS, post-crash state),
+// loadEnrollmentRegistry falls back to the backup so the agent keeps
+// booting instead of log.Fatal'ing on one bad file.
+const (
+	enrollmentsFile       = "enrollments.json"
+	enrollmentsBackupFile = "enrollments.json.bak"
+)
+
+// enrollmentRegistrySchema is the on-disk document wrapping the list.
+// Versioned so future format changes can migrate in place.
+type enrollmentRegistrySchema struct {
+	Version     int           `json:"version"`
+	Enrollments []*Enrollment `json:"enrollments"`
+}
+
+const enrollmentRegistryVersion = 1
+
+// enrollmentRegistry is the in-process view of the persisted registry.
+// Thread-safe; all mutations go through the registry's mutex.
+type enrollmentRegistry struct {
+	mu          sync.Mutex
+	path        string
+	enrollments []*Enrollment
+}
+
+// loadEnrollmentRegistry reads <configDir>/enrollments.json and returns
+// a registry. A missing file is not an error — returns an empty registry
+// pointed at the would-be path so subsequent Save() materializes it.
+//
+// If the main file exists but fails to parse (truncated write, version
+// mismatch from a future downgrade, FS corruption), we try the
+// one-save-behind backup at enrollments.json.bak and log loudly on
+// fallback. The backup is always slightly stale but strictly more
+// useful than exiting with Fatalf — the agent can still boot every
+// enrollment that was healthy one save ago.
+func loadEnrollmentRegistry(configDir string) (*enrollmentRegistry, error) {
+	path := filepath.Join(configDir, enrollmentsFile)
+	backupPath := filepath.Join(configDir, enrollmentsBackupFile)
+	r := &enrollmentRegistry{path: path}
+
+	enrollments, mainErr := readEnrollmentsFile(path)
+	if mainErr == nil {
+		r.enrollments = enrollments
+		return r, nil
+	}
+	// Main file missing entirely (fresh install) is not an error.
+	if errors.Is(mainErr, os.ErrNotExist) {
+		// Backup without a main file is an odd state but still usable —
+		// a save rolled back and then removed the main? Safer to try it.
+		if _, statErr := os.Stat(backupPath); statErr == nil {
+			if enrollments, bakErr := readEnrollmentsFile(backupPath); bakErr == nil {
+				log.Printf("[enrollments] WARNING: %s missing, recovered from %s", path, backupPath)
+				r.enrollments = enrollments
+				return r, nil
+			}
+		}
+		return r, nil
+	}
+
+	// Main file present but corrupt → try backup.
+	if _, statErr := os.Stat(backupPath); statErr == nil {
+		if enrollments, bakErr := readEnrollmentsFile(backupPath); bakErr == nil {
+			log.Printf("[enrollments] WARNING: %s corrupt (%v); recovered from backup %s", path, mainErr, backupPath)
+			r.enrollments = enrollments
+			return r, nil
+		}
+	}
+	return nil, mainErr
+}
+
+// readEnrollmentsFile is the shared main+backup reader. Returns the
+// enrollments list on success, or a context-wrapped error on any
+// failure (missing, unreadable, malformed, unsupported version).
+func readEnrollmentsFile(path string) ([]*Enrollment, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var doc enrollmentRegistrySchema
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("parse %s: %w", path, err)
+	}
+	if doc.Version != enrollmentRegistryVersion {
+		return nil, fmt.Errorf("unsupported enrollments.json version %d (expected %d)", doc.Version, enrollmentRegistryVersion)
+	}
+	return doc.Enrollments, nil
+}
+
+// save atomically writes the registry to disk. Called under the mutex.
+// After a successful main write, we refresh the .bak sibling so the
+// next load has a one-save-behind fallback. Backup write errors are
+// logged but don't fail the save — the main file is the source of
+// truth and a missing backup just degrades recovery, not correctness.
+func (r *enrollmentRegistry) saveLocked() error {
+	doc := enrollmentRegistrySchema{
+		Version:     enrollmentRegistryVersion,
+		Enrollments: r.enrollments,
+	}
+	data, err := json.MarshalIndent(&doc, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	if err := atomicWrite(r.path, data, 0600); err != nil {
+		return err
+	}
+	backupPath := r.path + ".bak"
+	if err := atomicWrite(backupPath, data, 0600); err != nil {
+		log.Printf("[enrollments] WARNING: failed to refresh backup %s: %v (main save succeeded)", backupPath, err)
+	}
+	return nil
+}
+
+// List returns a snapshot of enrollments. Safe to iterate without the lock.
+func (r *enrollmentRegistry) List() []*Enrollment {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]*Enrollment, len(r.enrollments))
+	copy(out, r.enrollments)
+	return out
+}
+
+// Len returns the number of enrollments.
+func (r *enrollmentRegistry) Len() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.enrollments)
+}
+
+// NextAvailableListenPort returns a port not currently used by any
+// enrollment in the registry, starting from base and scanning upward.
+// Used at enroll time to assign unique per-enrollment Nebula UDP ports
+// so multiple enrollments can coexist (the OS only lets one socket
+// bind a given port at a time).
+func (r *enrollmentRegistry) NextAvailableListenPort(base int) int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.nextAvailableListenPortLocked(base)
+}
+
+func (r *enrollmentRegistry) nextAvailableListenPortLocked(base int) int {
+	used := make(map[int]bool, len(r.enrollments))
+	for _, e := range r.enrollments {
+		if e.ListenPort > 0 {
+			used[e.ListenPort] = true
+		}
+	}
+	for p := base; p < 65535; p++ {
+		if used[p] {
+			continue
+		}
+		// Belt-and-braces: also probe the OS for an actual UDP bind.
+		// Our own registry is the primary source of truth, but a parallel
+		// hop-agent install on the same host (e.g. a leftover system
+		// LaunchDaemon when the user installs the bundled .app, or a
+		// dev-mode `hop-agent serve` running from a terminal) holds the
+		// port at the kernel level even though it doesn't appear in
+		// THIS registry. Without this probe, fresh enrollments on hosts
+		// with a parallel install fail at Nebula bind-time with EADDRINUSE
+		// → the user sees "address already in use" and has no recourse
+		// short of a manual cleanup.
+		if udpPortAvailable(p) {
+			return p
+		}
+	}
+	return 0 // shouldn't happen with realistic enrollment counts
+}
+
+// udpPortAvailable returns true if we can bind UDP `*:port` right now.
+// Used by nextAvailableListenPortLocked to skip ports held by parallel
+// hop-agent installs the registry doesn't know about.
+//
+// The bind is immediately closed, so this is a transient check — it
+// races with whoever might bind the port between this probe and the
+// actual Nebula bind. In practice the only thing that holds these
+// ports is another hop-agent process, and they don't churn ports;
+// the race window is theoretical not practical.
+func udpPortAvailable(port int) bool {
+	addr := &net.UDPAddr{IP: net.IPv4zero, Port: port}
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
+}
+
+// AssignMissingListenPorts walks the registry, assigns a unique port
+// (starting at base) to any enrollment missing one, and persists.
+// Returns the count of enrollments updated. Idempotent.
+func (r *enrollmentRegistry) AssignMissingListenPorts(base int) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	updated := 0
+	for _, e := range r.enrollments {
+		if e.ListenPort > 0 {
+			continue
+		}
+		e.ListenPort = r.nextAvailableListenPortLocked(base)
+		updated++
+	}
+	if updated == 0 {
+		return 0, nil
+	}
+	if err := r.saveLocked(); err != nil {
+		return 0, err
+	}
+	return updated, nil
+}
+
+// HealDuplicateListenPorts (Fix F, v0.10.26) detects enrollments that
+// share a ListenPort value and reallocates all but the FIRST-enrolled
+// (oldest EnrolledAt) to fresh unique ports. Returns the names of
+// enrollments that were renumbered, so the caller can re-run
+// healListenPortYAML on them to make nebula.yaml match.
+//
+// Idempotent: returns nil on healthy registries (no duplicates).
+//
+// Why: pre-v0.10.26 the server pushed a hardcoded listenPort=4242 on
+// every cert renewal, silently corrupting multi-enrollment hosts whose
+// secondary enrollment was allocated 4243+. After Fix A+B prevent
+// future corruption, this catches any historical / future regression
+// (or manual hand-edit) that introduces duplicates, on the next agent
+// process start.
+func (r *enrollmentRegistry) HealDuplicateListenPorts(base int) ([]string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	// Group enrollments by ListenPort. Skip zero-port entries — those
+	// are handled by AssignMissingListenPorts instead.
+	byPort := map[int][]*Enrollment{}
+	for _, e := range r.enrollments {
+		if e.ListenPort > 0 {
+			byPort[e.ListenPort] = append(byPort[e.ListenPort], e)
+		}
+	}
+
+	var renumbered []string
+	for _, group := range byPort {
+		if len(group) < 2 {
+			continue
+		}
+		// Sort: oldest EnrolledAt first (it keeps the port).
+		sort.Slice(group, func(i, j int) bool {
+			return group[i].EnrolledAt.Before(group[j].EnrolledAt)
+		})
+		// group[0] keeps its port; reassign the rest.
+		for _, e := range group[1:] {
+			e.ListenPort = r.nextAvailableListenPortLocked(base)
+			renumbered = append(renumbered, e.Name)
+		}
+	}
+
+	if len(renumbered) == 0 {
+		return nil, nil
+	}
+	if err := r.saveLocked(); err != nil {
+		return nil, err
+	}
+	return renumbered, nil
+}
+
+// Get returns the enrollment with the given name, or nil.
+func (r *enrollmentRegistry) Get(name string) *Enrollment {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.enrollments {
+		if e.Name == name {
+			return e
+		}
+	}
+	return nil
+}
+
+// Add appends an enrollment and persists. Rejects duplicate names.
+func (r *enrollmentRegistry) Add(e *Enrollment) error {
+	if err := validateEnrollmentName(e.Name); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, existing := range r.enrollments {
+		if existing.Name == e.Name {
+			return fmt.Errorf("enrollment %q already exists", e.Name)
+		}
+	}
+	r.enrollments = append(r.enrollments, e)
+	if err := r.saveLocked(); err != nil {
+		// Roll back in-memory state so retries see the original set.
+		r.enrollments = r.enrollments[:len(r.enrollments)-1]
+		return err
+	}
+	return nil
+}
+
+// Remove deletes the named enrollment and persists. Returns an error if
+// the name is not present.
+func (r *enrollmentRegistry) Remove(name string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	idx := -1
+	for i, e := range r.enrollments {
+		if e.Name == name {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("enrollment %q not found", name)
+	}
+	removed := r.enrollments[idx]
+	r.enrollments = append(r.enrollments[:idx], r.enrollments[idx+1:]...)
+	if err := r.saveLocked(); err != nil {
+		// Roll back so in-memory matches disk.
+		r.enrollments = append(r.enrollments[:idx], append([]*Enrollment{removed}, r.enrollments[idx:]...)...)
+		return err
+	}
+	return nil
+}
+
+// Names returns a sorted list of enrollment names. Used for deterministic
+// iteration order (DNS drop-in generation, status output, etc.).
+func (r *enrollmentRegistry) Names() []string {
+	list := r.List()
+	names := make([]string, len(list))
+	for i, e := range list {
+		names[i] = e.Name
+	}
+	sort.Strings(names)
+	return names
+}
+
+// CAFingerprints returns the deduplicated set of CA fingerprints across
+// all current enrollments. Used by the F2 conflict-detection header
+// (existingNetworkCAs) sent on every device-flow poll and token enroll
+// — the server short-circuits with 409 if the would-be network's CA
+// fingerprint matches any value here, preventing orphan node rows
+// before they're committed.
+//
+// Stable order (lexical) so request bodies are deterministic and easier
+// to audit / log.
+func (r *enrollmentRegistry) CAFingerprints() []string {
+	list := r.List()
+	seen := make(map[string]struct{}, len(list))
+	for _, e := range list {
+		if e.CAFingerprint != "" {
+			seen[e.CAFingerprint] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for fp := range seen {
+		out = append(out, fp)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// SetClipboardSync persists Enrollment.ClipboardSync for the named
+// enrollment. Idempotent — returns nil with no write if the value
+// already matches. Caller must restart the agent for the toggle to
+// take effect on the running watcher.
+func (r *enrollmentRegistry) SetClipboardSync(name string, enabled bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.enrollments {
+		if e.Name != name {
+			continue
+		}
+		if e.ClipboardSync == enabled {
+			return nil
+		}
+		e.ClipboardSync = enabled
+		return r.saveLocked()
+	}
+	return errors.New("enrollment not found")
+}
+
+// SetNetworkID persists Enrollment.NetworkID. Phase II.3 (v0.11.3):
+// the agent receives the network's UUID in heartbeat responses and
+// stores it lazily so the desktop client can construct dashboard URLs
+// (e.g. /terminal/{networkId}/{nodeId}). Idempotent.
+func (r *enrollmentRegistry) SetNetworkID(name string, networkID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.enrollments {
+		if e.Name != name {
+			continue
+		}
+		if e.NetworkID == networkID {
+			return nil
+		}
+		e.NetworkID = networkID
+		return r.saveLocked()
+	}
+	return errors.New("enrollment not found")
+}
+
+// enrollmentDir returns the per-enrollment subdirectory path
+// (<configDir>/<name>). No filesystem I/O.
+func enrollmentDir(configDir, name string) string {
+	return filepath.Join(configDir, name)
+}
+
+// activeEnrollment is the enrollment the current agent process (or CLI
+// subcommand) is operating on. Phase A: single-network — set once from
+// the registry's primary entry by callers like runServe or runStatus.
+// Phase B will retire this global in favor of per-instance state.
+var activeEnrollment *Enrollment
+
+// setActiveEnrollment records the enrollment context for subsequent
+// file-path lookups. Safe to call with nil to clear.
+func setActiveEnrollment(e *Enrollment) {
+	activeEnrollment = e
+}
+
+// activeEnrollDir returns the subdir of the active enrollment, or
+// configDir if nothing is set (safety fallback used only in edge cases
+// like a completely un-enrolled agent).
+func activeEnrollDir() string {
+	if activeEnrollment == nil {
+		return configDir
+	}
+	return enrollmentDir(configDir, activeEnrollment.Name)
+}
+
+// loadPrimaryEnrollment performs the common bootstrap for any CLI
+// subcommand that wants to read per-enrollment state: runs the
+// legacy-layout migration (idempotent), loads the registry, and sets
+// the first entry as the active enrollment. Returns the registry so
+// callers can enumerate. Missing enrollments are not an error — the
+// returned registry will have Len() == 0.
+func loadPrimaryEnrollment() *enrollmentRegistry {
+	if _, err := migrateLegacyLayout(configDir); err != nil {
+		// Surface the error but don't exit — status/info commands
+		// should still be able to report "not enrolled" cleanly.
+		// Agents that need the migration to succeed (serve path)
+		// will hit the failure again with a fatal log.
+		return &enrollmentRegistry{path: filepath.Join(configDir, enrollmentsFile)}
+	}
+	reg, err := loadEnrollmentRegistry(configDir)
+	if err != nil {
+		return &enrollmentRegistry{path: filepath.Join(configDir, enrollmentsFile)}
+	}
+	if reg.Len() > 0 {
+		setActiveEnrollment(reg.List()[0])
+	}
+	return reg
+}
+
+// enrollmentNameRegex matches a valid local enrollment name: lowercase
+// alphanumeric plus hyphens, starting with a letter or digit, 1–32 chars.
+// Deliberately conservative: the name becomes a filesystem directory and
+// shows up in CLI output — no whitespace, slashes, or dots.
+var enrollmentNameRegex = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,31}$`)
+
+// reservedEnrollmentNames are directory names that can't be used as an
+// enrollment name because they collide with registry artifacts or with
+// Windows device-file names (creating `.../con/` silently fails on
+// NTFS — Windows interprets `con` as the console device).
+var reservedEnrollmentNames = map[string]struct{}{
+	"enrollments.json": {},
+	// Windows reserved device names — case-folding is already handled
+	// by the lowercase-only validation regex, so only the lowercase
+	// forms need to be listed.
+	"con": {}, "prn": {}, "aux": {}, "nul": {},
+	"com1": {}, "com2": {}, "com3": {}, "com4": {}, "com5": {},
+	"com6": {}, "com7": {}, "com8": {}, "com9": {},
+	"lpt1": {}, "lpt2": {}, "lpt3": {}, "lpt4": {}, "lpt5": {},
+	"lpt6": {}, "lpt7": {}, "lpt8": {}, "lpt9": {},
+}
+
+func validateEnrollmentName(name string) error {
+	if name == "" {
+		return fmt.Errorf("enrollment name is empty")
+	}
+	if !enrollmentNameRegex.MatchString(name) {
+		return fmt.Errorf("invalid enrollment name %q (must match [a-z0-9][a-z0-9-]{0,31})", name)
+	}
+	if _, reserved := reservedEnrollmentNames[name]; reserved {
+		return fmt.Errorf("enrollment name %q is reserved", name)
+	}
+	return nil
+}
+
+// caFingerprint returns the first 12 hex chars of SHA-256(caCertPEM).
+// Used as a fallback enrollment name when no DNS domain is available.
+// Short enough to be typable, long enough to disambiguate across any
+// realistic number of control planes a user joins.
+func caFingerprint(caCertPEM []byte) string {
+	sum := sha256.Sum256(caCertPEM)
+	return hex.EncodeToString(sum[:])[:12]
+}
+
+// defaultEnrollmentName picks a name from the available hints, in
+// priority order: DNS domain (if it's a valid enrollment name), else
+// CA fingerprint. Caller is responsible for checking collision against
+// the registry and prompting the user for an override if needed.
+func defaultEnrollmentName(dnsDomain, caFingerprintHex string) string {
+	if validateEnrollmentName(dnsDomain) == nil {
+		return dnsDomain
+	}
+	return caFingerprintHex
+}

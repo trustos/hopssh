@@ -200,12 +200,5 @@ func TestHandleUpload_PathTraversal(t *testing.T) {
 	}
 }
 
-// --- WinTun (non-Windows stub) ---
-
-func TestEnsureWinTun(t *testing.T) {
-	// On non-Windows platforms, ensureWinTun is a no-op.
-	// On Windows, it extracts the DLL (tested via the Windows integration test).
-	if err := ensureWinTun(); err != nil {
-		t.Fatalf("ensureWinTun failed: %v", err)
-	}
-}
+// TestEnsureWinTun moved to internal/client (wintun.go was relocated in
+// Phase NN). Removed from cmd/agent.

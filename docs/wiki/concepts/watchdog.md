@@ -2,15 +2,16 @@
 type: concept
 title: Agent watchdog architecture (3 independent watchdogs)
 status: current
-last_compiled: 2026-05-07
+last_compiled: 2026-05-09
 sources:
-  - cmd/agent/keepalive.go
-  - cmd/agent/renew.go (runRenewalWatchdog)
-  - cmd/agent/watcher_watchdog.go
-  - cmd/agent/instance.go (markX / activityAge accessors, restartFn closure)
-  - cmd/agent/watchdog_test.go
-  - cmd/agent/renew_watchdog_test.go
-  - cmd/agent/watcher_watchdog_test.go
+  - internal/client/keepalive.go (was cmd/agent/keepalive.go pre-Phase-NN)
+  - internal/client/renew.go (runRenewalWatchdog)
+  - internal/client/watcher_watchdog.go
+  - internal/client/instance.go (markX / activityAge accessors, restartFn closure)
+  - internal/client/client.go (the lifted connectFn / restartFn closure binding)
+  - internal/client/watchdog_test.go
+  - internal/client/renew_watchdog_test.go
+  - internal/client/watcher_watchdog_test.go
 ---
 
 # Agent watchdog architecture
@@ -78,11 +79,11 @@ Variants per watchdog:
 - **Data plane**: stamp surrogate is the keepalive cycle's all-fail counter (no `lastDataPlaneActivityAt` field — instead, consecutive cycle count). The "stamp" is implicit in the ticker advancing. Dump file: `stuck-state-<ts>.txt`.
 - **Watcher**: stamp point is the TOP of every tick body in `watchNetworkChanges`. Field: `lastWatcherActivityAt`. Method: `markWatcherActivity()` / `watcherActivityAge()`. Dump file: `watcher-stuck-<ts>.txt`.
 
-The renewal and watcher watchdogs share the `activityMu sync.Mutex` and stamp pattern in `cmd/agent/instance.go`. The data-plane watchdog uses cycle-counter logic in `cmd/agent/keepalive.go`.
+The renewal and watcher watchdogs share the `activityMu sync.Mutex` and stamp pattern in `internal/client/instance.go`. The data-plane watchdog uses cycle-counter logic in `internal/client/keepalive.go`.
 
 ## Defense in depth: per-watchdog companion timeouts
 
-Phase DD added a fourth idea on top of the watcher watchdog: **hard timeouts on the load-bearing blocking calls inside the watched loop body.** `runWithTimeout(name, label, deadline, fn)` in `cmd/agent/watcher_watchdog.go` wraps `ctrl.RebindUDPServer()` and `ctrl.CloseAllTunnels(true)` with 5s deadlines. On timeout, the helper logs WARN and returns; the leaked goroutine is the accepted cost (alternative is the entire watcher wedging for hours).
+Phase DD added a fourth idea on top of the watcher watchdog: **hard timeouts on the load-bearing blocking calls inside the watched loop body.** `runWithTimeout(name, label, deadline, fn)` in `internal/client/watcher_watchdog.go` wraps `ctrl.RebindUDPServer()` and `ctrl.CloseAllTunnels(true)` with 5s deadlines. On timeout, the helper logs WARN and returns; the leaked goroutine is the accepted cost (alternative is the entire watcher wedging for hours).
 
 This is **defense in depth, not an alternative** to the watchdog. The watchdog is the safety net for any wedge the timeouts don't catch (different deadlock site, missed deadline, non-blocking-but-still-stuck logic). Common case: timeouts fire, watcher continues normally, no user-visible disruption. Edge case: timeouts miss → watchdog catches within 3.5 min.
 
@@ -117,9 +118,9 @@ Files live at `<configDir>/<network>/<class>-stuck-<YYYYMMDDTHHMMSSZ>.txt`. Prun
 
 ## Test coverage
 
-- `cmd/agent/watchdog_test.go` — 6 tests for the data-plane keepalive watchdog (dump format, cooldown, nil-restartFn graceful no-op, restartFn success, source-scan tripwires).
-- `cmd/agent/renew_watchdog_test.go` — 8 tests for the renewal watchdog (stamp/age accessors, fires after silence, quiet when ticking, cold-start grace, ctx-cancel exit, restart error propagation, concurrent stamp safety).
-- `cmd/agent/watcher_watchdog_test.go` — 14 tests for the watcher watchdog including 3 source-scan tripwires (`TestTryStartMeshInstance_SpawnsWatcherWatchdog`, `TestWatchNetworkChanges_StampsAtTopOfTickBody`, `TestWatchNetworkChanges_RebindBlockUsesTimeouts`).
+- `internal/client/watchdog_test.go` — 6 tests for the data-plane keepalive watchdog (dump format, cooldown, nil-restartFn graceful no-op, restartFn success, source-scan tripwires).
+- `internal/client/renew_watchdog_test.go` — 8 tests for the renewal watchdog (stamp/age accessors, fires after silence, quiet when ticking, cold-start grace, ctx-cancel exit, restart error propagation, concurrent stamp safety).
+- `internal/client/watcher_watchdog_test.go` — 14 tests for the watcher watchdog including 3 source-scan tripwires (`TestTryStartMeshInstance_SpawnsWatcherWatchdog`, `TestWatchNetworkChanges_StampsAtTopOfTickBody`, `TestWatchNetworkChanges_RebindBlockUsesTimeouts`).
 
 ## Architectural lesson
 

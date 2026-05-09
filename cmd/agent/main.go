@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -21,10 +20,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
-	"github.com/slackhq/nebula/cert"
 	"github.com/trustos/hopssh/internal/buildinfo"
-	"github.com/trustos/hopssh/internal/nebulacfg"
-	"gopkg.in/yaml.v3"
+	"github.com/trustos/hopssh/internal/client"
 
 	netpprof "net/http/pprof"
 )
@@ -45,43 +42,43 @@ func main() {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "help", "--help", "-h":
-			runHelp()
+			client.RunHelp()
 			return
 		case "version", "--version":
 			fmt.Printf("hop-agent %s (%s)\n", buildinfo.Version, buildinfo.Commit)
 			return
 		case "status":
-			runStatus(os.Args[2:])
+			client.RunStatus(os.Args[2:])
 			return
 		case "info":
-			runInfo(os.Args[2:])
+			client.RunInfo(os.Args[2:])
 			return
 		case "enroll":
-			runEnroll(os.Args[2:])
+			client.RunEnroll(os.Args[2:])
 			return
 		case "serve":
 			runServe(os.Args[2:])
 			return
 		case "install":
-			runAgentInstall(os.Args[2:])
+			client.RunAgentInstall(os.Args[2:])
 			return
 		case "uninstall":
-			runAgentUninstall(os.Args[2:])
+			client.RunAgentUninstall(os.Args[2:])
 			return
 		case "update":
-			runAgentUpdate(os.Args[2:])
+			client.RunAgentUpdate(os.Args[2:])
 			return
 		case "restart":
-			runRestart(os.Args[2:])
+			client.RunRestart(os.Args[2:])
 			return
 		case "stop":
-			runStop()
+			client.RunStop()
 			return
 		case "leave":
-			runLeave(os.Args[2:])
+			client.RunLeave(os.Args[2:])
 			return
 		case "client":
-			runClient(os.Args[2:])
+			client.RunClientJoin(os.Args[2:])
 			return
 		case "migration":
 			runMigration(os.Args[2:])
@@ -102,75 +99,34 @@ func runServe(args []string) {
 	defer shutdownCancel()
 
 	// If launched by Windows SCM, redirect logs + install the service
-	// handler that bridges Stop/Shutdown into shutdownCancel. Returns
-	// false in console mode; we then rely on signals.
-	_ = svcIntegrateIfNeeded(shutdownCancel)
+	// handler that bridges Stop/Shutdown into shutdownCancel.
+	_ = client.SvcIntegrateIfNeeded(shutdownCancel)
 
-	// Clean up any leftover <exe>.old from a previous Windows self
-	// update. No-op on other platforms.
-	cleanupOldBinary()
-
-	// Optional loopback-only pprof listener for development/profiling.
-	// Activated only when HOPSSH_PPROF_ADDR is set (e.g. "127.0.0.1:6060").
-	// Loopback-only by design — no auth, no exposure to the mesh or LAN.
-	// Used to drive `go tool pprof` against a running agent without
-	// having to fish the bearer token out of the per-enrollment subdir.
-	startPprofIfRequested()
+	client.CleanupOldBinary()
+	client.StartPprofIfRequested()
 
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
 	cfgDir := fs.String("config-dir", "", "Override config directory")
 	tokenFile := fs.String("token-file", "", "Path to the bearer token file")
-	token := fs.String("token", "", "Bearer token (overrides -token-file)")
-	endpointFile := fs.String("endpoint-file", "", "Path to control plane endpoint URL")
-	nodeIDFile := fs.String("node-id-file", "", "Path to node ID file")
-	nebulaConfig := fs.String("nebula-config", "", "Path to Nebula config")
+	tokenFlag := fs.String("token", "", "Bearer token (overrides -token-file)")
 	listenAddr := fs.String("listen", "", "Override listen address (bypasses mesh, uses OS stack)")
 	mirrorDir := fs.String("mirror-dir", "", "When set, mirror the local-api token + port to <mirror-dir>/system-local-api-{token,port} for the desktop .app to discover the system agent (macOS only; written by `hop-agent install --migrate-from`)")
 	fs.Parse(args)
-	systemMirrorDirOverride = strings.TrimSpace(*mirrorDir)
 
-	if *cfgDir != "" {
-		configDir = resolveConfigDir(*cfgDir)
-	}
+	client.SetSystemMirrorDirOverride(strings.TrimSpace(*mirrorDir))
 
-	// Migrate any pre-v0.10 flat layout into the new subdir layout
-	// before reading anything else. Idempotent + safe on fresh installs.
-	if _, err := migrateLegacyLayout(configDir); err != nil {
+	// Resolve the effective config dir BEFORE the legacy migration
+	// (which works on whatever path we hand it).
+	effCfgDir := client.ResolveConfigDir(*cfgDir)
+
+	// Migrate any pre-v0.10 flat layout into the new subdir layout.
+	// Idempotent + safe on fresh installs.
+	if err := client.MigrateLegacyLayout(effCfgDir); err != nil {
 		log.Fatalf("Legacy config migration failed: %v", err)
 	}
 
-	reg, err := loadEnrollmentRegistry(configDir)
-	if err != nil {
-		log.Fatalf("Load enrollments: %v", err)
-	}
-	// Set activeEnrollment so CLI-style paths (readEndpointFromDisk
-	// fallbacks, legacy file defaults) continue to work against one
-	// "primary" enrollment. The per-instance runtime (below) does not
-	// depend on this global.
-	if reg.Len() > 0 {
-		setActiveEnrollment(reg.List()[0])
-	}
-
-	// Honor legacy flag overrides (--token-file, --endpoint-file, etc.)
-	// for un-enrolled debug runs. When enrollments exist, the per-
-	// instance loop below reads paths directly off the instance's
-	// subdir instead of these flags.
-	baseDir := activeEnrollDir()
-	if *tokenFile == "" {
-		*tokenFile = filepath.Join(baseDir, "token")
-	}
-	if *endpointFile == "" {
-		*endpointFile = filepath.Join(baseDir, "endpoint")
-	}
-	if *nodeIDFile == "" {
-		*nodeIDFile = filepath.Join(baseDir, "node-id")
-	}
-	if *nebulaConfig == "" {
-		*nebulaConfig = filepath.Join(baseDir, "nebula.yaml")
-	}
-
-	// Build the HTTP mux once — handlers are stateless except for the
-	// per-instance auth token which gets wrapped per listener below.
+	// Build the per-instance HTTP mux. Stateless except for the auth
+	// token which is layered in by the agentHTTPHook.
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", handleHealth)
 	mux.HandleFunc("POST /exec", handleExec)
@@ -183,214 +139,49 @@ func runServe(args []string) {
 	mux.HandleFunc("GET /debug/pprof/symbol", netpprof.Symbol)
 	mux.HandleFunc("GET /debug/pprof/trace", netpprof.Trace)
 
-	renewCtx, renewCancel := context.WithCancel(context.Background())
-	defer renewCancel()
-
-	instances := newInstanceRegistry()
-	servers := newServerSet()
-	defer servers.shutdownAll()
-
-	// Loopback HTTP API used by the desktop GUI shell (Tauri). Always
-	// started — gated only by the bearer token + 127.0.0.1 origin check
-	// inside the handlers. Stdout prints HOPSSH_LOCAL_API:<addr>:<token>
-	// on success so a parent process can scrape it.
-	//
-	// connect/disconnect closures capture servers + mux + renewCtx so
-	// the local API can bring enrollments up/down at runtime — the user
-	// never has to restart the agent to use a freshly-enrolled network.
-	//
-	// connectFn is forward-declared so its body (and any restartFn
-	// closure inside) can reference connectFn itself for the v0.10.36
-	// watchdog auto-recovery path.
-	var connectFn func(name string) error
-	connectFn = func(name string) error {
-		e := reg.Get(name)
-		if e == nil {
-			return fmt.Errorf("enrollment %q not found", name)
-		}
-		if existing := instances.get(name); existing != nil && existing.control() != nil {
-			return nil // already up
-		}
-		// Drop any stale instance entry (e.g. previous start failed and
-		// left a half-initialized inst in the registry) so the new
-		// tryStartMeshInstance gets a clean slate.
-		if old := instances.remove(name); old != nil {
-			old.close()
-			servers.shutdownInstance(name)
-		}
-		// Wait for the kernel to release per-enrollment resources from
-		// any prior instance: UDP listen port, and (on Linux) the TUN
-		// device. Cross-platform notes: macOS auto-assigns utun names
-		// so its TUN-name collision is impossible; Windows uses WinTun
-		// which has a different driver model.
-		//
-		// On Linux, /sys/class/net/<dev> can disappear before the
-		// kernel finishes releasing the underlying netdev — so
-		// waitForTUNDeviceFreeFn is necessary but not sufficient.
-		// The retry-with-backoff below is the real fix; the wait is
-		// just the optimistic fast path.
-		listenPort := e.ListenPort
-		if listenPort == 0 {
-			listenPort = nebulacfg.ListenPort
-		}
-		devName := meshIfaceName(name)
-
-		try := func() (*meshInstance, error) {
-			waitForUDPPortFreeFn(listenPort, 3*time.Second)
-			waitForTUNDeviceFreeFn(devName, 3*time.Second)
-
-			inst := newMeshInstance(e)
-			// v0.10.36: re-wire restartFn on every fresh instance so
-			// the watchdog can recover this one too. Recursion is
-			// fine here: each restart constructs a new closure
-			// bound to the new inst, replacing the prior one.
-			instName := name
-			inst.restartFn = func() error { return connectFn(instName) }
-			instances.add(inst)
-			if err := tryStartMeshInstance(renewCtx, inst, servers, mux); err != nil {
-				instances.remove(name)
-				inst.close()
-				return nil, err
-			}
-			// tryStartMeshInstance falls back to OS stack and returns
-			// nil even when both kernel TUN and userspace Nebula
-			// failed (e.g. resource still busy). Detect that here so
-			// the API caller sees a real error and the retry loop
-			// fires.
-			if inst.control() == nil {
-				instances.remove(name)
-				inst.close()
-				servers.shutdownInstance(name)
-				return nil, fmt.Errorf("nebula did not start (kernel TUN + userspace both failed; likely 'address already in use' or 'device or resource busy')")
-			}
-			return inst, nil
-		}
-
-		// Multi-attempt retry: linux kernel TUN/UDP release after
-		// inst.close() can take several seconds, especially on busy
-		// systems or VMs. Total budget ~25 s (3 attempts × 3 s wait +
-		// inter-attempt sleeps of 2 s, 4 s, 8 s). Each attempt
-		// re-runs the resource waits, so the kernel has more time on
-		// each successive try.
-		var lastErr error
-		for attempt := 0; attempt < 4; attempt++ {
-			if attempt > 0 {
-				sleep := time.Duration(1<<uint(attempt)) * time.Second
-				log.Printf("[local-api] connect %q attempt %d backoff %v after: %v", name, attempt, sleep, lastErr)
-				time.Sleep(sleep)
-			}
-			_, err := try()
-			if err == nil {
-				return nil
-			}
-			lastErr = err
-			es := err.Error()
-			retryable := strings.Contains(es, "address already in use") ||
-				strings.Contains(es, "device or resource busy") ||
-				strings.Contains(es, "nebula did not start")
-			if !retryable {
-				return err
-			}
-		}
-		// Classify the final retry-loop error so the UI can show an
-		// actionable message instead of a generic "address already in
-		// use" hedge. The most common case in production is a parallel
-		// hop-agent install (system LaunchDaemon left over after a
-		// download of the .app, or a dev `hop-agent serve` running in
-		// a terminal) holding the bundled-agent's chosen UDP port.
-		// We have a port-availability probe at NextAvailableListenPort
-		// (cmd/agent/enrollments.go) that should pick a free port, but
-		// it can race with a parallel-agent that binds AFTER our probe
-		// and BEFORE Nebula's actual bind — so this error path can still
-		// fire. The message points the user at Settings → Danger zone →
-		// Reset which removes the parallel install.
-		es := lastErr.Error()
-		if strings.Contains(es, "address already in use") || strings.Contains(es, "device or resource busy") {
-			return fmt.Errorf("connect failed after 4 attempts: another hop-agent on this Mac is using the network port. Open Settings → Danger zone → Reset to remove the conflicting install, then try Connect again. (underlying: %s)", es)
-		}
-		return fmt.Errorf("connect failed after 4 attempts: %w", lastErr)
+	c, err := client.NewClient(client.Config{
+		ConfigDir: effCfgDir,
+		UserAgent: "hopssh-agent/" + buildinfo.Version,
+	})
+	if err != nil {
+		log.Fatalf("Client init: %v", err)
 	}
+	c.SetInstanceHTTPHook(&agentHTTPHook{mux: mux})
+	defer c.Stop()
 
-	disconnectFn := func(name string) error {
-		inst := instances.remove(name)
-		if inst == nil {
-			return nil // already gone
-		}
-		// stopwatcher → close → release UDP port + utun + DNS, all
-		// inside meshInstance.close().
-		inst.close()
-		// Drop the per-instance HTTP listener too so the next connect
-		// can rebind cleanly.
-		servers.shutdownInstance(name)
-		return nil
-	}
+	// Phase Z (v0.10.91): periodic re-chown of mirror files if they're
+	// still root-owned. No-op when the mirror dir override is empty.
+	client.RunMirrorChownSelfHeal(shutdownCtx)
 
-	// Phase Z (v0.10.91): self-heal goroutine that periodically re-
-	// chowns the system mirror files if they're still root-owned (e.g.
-	// the LaunchDaemon booted before any user logged in, leaving
-	// resolveConsoleUser unable to find a target). Only fires when
-	// systemMirrorDirOverride is set (i.e. system-mode agent launched
-	// with --mirror-dir). Bundled mode (no --mirror-dir) skips this.
-	go runMirrorChownSelfHeal(shutdownCtx, systemMirrorDirOverride)
-
-	if err := startLocalAPI(shutdownCtx, configDir, reg, instances, connectFn, disconnectFn); err != nil {
+	// Loopback HTTP API used by the desktop GUI shell (Tauri).
+	if err := client.StartLocalAPI(shutdownCtx, c); err != nil {
 		log.Printf("[agent] WARNING: local API not started: %v", err)
 	}
 
-	// --listen overrides + no enrollment → OS-stack-only debug mode.
-	// Preserve the historical single-process behavior for running the
-	// agent against a manual --token for ad-hoc testing.
-	if *listenAddr != "" && reg.Len() == 0 {
-		if err := startDebugOSListener(servers, mux, *token, *tokenFile, *listenAddr); err != nil {
+	names := c.EnrollmentNames()
+
+	if *listenAddr != "" && len(names) == 0 {
+		// --listen overrides + no enrollment → OS-stack-only debug mode.
+		if err := startDebugOSListener(c, mux, *tokenFlag, *tokenFile, *listenAddr); err != nil {
 			log.Fatalf("%v", err)
 		}
-	} else if reg.Len() == 0 {
-		// No enrollment and no explicit listen → serve on mesh-less OS
-		// stack at the default port so `hop-agent enroll` workflows that
-		// expect an already-running process still succeed.
-		//
-		// Soft-fail when no token is configured: the GUI shell drives
-		// enrollment through the local API on 127.0.0.1, so a
-		// freshly-installed agent (no token, no enrollments) must stay
-		// alive long enough to be enrolled. The local API handlers run
-		// on a separate listener and don't depend on this one.
+	} else if len(names) == 0 {
+		// No enrollment + no --listen → soft-fail OS-stack listener so a
+		// freshly-installed agent stays alive long enough for enrollment
+		// via the local API.
 		log.Printf("[agent] no enrollments found, awaiting enrollment (use the desktop client or 'hop-agent enroll')")
-		if err := startDebugOSListener(servers, mux, *token, *tokenFile, fmt.Sprintf(":%d", agentAPIPort)); err != nil {
+		if err := startDebugOSListener(c, mux, *tokenFlag, *tokenFile, fmt.Sprintf(":%d", client.AgentAPIPort)); err != nil {
 			log.Printf("[agent] mesh API listener not started (this is expected for a fresh install): %v", err)
 		}
 	} else {
-		// Migrate legacy enrollments missing a per-enrollment listen
-		// port. Pre-v0.10.3 enrollments shared port 4242 (with the
-		// non-primary one falling back to a random ephemeral port at
-		// runtime, breaking NAT mappings on every restart). Assign
-		// each a unique deterministic port + persist + heal nebula.yaml.
-		migrateListenPorts(reg)
-
-		// Boot-time clock-sanity gate. Probe the first enrollment's
-		// control plane HTTPS Date header; if local clock is drastically
-		// off, attempt a platform-native NTP resync before Nebula starts.
-		// This closes the UTM-suspended-VM / no-RTC-board class of
-		// "every handshake fails with certificate is expired" failures.
-		if first := reg.List(); len(first) > 0 {
-			EnsureClockSane(renewCtx, first[0].Endpoint)
-		}
-
-		// The common case: start one Nebula instance per enrollment.
-		for _, e := range reg.List() {
-			inst := newMeshInstance(e)
-			// v0.10.36: wire watchdog auto-recovery for boot-time
-			// instances too. connectFn is constructed below; capture
-			// the enrollment name so each closure is bound correctly.
-			instName := e.Name
-			inst.restartFn = func() error { return connectFn(instName) }
-			instances.add(inst)
-			startMeshInstance(renewCtx, inst, servers, mux)
+		// Common case: start one Nebula instance per enrollment.
+		if err := c.Start(shutdownCtx); err != nil {
+			log.Fatalf("[agent] start: %v", err)
 		}
 	}
 
 	// Wait for Unix signals (SIGINT/SIGTERM) OR Windows SCM
-	// Stop/Shutdown — both cancel shutdownCtx via shutdownCancel set
-	// up at the top of runServe.
+	// Stop/Shutdown.
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
@@ -404,288 +195,22 @@ func runServe(args []string) {
 	<-shutdownCtx.Done()
 
 	log.Println("Shutting down agent...")
-	renewCancel()
-	servers.shutdownAll()
-	instances.closeAll()
+	_ = c.Stop()
 }
 
-// migrateListenPorts handles two related issues introduced before
-// per-enrollment listen ports landed:
-//
-//  1. Pre-existing enrollments lack the ListenPort field — assign each
-//     a unique port starting at nebulacfg.ListenPort + persist.
-//  2. The on-disk nebula.yaml may carry the legacy port (4242 for the
-//     primary, 0 for the rest) — overwrite listen.port to match the
-//     newly-assigned ListenPort.
-//
-// Without this fix, multiple enrollments race for the same UDP port
-// at boot and the loser falls back to a random ephemeral port (port 0)
-// — which breaks NAT-PMP mapping reuse, breaks lighthouse host updates
-// across restarts, and leaves the slow path unable to establish tunnels.
-func migrateListenPorts(reg *enrollmentRegistry) {
-	updated, err := reg.AssignMissingListenPorts(nebulacfg.ListenPort)
-	if err != nil {
-		log.Printf("[migrate] WARNING: failed to assign listen ports: %v", err)
-		return
-	}
-	if updated > 0 {
-		log.Printf("[migrate] assigned listen ports to %d legacy enrollment(s)", updated)
-	}
+// agentHTTPHook implements client.InstanceHTTPHook by wrapping the agent's
+// stateless mux with bearer-token auth per instance. Mobile clients pass
+// nil for the hook; this lives in cmd/agent only.
+type agentHTTPHook struct{ mux http.Handler }
 
-	// Fix F (v0.10.26): self-heal duplicate listen ports.
-	//
-	// Pre-v0.10.26 the server's /api/renew handler hardcoded a
-	// listenPort=4242 push that silently corrupted multi-enrollment
-	// hosts. Even after Fix A+B prevent future corruption, this
-	// startup check ensures we self-heal if any future regression OR
-	// manual edit ever leaves two enrollments with the same port —
-	// avoiding the catastrophic port-bind collision in reloadNebula
-	// that previously left the network permanently broken.
-	renumbered, err := reg.HealDuplicateListenPorts(nebulacfg.ListenPort)
-	if err != nil {
-		log.Printf("[migrate] WARNING: heal duplicate listen ports: %v", err)
-	} else if len(renumbered) > 0 {
-		log.Printf("[migrate] healed duplicate listen ports — reassigned: %v", renumbered)
-	}
-
-	for _, e := range reg.List() {
-		if err := healListenPortYAML(e); err != nil {
-			log.Printf("[migrate %s] WARNING: heal listen.port: %v", e.Name, err)
-		}
-	}
-}
-
-// healListenPortYAML rewrites listen.port in this enrollment's
-// nebula.yaml if it doesn't match the persisted ListenPort.
-// Idempotent — no-op if already in sync.
-func healListenPortYAML(e *Enrollment) error {
-	cfgPath := filepath.Join(enrollmentDir(configDir, e.Name), "nebula.yaml")
-	data, err := os.ReadFile(cfgPath)
-	if err != nil {
-		return err
-	}
-	var cfg map[string]any
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return err
-	}
-	listen, _ := cfg["listen"].(map[string]any)
-	if listen == nil {
-		listen = map[string]any{"host": "0.0.0.0"}
-	}
-	curPort, _ := listen["port"].(int)
-	if curPort == e.ListenPort {
-		return nil
-	}
-	listen["port"] = e.ListenPort
-	cfg["listen"] = listen
-	out, err := yaml.Marshal(cfg)
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(cfgPath, out, 0644); err != nil {
-		return err
-	}
-	log.Printf("[migrate %s] nebula.yaml listen.port updated %d → %d", e.Name, curPort, e.ListenPort)
-	return nil
-}
-
-// startMeshInstance is the boot-time wrapper: returns nothing and
-// log.Fatals on anything that should keep the agent from coming up at
-// all. Runtime callers (the local API's live-connect path) should use
-// tryStartMeshInstance which returns errors.
-func startMeshInstance(ctx context.Context, inst *meshInstance, servers *serverSet, mux http.Handler) {
-	if err := tryStartMeshInstance(ctx, inst, servers, mux); err != nil {
-		log.Fatalf("[agent %s] start: %v", inst.name(), err)
-	}
-}
-
-// tryStartMeshInstance brings up Nebula + heartbeat + renewal + DNS for
-// one enrollment and wires a per-instance HTTP server onto its mesh
-// listener. Returns an error on hard failures (missing token, port
-// bind on the agent listener); soft failures (Nebula start) fall back
-// to an OS-stack listener so the renewal loop keeps running.
-//
-// Boot path uses startMeshInstance (which log.Fatal's on error since
-// the agent can't proceed). Runtime path uses this directly so a bad
-// runtime enroll can't crash the whole agent.
-func tryStartMeshInstance(ctx context.Context, inst *meshInstance, servers *serverSet, mux http.Handler) error {
-	cfgPath := filepath.Join(inst.dir(), "nebula.yaml")
-	inst.parentCtx = ctx
-	// Per-instance ctx so disconnect/leave can stop heartbeat + renewal
-	// + path-quality goroutines without taking down the whole agent.
-	// Pre-v0.10.34 these used the outer (agent-wide) ctx, so a
-	// disconnect left them running against a closed instance — leaking
-	// goroutines and producing duplicate heartbeats/renewals on
-	// subsequent reconnect.
-	inst.runCtx, inst.runCancel = context.WithCancel(ctx)
-
-	authToken, err := readInstanceToken(inst)
-	if err != nil {
-		return fmt.Errorf("read token: %w", err)
-	}
-	authed := authMiddleware(authToken, mux)
-
-	// Prune accumulated stuck-state forensic dumps. The watchdog can
-	// emit one per ~5 min during persistent failures (pre-v0.10.85
-	// the lighthouse-as-peer false-positive could fire indefinitely),
-	// so the directory accumulates without bound. Runs at every
-	// instance bring-up — boot-time and runtime connect.
-	pruneOldStuckStateDumps(inst.dir())
-
-	// Start cert renewal + heartbeat regardless of Nebula outcome —
-	// even an expired-cert agent needs to renew + re-sync.
-	if inst.endpoint() != "" && inst.nodeID() != "" {
-		go runCertRenewal(inst.runCtx, inst)
-		go runHeartbeat(inst.runCtx, inst)
-		// Phase P: silent-renewal-death detector. Asserts on
-		// inst.lastRenewalActivityAt updates from the renewal loop;
-		// fires CRITICAL + forensic dump + restartFn if the renewal
-		// goes silent past renewalSilenceThreshold (= 6h on a 24h
-		// cert). Mirrors the v0.10.36 stuck-data-plane watchdog.
-		go runRenewalWatchdog(inst.runCtx, inst)
-		// Phase DD (v0.10.96): silent watchNetworkChanges-death detector.
-		// Asserts on inst.lastWatcherActivityAt updates from the watcher
-		// loop; fires CRITICAL + forensic dump + restartFn if the watcher
-		// goes silent past watcherSilenceThreshold (= 3 min). Catches
-		// vendor Nebula deadlocks in RebindUDPServer / CloseAllTunnels
-		// that the recover() block can't handle (deadlocks are not
-		// panics).
-		go runWatcherWatchdog(inst.runCtx, inst)
-		log.Printf("[agent %s] cert auto-renewal + heartbeat + watchdogs enabled (endpoint: %s)", inst.name(), inst.endpoint())
-	}
-
-	// If nebula.yaml is missing, fall back to OS stack (rare — should
-	// only happen if enrollment is corrupt). Renewal might recover it.
-	if _, err := os.Stat(cfgPath); err != nil {
-		log.Printf("[agent %s] no Nebula config at %s, running on OS stack", inst.name(), cfgPath)
-		servers.startOSListener(inst, authed, fmt.Sprintf(":%d", agentAPIPort))
-		return nil
-	}
-
-	tunMode := readTunMode(inst)
-	ensureP2PConfig(inst)
-
-	inst.onRestart = func(newSvc meshService) {
-		if err := servers.rebindMesh(inst, authed, newSvc); err != nil {
-			log.Printf("[agent %s] CRITICAL: cannot listen on new Nebula instance: %v", inst.name(), err)
-		}
-	}
-
-	meshSvc := startMesh(cfgPath, tunMode)
-	if meshSvc == nil {
-		log.Printf("[agent %s] all Nebula modes failed — falling back to OS stack", inst.name())
-		servers.startOSListener(inst, authed, fmt.Sprintf(":%d", agentAPIPort))
-		return nil
-	}
-	inst.setSvc(meshSvc)
-	log.Printf("[agent %s] Nebula mesh connected (mode: %s)", inst.name(), tunMode)
-
-	// Configure split-DNS for this mesh's domain in kernel TUN mode.
-	if tunMode == "kernel" {
-		inst.dnsConfig = readDNSConfig(inst)
-		configureDNS(inst, inst.dnsConfig)
-	}
-
-	// Inject the on-disk peer-endpoint cache into Nebula's hostmap
-	// BEFORE any handshake fires. Without this, the first packet to a
-	// peer triggers a concurrent handshake + lighthouse query; on
-	// cellular the relay path often wins the race and the tunnel comes
-	// up relayed. TCP slow-starts through the relay leg, then collapses
-	// when Nebula reactively roams direct ~5-10 s later. Pre-populating
-	// the hostmap from disk lets the very first handshake attempt direct.
-	if n := injectCachedPeerEndpoints(inst); n > 0 {
-		log.Printf("[agent %s] injected %d cached peer endpoint(s) into hostmap", inst.name(), n)
-	}
-
-	// Warm tunnels synchronously: lighthouse first, then peers from
-	// heartbeat. Both must complete before the mesh listener starts,
-	// otherwise Screen Sharing's quality probe fails on first connect.
-	warmTunnel(cfgPath)
-	warmPeersFromHeartbeat(inst, inst.endpoint())
-
-	// Fix D (v0.10.26): mirror the empty-endpoint guard from the
-	// reload paths (renew.go:885, 933) so the watcher startup
-	// preconditions are consistent across all entry points. If the
-	// endpoint is empty, watchNetworkChanges would silently early-exit
-	// anyway — explicit log here is more discoverable.
-	if ctrl := meshSvc.NebulaControl(); ctrl != nil && inst.endpoint() != "" {
-		inst.startWatcher(ctrl)
-	} else if ctrl == nil {
-		log.Printf("[agent %s] WARNING: cannot start network-change watcher: no Nebula control", inst.name())
-	} else {
-		log.Printf("[agent %s] WARNING: cannot start network-change watcher: enrollment endpoint is empty", inst.name())
-	}
-
-	if nebulacfg.PortmapEnabled {
-		port := inst.enrollment.ListenPort
-		if port == 0 {
-			port = nebulacfg.ListenPort // fallback for pre-migration runs
-		}
-		inst.startPortmap(ctx, uint16(port))
-	}
-
-	if err := servers.startMeshListener(inst, authed, meshSvc, fmt.Sprintf(":%d", agentAPIPort)); err != nil {
-		return fmt.Errorf("Nebula mesh listen: %w", err)
-	}
-	log.Printf("[agent %s] listening on :%d (Nebula mesh, %s TUN)", inst.name(), agentAPIPort, tunMode)
-
-	// Phase B-lite: per-peer RTT EWMA via TCP-connect probes to each
-	// direct peer's mesh listener (:41820). Feeds PeerDetail.RTTms in
-	// the heartbeat (dashboard surfaces it) and logs degradation
-	// (3× consecutive samples >50 ms above EWMA). One TCP-SYN per
-	// direct peer per 10 s — cost is negligible.
-	go runPathQuality(inst.runCtx, inst)
-
-	// CGNAT-aware mesh keepalive: every 90s, fire a TCP-connect to
-	// each peer's mesh API listener via the mesh IP. Refreshes our
-	// outbound UDP flow state on the wire so a CGNAT operator's
-	// idle-timeout (typically 60-300s) can't drop the flow during
-	// app-layer silence. Without this, an idle-then-active mesh
-	// session (e.g. user clicks Screen Sharing after 5+ min idle)
-	// pays a re-handshake cost that the application protocol may
-	// see as a timeout (RFB ≈ 30s) before recovery completes.
-	go runMeshKeepalive(inst.runCtx, inst)
-
-	// Phase L slice 2: clipboard sync. Per-(device, network) opt-in
-	// — only spawn when enrollment.ClipboardSync == true. Watcher +
-	// receiver share inst.runCtx so disconnect/leave stops them.
-	if inst.enrollment != nil && inst.enrollment.ClipboardSync {
-		dir := inst.dir()
-		nodeIDBytes, _ := os.ReadFile(filepath.Join(dir, "node-id"))
-		tokenBytes, _ := os.ReadFile(filepath.Join(dir, "token"))
-		nodeID := strings.TrimSpace(string(nodeIDBytes))
-		token := strings.TrimSpace(string(tokenBytes))
-		if nodeID != "" && token != "" && inst.endpoint() != "" {
-			inst.clipboardSyncRef = startClipboardSync(inst.runCtx, inst, inst.endpoint(), nodeID, token)
-		}
-	}
-
-	// Layer 4 DISABLED in v0.10.27.1 hotfix. Two production issues:
-	// (1) Reap loop under asymmetric CGNAT (probed source-IP doesn't
-	//     match reply source-IP, endpoints falsely classified dead).
-	// (2) Probes themselves cause hostmap roam-flap — every TestRequest
-	//     to a different candidate endpoint elicits a TestReply that
-	//     triggers Nebula's handleHostRoaming, CurrentRemote bounces
-	//     every 5s (probe interval), defeating patches 14+15's
-	//     preferred_ranges roam suppression. Verified post-hotfix
-	//     2026-04-26: MBP↔mini hostmap flapped between 3 addresses
-	//     every 5s, matching probeTicker cadence.
-	//
-	// Until Layer 4b (nonce-correlated TestRequest/TestReply for
-	// CGNAT-asymmetry-safe per-endpoint liveness signal) is built,
-	// disable the entire goroutine. The vendor patch infrastructure
-	// (SetInboundObserver, ProbeEndpoint, ReplaceStaticHostMap)
-	// remains in place for future iteration — only the agent-side
-	// scheduler is dormant.
-	//
-	// go runEndpointProbe(ctx, inst)
-	return nil
+func (h *agentHTTPHook) BuildHandler(name, authToken string) http.Handler {
+	return authMiddleware(authToken, h.mux)
 }
 
 // startDebugOSListener serves the mux directly on the OS stack using a
-// bearer token from --token or --token-file. Used only when no
-// enrollment exists — mainly for ad-hoc local testing.
-func startDebugOSListener(servers *serverSet, mux http.Handler, tokenFlag, tokenFilePath, listenAddr string) error {
+// bearer token from --token or --token-file. Used only when no enrollment
+// exists — for ad-hoc local testing.
+func startDebugOSListener(c *client.Client, mux http.Handler, tokenFlag, tokenFilePath, listenAddr string) error {
 	authToken := tokenFlag
 	if authToken == "" && tokenFilePath != "" {
 		data, err := os.ReadFile(tokenFilePath)
@@ -697,127 +222,9 @@ func startDebugOSListener(servers *serverSet, mux http.Handler, tokenFlag, token
 	if authToken == "" {
 		return fmt.Errorf("no authentication token configured (pass --token or --token-file, or enroll first)")
 	}
-	authed := authMiddleware(authToken, mux)
-	return servers.startUnscopedOSListener(authed, listenAddr)
+	return c.RegisterDebugListener(authMiddleware(authToken, mux), listenAddr)
 }
 
-// startPMTUD is disabled — requires fork with PMTUD support.
-// func startPMTUD(ctx context.Context, ctrl *nebula.Control, configPath string) { ... }
-
-// warmTunnel blocks until Noise handshakes complete to all reachable mesh
-// peers. The TCP dials go through the TUN device, triggering Nebula handshakes.
-// DialTimeout blocks until the handshake + TCP round-trip succeeds, so when
-// this function returns, all peer tunnels are warm.
-func warmTunnel(configPath string) {
-	time.Sleep(500 * time.Millisecond)
-
-	dir := filepath.Dir(configPath)
-	certPEM, err := os.ReadFile(filepath.Join(dir, "node.crt"))
-	if err != nil {
-		return
-	}
-	c, _, err := cert.UnmarshalCertificateFromPEM(certPEM)
-	if err != nil {
-		return
-	}
-	networks := c.Networks()
-	if len(networks) == 0 {
-		return
-	}
-
-	lighthouseAddr := networks[0].Masked().Addr().Next()
-	start := time.Now()
-
-	d := net.Dialer{Timeout: 5 * time.Second}
-	if conn, err := d.DialContext(context.Background(), "tcp", net.JoinHostPort(lighthouseAddr.String(), "41820")); err == nil {
-		conn.Close()
-	}
-	log.Printf("[agent] warm-up: lighthouse ready in %s", time.Since(start).Truncate(time.Millisecond))
-}
-
-// warmPeersFromHeartbeat sends a heartbeat to get online peer IPs, then
-// dials each one to establish Nebula tunnels before accepting connections.
-func warmPeersFromHeartbeat(inst *meshInstance, endpoint string) {
-	dir := inst.dir()
-	nodeID, _ := os.ReadFile(filepath.Join(dir, "node-id"))
-	token, _ := os.ReadFile(filepath.Join(dir, "token"))
-	if len(nodeID) == 0 || len(token) == 0 {
-		return
-	}
-
-	reqBody := fmt.Sprintf(`{"nodeId":%q}`, strings.TrimSpace(string(nodeID)))
-	req, err := http.NewRequest("POST", endpoint+"/api/heartbeat", strings.NewReader(reqBody))
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(string(token)))
-
-	client := &http.Client{
-		Timeout:   5 * time.Second,
-		Transport: &http.Transport{DisableKeepAlives: true},
-	}
-	resp, err := client.Do(req)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		if resp != nil {
-			resp.Body.Close()
-		}
-		return
-	}
-	defer resp.Body.Close()
-
-	var body struct {
-		Peers         []string            `json:"peers"`
-		PeerEndpoints map[string][]string `json:"peerEndpoints"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
-		return
-	}
-
-	// Inject advertised peer UDP endpoints into Nebula's hostmap BEFORE
-	// dialing, so the TCP dials below traverse an already-populated hostmap
-	// (direct handshake path) instead of falling through to lighthouse
-	// discovery (which may be unreachable on carrier-filtered cellular).
-	if len(body.PeerEndpoints) > 0 {
-		injectPeerEndpoints(inst, body.PeerEndpoints)
-	}
-
-	if len(body.Peers) == 0 {
-		return
-	}
-	start := time.Now()
-	for _, ip := range body.Peers {
-		d := net.Dialer{Timeout: 2 * time.Second}
-		if conn, err := d.Dial("tcp", net.JoinHostPort(ip, "41820")); err == nil {
-			conn.Close()
-		}
-	}
-	log.Printf("[agent] warm-up: %d peers ready in %s", len(body.Peers), time.Since(start).Truncate(time.Millisecond))
-}
-
-// startMesh starts Nebula in the requested TUN mode with graceful fallback.
-// Tries kernel TUN first (if requested), falls back to userspace, returns nil if all fail.
-func startMesh(configPath, tunMode string) meshService {
-	if tunMode == "kernel" {
-		if err := ensureWinTun(); err != nil {
-			log.Printf("[agent] WARNING: wintun setup failed: %v", err)
-		}
-		svc, err := startNebulaKernelTun(configPath)
-		if err != nil {
-			log.Printf("[agent] WARNING: kernel TUN failed: %v (falling back to userspace)", err)
-			// Fall through to userspace.
-		} else {
-			return svc
-		}
-	}
-
-	svc, err := startNebula(configPath)
-	if err != nil {
-		log.Printf("[agent] WARNING: Nebula userspace failed: %v (falling back to OS stack)", err)
-		return nil
-	}
-	return svc
-}
 
 func authMiddleware(token string, next http.Handler) http.Handler {
 	expected := "Bearer " + token

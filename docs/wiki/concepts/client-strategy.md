@@ -16,19 +16,19 @@ sources:
 
 One Tauri 2 + Svelte 5 UI codebase across iOS, Android, macOS, Windows, Linux. Desktop spawns the existing `hop-agent` binary as a sidecar; mobile uses native VPN provider extensions (NEPacketTunnelProvider on iOS, VpnService on Android) linking a gomobile-compiled shared Go core. Web terminal works in the WebView on every platform.
 
-**Status (2026-05-07):** macOS shipped (Phase V→DD); Windows and Linux desktop blocked only on Tauri-shell + packaging work (agent-side already complete); iOS and Android blocked on the `internal/client/` shared-substrate refactor.
+**Status (2026-05-09):** macOS shipped (Phase V→DD); Windows and Linux desktop blocked only on Tauri-shell + packaging work (agent-side already complete); the `internal/client/` shared-substrate landed in Phase NN — iOS and Android are now substrate-ready. Remaining mobile work is the gomobile binding (NN+1) and the platform-specific VPN-extension scaffolding (NN+2 iOS, NN+3 Android).
 
 ## Status snapshot
 
 | Platform | Architecture | Substrate | UI shell | Status | Shipped at |
 |---|---|---|---|---|---|
-| **macOS desktop** | Tauri + sidecar `hop-agent` | Existing `cmd/agent/` (no refactor needed) | Tauri 2 + Svelte 5 | Production | v0.10.85 → v0.10.96 |
-| **Windows desktop** | Tauri + sidecar + WinTun + WebView2 | Existing `cmd/agent/` (WinTun, SCM, NRPT all shipped) | Tauri 2 + Svelte 5 | Plan ready | — |
-| **Linux desktop** | Tauri + sidecar + AppImage / .deb / .rpm | Existing `cmd/agent/` (systemd, dnsproxy shipped) | Tauri 2 + Svelte 5 | Plan ready | — |
-| **iOS** | Tauri UI + NEPacketTunnelProvider + gomobile xcframework | NEW `internal/client/` + gomobile binding | Tauri 2 + Svelte 5 | Substrate-blocked | — |
-| **Android** | Tauri UI + VpnService + gomobile aar | NEW `internal/client/` + gomobile binding | Tauri 2 + Svelte 5 | Substrate-blocked | — |
+| **macOS desktop** | Tauri + sidecar `hop-agent` | `cmd/agent/` (post-Phase-NN: thin shell that imports `internal/client/`) | Tauri 2 + Svelte 5 | Production | v0.10.85 → v0.10.96 |
+| **Windows desktop** | Tauri + sidecar + WinTun + WebView2 | Same `cmd/agent/` thin shell (WinTun, SCM, NRPT all shipped via `internal/client/`) | Tauri 2 + Svelte 5 | Plan ready | — |
+| **Linux desktop** | Tauri + sidecar + AppImage / .deb / .rpm | Same `cmd/agent/` thin shell (systemd, dnsproxy shipped via `internal/client/`) | Tauri 2 + Svelte 5 | Plan ready | — |
+| **iOS** | Tauri UI + NEPacketTunnelProvider + gomobile xcframework | ✅ `internal/client/` (Phase NN); ❌ gomobile binding (NN+1) | Tauri 2 + Svelte 5 | Substrate ready | — |
+| **Android** | Tauri UI + VpnService + gomobile aar | ✅ `internal/client/` (Phase NN); ❌ gomobile binding (NN+1) | Tauri 2 + Svelte 5 | Substrate ready | — |
 
-**The `internal/client/` substrate does not exist yet** — verified 2026-05-07 (`ls internal/client` returns "No such file or directory"). It's the linchpin of the mobile path. Until it lands, the iOS and Android plans are paper.
+**The `internal/client/` substrate landed in Phase NN (2026-05-09).** ~22k LOC + 89 files extracted from `cmd/agent/` (which was `package main`); see [[../phases/nn-client-substrate]] for the extraction ledger. The package exposes a gomobile + Rust-FFI compatible public API (`Client`, `Config`, `EnrollOptions`, `Snapshot`, `EnrollmentSummary`, `PeerInfo`, `Event`, `EventCallback`, `SubscriptionID`, `InstanceHTTPHook`) with constraint tripwires in `internal/client/api_constraints_test.go`.
 
 ## Per-platform decisions (ADRs)
 
@@ -87,19 +87,22 @@ The "real" code reuse: **the Go core runs unchanged on every platform**. Desktop
 
 ## Project structure
 
-New paths under `/Users/tenevi/Projects/Github.Trustos/hopssh/`:
+Paths under `/Users/tenevi/Projects/Github.Trustos/hopssh/`:
 
 ```
 internal/
-  client/                          NEW — extract from cmd/agent/{client,enroll,nebula,renew}.go
-    client.go                      shared client lifecycle (used by cmd/agent and mobilehop)
+  client/                          BUILT (Phase NN, 2026-05-09) — 89 files extracted from cmd/agent/{client,enroll,nebula,renew,…}.go
+    api.go                         FFI-clean public surface: Client, Config, EnrollOptions, Snapshot, etc.
+    api_constraints_test.go        gomobile-compat tripwires (no chan/func/interface{} fields)
+    client.go                      Client.connect / Client.startInstance — lifted from runServe's connectFn
     enroll.go                      device flow + token + bundle enrollment
     nebula.go                      Nebula start/stop/rebind, watchNetworkChanges
     renew.go                       cert renewal + heartbeat loops
-    config.go                      cert + key persistence (abstracted: file path on desktop, keychain on mobile)
+    instance.go, keepalive.go, watcher_watchdog.go, peerstate.go, peer_cache.go, …
+    local_api.go                   loopback HTTP API (also lives here post-Phase-NN — desktop sidecar consumes via StartLocalAPI)
 
 clients/
-  mobile-go/                       NEW — gomobile binding module
+  mobile-go/                       NEW (Phase NN+1) — gomobile binding module
     mobilehop/
       mobilehop.go                 exported API: NewClient(tunFd, configJSON), Start, Stop, Rebind, Status, Peers
       control.go                   lifecycle + GC tuning (debug.SetGCPercent(20))

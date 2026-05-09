@@ -1,12 +1,13 @@
 ---
 type: decision
 title: iOS client architecture — Tauri main app + Network Extension + gomobile xcframework
-status: proposed
+status: substrate-built
 last_compiled: 2026-05-09
 sources:
-  - cmd/agent/client.go (model for mobilehop.NewClient)
-  - cmd/agent/nebula.go (model for in-extension network-change handling)
-  - cmd/agent/renew.go (model for in-extension cert renewal + heartbeat)
+  - internal/client/client.go (model for mobilehop.NewClient — Phase NN extracted)
+  - internal/client/nebula.go (model for in-extension network-change handling — Phase NN extracted)
+  - internal/client/renew.go (model for in-extension cert renewal + heartbeat — Phase NN extracted)
+  - internal/client/api.go (the gomobile-compatible Client surface — added Phase NN)
   - patches/nebula-1031-graceful-shutdown.patch (must apply to gomobile builds)
 ---
 
@@ -16,7 +17,7 @@ sources:
 
 The reasoning that produced this decision came from:
 
-- **Code I read:** `cmd/agent/client.go` (model for the `mobilehop.NewClient` API surface), `cmd/agent/nebula.go` (the network-change recovery path that runs unchanged inside the extension), `cmd/agent/renew.go` (cert renewal + heartbeat that runs in-extension), `patches/nebula-1031-graceful-shutdown.patch` (must apply to gomobile builds).
+- **Code I read:** `internal/client/client.go` (the lifted `Client.Connect`/`Client.startInstance` body — was `cmd/agent/main.go::tryStartMeshInstance` pre-Phase-NN), `internal/client/nebula.go` (the network-change recovery path that runs unchanged inside the extension), `internal/client/renew.go` (cert renewal + heartbeat that runs in-extension), `internal/client/api.go` (the gomobile-compatible public surface), `patches/nebula-1031-graceful-shutdown.patch` (must apply to gomobile builds).
 - **Wiki pages I consulted:** [[../concepts/client-strategy]] (master strategy), [[client-macos-architecture]] (sibling desktop ADR), [[../concepts/watchdog]] (three-watchdog architecture the gomobile core inherits).
 - **External sources I fetched:** [DefinedNet/mobile_nebula](https://github.com/DefinedNet/mobile_nebula) (MIT-licensed reference for the gomobile + iOS NE stack), Apple's `NEPacketTunnelProvider` documentation, Tauri issues #14371 / #10074 / #14332 / #9907 / #10631 (iOS-on-Tauri readiness), Apple Developer Forums thread on iOS 15+ NE memory cap.
 - **Prior-knowledge claims (with confidence):**
@@ -29,12 +30,12 @@ The reasoning that produced this decision came from:
 
 ## Status
 
-**Proposed. Substrate-blocked.** Re-verified 2026-05-09: `internal/client/` directory still does not exist; no `.xcframework` artifacts on disk; no `clients/mobile-go/` tree. iOS work cannot start until the substrate is built.
+**Proposed. Substrate built (Phase NN, 2026-05-09).** `internal/client/` was extracted from `cmd/agent/` (~22k LOC, 89 files) with a gomobile + Rust-FFI compatible public API surface (`Client`, `Config`, `EnrollOptions`, `Snapshot`, `EnrollmentSummary`, `PeerInfo`, `Event`, `EventCallback`, `SubscriptionID`, `InstanceHTTPHook`). FFI-constraint tripwires in `internal/client/api_constraints_test.go` enforce no `chan`/`func`/`interface{}` in exported struct fields. iOS work can now begin.
 
-Required substrate (none of these exist as of 2026-05-09):
-- `internal/client/` — shared package extracted from `cmd/agent/{client,enroll,nebula,renew}.go`. The same package will back the Android client and any future mobile/embedded targets.
-- `clients/mobile-go/mobilehop/` — gomobile binding compiling the shared package to `MobileHop.xcframework`.
-- iOS Network Extension scaffolding inside `clients/desktop/src-tauri/` (PacketTunnelProvider target + entitlements + App Group config).
+Required substrate progress:
+- ✅ `internal/client/` — shared package extracted from `cmd/agent/{client,enroll,nebula,renew}.go` (Phase NN). Same package backs the Android client and any future mobile/embedded target.
+- ❌ `clients/mobile-go/mobilehop/` — gomobile binding compiling the shared package to `MobileHop.xcframework`. **Phase NN+1.**
+- ❌ iOS Network Extension scaffolding inside `clients/desktop/src-tauri/` (PacketTunnelProvider target + entitlements + App Group config). **Phase NN+2.**
 
 External prerequisites:
 - Apple Developer Program account ($99/yr) — see [`docs/wiki/runbooks/notarization-pipeline.md`](../runbooks/notarization-pipeline.md) for the same enrollment that gates macOS notarization.
@@ -102,7 +103,7 @@ iOS is the first **mobile** target. Unlike desktop (where `hop-agent` runs as a 
 
 Key properties:
 - **OS keeps the extension alive** independent of the main app. User kills the Tauri app → VPN stays up. Phone reboots → on-demand rules restart it.
-- **Packet forwarding, keepalives, rekeys, heartbeat, and network-change detection all live in the extension** — the exact same Go logic as `cmd/agent/nebula.go` and `cmd/agent/renew.go`, just compiled via gomobile.
+- **Packet forwarding, keepalives, rekeys, heartbeat, and network-change detection all live in the extension** — the exact same Go logic as `internal/client/nebula.go` and `internal/client/renew.go`, just compiled via gomobile.
 - **Main-app background work is minimal**: silent-push-driven reconnect + status polling. Handled by the Tauri push plugin + the Swift plugin.
 - **Memory**: 50 MiB cap applies only to the extension process. `debug.SetGCPercent(20)` in `mobilehop` init (matches DefinedNet `mobile_nebula` pattern). Main app WebView is unbounded by normal iOS app memory.
 
@@ -217,7 +218,7 @@ What is new vs. reused:
   6. Extension enters its run loop; Go goroutines take over for Nebula, heartbeat, renewal.
 - **Stop**: `session.stopVPNTunnel()` → `PacketTunnelProvider.stopTunnel(with reason:)` → `MobileHop.Stop()` → Go shuts down cleanly (the vendored `patches/nebula-1031-graceful-shutdown.patch` fix is active).
 - **Always-on**: attach an `NEOnDemandRule` with `.connect` action + `.anyInterface` match. Settings toggle flips this. Default: ON at first enroll.
-- **Network changes** (WiFi ↔ cellular, WiFi disconnect): extension runs its own `NWPathMonitor` observing path updates; calls `MobileHop.Rebind()` on change. Internally this maps to the existing recovery path in [cmd/agent/nebula.go](../cmd/agent/nebula.go) (`RebindUDPServer()` + `CloseAllTunnels(true)`).
+- **Network changes** (WiFi ↔ cellular, WiFi disconnect): extension runs its own `NWPathMonitor` observing path updates; calls `MobileHop.Rebind()` on change. Internally this maps to the existing recovery path in [internal/client/nebula.go](../../../internal/client/nebula.go) (`RebindUDPServer()` + `CloseAllTunnels(true)`).
 - **Screen lock / sleep**: iOS does NOT suspend the extension during screen-off — only during hardware power-down or airplane mode. Path changes (WiFi drop when device locks a few minutes later) are handled like any other network change.
 - **Silent push reconnect (v1.1)**: if we ever need the server to trigger a reconnect (e.g., cert revocation, emergency re-enroll), a silent push wakes the *main* app for ~30s, which calls `session.startVPNTunnel()` to force the extension to restart. Not required for v1 (on-demand rules cover the common cases).
 
@@ -469,4 +470,4 @@ Polish + diagnostics + UI features that shipped after the previous "Lessons" sec
 | II.4 | OS brand-mark icons + tooltips | All — inline SVG renders in WKWebView identically; replace tooltip mechanism per EE F3 row above |
 | KK | Karpathy behavioral guidelines | Process-only; no code change |
 
-**Substrate-not-built reminder.** All of the above iOS items are paper-blocked on `internal/client/` + `MobileHop.xcframework` not existing. Do not start Phase EE→II.4 iOS port work until the substrate ships. Re-verify with `ls internal/client/ clients/mobile-go/` before starting.
+**Substrate built (Phase NN, 2026-05-09).** `internal/client/` exists; `MobileHop.xcframework` does not yet (Phase NN+1). Verify with `ls internal/client/ clients/mobile-go/` — first dir present, second absent — before starting iOS-shell work. The remaining iOS effort is the gomobile binding (NN+1) and the NEPacketTunnelProvider scaffolding inside the Tauri iOS project (NN+2).

@@ -5,6 +5,14 @@ review passes (concurrency/lifecycle + edge cases/platform) plus a
 direct source check. This doc captures what's solid, what's a real
 bug to fix soon, and what's a latent risk to log + watch.*
 
+> **Phase NN path note (2026-05-09):** file references in this analysis
+> (`cmd/agent/instance.go:34`, `cmd/agent/nebula.go:150–`,
+> `cmd/agent/renew.go:668`, etc.) point to pre-Phase-NN locations. All
+> `cmd/agent/{enroll,instance,nebula,renew,…}.go` citations read as
+> `internal/client/<same>.go` post-extraction. The bugs (G1, G2) were
+> fixed in v0.10.1–v0.10.2; the file paths are historical records of
+> where they were found.
+
 *Status: **v0.10.0** shipped the feature, **v0.10.1** fixed the
 critical watcher-lifecycle bugs (G1 + G2) plus three quick-win
 latents (L4, L5, L8), **v0.10.2** shipped the two remaining

@@ -2613,15 +2613,16 @@ mod tests {
     /// they need.
     #[test]
     fn local_api_peer_detail_includes_terminal_fields() {
+        // Phase NN: local_api.go moved from cmd/agent to internal/client.
         let local_api = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("..")
             .join("..")
-            .join("cmd")
-            .join("agent")
+            .join("internal")
+            .join("client")
             .join("local_api.go");
         let src = std::fs::read_to_string(&local_api)
-            .expect("cmd/agent/local_api.go must be readable");
+            .expect("internal/client/local_api.go must be readable");
         for needle in &[
             "type peerDetailWithInfo struct",
             "NodeID string",
@@ -2632,7 +2633,7 @@ mod tests {
         ] {
             assert!(
                 src.contains(needle),
-                "Phase II.3: cmd/agent/local_api.go must contain {:?} \
+                "Phase II.3: internal/client/local_api.go must contain {:?} \
                  — peerDetailWithInfo wires NodeID/IsLighthouse/OS \
                  to /local/peers responses.",
                 needle

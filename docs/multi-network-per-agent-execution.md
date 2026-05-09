@@ -4,6 +4,20 @@
 v0.10.0; polished in v0.10.1 (watcher lifecycle + 3 latents) and
 v0.10.2 (migration + registry recovery).***
 
+> **Phase NN path note (2026-05-09):** all `cmd/agent/<file>.go` references
+> in this document point to pre-Phase-NN locations. Phase NN moved
+> client-lifecycle Go (~22k LOC, 89 files) into `internal/client/`. Read
+> any `cmd/agent/{enroll,enrollments,instance,nebula,renew,keepalive,
+> watcher_watchdog,peerstate,peer_cache,self_endpoints,path_quality,
+> clock_check,endpoint_probe,relay_state,serverset,dns*,clipboard*,
+> privilege_*,legacy_migrate,migrate*,wintun*,local_api,service*,
+> uninstall,info,help,status,update,leave,client,pprof}.go` reference as
+> `internal/client/<file>.go`. `cmd/agent/main.go` (where `runServe`'s
+> `connectFn`/`disconnectFn` closures lived) is now a thin shell that
+> constructs `*client.Client`; the closure bodies became
+> `Client.connect`/`Client.disconnect` in `internal/client/client.go`.
+> See `docs/wiki/log.md` § 2026-05-09 ingest for the extraction ledger.
+
 **For the current state of the feature, see:**
 - `docs/multi-network-gap-analysis.md` — post-ship review + what
   was fixed when.

@@ -1,12 +1,13 @@
 ---
 type: decision
 title: Android client architecture — Tauri + VpnService foreground + gomobile aar
-status: proposed
+status: substrate-built
 last_compiled: 2026-05-09
 sources:
-  - cmd/agent/client.go
-  - cmd/agent/nebula.go
-  - cmd/agent/renew.go
+  - internal/client/client.go (Phase NN extracted)
+  - internal/client/nebula.go (Phase NN extracted)
+  - internal/client/renew.go (Phase NN extracted)
+  - internal/client/api.go (gomobile-compatible Client surface — added Phase NN)
   - patches/nebula-1031-graceful-shutdown.patch
 ---
 
@@ -16,7 +17,7 @@ sources:
 
 The reasoning that produced this decision came from:
 
-- **Code I read:** `cmd/agent/client.go`, `cmd/agent/nebula.go`, `cmd/agent/renew.go` (same Go core that gomobile compiles into the aar), `patches/nebula-1031-graceful-shutdown.patch`.
+- **Code I read:** `internal/client/client.go`, `internal/client/nebula.go`, `internal/client/renew.go`, `internal/client/api.go` (same Go core that gomobile compiles into the aar; extracted from `cmd/agent/` in Phase NN), `patches/nebula-1031-graceful-shutdown.patch`.
 - **Wiki pages I consulted:** [[../concepts/client-strategy]] (master strategy), [[client-ios-architecture]] (mobile sibling — Android shares everything in-process where iOS needed App Groups + Keychain sharing), [[../concepts/watchdog]] (inherited watchdogs).
 - **External sources I fetched:** [DefinedNet/mobile_nebula](https://github.com/DefinedNet/mobile_nebula) (Android `VpnService` reference), Android documentation for `VpnService`, foreground service `specialUse` type (API 28+), `EncryptedSharedPreferences` + Jetpack Security `MasterKey`, Google Play VPN policy.
 - **Prior-knowledge claims (with confidence):**
@@ -30,12 +31,12 @@ The reasoning that produced this decision came from:
 
 ## Status
 
-**Proposed. Substrate-blocked.** Re-verified 2026-05-09: `internal/client/` directory still does not exist; no `.aar` artifacts on disk; no `clients/mobile-go/` tree. Android work cannot start until the substrate is built (the same substrate that gates iOS — see [[client-ios-architecture]] § Status).
+**Proposed. Substrate built (Phase NN, 2026-05-09).** `internal/client/` extracted from `cmd/agent/` (~22k LOC, 89 files) with a gomobile + Rust-FFI compatible public API surface. Same substrate also unblocks iOS — see [[client-ios-architecture]] § Status. Android work can now begin.
 
-Required substrate (none of these exist as of 2026-05-09):
-- `internal/client/` — shared package extracted from `cmd/agent/{client,enroll,nebula,renew}.go`. Same package backs the iOS client.
-- `clients/mobile-go/mobilehop/` — gomobile binding compiling the shared package to `mobilehop.aar`.
-- Android VpnService scaffolding inside `clients/desktop/src-tauri/gen/android/` (HopsshVpnService Kotlin class + manifest entries + permissions).
+Required substrate progress:
+- ✅ `internal/client/` — shared package extracted from `cmd/agent/{client,enroll,nebula,renew}.go` (Phase NN). Same package backs the iOS client.
+- ❌ `clients/mobile-go/mobilehop/` — gomobile binding compiling the shared package to `mobilehop.aar`. **Phase NN+1.**
+- ❌ Android VpnService scaffolding inside `clients/desktop/src-tauri/gen/android/` (HopsshVpnService Kotlin class + manifest entries + permissions). **Phase NN+3.**
 
 External prerequisites:
 - Google Play Console ($25 one-time) — required to publish to Play Store.
@@ -250,7 +251,7 @@ Same overall flow as iOS (spec'd in [client-ios-plan.md](client-ios-plan.md)); A
    - `.setMtu(1300)` → Nebula MTU minus headroom
 4. `.establish()` → returns `ParcelFileDescriptor`; `tunFd = parcelFd.detachFd()`.
 5. `MobileHop.NewClient(tunFd, configJSON).Start()`.
-6. Register `ConnectivityManager.NetworkCallback` → on `onCapabilitiesChanged` / `onLinkPropertiesChanged`, call `MobileHop.Rebind()` (mapped to the same Nebula `RebindUDPServer()` + `CloseAllTunnels(true)` recovery path from [cmd/agent/nebula.go](../cmd/agent/nebula.go)).
+6. Register `ConnectivityManager.NetworkCallback` → on `onCapabilitiesChanged` / `onLinkPropertiesChanged`, call `MobileHop.Rebind()` (mapped to the same Nebula `RebindUDPServer()` + `CloseAllTunnels(true)` recovery path from [internal/client/nebula.go](../../../internal/client/nebula.go)).
 7. Return `START_STICKY` — OS auto-restarts the service if killed.
 
 **Stopping** (user disconnect or uninstall):
@@ -511,4 +512,4 @@ Polish + diagnostics + UI features that shipped after the previous "Lessons" sec
 | II.4 | OS brand-mark icons + tooltips | All — inline SVG renders in Android WebView identically; replace tooltip mechanism per EE F3 row above |
 | KK | Karpathy behavioral guidelines | Process-only; no code change |
 
-**Substrate-not-built reminder.** All of the above Android items are paper-blocked on `internal/client/` + `mobilehop.aar` not existing. Do not start Phase EE→II.4 Android port work until the substrate ships. Re-verify with `ls internal/client/ clients/mobile-go/` before starting.
+**Substrate built (Phase NN, 2026-05-09).** `internal/client/` exists; `mobilehop.aar` does not yet (Phase NN+1). Verify with `ls internal/client/ clients/mobile-go/` — first dir present, second absent — before starting Android-shell work. The remaining Android effort is the gomobile binding (NN+1) and the VpnService scaffolding inside the Tauri Android project (NN+3).
