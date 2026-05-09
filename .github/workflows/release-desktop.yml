@@ -200,11 +200,15 @@ jobs:
           fail_on_unmatched_files: false
 
   # Stage 5 — Windows desktop foundation. Builds .msi + NSIS installer
-  # via Tauri 2's bundle pipeline. STATUS: foundation only. Buildable
-  # on CI; UX has NOT been verified on a real Windows machine yet.
+  # via Tauri 2's bundle pipeline. STATUS: foundation only. CI builds
+  # are INFORMATIONAL — failures don't block the macOS release path
+  # (which is the production user-facing channel). Hardware-verified
+  # Windows builds become a hard requirement when this stage gets
+  # promoted from foundation to production.
   # Tracking gaps in docs/wiki/decisions/client-windows-linux-architecture.md.
   build-windows:
-    name: Build Windows MSI + NSIS
+    name: Build Windows MSI + NSIS (informational)
+    continue-on-error: true
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -261,10 +265,11 @@ jobs:
           fail_on_unmatched_files: false
 
   # Stage 6 — Linux desktop foundation. Builds .deb + .rpm + AppImage
-  # via Tauri 2's bundle pipeline. STATUS: foundation only. Buildable
-  # on CI; UX has NOT been verified on a real Linux desktop yet.
+  # via Tauri 2's bundle pipeline. STATUS: foundation only.
+  # INFORMATIONAL — same reasoning as build-windows above.
   build-linux:
-    name: Build Linux .deb + .rpm + AppImage
+    name: Build Linux .deb + .rpm + AppImage (informational)
+    continue-on-error: true
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
