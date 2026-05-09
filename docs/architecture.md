@@ -2,6 +2,8 @@
 
 Encrypted mesh networking with P2P, relay fallback, built-in DNS, and a web terminal.
 
+> **Note (2026-05-09):** this doc captures the foundational architecture (Phase 1, mesh core). For architecture details added in v0.10+ (multi-network per agent, three-watchdog reliability, system-mode mirror handoff, macOS desktop client, in-app terminal via dashboard webview), see the wiki concept pages: [`docs/wiki/concepts/`](wiki/concepts/) — `client-strategy`, `desktop-client`, `macos-system-mode`, `watchdog`, `cert-renewal`, `sleep-wake`. The phase ledger at [`docs/wiki/phases/phase-ledger.md`](wiki/phases/phase-ledger.md) is the version-by-version record.
+
 ---
 
 ## System Overview

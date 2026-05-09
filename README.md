@@ -24,8 +24,11 @@ hopssh creates encrypted mesh networks between your devices. Connect your server
 
 - **Single binary** — control plane, lighthouse, relay, DNS, web UI, all in one
 - **Web terminal** — SSH into any node from your browser (no one else has this)
+- **Native macOS desktop** — Tauri 2 + Svelte 5 menubar app: autostart on login, in-app terminal, Activity log, diagnostics, OS-icon peer list. Linux/Windows/iOS/Android planned.
 - **User-defined DNS** — `jellyfin.zero`, `nas.home`, `db.prod` — pick your own domain per network
 - **Per-node capabilities** — toggle terminal, health check, port forwarding per device from the dashboard
+- **Multi-network per agent** — one host can join 2+ networks simultaneously (each with its own CA, DNS domain, listen port)
+- **Self-healing reliability** — three independent watchdogs (renewal / data-plane / watcher) detect silent goroutine death + auto-recover with forensic dump
 - **Teams & invites** — share networks with invite links, admin/member roles
 - **Self-hosted** — your infrastructure, your keys, no external service
 
@@ -39,6 +42,7 @@ hopssh creates encrypted mesh networks between your devices. Connect your server
 | Web terminal | No | No | **Yes** |
 | DNS | Manual | MagicDNS (.ts.net) | **User-defined domains** |
 | Per-node capabilities | No | Via ACLs | **Dashboard toggles** |
+| Native desktop client | All platforms | All platforms | **macOS** (Linux/Windows/iOS/Android planned) |
 | Teams & invites | No | Via admin console | **Invite links with expiry** |
 | Management UI | Hosted only | Limited | **Always (embedded in binary)** |
 | Protocol | Custom | WireGuard | Nebula (Noise, Curve25519) |

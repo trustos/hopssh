@@ -2,7 +2,7 @@
 
 *hopssh vs Defined Networking vs Tailscale vs ZeroTier*
 
-*Last updated: 2026-04-15*
+*Last updated: 2026-05-09 — current shipping version: v0.11.4. See [phase ledger](wiki/phases/phase-ledger.md) for the version-by-version record.*
 
 ---
 
@@ -216,7 +216,7 @@ unified server binary. This is the competitor to watch.
 - Custom DNS zones with per-peer-group distribution (v0.63, Jan 2026)
 - Built-in reverse proxy with custom domains + authentication (v0.65, Feb 2026)
 - iOS and Android mobile apps
-- Desktop tray apps (macOS, Windows, Linux)
+- Desktop tray apps for **all** of macOS / Windows / Linux. **As of v0.11.4 hopssh ships a Tauri 2 + Svelte 5 macOS desktop client** (autostart on login, in-app terminal via dashboard webview, Activity log, diagnostics, OS-icon peer list, lighthouse special-case). Linux + Windows + iOS + Android desktop/mobile clients are planned (per `docs/wiki/decisions/client-{ios,android,windows-linux}-architecture.md`) but not yet shipped.
 - Granular access policies (groups, tags, rules) with a dashboard editor
 - Multiple identity providers per network
 - Subnet routing and egress/exit-node-like features
