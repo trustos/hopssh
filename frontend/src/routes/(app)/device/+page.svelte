@@ -166,7 +166,7 @@
 			<h1 class="text-2xl font-bold">Authorize Device</h1>
 			<p class="mt-1 text-sm text-muted-foreground">
 				{#if arrivedWithCode && code.length === 4}
-					Approve the Mac that asked to join.
+					Approve the device that asked to join.
 				{:else}
 					Enter the code shown on the device that's joining.
 				{/if}

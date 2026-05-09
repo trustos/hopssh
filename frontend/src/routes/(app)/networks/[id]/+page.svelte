@@ -1002,7 +1002,7 @@
 										{#if node.nodeType === 'lighthouse'}
 											<span class="text-muted-foreground/50">—</span>
 										{:else if node.clientType === 'desktop'}
-											<span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium" title="Running the macOS desktop app">Desktop</span>
+											<span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium" title="Running the hopssh desktop app">Desktop</span>
 										{:else if node.clientType === 'cli'}
 											<span class="inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium text-muted-foreground" title="Running the standalone hop-agent CLI">CLI</span>
 										{:else}

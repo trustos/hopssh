@@ -81,7 +81,7 @@
 						</Sidebar.MenuButton>
 					</Sidebar.MenuItem>
 					<Sidebar.MenuItem>
-						<Sidebar.MenuButton tooltipContent="Get the macOS desktop app">
+						<Sidebar.MenuButton tooltipContent="Get the desktop app">
 							{#snippet child({ props })}
 								<a href="/download" {...props}>
 									<Download class="size-4" />
