@@ -105,7 +105,7 @@ fn retry_attach_system_agent(
     }
     if !crate::agent::system_mirror_files_exist() {
         return Err(
-            "no system-mode mirror files found — this Mac doesn't appear to be in system mode"
+            "no system-mode mirror files found — this device doesn't appear to be in system mode"
                 .into(),
         );
     }
@@ -2427,6 +2427,14 @@ mod tests {
                 }
             }
         }
+
+        // Rust source isn't scanned here — the regex-against-self
+        // problem (the forbidden-tokens array would match its own
+        // declaration) makes a self-aware tripwire fragile. The Rust
+        // surface for user-facing strings is small (Err() returns from
+        // Tauri commands that surface in JS error toasts); spot-check
+        // via `git grep '"this Mac"' clients/desktop/src-tauri/src/`
+        // before tagging a release.
     }
 
     /// Tripwire: macOS RunEvent::Reopen must show + focus the main
