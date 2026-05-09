@@ -1,7 +1,7 @@
 ---
 type: decision
 title: Windows + Linux desktop client architecture (delta on top of macOS)
-status: proposed
+status: foundation-shipped
 last_compiled: 2026-05-09
 sources:
   - cmd/agent/wintun
@@ -29,7 +29,18 @@ The reasoning that produced this decision came from:
 
 ## Status
 
-**Proposed.** Agent-side platform plumbing (WinTun, SCM, NRPT-bypass DNS proxy on Windows; systemd, dnsproxy on Linux) is already shipped via the existing `cmd/agent/` codebase — see `cmd/agent/service_windows.go`, `cmd/agent/dnsproxy_windows.go`, `cmd/agent/dns_linux.go`. **The Tauri shell + per-OS installers (NSIS/MSI/AppImage/.deb/.rpm) + signing pipelines have not been built.**
+**Foundation shipped (Stages 5+6, v0.11.11).** Agent-side platform plumbing (WinTun, SCM, NRPT-bypass DNS proxy on Windows; systemd, dnsproxy on Linux) was already shipped via the existing `internal/client/` codebase — see `internal/client/service_windows.go`, `internal/client/dnsproxy_windows.go`, `internal/client/dns_linux.go` (post-Phase-NN paths). The Tauri shell now also has:
+
+- **`tauri.conf.json` cross-platform bundle config** — `bundle.windows` (NSIS + MSI/WiX), `bundle.linux` (.deb + .rpm + AppImage with the right runtime-deps list).
+- **CI build jobs** — `.github/workflows/release-desktop.yml` has a `build-windows` job (windows-latest runner, cross-compiles `hop-agent.exe`, runs `tauri build --bundles msi,nsis`) and a `build-linux` job (ubuntu-22.04 runner, installs WebKit2GTK + GTK3 + AppIndicator dev deps, runs `tauri build --bundles deb,rpm,appimage`). Artifacts attached to GitHub release on tag push.
+- **Windows Rust analogues for the load-bearing flows** — `install_system_service` / `uninstall_system_service` in `lib.rs` now use a `run_windows_elevated` helper that invokes PowerShell `Start-Process -Verb RunAs` to UAC-elevate `hop-agent.exe install` / `uninstall`. Other macOS-only commands (osascript-driven Terminal handoff, /etc/resolver, /Applications-paths) keep returning errors on non-macOS — they're macOS-specific UX papercut features that have non-load-bearing fallbacks.
+
+**What's verified:** `cargo check` + the 41 cargo unit tests pass on macOS post-changes (no regression). CI builds will surface any cross-compile errors on the next release tag.
+
+**What's NOT yet verified:** the resulting `.msi` / `.AppImage` actually installs and runs on a real Windows / Linux machine. The user-facing UX (system-tray rendering, autostart-on-login, window decorations, system-mode install dialog) needs hardware-in-the-loop testing before Windows + Linux can be marked production-ready. Tracking those gaps:
+
+- **Windows:** verify NSIS installer enrols the agent + spawns it on first launch + tray icon renders + UAC dialog appears on system-mode upgrade. Autostart via the registry's `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` key is NOT yet wired in the Rust shell — Phase Y autostart on macOS uses `tauri-plugin-autostart`, which DOES support Windows registry autostart out of the box, but I haven't confirmed the existing call site in `setup()` works through to Windows on a real machine.
+- **Linux:** verify .deb/.rpm/AppImage on Ubuntu 24.04 + Fedora 40 (the existing agent-side test matrix). DBus-based autostart (`~/.config/autostart/hopssh.desktop` file) needs writing — `tauri-plugin-autostart` supports Linux too but has caveats around `.desktop` file location depending on distro.
 
 Implementation can start immediately after [[client-macos-architecture]]'s shell stabilizes (already shipped at v0.10.96); the delta here describes only what changes vs the macOS ADR, NOT a full re-specification.
 

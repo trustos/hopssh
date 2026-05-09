@@ -678,10 +678,6 @@ fn install_status() -> InstallStatus {
 /// macOS only — no-op on other platforms.
 #[tauri::command]
 fn install_system_service(_app: AppHandle) -> Result<String, String> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        return Err("install_system_service: only supported on macOS".to_string());
-    }
     #[cfg(target_os = "macos")]
     {
         let agent = resolve_agent_path()
@@ -693,23 +689,40 @@ fn install_system_service(_app: AppHandle) -> Result<String, String> {
             r#"do shell script "'{}' install" with administrator privileges"#,
             agent.display()
         );
-        run_osascript(&script).map(|out| {
+        return run_osascript(&script).map(|out| {
             if out.trim().is_empty() {
                 "system service installed".to_string()
             } else {
                 out
             }
-        })
+        });
+    }
+    #[cfg(target_os = "windows")]
+    {
+        // Stage 5 — Windows desktop foundation. Elevation via UAC:
+        // PowerShell's Start-Process -Verb RunAs invokes the bundled
+        // hop-agent.exe with admin rights. The agent's existing Windows
+        // service-install path (internal/client/service_windows.go via
+        // svc/mgr) creates the SCM service on consent; UAC denial
+        // returns the agent unrun, surfaced here as an error.
+        //
+        // STATUS: foundation only — verified buildable, NOT verified on
+        // a real Windows machine. Tracking as known-untested in the
+        // commit body. `hop-agent install` itself is production-tested
+        // on Windows (used by `hop-agent install` from a console).
+        let agent = resolve_agent_path()
+            .ok_or_else(|| "could not locate bundled hop-agent binary".to_string())?;
+        return run_windows_elevated(&agent, "install");
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Err("install_system_service: not yet implemented on Linux (use `sudo hop-agent install` from a terminal)".to_string())
     }
 }
 
-/// Uninstall the launchd daemon (mirror of install_system_service).
+/// Uninstall the system service (mirror of install_system_service).
 #[tauri::command]
 fn uninstall_system_service(_app: AppHandle) -> Result<String, String> {
-    #[cfg(not(target_os = "macos"))]
-    {
-        return Err("uninstall_system_service: only supported on macOS".to_string());
-    }
     #[cfg(target_os = "macos")]
     {
         let agent = resolve_agent_path()
@@ -718,14 +731,65 @@ fn uninstall_system_service(_app: AppHandle) -> Result<String, String> {
             r#"do shell script "'{}' uninstall" with administrator privileges"#,
             agent.display()
         );
-        run_osascript(&script).map(|out| {
+        return run_osascript(&script).map(|out| {
             if out.trim().is_empty() {
                 "system service removed".to_string()
             } else {
                 out
             }
-        })
+        });
     }
+    #[cfg(target_os = "windows")]
+    {
+        let agent = resolve_agent_path()
+            .ok_or_else(|| "could not locate bundled hop-agent binary".to_string())?;
+        return run_windows_elevated(&agent, "uninstall");
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        Err("uninstall_system_service: not yet implemented on Linux (use `sudo hop-agent uninstall` from a terminal)".to_string())
+    }
+}
+
+/// Stage 5 — Windows elevation helper. Spawns the named hop-agent
+/// subcommand with UAC elevation via PowerShell's Start-Process.
+/// Blocks until the elevated process exits; surfaces stderr on
+/// failure so the UI can show what went wrong.
+///
+/// We use PowerShell rather than ShellExecute via WinAPI because
+/// PowerShell waits on the elevated process via `-Wait` cleanly,
+/// and -PassThru returns the exit code we can branch on. The
+/// subprocess is two hops deep (us → powershell.exe → elevated
+/// hop-agent.exe), but that's the standard idiom and avoids us
+/// needing to link windows-sys for ShellExecuteExW + IsUserAnAdmin.
+#[cfg(target_os = "windows")]
+fn run_windows_elevated(agent: &std::path::Path, subcommand: &str) -> Result<String, String> {
+    // Quote escape: PowerShell single-quoted strings escape ' as ''.
+    let agent_str = agent.display().to_string().replace('\'', "''");
+    let script = format!(
+        "$p = Start-Process -FilePath '{}' -ArgumentList '{}' -Verb RunAs -Wait -PassThru; exit $p.ExitCode",
+        agent_str, subcommand
+    );
+    let output = std::process::Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .output()
+        .map_err(|e| format!("powershell spawn failed: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "{} failed (exit {}): {}",
+            subcommand,
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(format!("hop-agent {} (Windows SCM) succeeded", subcommand))
 }
 
 /// Symlink /usr/local/bin/hop to the bundled hop-agent binary so

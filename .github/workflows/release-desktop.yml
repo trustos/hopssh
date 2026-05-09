@@ -198,3 +198,136 @@ jobs:
             clients/desktop/src-tauri/target/release/bundle/dmg/hopssh_*.dmg
           tag_name: ${{ github.ref_name }}
           fail_on_unmatched_files: false
+
+  # Stage 5 — Windows desktop foundation. Builds .msi + NSIS installer
+  # via Tauri 2's bundle pipeline. STATUS: foundation only. Buildable
+  # on CI; UX has NOT been verified on a real Windows machine yet.
+  # Tracking gaps in docs/wiki/decisions/client-windows-linux-architecture.md.
+  build-windows:
+    name: Build Windows MSI + NSIS
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: |
+            go.sum
+            clients/desktop/src-tauri/Cargo.lock
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            frontend/package-lock.json
+            clients/desktop/package-lock.json
+
+      - name: Cache Rust deps + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients/desktop/src-tauri
+          shared-key: desktop-release-windows
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+
+      - name: Vendor + patch
+        shell: bash
+        run: make setup
+
+      - name: Build hop-agent.exe
+        shell: bash
+        run: |
+          mkdir -p clients/desktop/src-tauri/binaries
+          LDFLAGS='-s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=${{ github.ref_name }} -X github.com/trustos/hopssh/internal/buildinfo.ClientType=desktop'
+          GOOS=windows GOARCH=amd64 go build -mod=vendor -ldflags="$LDFLAGS" \
+            -o clients/desktop/src-tauri/binaries/hop-agent.exe ./cmd/agent
+
+      - name: Build Tauri MSI + NSIS
+        working-directory: clients/desktop
+        run: |
+          npm install --no-audit --no-fund
+          npm run tauri build -- --bundles msi,nsis
+
+      - name: Upload Windows artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            clients/desktop/src-tauri/target/release/bundle/msi/*.msi
+            clients/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+          tag_name: ${{ github.ref_name }}
+          fail_on_unmatched_files: false
+
+  # Stage 6 — Linux desktop foundation. Builds .deb + .rpm + AppImage
+  # via Tauri 2's bundle pipeline. STATUS: foundation only. Buildable
+  # on CI; UX has NOT been verified on a real Linux desktop yet.
+  build-linux:
+    name: Build Linux .deb + .rpm + AppImage
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Tauri Linux deps
+        # WebKit2GTK + GTK3 + AppIndicator dev libs. Pulled in via
+        # tauri.conf.json's bundle.linux.deb.depends; the runtime list
+        # is what end users need installed. Build-time list overlaps.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+          cache-dependency-path: |
+            go.sum
+            clients/desktop/src-tauri/Cargo.lock
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: |
+            frontend/package-lock.json
+            clients/desktop/package-lock.json
+
+      - name: Cache Rust deps + target
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: clients/desktop/src-tauri
+          shared-key: desktop-release-linux
+          save-if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
+
+      - name: Vendor + patch
+        run: make setup
+
+      - name: Build hop-agent (Linux amd64)
+        run: |
+          mkdir -p clients/desktop/src-tauri/binaries
+          LDFLAGS='-s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=${{ github.ref_name }} -X github.com/trustos/hopssh/internal/buildinfo.ClientType=desktop'
+          GOOS=linux GOARCH=amd64 go build -mod=vendor -ldflags="$LDFLAGS" \
+            -o clients/desktop/src-tauri/binaries/hop-agent ./cmd/agent
+
+      - name: Build Tauri .deb + .rpm + AppImage
+        working-directory: clients/desktop
+        run: |
+          npm install --no-audit --no-fund
+          npm run tauri build -- --bundles deb,rpm,appimage
+
+      - name: Upload Linux artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            clients/desktop/src-tauri/target/release/bundle/deb/*.deb
+            clients/desktop/src-tauri/target/release/bundle/rpm/*.rpm
+            clients/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+          tag_name: ${{ github.ref_name }}
+          fail_on_unmatched_files: false
