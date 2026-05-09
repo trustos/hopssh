@@ -267,6 +267,50 @@ func (liveCtrlFakeSvc) NebulaControl() *nebula.Control {
 }
 func (liveCtrlFakeSvc) DevName() string { return "" }
 
+// TestConnect_NilRunCtxReturnsErrorNotPanic exercises the v0.11.18→19
+// crash path: a fresh-install agent with zero enrollments where the
+// local API is brought up before Client.Start has been called. Pre-fix,
+// the local-API's auto-connect (after a device-flow enrollment) crashed
+// inside startInstance's context.WithCancel(c.runCtx) because runCtx
+// was nil — http.(*conn).serve.func1 caught the panic, returned 500 to
+// the caller, and the bundled child stayed up but its mesh never came
+// up. This guard converts the nil-runCtx misorder into a graceful
+// "not started" error so the user sees an actionable message instead
+// of a crash bouncing through Tauri's stdout pipe.
+//
+// Tripwire: regressing the guard or the cmd/agent/main.go ordering
+// (Start before StartLocalAPI) should fail this test.
+func TestConnect_NilRunCtxReturnsErrorNotPanic(t *testing.T) {
+	dir := t.TempDir()
+	c := &Client{
+		cfg:       Config{ConfigDir: dir},
+		enrolls:   &enrollmentRegistry{path: dir + "/enrollments.json"},
+		instances: newInstanceRegistry(),
+		servers:   newServerSet(),
+		subChans:  map[uint64]chan Event{},
+		subCBs:    map[uint64]EventCallback{},
+		// Crucially: NOT calling Start, so c.runCtx remains nil.
+		// connectOverride NOT set, so the real connect path runs.
+	}
+	// Add an enrollment so the early "not found" branch doesn't short-
+	// circuit before reaching the runCtx check.
+	if err := c.enrolls.Add(&Enrollment{Name: "home", NodeID: "test"}); err != nil {
+		t.Fatalf("seed enrollment: %v", err)
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("connect panicked instead of returning an error: %v", r)
+		}
+	}()
+	err := c.connect("home")
+	if err == nil {
+		t.Fatal("connect should have errored when runCtx is nil")
+	}
+	if !strings.Contains(err.Error(), "not started") {
+		t.Errorf("error should mention 'not started'; got: %v", err)
+	}
+}
+
 // We need the imports used by the fake; declared here to keep the test
 // file self-contained alongside the lifecycle tests.
 var _ = context.Background

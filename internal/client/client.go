@@ -22,6 +22,15 @@ func (c *Client) connect(name string) error {
 	if c.connectOverride != nil {
 		return c.connectOverride(name)
 	}
+	// Defensive: if Start() hasn't been called yet, c.runCtx is nil and
+	// startInstance would panic in context.WithCancel(nil). Pre-Phase-NN
+	// the local API's connect closure captured the agent-wide renewCtx
+	// which was always live; post-NN, c.runCtx is set by Start() — and
+	// callers must Start before exposing connect via the local API.
+	// Return a graceful error instead of panicking on the misorder.
+	if c.runCtx == nil {
+		return fmt.Errorf("client not started: call Client.Start before connect")
+	}
 	e := c.enrolls.Get(name)
 	if e == nil {
 		return fmt.Errorf("enrollment %q not found", name)

@@ -153,6 +153,17 @@ func runServe(args []string) {
 	// still root-owned. No-op when the mirror dir override is empty.
 	client.RunMirrorChownSelfHeal(shutdownCtx)
 
+	// Always Start() the client BEFORE StartLocalAPI so c.runCtx is set
+	// even on fresh installs with zero enrollments. With an empty list
+	// Start() is a no-op aside from setting runCtx + running
+	// migrateListenPorts on an empty registry. Without this, a device-flow
+	// enrollment landing through the local API would call the auto-connect
+	// path with c.runCtx == nil → panic in startInstance's
+	// context.WithCancel (the v0.11.18 Linux fresh-install crash).
+	if err := c.Start(shutdownCtx); err != nil {
+		log.Fatalf("[agent] start: %v", err)
+	}
+
 	// Loopback HTTP API used by the desktop GUI shell (Tauri).
 	if err := client.StartLocalAPI(shutdownCtx, c); err != nil {
 		log.Printf("[agent] WARNING: local API not started: %v", err)
@@ -173,12 +184,8 @@ func runServe(args []string) {
 		if err := startDebugOSListener(c, mux, *tokenFlag, *tokenFile, fmt.Sprintf(":%d", client.AgentAPIPort)); err != nil {
 			log.Printf("[agent] mesh API listener not started (this is expected for a fresh install): %v", err)
 		}
-	} else {
-		// Common case: start one Nebula instance per enrollment.
-		if err := c.Start(shutdownCtx); err != nil {
-			log.Fatalf("[agent] start: %v", err)
-		}
 	}
+	// else: the with-enrollments case is already handled by c.Start() above.
 
 	// Wait for Unix signals (SIGINT/SIGTERM) OR Windows SCM
 	// Stop/Shutdown.

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"runtime"
 	"strings"
 	"testing"
@@ -202,3 +203,29 @@ func TestHandleUpload_PathTraversal(t *testing.T) {
 
 // TestEnsureWinTun moved to internal/client (wintun.go was relocated in
 // Phase NN). Removed from cmd/agent.
+
+// TestRunServe_StartBeforeStartLocalAPI is a source-scan tripwire that
+// guards against re-introducing the v0.11.18 Linux fresh-install crash.
+// client.StartLocalAPI exposes connect/enroll endpoints whose handlers
+// reach c.connect → c.startInstance → context.WithCancel(c.runCtx).
+// runCtx is set by c.Start. If Start runs AFTER StartLocalAPI (or is
+// skipped on the no-enrollments branch as it was pre-v0.11.19), the
+// loopback handler can fire with runCtx == nil and panic.
+func TestRunServe_StartBeforeStartLocalAPI(t *testing.T) {
+	b, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	src := string(b)
+	startIdx := strings.Index(src, "c.Start(shutdownCtx)")
+	if startIdx < 0 {
+		t.Fatal("main.go must call c.Start(shutdownCtx) at agent boot")
+	}
+	apiIdx := strings.Index(src, "client.StartLocalAPI(shutdownCtx, c)")
+	if apiIdx < 0 {
+		t.Fatal("main.go must call client.StartLocalAPI(shutdownCtx, c)")
+	}
+	if startIdx >= apiIdx {
+		t.Fatalf("c.Start must come BEFORE client.StartLocalAPI (Start at offset %d, StartLocalAPI at offset %d). The local API exposes connect/enroll endpoints whose handlers use c.runCtx, which is set by Start.", startIdx, apiIdx)
+	}
+}
