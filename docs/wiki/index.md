@@ -53,7 +53,7 @@ Forensic post-mortems of specific failure events.
 
 - [[incidents/2026-05-02-mbp-watchdog-deploy-bounce]] — work-network watchdog tripped during v0.10.84 control-plane rollout; auto-recovered (resolved)
 - [[incidents/2026-05-07-mbp-watcher-wedge]] — watchNetworkChanges deadlocked in vendor Nebula call; third watchdog class added in Phase DD (v0.10.96, resolved)
-- [[incidents/2026-05-09-linux-desktop-stuck-onboarding]] — first Linux .deb desktop client user-test: stuck onboarding + "Load failed" on Connect (open — needs panic message capture)
+- [[incidents/2026-05-09-linux-desktop-stuck-onboarding]] — Linux .deb fresh-install panic: nil c.runCtx in startInstance because Start was skipped on no-enrollments branch; two-layer fix in v0.11.19 (resolved)
 
 ## Phases
 

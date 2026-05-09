@@ -1,16 +1,14 @@
 ---
 type: incident
 title: 2026-05-09 — Linux desktop client stuck onboarding + "Load failed" on Connect
-status: open
+status: resolved
 last_compiled: 2026-05-10
 sources:
-  - clients/desktop/src/lib/Onboarding.svelte
-  - clients/desktop/src/lib/local-api.ts
-  - clients/desktop/src/lib/Disconnected.svelte
-  - clients/desktop/src-tauri/src/agent.rs
+  - cmd/agent/main.go
+  - internal/client/api.go
   - internal/client/client.go
   - internal/client/local_api.go
-shipped_in: not-yet-fixed
+shipped_in: v0.11.19 (commit 10ff0c9)
 ---
 
 # 2026-05-09 — Linux desktop client stuck onboarding + "Load failed" on Connect
@@ -61,9 +59,39 @@ shipped_in: not-yet-fixed
 4. If the panic message doesn't show, run `hop-agent serve` from a terminal (not via .app) and reproduce the connect — the stderr will be visible directly.
 5. Confirm whether the user is on an x86_64 VM running aarch64 binary (the original Exec format error from v0.11.13 era) or actually on aarch64. `uname -m` on the VM.
 
-## Provisional fixes shipped in v0.11.18
+## Resolution (v0.11.19, commit 10ff0c9)
 
-None — the root cause isn't isolated. v0.11.18 just ships the dashboard frontend + client.go "Mac" → "device" copy fixes (commits 277bfc8, 8748d25). The connect crash investigation continues separately.
+**Root cause confirmed via journalctl on the aarch64 Ubuntu VM:**
+
+```
+http: panic serving 127.0.0.1:46684: cannot create context from nil parent
+context.WithCancel({0x0?, 0x0?})
+        /home/runner/.../src/context/context.go:241 +0xc0
+github.com/trustos/hopssh/internal/client.(*Client).startInstance(0x...,{0x0, 0x0}, 0x...)
+        internal/client/client.go:145 +0xbc
+github.com/trustos/hopssh/internal/client.(*Client).connect.func1(...)
+        internal/client/client.go:57
+github.com/trustos/hopssh/internal/client.(*localAPIServer).handleEnrollDeviceFlowPoll(...)
+        internal/client/local_api.go:903 +0xf48
+```
+
+The local API's auto-connect path (handleEnrollDeviceFlowPoll → s.client.connect → c.startInstance) reads `c.runCtx`, which is assigned by `Client.Start`. Pre-fix, `cmd/agent/main.go` only called `c.Start` when enrollments existed (line 178 in the `else` branch). On fresh installs (zero enrollments) it skipped Start entirely — but `client.StartLocalAPI` was always called at line 157, exposing connect/enroll endpoints whose handlers needed runCtx. When the user's device-flow enrollment landed via the loopback API and triggered auto-connect, `context.WithCancel(c.runCtx)` panicked with `cannot create context from nil parent`.
+
+**Phase NN regression** — pre-extraction the local-API's connect closure captured the agent-wide `renewCtx` from `runServe`, always live regardless of enrollment state. Post-NN, `c.runCtx` replaced it but Start() is what assigns it.
+
+**Two-layer fix** (commit 10ff0c9):
+
+1. **`cmd/agent/main.go`** — call `c.Start(shutdownCtx)` UNCONDITIONALLY before `StartLocalAPI`. Start is idempotent (CompareAndSwap guard); with zero enrollments it just sets runCtx + runs `migrateListenPorts` on an empty registry. The `else` branch in the listener-decision if/else was removed (Start now handles bringing up enrollments).
+2. **`internal/client/client.go::(*Client).connect`** — defensive nil-runCtx guard returns "client not started" error instead of panicking. Any future regression that lets connect run before Start surfaces as a clean error instead of a goroutine crash bouncing through `net/http`'s panic recovery.
+
+**Regression tripwires:**
+
+- `cmd/agent/main_test.go::TestRunServe_StartBeforeStartLocalAPI` — source-scan asserts `c.Start` appears before `StartLocalAPI` in main.go.
+- `internal/client/local_api_lifecycle_test.go::TestConnect_NilRunCtxReturnsErrorNotPanic` — exercises the nil-runCtx path and asserts graceful error, not panic.
+
+**Live verification on the aarch64 Ubuntu VM** (192.168.23.232): fresh-install `hop-agent v0.11.19-dev` (replaced `/usr/lib/hopssh/binaries/hop-agent`, wiped `~/.config/hopssh/`) accepts `/local/status`, `/local/connect?enrollment=does-not-exist`, and `/local/enroll/device-flow/start` without crashing. Process stays alive across all calls; no Go panic in journalctl.
+
+**Architectural lesson.** Any agent state that exposes a network surface BEFORE its full lifecycle is initialized is a panic-trap: handlers will get called and reach not-yet-set fields. When extracting a struct from a runServe-like function (Phase NN), audit every exported method's transitively-reachable `c.<field>` for "is this assigned by NewClient or by Start?" — and force the right ordering at every entry point. The `c.runCtx` field passes both as a nil-zero-value AND through reflection-friendly tests, but only fails when a real handler reaches it. Two-layer defense (correct ordering + defensive nil guard) is the right model for this class.
 
 ## Cross-references
 
