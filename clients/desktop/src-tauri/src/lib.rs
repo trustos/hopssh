@@ -1505,8 +1505,14 @@ pub fn run() {
 /// Resolution order:
 ///   1. `HOPSSH_AGENT_BINARY` env var (highest priority, for dev override).
 ///   2. `<bundle>/Contents/Resources/hop-agent` — production macOS bundle.
-///   3. Sibling of the exe — for some dev/test layouts.
-///   4. Walk up from the exe and look in `src-tauri/binaries/hop-agent` —
+///   3. `/usr/lib/hopssh/binaries/hop-agent` — production Linux .deb / .rpm.
+///      Tauri 2 sticks bundle.resources at /usr/lib/<productName>/<resource-path>
+///      when packaging .deb / .rpm; the desktop binary itself lands at
+///      /usr/bin/hopssh-desktop.
+///   4. `<install-dir>\hop-agent.exe` — production Windows NSIS / MSI.
+///      Tauri puts bundle.resources right next to the .exe on Windows.
+///   5. Sibling of the exe — for some dev/test layouts (cross-platform).
+///   6. Walk up from the exe and look in `src-tauri/binaries/hop-agent[.exe]` —
 ///      `cargo tauri dev` resolves the exe to target/debug/<bin>, so this
 ///      finds the dev-built sidecar without env config.
 pub fn resolve_agent_path() -> Option<PathBuf> {
@@ -1517,17 +1523,34 @@ pub fn resolve_agent_path() -> Option<PathBuf> {
         }
     }
 
+    // EXE_SUFFIX is "" on Unix, ".exe" on Windows. Append to the file
+    // name when probing — Linux/macOS look for "hop-agent", Windows
+    // for "hop-agent.exe".
+    let agent_basename = format!("hop-agent{}", std::env::consts::EXE_SUFFIX);
+
     if let Ok(exe) = std::env::current_exe() {
         if let Some(parent) = exe.parent() {
-            // Production macOS: <bundle>/Contents/MacOS/<bin>
-            //                   + Contents/Resources/(binaries/)hop-agent
-            // Tauri preserves the relative path of bundle resources, so
-            // when bundle.resources lists "binaries/hop-agent" the file
-            // ends up at Resources/binaries/hop-agent.
             let candidates = [
-                parent.join("../Resources/binaries/hop-agent"),
-                parent.join("../Resources/hop-agent"),
-                parent.join("hop-agent"),
+                // macOS .app: <bundle>/Contents/MacOS/<bin>
+                //             + Contents/Resources/(binaries/)hop-agent.
+                // Tauri preserves the relative path of bundle resources,
+                // so bundle.resources = "binaries/hop-agent*" lands at
+                // Resources/binaries/hop-agent on a real install.
+                parent.join("../Resources/binaries").join(&agent_basename),
+                parent.join("../Resources").join(&agent_basename),
+                // Windows NSIS / MSI: hopssh-desktop.exe + hop-agent.exe
+                // sit in the same install dir (per-user NSIS lands in
+                // %LOCALAPPDATA%\hopssh\, MSI in Program Files\hopssh\).
+                // Tauri ships bundle.resources alongside the binary on
+                // Windows — no Resources/ subdir.
+                parent.join(&agent_basename),
+                // Linux .deb / .rpm: /usr/bin/hopssh-desktop +
+                // /usr/lib/hopssh/binaries/hop-agent. Tauri picks the
+                // /usr/lib/<productName>/ tree for resources on Debian
+                // and RPM packages. The relative climb from /usr/bin
+                // is ../lib/hopssh/binaries/.
+                parent.join("../lib/hopssh/binaries").join(&agent_basename),
+                parent.join("../lib/hopssh").join(&agent_basename),
             ];
             for c in candidates {
                 if c.exists() {
@@ -1535,18 +1558,18 @@ pub fn resolve_agent_path() -> Option<PathBuf> {
                 }
             }
         }
-        // Walk up to find src-tauri/binaries/hop-agent — used by cargo
-        // tauri dev when the binary lives at the project root.
+        // Walk up to find src-tauri/binaries/hop-agent[.exe] — used by
+        // cargo tauri dev when the binary lives at the project root.
         let mut p = exe.clone();
         for _ in 0..7 {
             if !p.pop() {
                 break;
             }
-            let candidate = p.join("src-tauri/binaries/hop-agent");
+            let candidate = p.join("src-tauri/binaries").join(&agent_basename);
             if candidate.exists() {
                 return Some(candidate);
             }
-            let candidate2 = p.join("hop-agent");
+            let candidate2 = p.join(&agent_basename);
             if candidate2.exists() {
                 return Some(candidate2);
             }

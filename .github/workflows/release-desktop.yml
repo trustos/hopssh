@@ -215,9 +215,19 @@ jobs:
   # promoted from foundation to production.
   # Tracking gaps in docs/wiki/decisions/client-windows-linux-architecture.md.
   build-windows:
-    name: Build Windows MSI + NSIS (informational)
+    name: Build Windows ${{ matrix.tauri_arch }} MSI + NSIS (informational)
     continue-on-error: true
     runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rust_target: x86_64-pc-windows-msvc
+            goarch: amd64
+            tauri_arch: x86_64
+          - rust_target: aarch64-pc-windows-msvc
+            goarch: arm64
+            tauri_arch: aarch64
     steps:
       - uses: actions/checkout@v4
 
@@ -238,56 +248,73 @@ jobs:
             frontend/package-lock.json
             clients/desktop/package-lock.json
 
+      - name: Add Rust target
+        # x86_64-pc-windows-msvc is always present on windows-latest;
+        # rustup is a no-op for it. aarch64-pc-windows-msvc is added
+        # on demand for the ARM64 cross-compile.
+        run: rustup target add ${{ matrix.rust_target }}
+
       - name: Cache Rust deps + target
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: clients/desktop/src-tauri
-          shared-key: desktop-release-windows
+          # Per-arch cache key — x86_64 + aarch64 cross-compiled output
+          # trees diverge after the rustup target add.
+          shared-key: desktop-release-windows-${{ matrix.tauri_arch }}
           save-if: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
 
       - name: Vendor + patch
         shell: bash
         run: make setup
 
-      - name: Build hop-agent.exe
+      - name: Build hop-agent.exe (${{ matrix.goarch }})
         shell: bash
         run: |
           mkdir -p clients/desktop/src-tauri/binaries
           LDFLAGS='-s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=${{ github.ref_name }} -X github.com/trustos/hopssh/internal/buildinfo.ClientType=desktop'
-          GOOS=windows GOARCH=amd64 go build -mod=vendor -ldflags="$LDFLAGS" \
+          GOOS=windows GOARCH=${{ matrix.goarch }} go build -mod=vendor -ldflags="$LDFLAGS" \
             -o clients/desktop/src-tauri/binaries/hop-agent.exe ./cmd/agent
+          file clients/desktop/src-tauri/binaries/hop-agent.exe || true
 
-      - name: Build Tauri MSI + NSIS
+      - name: Build Tauri MSI + NSIS (--target ${{ matrix.rust_target }})
         working-directory: clients/desktop
+        # `tauri build --target X` cross-compiles the Rust shell to X
+        # AND tells WiX/NSIS to produce arch-suffixed bundle filenames
+        # (hopssh_0.1.0_arm64_en-US.msi vs hopssh_0.1.0_x64-setup.exe).
         run: |
           npm install --no-audit --no-fund
-          npm run tauri build -- --bundles msi,nsis
+          npm run tauri build -- --target ${{ matrix.rust_target }} --bundles msi,nsis
 
-      # Tauri emits version-tagged filenames (hopssh_0.1.0_x64-setup.exe etc).
-      # Copy them to STABLE names that the dashboard /download page + the
-      # install scripts can link to without per-version churn.
-      - name: Stable rename Windows artifacts
+      # Tauri emits version-tagged filenames (hopssh_0.1.0_x64-setup.exe).
+      # Copy them to STABLE names the dashboard + install scripts link to
+      # without per-version churn. The Tauri target dir for cross-compiled
+      # builds is target/<rust_target>/release/bundle/, NOT target/release/
+      # bundle/. Use that path explicitly.
+      - name: Stable rename Windows artifacts (${{ matrix.tauri_arch }})
         shell: bash
+        env:
+          ARCH: ${{ matrix.tauri_arch }}
+          RUST_TARGET: ${{ matrix.rust_target }}
         run: |
           set -x
-          BUNDLE=clients/desktop/src-tauri/target/release/bundle
-          MSI=$(find "$BUNDLE/msi" -name "*.msi" -print -quit)
-          NSIS=$(find "$BUNDLE/nsis" -name "*-setup.exe" -print -quit)
-          if [ -n "$MSI" ]; then cp "$MSI" "$BUNDLE/msi/hopssh-windows-x86_64.msi"; fi
-          if [ -n "$NSIS" ]; then cp "$NSIS" "$BUNDLE/nsis/hopssh-windows-x86_64-setup.exe"; fi
-          ls -la "$BUNDLE/msi/" "$BUNDLE/nsis/"
+          BUNDLE="clients/desktop/src-tauri/target/${RUST_TARGET}/release/bundle"
+          MSI=$(find "$BUNDLE/msi" -name "*.msi" -print -quit 2>/dev/null || true)
+          NSIS=$(find "$BUNDLE/nsis" -name "*-setup.exe" -print -quit 2>/dev/null || true)
+          if [ -n "$MSI" ]; then cp "$MSI" "$BUNDLE/msi/hopssh-windows-${ARCH}.msi"; fi
+          if [ -n "$NSIS" ]; then cp "$NSIS" "$BUNDLE/nsis/hopssh-windows-${ARCH}-setup.exe"; fi
+          ls -la "$BUNDLE/msi/" "$BUNDLE/nsis/" 2>/dev/null || true
 
-      - name: Upload Windows artifacts
+      - name: Upload Windows artifacts (${{ matrix.tauri_arch }})
         uses: softprops/action-gh-release@v2
         with:
           # Stable + version-tagged side-by-side. Stable is what the
           # dashboard links to; version-tagged sits on the release page
           # for archival.
           files: |
-            clients/desktop/src-tauri/target/release/bundle/msi/hopssh-windows-x86_64.msi
-            clients/desktop/src-tauri/target/release/bundle/msi/*.msi
-            clients/desktop/src-tauri/target/release/bundle/nsis/hopssh-windows-x86_64-setup.exe
-            clients/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
+            clients/desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle/msi/hopssh-windows-${{ matrix.tauri_arch }}.msi
+            clients/desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle/msi/*.msi
+            clients/desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle/nsis/hopssh-windows-${{ matrix.tauri_arch }}-setup.exe
+            clients/desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle/nsis/*-setup.exe
           tag_name: ${{ github.ref_name }}
           fail_on_unmatched_files: false
 

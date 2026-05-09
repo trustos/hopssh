@@ -39,6 +39,19 @@
 		return 'x86_64';
 	}
 	let linuxArch = $state(detectLinuxArch());
+
+	// Same heuristic for Windows. Windows on ARM is increasingly common
+	// (Surface Pro X, Copilot+ PCs, Parallels/UTM on Apple Silicon).
+	function detectWindowsArch(): 'x86_64' | 'aarch64' {
+		if (typeof navigator === 'undefined') return 'x86_64';
+		const ua = navigator.userAgent.toLowerCase();
+		// Windows on ARM advertises "ARM64" in some UA strings + recent
+		// Edge sets userAgentData.platformArch when available. UA-only
+		// detection below is the conservative-fallback path.
+		if (ua.includes('arm64') || ua.includes('aarch64')) return 'aarch64';
+		return 'x86_64';
+	}
+	let windowsArch = $state(detectWindowsArch());
 </script>
 
 <svelte:head>
@@ -173,17 +186,41 @@
 
 			<Card.Root class="mt-4">
 				<Card.Header>
-					<Card.Title>Download for Windows</Card.Title>
+					<Card.Title>Download for Windows ({windowsArch})</Card.Title>
 					<Card.Description>
-						x86_64 (64-bit Intel / AMD). ARM64 builds are deferred.
+						{#if windowsArch === 'aarch64'}
+							Detected ARM64 Windows — buttons default to the
+							arm64 build. Switch to x86_64 if you actually need the
+							64-bit Intel/AMD installer.
+						{:else}
+							Detected x86_64 (64-bit Intel/AMD). Switch to aarch64 if
+							you're on a Windows-on-ARM machine (Surface Pro X,
+							Copilot+ PC, Parallels/UTM on Apple Silicon).
+						{/if}
 					</Card.Description>
 				</Card.Header>
 				<Card.Content class="space-y-4">
+					<div class="flex gap-2 text-xs">
+						<span class="font-medium text-muted-foreground">Architecture:</span>
+						<button
+							class={windowsArch === 'x86_64'
+								? 'rounded bg-primary/15 px-2 py-0.5 font-medium text-primary'
+								: 'rounded bg-transparent px-2 py-0.5 text-muted-foreground hover:bg-muted'}
+							onclick={() => (windowsArch = 'x86_64')}
+						>x86_64</button>
+						<button
+							class={windowsArch === 'aarch64'
+								? 'rounded bg-primary/15 px-2 py-0.5 font-medium text-primary'
+								: 'rounded bg-transparent px-2 py-0.5 text-muted-foreground hover:bg-muted'}
+							onclick={() => (windowsArch = 'aarch64')}
+						>aarch64 (ARM64)</button>
+					</div>
+
 					<div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-						<Button variant="default" href="/download/desktop/hopssh-windows-x86_64.msi">
+						<Button variant="default" href="/download/desktop/hopssh-windows-{windowsArch}.msi">
 							Download MSI installer
 						</Button>
-						<Button variant="outline" href="/download/desktop/hopssh-windows-x86_64-setup.exe">
+						<Button variant="outline" href="/download/desktop/hopssh-windows-{windowsArch}-setup.exe">
 							Download NSIS installer
 						</Button>
 					</div>
