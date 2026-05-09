@@ -96,7 +96,14 @@ jobs:
             clients/desktop/package-lock.json
 
       - name: Set up Rust
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+        # Apple-Silicon only. Intel macOS support was dropped 2026-05-09
+        # — no Intel users on the active fleet, and dual-arch lipo + DMG
+        # variants doubled CI time + bundle size for ~0% of installs.
+        # If demand surfaces (verifiable Intel-Mac user reports), the
+        # x86_64 target add + lipo + DMG-arch-x86_64 path is one short
+        # commit away; the build-dmg.sh script keeps the per-arch
+        # naming convention so a second DMG could co-publish later.
+        run: rustup target add aarch64-apple-darwin
 
       # Swatinem/rust-cache@v2 caches ~/.cargo/registry, ~/.cargo/git,
       # and target/ keyed on Cargo.lock + rustflags + rustc version.
@@ -119,7 +126,7 @@ jobs:
       - name: Vendor + patch
         run: make setup
 
-      - name: "Build hop-agent (universal arm64 + amd64 lipo)"
+      - name: "Build hop-agent (darwin/arm64 only)"
         run: |
           mkdir -p clients/desktop/src-tauri/binaries
           # Bake clientType=desktop so the dashboard renders "🖥 Desktop"
@@ -127,11 +134,7 @@ jobs:
           # standalone binaries).
           LDFLAGS='-s -w -X github.com/trustos/hopssh/internal/buildinfo.Version=${{ github.ref_name }} -X github.com/trustos/hopssh/internal/buildinfo.ClientType=desktop'
           GOOS=darwin GOARCH=arm64 go build -mod=vendor -ldflags="$LDFLAGS" \
-            -o /tmp/hop-agent-darwin-arm64 ./cmd/agent
-          GOOS=darwin GOARCH=amd64 go build -mod=vendor -ldflags="$LDFLAGS" \
-            -o /tmp/hop-agent-darwin-amd64 ./cmd/agent
-          lipo -create -output clients/desktop/src-tauri/binaries/hop-agent \
-            /tmp/hop-agent-darwin-arm64 /tmp/hop-agent-darwin-amd64
+            -o clients/desktop/src-tauri/binaries/hop-agent ./cmd/agent
 
       # ---- SIGNED PATH ----
       - name: Import Developer ID cert
@@ -193,9 +196,14 @@ jobs:
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
+          # Apple-Silicon-only since 2026-05-09. The stable-named DMG
+          # (hopssh-macos-aarch64.dmg) is what the dashboard /download
+          # page links to + what install-mac.sh fetches; the version-
+          # tagged sibling (hopssh_<version>_aarch64.dmg) is for
+          # archival on the GitHub release page.
           files: |
-            clients/desktop/src-tauri/target/release/bundle/dmg/hopssh-macos-*.dmg
-            clients/desktop/src-tauri/target/release/bundle/dmg/hopssh_*.dmg
+            clients/desktop/src-tauri/target/release/bundle/dmg/hopssh-macos-aarch64.dmg
+            clients/desktop/src-tauri/target/release/bundle/dmg/hopssh_*_aarch64.dmg
           tag_name: ${{ github.ref_name }}
           fail_on_unmatched_files: false
 
@@ -255,11 +263,30 @@ jobs:
           npm install --no-audit --no-fund
           npm run tauri build -- --bundles msi,nsis
 
+      # Tauri emits version-tagged filenames (hopssh_0.1.0_x64-setup.exe etc).
+      # Copy them to STABLE names that the dashboard /download page + the
+      # install scripts can link to without per-version churn.
+      - name: Stable rename Windows artifacts
+        shell: bash
+        run: |
+          set -x
+          BUNDLE=clients/desktop/src-tauri/target/release/bundle
+          MSI=$(find "$BUNDLE/msi" -name "*.msi" -print -quit)
+          NSIS=$(find "$BUNDLE/nsis" -name "*-setup.exe" -print -quit)
+          if [ -n "$MSI" ]; then cp "$MSI" "$BUNDLE/msi/hopssh-windows-x86_64.msi"; fi
+          if [ -n "$NSIS" ]; then cp "$NSIS" "$BUNDLE/nsis/hopssh-windows-x86_64-setup.exe"; fi
+          ls -la "$BUNDLE/msi/" "$BUNDLE/nsis/"
+
       - name: Upload Windows artifacts
         uses: softprops/action-gh-release@v2
         with:
+          # Stable + version-tagged side-by-side. Stable is what the
+          # dashboard links to; version-tagged sits on the release page
+          # for archival.
           files: |
+            clients/desktop/src-tauri/target/release/bundle/msi/hopssh-windows-x86_64.msi
             clients/desktop/src-tauri/target/release/bundle/msi/*.msi
+            clients/desktop/src-tauri/target/release/bundle/nsis/hopssh-windows-x86_64-setup.exe
             clients/desktop/src-tauri/target/release/bundle/nsis/*-setup.exe
           tag_name: ${{ github.ref_name }}
           fail_on_unmatched_files: false
@@ -327,12 +354,32 @@ jobs:
           npm install --no-audit --no-fund
           npm run tauri build -- --bundles deb,rpm,appimage
 
+      # Same stable-rename pattern as the Windows job — copy Tauri's
+      # version-tagged output to dashboard-linkable stable names.
+      - name: Stable rename Linux artifacts
+        run: |
+          set -x
+          BUNDLE=clients/desktop/src-tauri/target/release/bundle
+          DEB=$(find "$BUNDLE/deb" -name "*.deb" -print -quit)
+          RPM=$(find "$BUNDLE/rpm" -name "*.rpm" -print -quit)
+          APPIMAGE=$(find "$BUNDLE/appimage" -name "*.AppImage" -print -quit)
+          if [ -n "$DEB" ]; then cp "$DEB" "$BUNDLE/deb/hopssh-linux-x86_64.deb"; fi
+          if [ -n "$RPM" ]; then cp "$RPM" "$BUNDLE/rpm/hopssh-linux-x86_64.rpm"; fi
+          if [ -n "$APPIMAGE" ]; then
+            cp "$APPIMAGE" "$BUNDLE/appimage/hopssh-linux-x86_64.AppImage"
+            chmod +x "$BUNDLE/appimage/hopssh-linux-x86_64.AppImage"
+          fi
+          ls -la "$BUNDLE/deb/" "$BUNDLE/rpm/" "$BUNDLE/appimage/"
+
       - name: Upload Linux artifacts
         uses: softprops/action-gh-release@v2
         with:
           files: |
+            clients/desktop/src-tauri/target/release/bundle/deb/hopssh-linux-x86_64.deb
             clients/desktop/src-tauri/target/release/bundle/deb/*.deb
+            clients/desktop/src-tauri/target/release/bundle/rpm/hopssh-linux-x86_64.rpm
             clients/desktop/src-tauri/target/release/bundle/rpm/*.rpm
+            clients/desktop/src-tauri/target/release/bundle/appimage/hopssh-linux-x86_64.AppImage
             clients/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
           tag_name: ${{ github.ref_name }}
           fail_on_unmatched_files: false

@@ -4,15 +4,28 @@
 	import * as Alert from '$lib/components/ui/alert/index.js';
 	import * as Tabs from '$lib/components/ui/tabs/index.js';
 
-	const installCmd = 'curl -fsSL https://hopssh.com/install-mac.sh | bash';
-	const xattrCmd = 'sudo xattr -cr /Applications/hopssh.app';
+	const macInstallCmd = 'curl -fsSL https://hopssh.com/install-mac.sh | bash';
+	const macXattrCmd = 'sudo xattr -cr /Applications/hopssh.app';
 
-	let copied = $state<'install' | 'xattr' | null>(null);
-	function copy(text: string, which: 'install' | 'xattr') {
+	let copied = $state<'mac-install' | 'mac-xattr' | null>(null);
+	function copy(text: string, which: 'mac-install' | 'mac-xattr') {
 		void navigator.clipboard.writeText(text);
 		copied = which;
 		setTimeout(() => (copied = null), 1500);
 	}
+
+	// Default the visible platform tab to the user's OS so the page lands on
+	// the relevant download without a click. Heuristic only — users can
+	// switch tabs to grab a build for a different machine.
+	function detectPlatform(): 'macos' | 'windows' | 'linux' {
+		if (typeof navigator === 'undefined') return 'macos';
+		const ua = navigator.userAgent.toLowerCase();
+		if (ua.includes('win')) return 'windows';
+		if (ua.includes('mac')) return 'macos';
+		if (ua.includes('linux')) return 'linux';
+		return 'macos';
+	}
+	const initialPlatform = detectPlatform();
 </script>
 
 <svelte:head>
@@ -21,148 +34,229 @@
 
 <div class="mx-auto max-w-2xl space-y-6 p-6">
 	<div>
-		<h1 class="text-2xl font-bold">Get hopssh for macOS</h1>
+		<h1 class="text-2xl font-bold">Get hopssh for your desktop</h1>
 		<p class="mt-1 text-sm text-muted-foreground">
 			Tray app + native window for managing your mesh. Works alongside the
 			CLI agent and any servers you've already enrolled.
 		</p>
 	</div>
 
-	<Alert.Root>
-		<Alert.Title>About the install warning</Alert.Title>
-		<Alert.Description>
-			hopssh isn't yet signed with an Apple Developer ID, so a Safari-downloaded
-			DMG triggers macOS's <em>"Apple could not verify…"</em> dialog. The
-			recommended one-line install below uses <code class="font-mono text-xs">curl</code>,
-			which doesn't attach the <code class="font-mono text-xs"
-				>com.apple.quarantine</code
-			> tag that browsers do — so Gatekeeper has nothing to flag and the install runs
-			cleanly. Apple Developer signing is on the roadmap.
-		</Alert.Description>
-	</Alert.Root>
-
-	<Tabs.Root value="recommended" class="w-full">
-		<Tabs.List class="grid w-full grid-cols-2">
-			<Tabs.Trigger value="recommended">Recommended (one command)</Tabs.Trigger>
-			<Tabs.Trigger value="manual">Manual (download DMG)</Tabs.Trigger>
+	<Tabs.Root value={initialPlatform} class="w-full">
+		<Tabs.List class="grid w-full grid-cols-3">
+			<Tabs.Trigger value="macos">macOS</Tabs.Trigger>
+			<Tabs.Trigger value="windows">Windows</Tabs.Trigger>
+			<Tabs.Trigger value="linux">Linux</Tabs.Trigger>
 		</Tabs.List>
 
-		<Tabs.Content value="recommended">
-			<Card.Root>
+		<!-- ============= macOS ============= -->
+		<Tabs.Content value="macos">
+			<Alert.Root class="mt-4">
+				<Alert.Title>About the install warning</Alert.Title>
+				<Alert.Description>
+					hopssh isn't yet signed with an Apple Developer ID, so a Safari-downloaded
+					DMG triggers macOS's <em>"Apple could not verify…"</em> dialog. The
+					recommended one-line install below uses
+					<code class="font-mono text-xs">curl</code>, which doesn't attach the
+					<code class="font-mono text-xs">com.apple.quarantine</code> tag that browsers
+					do — so Gatekeeper has nothing to flag and the install runs cleanly.
+					Apple Developer signing is on the roadmap.
+				</Alert.Description>
+			</Alert.Root>
+
+			<Alert.Root class="mt-3 border-amber-500/30 bg-amber-500/5">
+				<Alert.Title>Apple Silicon only</Alert.Title>
+				<Alert.Description>
+					The desktop app ships for Apple Silicon (M1/M2/M3/M4) Macs only as
+					of v0.11.x. If you're on an Intel Mac, the CLI agent still works
+					— see <a href="/install.sh" class="font-medium text-primary hover:underline">/install.sh</a> for
+					the universal CLI installer, and use any browser to access the
+					dashboard.
+				</Alert.Description>
+			</Alert.Root>
+
+			<Tabs.Root value="recommended" class="mt-4 w-full">
+				<Tabs.List class="grid w-full grid-cols-2">
+					<Tabs.Trigger value="recommended">Recommended (one command)</Tabs.Trigger>
+					<Tabs.Trigger value="manual">Manual (download DMG)</Tabs.Trigger>
+				</Tabs.List>
+
+				<Tabs.Content value="recommended">
+					<Card.Root>
+						<Card.Header>
+							<Card.Title>One-line install</Card.Title>
+							<Card.Description>
+								Paste this into Terminal. Installs into <code class="font-mono text-xs">/Applications</code>
+								and launches automatically. Requires your admin password.
+							</Card.Description>
+						</Card.Header>
+						<Card.Content class="space-y-3">
+							<div class="rounded-md border bg-muted/30 p-3">
+								<code class="block break-all font-mono text-[12px]">{macInstallCmd}</code>
+							</div>
+							<Button variant="outline" size="sm" onclick={() => copy(macInstallCmd, 'mac-install')}>
+								{copied === 'mac-install' ? 'Copied!' : 'Copy command'}
+							</Button>
+						</Card.Content>
+					</Card.Root>
+				</Tabs.Content>
+
+				<Tabs.Content value="manual">
+					<Card.Root>
+						<Card.Header>
+							<Card.Title>Download the DMG</Card.Title>
+							<Card.Description>
+								Apple Silicon. You'll need to unblock Gatekeeper once.
+							</Card.Description>
+						</Card.Header>
+						<Card.Content class="space-y-4">
+							<Button variant="default" class="w-full" href="/download/desktop/hopssh-macos-aarch64.dmg">
+								Download for Apple Silicon
+							</Button>
+
+							<div class="space-y-3 rounded-md border bg-muted/20 p-4 text-xs">
+								<p class="font-medium text-foreground">After downloading:</p>
+								<ol class="list-decimal space-y-2 pl-5 leading-relaxed text-muted-foreground">
+									<li>Double-click the DMG to mount it.</li>
+									<li>Drag <code class="font-mono">hopssh.app</code> into <code class="font-mono">Applications</code>.</li>
+									<li>Eject the DMG.</li>
+									<li>
+										Open <code class="font-mono">Applications</code> in Finder and double-click
+										<code class="font-mono">hopssh</code>. macOS shows
+										<em>"Apple could not verify…"</em> and refuses to open it.
+										<strong>This is expected.</strong> Use one of the unblock paths below.
+									</li>
+								</ol>
+							</div>
+
+							<div class="space-y-3 rounded-md border border-amber-500/20 bg-amber-500/5 p-4 text-xs">
+								<p class="font-medium text-foreground">Unblock Gatekeeper (Terminal, fastest):</p>
+								<div class="rounded-md border bg-background p-2">
+									<code class="block break-all font-mono text-[11px]">{macXattrCmd}</code>
+								</div>
+								<Button variant="outline" size="sm" onclick={() => copy(macXattrCmd, 'mac-xattr')}>
+									{copied === 'mac-xattr' ? 'Copied!' : 'Copy command'}
+								</Button>
+							</div>
+						</Card.Content>
+					</Card.Root>
+				</Tabs.Content>
+			</Tabs.Root>
+		</Tabs.Content>
+
+		<!-- ============= Windows ============= -->
+		<Tabs.Content value="windows">
+			<Alert.Root class="mt-4">
+				<Alert.Title>Foundation build — verify before deploying</Alert.Title>
+				<Alert.Description>
+					The Windows desktop client is in the <strong>foundation</strong> phase: it builds in CI but
+					hasn't been hardware-verified yet. The MSI / NSIS installers are
+					expected to install correctly, but UX details (tray rendering,
+					autostart on login, system-mode UAC dialog) need a real Windows
+					machine to confirm. Use it on a test machine first; please file
+					<a href="https://github.com/trustos/hopssh/issues" class="font-medium text-primary hover:underline">issues</a>
+					if anything breaks.
+				</Alert.Description>
+			</Alert.Root>
+
+			<Card.Root class="mt-4">
 				<Card.Header>
-					<Card.Title>One-line install</Card.Title>
+					<Card.Title>Download for Windows</Card.Title>
 					<Card.Description>
-						Paste this into Terminal. Installs into <code class="font-mono text-xs"
-							>/Applications</code
-						> and launches automatically. Requires your admin password.
+						x86_64 (64-bit Intel / AMD). ARM64 builds are deferred.
 					</Card.Description>
 				</Card.Header>
-				<Card.Content class="space-y-3">
-					<div class="rounded-md border bg-muted/30 p-3">
-						<code class="block break-all font-mono text-[12px]">{installCmd}</code>
+				<Card.Content class="space-y-4">
+					<div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+						<Button variant="default" href="/download/desktop/hopssh-windows-x86_64.msi">
+							Download MSI installer
+						</Button>
+						<Button variant="outline" href="/download/desktop/hopssh-windows-x86_64-setup.exe">
+							Download NSIS installer
+						</Button>
 					</div>
-					<Button variant="outline" size="sm" onclick={() => copy(installCmd, 'install')}>
-						{copied === 'install' ? 'Copied!' : 'Copy command'}
-					</Button>
-					<div class="space-y-1.5 text-xs text-muted-foreground">
-						<p class="font-medium text-foreground">What it does:</p>
-						<ol class="list-decimal space-y-1 pl-5">
-							<li>Detects your Mac's CPU architecture (Apple Silicon / Intel).</li>
-							<li>Downloads the matching DMG with <code class="font-mono">curl</code>
-								— so it never gets the quarantine tag.</li>
-							<li>Mounts the DMG, copies <code class="font-mono">hopssh.app</code> into
-								<code class="font-mono">/Applications</code>
-								via <code class="font-mono">ditto --noextattr</code> (strips any
-								xattrs that might've snuck in), ejects the DMG.</li>
-							<li>Opens the app. The tray icon appears in your menubar.</li>
-						</ol>
+
+					<div class="space-y-3 rounded-md border bg-muted/20 p-4 text-xs">
+						<p class="font-medium text-foreground">Choosing between MSI and NSIS:</p>
+						<ul class="list-disc space-y-1 pl-5 leading-relaxed text-muted-foreground">
+							<li><strong>MSI</strong> — preferred for IT-managed deployments (Group Policy, Intune).
+								Per-machine install by default.</li>
+							<li><strong>NSIS (.exe)</strong> — preferred for personal installs. Per-user install,
+								smaller, simpler.</li>
+						</ul>
+					</div>
+
+					<div class="space-y-3 rounded-md border border-amber-500/20 bg-amber-500/5 p-4 text-xs">
+						<p class="font-medium text-foreground">SmartScreen warning</p>
+						<p class="text-muted-foreground">
+							Windows Defender SmartScreen will warn about an unsigned
+							publisher. Click <strong>More info</strong> → <strong>Run anyway</strong> to proceed.
+							Code-signing with an EV Authenticode certificate is on the
+							roadmap.
+						</p>
 					</div>
 				</Card.Content>
 			</Card.Root>
 		</Tabs.Content>
 
-		<Tabs.Content value="manual">
-			<Card.Root>
+		<!-- ============= Linux ============= -->
+		<Tabs.Content value="linux">
+			<Alert.Root class="mt-4">
+				<Alert.Title>Foundation build — verify before deploying</Alert.Title>
+				<Alert.Description>
+					The Linux desktop client is in the <strong>foundation</strong> phase: it builds in CI
+					(Ubuntu 22.04 with WebKit2GTK 4.1) but hasn't been hardware-verified
+					on every distro. AppImage is the most portable option; .deb / .rpm
+					are tested on Ubuntu / Fedora respectively.
+				</Alert.Description>
+			</Alert.Root>
+
+			<Card.Root class="mt-4">
 				<Card.Header>
-					<Card.Title>Download the DMG</Card.Title>
+					<Card.Title>Download for Linux</Card.Title>
 					<Card.Description>
-						If you'd rather click than paste. You'll need to unblock Gatekeeper once.
+						x86_64 (64-bit). ARM64 / Raspberry Pi builds are deferred — use
+						the CLI agent for now.
 					</Card.Description>
 				</Card.Header>
 				<Card.Content class="space-y-4">
-					<div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
-						<Button variant="default" href="/download/desktop/hopssh-macos-aarch64.dmg">
-							Download for Apple Silicon
+					<div class="grid grid-cols-1 gap-2 sm:grid-cols-3">
+						<Button variant="default" href="/download/desktop/hopssh-linux-x86_64.AppImage">
+							AppImage (universal)
 						</Button>
-						<Button variant="outline" href="/download/desktop/hopssh-macos-x86_64.dmg">
-							Download for Intel
+						<Button variant="outline" href="/download/desktop/hopssh-linux-x86_64.deb">
+							.deb (Debian / Ubuntu)
+						</Button>
+						<Button variant="outline" href="/download/desktop/hopssh-linux-x86_64.rpm">
+							.rpm (Fedora / RHEL)
 						</Button>
 					</div>
 
 					<div class="space-y-3 rounded-md border bg-muted/20 p-4 text-xs">
-						<p class="font-medium text-foreground">After downloading:</p>
-						<ol class="list-decimal space-y-2 pl-5 leading-relaxed text-muted-foreground">
-							<li>Double-click the DMG to mount it.</li>
-							<li>Drag <code class="font-mono">hopssh.app</code> into <code class="font-mono">Applications</code>.</li>
-							<li>Eject the DMG.</li>
-							<li>
-								Open <code class="font-mono">Applications</code> in Finder and double-click
-								<code class="font-mono">hopssh</code>. macOS shows
-								<em>"Apple could not verify…"</em> and refuses to open it. <strong>This
-									is expected.</strong>
-								Use one of the unblock paths below — once is enough.
-							</li>
-						</ol>
+						<p class="font-medium text-foreground">After downloading the AppImage:</p>
+						<pre class="overflow-x-auto rounded bg-background p-2 font-mono text-[11px]">{`chmod +x hopssh-linux-x86_64.AppImage
+./hopssh-linux-x86_64.AppImage`}</pre>
+					</div>
+
+					<div class="space-y-3 rounded-md border bg-muted/20 p-4 text-xs">
+						<p class="font-medium text-foreground">.deb (Debian / Ubuntu):</p>
+						<pre class="overflow-x-auto rounded bg-background p-2 font-mono text-[11px]">{`sudo apt install ./hopssh-linux-x86_64.deb`}</pre>
+					</div>
+
+					<div class="space-y-3 rounded-md border bg-muted/20 p-4 text-xs">
+						<p class="font-medium text-foreground">.rpm (Fedora / RHEL / openSUSE):</p>
+						<pre class="overflow-x-auto rounded bg-background p-2 font-mono text-[11px]">{`sudo dnf install ./hopssh-linux-x86_64.rpm`}</pre>
 					</div>
 
 					<div class="space-y-3 rounded-md border border-amber-500/20 bg-amber-500/5 p-4 text-xs">
-						<p class="font-medium text-foreground">Unblock Gatekeeper (pick one)</p>
-
-						<div>
-							<p class="font-medium text-foreground">A. Terminal (one command, fastest):</p>
-							<div class="mt-1 rounded-md border bg-background p-2">
-								<code class="block break-all font-mono text-[11px]">{xattrCmd}</code>
-							</div>
-							<Button
-								variant="outline"
-								size="sm"
-								class="mt-2"
-								onclick={() => copy(xattrCmd, 'xattr')}
-							>
-								{copied === 'xattr' ? 'Copied!' : 'Copy command'}
-							</Button>
-							<p class="mt-1.5 text-muted-foreground">
-								Strips the <code class="font-mono">com.apple.quarantine</code>
-								tag Safari attached. Re-launch the app — no warning.
-							</p>
-						</div>
-
-						<div>
-							<p class="font-medium text-foreground">B. System Settings (UI):</p>
-							<ol class="mt-1 list-decimal space-y-1 pl-5 text-muted-foreground">
-								<li>Try to open <code class="font-mono">hopssh.app</code> once
-									(the warning dialog appears — dismiss it).</li>
-								<li>Open <strong>System Settings → Privacy &amp; Security</strong>.</li>
-								<li>Scroll to the <strong>Security</strong> section. There should
-									be a row saying
-									<em>"hopssh was blocked from use because it is not from an
-									identified developer."</em></li>
-								<li>Click <strong>Open Anyway</strong> and confirm with your
-									admin password.</li>
-								<li>The app launches; macOS remembers the override for future
-									runs.</li>
-							</ol>
-						</div>
-
-						<div>
-							<p class="font-medium text-foreground">C. Right-click → Open (older macOS only):</p>
-							<p class="mt-1 text-muted-foreground">
-								In Finder, right-click <code class="font-mono">hopssh.app</code>
-								→ <strong>Open</strong> → confirm. <span class="text-amber-700 dark:text-amber-400"
-									>This path is removed in macOS Sequoia (15.0) and later</span
-								> — use option A or B on those versions.
-							</p>
-						</div>
+						<p class="font-medium text-foreground">Runtime dependencies</p>
+						<p class="text-muted-foreground">
+							The desktop app needs <code class="font-mono">libwebkit2gtk-4.1</code>,
+							<code class="font-mono">libgtk-3</code>, and
+							<code class="font-mono">libayatana-appindicator3</code> at runtime.
+							The .deb / .rpm declare these as dependencies; the AppImage
+							assumes they're already installed (default on most modern
+							desktops).
+						</p>
 					</div>
 				</Card.Content>
 			</Card.Root>

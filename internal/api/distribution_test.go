@@ -10,12 +10,22 @@ func TestValidDesktopAssetRegex(t *testing.T) {
 		name string
 		ok   bool
 	}{
+		// macOS — Apple Silicon only since 2026-05-09.
 		{"hopssh-macos-aarch64.dmg", true},
-		{"hopssh-macos-x86_64.dmg", true},
-		{"hopssh-windows-x86_64.exe", true},
-		{"hopssh-windows-aarch64.exe", true},
+
+		// Windows — MSI + NSIS installers.
+		{"hopssh-windows-x86_64.msi", true},
+		{"hopssh-windows-aarch64.msi", true},
+		{"hopssh-windows-x86_64-setup.exe", true},
+		{"hopssh-windows-aarch64-setup.exe", true},
+
+		// Linux — AppImage + .deb + .rpm. x86_64 only for v1.
 		{"hopssh-linux-x86_64.AppImage", true},
-		{"hopssh-linux-aarch64.AppImage", true},
+		{"hopssh-linux-x86_64.deb", true},
+		{"hopssh-linux-x86_64.rpm", true},
+
+		// macOS Intel was dropped — must now be rejected.
+		{"hopssh-macos-x86_64.dmg", false},
 
 		// Path-traversal + injection attempts must be rejected.
 		{"../../etc/passwd", false},
@@ -26,6 +36,7 @@ func TestValidDesktopAssetRegex(t *testing.T) {
 		{"hopssh-macos-amd64.dmg", false},        // wrong arch encoding
 		{"hopssh-macos-aarch64.dmg.sig", false},  // unsupported ext
 		{"HOPSSH-MACOS-AARCH64.DMG", false},      // wrong case
+		{"hopssh-linux-aarch64.AppImage", false}, // ARM64 Linux not built today
 		{"", false},
 		{"hopssh.dmg", false},
 	}

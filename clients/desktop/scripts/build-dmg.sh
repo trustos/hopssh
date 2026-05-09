@@ -29,10 +29,13 @@ cd "$(dirname "$0")/.."
 
 VERSION=$(node -p 'require("./package.json").version')
 ARCH=$(uname -m)
+# Apple-Silicon only since 2026-05-09 — Intel macOS support dropped.
+# If we ever re-add x86_64, re-introduce the case branch + the DMG
+# upload glob in release-desktop.yml; the per-arch naming convention
+# below already accounts for it.
 case "$ARCH" in
   arm64) DMG_ARCH=aarch64 ;;
-  x86_64) DMG_ARCH=x86_64 ;;
-  *) echo "unsupported arch: $ARCH" >&2; exit 1 ;;
+  *) echo "build-dmg: unsupported arch: $ARCH (Apple Silicon only)" >&2; exit 1 ;;
 esac
 
 DMG_NAME="hopssh_${VERSION}_${DMG_ARCH}.dmg"

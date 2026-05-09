@@ -34,7 +34,11 @@ var validBinaryName = regexp.MustCompile(`^hop-(agent|server)-(linux|darwin|wind
 //   macos   -> .dmg
 //   windows -> .exe
 //   linux   -> .AppImage
-var validDesktopAsset = regexp.MustCompile(`^hopssh-(?:macos-(?:aarch64|x86_64)\.dmg|windows-(?:aarch64|x86_64)\.exe|linux-(?:aarch64|x86_64)\.AppImage)$`)
+// validDesktopAsset accepts the desktop bundles served by /download/desktop/{asset}.
+// macOS dropped Intel (x86_64) on 2026-05-09 — Apple Silicon only.
+// Windows MSI + Linux .deb/.rpm/AppImage land here once the build-windows /
+// build-linux jobs in release-desktop.yml emit them with these stable names.
+var validDesktopAsset = regexp.MustCompile(`^hopssh-(?:macos-aarch64\.dmg|windows-(?:x86_64|aarch64)(?:\.msi|-setup\.exe)|linux-x86_64\.(?:AppImage|deb|rpm))$`)
 
 // DistributionHandler serves install scripts, binary downloads, and version info.
 type DistributionHandler struct {
@@ -221,7 +225,7 @@ func (h *DistributionHandler) DownloadChecksums(w http.ResponseWriter, r *http.R
 func (h *DistributionHandler) DownloadDesktop(w http.ResponseWriter, r *http.Request) {
 	asset := chi.URLParam(r, "asset")
 	if !validDesktopAsset.MatchString(asset) {
-		http.Error(w, "Invalid desktop asset name. Expected: hopssh-{macos|windows|linux}-{aarch64|x86_64}.{dmg|exe|AppImage}", http.StatusBadRequest)
+		http.Error(w, "Invalid desktop asset name. Expected one of: hopssh-macos-aarch64.dmg, hopssh-windows-{x86_64|aarch64}.msi, hopssh-windows-{x86_64|aarch64}-setup.exe, hopssh-linux-x86_64.{AppImage|deb|rpm}", http.StatusBadRequest)
 		return
 	}
 	version := h.LatestVersion()
@@ -278,7 +282,19 @@ fi
 ARCH=$(uname -m)
 case "$ARCH" in
   arm64)  ASSET="hopssh-macos-aarch64.dmg" ;;
-  x86_64) ASSET="hopssh-macos-x86_64.dmg" ;;
+  x86_64)
+    cat <<'EOF' >&2
+Error: hopssh dropped Intel macOS support on 2026-05-09.
+The desktop client now ships Apple Silicon only.
+
+If you have an Intel Mac, the CLI agent still works:
+  curl -fsSL ` + endpoint + `/install.sh | sudo bash
+
+Run the dashboard from any browser. We'll consider re-adding the
+Intel desktop build if there's verifiable demand — file an issue at
+https://github.com/trustos/hopssh/issues with your use case.
+EOF
+    exit 1 ;;
   *) echo "Error: unsupported arch $ARCH" >&2; exit 1 ;;
 esac
 
