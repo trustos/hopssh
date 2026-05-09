@@ -2361,6 +2361,7 @@ mod tests {
         let targets = [
             ("App.svelte", app_svelte),
             ("Connected.svelte", lib_dir.join("Connected.svelte")),
+            ("Disconnected.svelte", lib_dir.join("Disconnected.svelte")),
             ("Onboarding.svelte", lib_dir.join("Onboarding.svelte")),
             ("Settings.svelte", lib_dir.join("Settings.svelte")),
             ("SystemModeCTA.svelte", lib_dir.join("SystemModeCTA.svelte")),
@@ -2388,6 +2389,13 @@ mod tests {
             "Triggers a one-time admin prompt", // Onboarding/SystemModeCTA footnote
             "Triggers an admin prompt",       // Settings subtitles
             "port collision",                 // Onboarding parallel-install warning
+            // Platform-specific copy that leaked into Linux + Windows
+            // builds. Replaced 2026-05-09 after the Linux user saw
+            // "Reaching the hopssh agent on this Mac" on their
+            // Ubuntu/aarch64 install. Use platform-neutral nouns:
+            // "this device" / "your computer".
+            "this Mac",                       // any user-facing reference
+            "your Mac",                       // Settings autostart subtitle, SystemModeCTA, etc.
         ];
         // Forbidden ONLY in onboarding (the flow that exposes them):
         let onboarding_forbidden = ["Control plane"];

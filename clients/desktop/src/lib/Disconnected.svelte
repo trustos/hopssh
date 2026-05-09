@@ -86,7 +86,7 @@
     </div>
     <h2 class="mb-1 text-base font-semibold">Connecting…</h2>
     <p class="max-w-sm text-sm text-zinc-400">
-      Reaching the hopssh agent on this Mac.
+      Reaching the hopssh agent on this device.
     </p>
   </div>
 {:else}

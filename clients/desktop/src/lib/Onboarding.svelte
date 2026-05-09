@@ -276,7 +276,7 @@
 
   // ---- Phase 2: parallel-install detection ----
   // The /local/status response carries parallelInstall when a leftover
-  // hop-agent install is detected on this Mac. We surface a banner +
+  // hop-agent install is detected on this device. We surface a banner +
   // one-click Reset BEFORE enrollment so the user never hits the
   // port-bind conflict.
   let parallelInstall = $derived(agent.status?.parallelInstall ?? null);
@@ -328,7 +328,7 @@
 
   {#if stage === 'idle' || stage === 'error'}
     <p class="mt-1 text-sm text-zinc-400">
-      Sign in to connect this Mac to a hopssh network.
+      Sign in to connect this device to a hopssh network.
     </p>
 
     {#if parallelInstall && (parallelInstall.launchDaemon || parallelInstall.legacyConfigDir)}
@@ -339,7 +339,7 @@
           Another hopssh install detected
         </div>
         <p class="mt-1 text-[12px] leading-relaxed text-amber-100/80">
-          A previous installation of hopssh is still on this Mac
+          A previous installation of hopssh is still on this device
           ({parallelInstall.launchDaemon ? 'system service' : ''}{parallelInstall.launchDaemon &&
           parallelInstall.legacyConfigDir
             ? ' + '
@@ -462,7 +462,7 @@
 
     {#if stage === 'pending'}
       <p class="mt-6 text-sm text-zinc-300">
-        We opened a browser tab to approve this Mac.
+        We opened a browser tab to approve this device.
       </p>
       <button
         type="button"
@@ -536,7 +536,7 @@
               <code class="rounded bg-zinc-900/60 px-1 font-mono">ping</code>,
               <code class="rounded bg-zinc-900/60 px-1 font-mono">ssh</code>,
               browsers, and other apps won't see your hopssh devices. A
-              small background service makes every app on your Mac able
+              small background service makes every app on your computer able
               to reach hopssh hostnames, keeps the connection alive when
               you quit hopssh, and reconnects after restart.
             </p>

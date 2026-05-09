@@ -199,7 +199,7 @@
 
   // The current version we display is whatever the running agent is
   // reporting via /local/status — that's what's actually IN USE on
-  // this Mac, and it's correctly baked from the git tag by both CI
+  // this device, and it's correctly baked from the git tag by both CI
   // and the dev-deploy script. Falls back to the .app's bundled
   // version (Tauri's getVersion → tauri.conf.json::version) only if
   // the agent hasn't reported yet, which itself is stale ("0.1.0"
@@ -396,7 +396,7 @@
     <section class="mt-6 rounded-lg border border-emerald-800 bg-emerald-950/40 p-6 text-center">
       <h2 class="text-base font-semibold text-emerald-100">Uninstall complete</h2>
       <p class="mt-3 text-xs leading-relaxed text-emerald-100/90">
-        To finish removing hopssh from this Mac, drag
+        To finish removing hopssh from this device, drag
         <span class="font-semibold">hopssh.app</span> from
         <span class="font-mono">/Applications</span> to the Trash.
       </p>
@@ -505,7 +505,7 @@
           <div class="min-w-0 flex-1">
             <div class="text-sm font-medium">Open hopssh on login</div>
             <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
-              Auto-opens the menubar icon when you sign in to your Mac.
+              Auto-opens the menubar icon when you sign in to your computer.
               Your network stays connected via "Run in the background"
               above — this only controls whether the menubar icon
               appears automatically.
@@ -689,7 +689,7 @@
             <div class="min-w-0 flex-1">
               <div class="text-sm font-medium">Sign out of all networks</div>
               <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
-                Removes this Mac from all hopssh networks. Your other
+                Removes this device from all hopssh networks. Your other
                 devices and the networks themselves aren't affected.
                 You can sign back in anytime. {agent.status?.enrollments.length ?? 0} active.
               </p>
@@ -770,9 +770,9 @@
         <div class="px-4 py-3">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0 flex-1">
-              <div class="text-sm font-medium">Remove hopssh from this Mac</div>
+              <div class="text-sm font-medium">Remove hopssh from this device</div>
               <p class="mt-0.5 text-[11px] leading-relaxed text-zinc-400">
-                Removes everything from this Mac: networks, certificates,
+                Removes everything from this device: networks, certificates,
                 the background service, and the command-line tool. After
                 this finishes, drag
                 <span class="font-mono">hopssh.app</span> from

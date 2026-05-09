@@ -74,7 +74,7 @@
         </h3>
         <p class="mt-1 text-[12px] leading-relaxed text-zinc-300">
           Right now hopssh's network is private to this app. Turn this
-          on so any app on your Mac — your browser, file shares, Screen
+          on so any app on your computer — your browser, file shares, Screen
           Sharing, Terminal — can use it. The connection stays alive
           when you quit hopssh and reconnects automatically after a
           restart.

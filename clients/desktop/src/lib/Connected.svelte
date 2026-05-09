@@ -445,7 +445,7 @@
     </div>
   {:else}
     <div class="flex h-full items-center justify-center text-sm text-zinc-500">
-      No networks yet. Click "Add network" above to connect this Mac.
+      No networks yet. Click "Add network" above to connect this device.
     </div>
   {/if}
 </div>
