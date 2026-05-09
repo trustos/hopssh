@@ -20,6 +20,12 @@ Move closed items to a "Resolved" section at the bottom rather than deleting —
 
 ## Open
 
+## 2026-05-09 — Linux desktop client stuck onboarding + "Load failed" on Connect
+
+First post-Stages-5+6 user-test of the Linux .deb desktop client (aarch64 Ubuntu VM) hits two symptoms: onboarding stays at step 2 even after device-flow approval, and manual Connect surfaces "Load failed" (JS `TypeError: Failed to fetch`). Disk state shows enrollment IS persisted; both `hopssh-desktop` + `hop-agent` child processes are alive at the user's snapshot. journalctl excerpt has Go stack frames pointing at `internal/client/client.go:87` (the `_, err := try()` line in `(*Client).connect`'s 4-attempt retry) — likely a panic, but the panic message itself wasn't captured before the diagnostic SSH session ended at precompact. **Action**: SSH to the VM (credentials in `e2e-connections` repo), run `journalctl --user -n 500 --no-pager | grep -B 3 -A 30 "panic\|runtime error\|fatal error"`, capture the panic message, then root-cause from there. Check `~/.config/hopssh/home/` for any `stuck-state-*.txt` / `watcher-stuck-*.txt` / `renewal-stuck-*.txt` forensic dumps.
+
+Source / context: [[incidents/2026-05-09-linux-desktop-stuck-onboarding]]
+
 ## 2026-05-07 — which vendor Nebula call wedged in the May 7 watcher incident
 
 The watchNetworkChanges goroutine deadlocked at `cmd/agent/nebula.go:272-273` — either inside `ctrl.RebindUDPServer()` or `ctrl.CloseAllTunnels(true)`. We couldn't determine which from logs alone (no CRITICAL/PANICKED, no goroutine dump pre-fix). Phase DD's watchdog will produce a forensic goroutine dump on the next occurrence (`<configDir>/<name>/watcher-stuck-<ts>.txt`) — that dump will pinpoint the lock contention and inform whether to file an upstream Nebula issue or extend our vendor patches. **Action**: when the next watcher-stuck dump appears in the wild, walk the goroutine stack and identify the held mutex.
