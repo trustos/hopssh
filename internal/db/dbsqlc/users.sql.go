@@ -63,6 +63,25 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 	return i, err
 }
 
+const getUserByGitHubID = `-- name: GetUserByGitHubID :one
+SELECT id, email, name, password_hash, github_id, created_at
+FROM users WHERE github_id = ?
+`
+
+func (q *Queries) GetUserByGitHubID(ctx context.Context, githubID *string) (User, error) {
+	row := q.db.QueryRowContext(ctx, getUserByGitHubID, githubID)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.Name,
+		&i.PasswordHash,
+		&i.GithubID,
+		&i.CreatedAt,
+	)
+	return i, err
+}
+
 const getUserByID = `-- name: GetUserByID :one
 SELECT id, email, name, password_hash, github_id, created_at
 FROM users WHERE id = ?
@@ -97,4 +116,18 @@ func (q *Queries) GetUserProfileByID(ctx context.Context, id string) (GetUserPro
 	var i GetUserProfileByIDRow
 	err := row.Scan(&i.ID, &i.Email, &i.Name)
 	return i, err
+}
+
+const setUserGitHubID = `-- name: SetUserGitHubID :exec
+UPDATE users SET github_id = ? WHERE id = ?
+`
+
+type SetUserGitHubIDParams struct {
+	GithubID *string
+	ID       string
+}
+
+func (q *Queries) SetUserGitHubID(ctx context.Context, arg SetUserGitHubIDParams) error {
+	_, err := q.db.ExecContext(ctx, setUserGitHubID, arg.GithubID, arg.ID)
+	return err
 }

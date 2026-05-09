@@ -166,6 +166,16 @@ func main() {
 
 	// Initialize handlers.
 	authH := &api.AuthHandler{Users: users, Sessions: sessions, Audit: audit}
+	oauthH := &api.OAuthHandler{
+		Provider: &api.OAuthProvider{
+			GitHubClientID:     os.Getenv("HOPSSH_GITHUB_CLIENT_ID"),
+			GitHubClientSecret: os.Getenv("HOPSSH_GITHUB_CLIENT_SECRET"),
+			PublicEndpoint:     *endpoint,
+		},
+		Users:    users,
+		Sessions: sessions,
+		Audit:    audit,
+	}
 	networkH := &api.NetworkHandler{Networks: networks, Nodes: nodes, Members: members, NetworkManager: netMgr, ForwardManager: fwdMgr}
 	enrollH := &api.EnrollHandler{Networks: networks, Nodes: nodes, Members: members, NetworkManager: netMgr, Endpoint: *endpoint, LighthouseHost: *lighthouseHost}
 	proxyH := &api.ProxyHandler{
@@ -221,7 +231,7 @@ func main() {
 	renewH.Events = networkEvents
 
 	clipboardH := api.NewClipboardHandler(nodes, eventsH.Hub)
-	router := api.NewRouter(users, sessions, authH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH, eventsH, netEventsH, clipboardH)
+	router := api.NewRouter(users, sessions, authH, oauthH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH, eventsH, netEventsH, clipboardH)
 
 	// Clean up expired sessions periodically with graceful shutdown.
 	stopCleanup := make(chan struct{})

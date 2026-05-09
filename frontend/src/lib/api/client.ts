@@ -56,6 +56,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
 // --- Auth ---
 export const auth = {
 	status: () => request<StatusResponse>('GET', '/api/auth/status'),
+	oauthStatus: () => request<{ github: boolean }>('GET', '/api/auth/oauth/status'),
 	register: (email: string, name: string, password: string) =>
 		request<AuthResponse>('POST', '/api/auth/register', { email, name, password }),
 	login: (email: string, password: string) =>

@@ -121,6 +121,7 @@ type Node struct {
 	PeersReportedAt     *int64
 	PeerState           *string
 	AgentVersion        *string
+	ClientType          *string
 }
 
 type Session struct {

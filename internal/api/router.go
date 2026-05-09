@@ -88,6 +88,7 @@ func NewRouter(
 	users *db.UserStore,
 	sessions *db.SessionStore,
 	authH *AuthHandler,
+	oauthH *OAuthHandler,
 	networkH *NetworkHandler,
 	enrollH *EnrollHandler,
 	proxyH *ProxyHandler,
@@ -119,6 +120,13 @@ func NewRouter(
 	r.With(publicRL.Limit, wt).Get("/api/auth/status", authH.Status)
 	r.With(publicRL.Limit, wt).Post("/api/auth/register", authH.Register)
 	r.With(publicRL.Limit, wt).Post("/api/auth/login", authH.Login)
+	// GitHub OAuth (Phase 2A #3, roadmap). Status is always-on; the
+	// start/callback hops short-circuit with 503 when GitHub credentials
+	// aren't configured. Frontend uses /status to gate the "Continue
+	// with GitHub" button so users never see a confusing 503.
+	r.With(publicRL.Limit, wt).Get("/api/auth/oauth/status", oauthH.Status)
+	r.With(publicRL.Limit, wt).Get("/api/auth/github/start", oauthH.StartGitHub)
+	r.With(publicRL.Limit, wt).Get("/api/auth/github/callback", oauthH.CallbackGitHub)
 	r.With(publicRL.Limit, wt).Post("/api/enroll", enrollH.Enroll)
 
 	// Device flow (public — agent-initiated).

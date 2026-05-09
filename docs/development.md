@@ -102,6 +102,33 @@ cd frontend && npm run dev
 # Dev server at http://localhost:5173, proxies /api/* to :9473
 ```
 
+### Optional: GitHub OAuth login
+
+The dashboard's "Continue with GitHub" button is enabled when the
+control plane is configured with a GitHub OAuth app. Without these
+env vars the button is hidden — email/password login still works.
+
+```bash
+# 1. Register an OAuth app at https://github.com/settings/developers
+#    Authorization callback URL: <your-endpoint>/api/auth/github/callback
+#    Example: https://hopssh.com/api/auth/github/callback
+# 2. Set the credentials before starting hop-server:
+export HOPSSH_GITHUB_CLIENT_ID="Iv1.abc123..."
+export HOPSSH_GITHUB_CLIENT_SECRET="..."
+./hop-server --endpoint https://your.endpoint
+```
+
+The OAuth flow:
+1. User clicks **Continue with GitHub** on `/login`.
+2. Browser → `/api/auth/github/start` (sets short-lived state cookie, 302 to GitHub).
+3. GitHub → user authorises → 302 to `/api/auth/github/callback?code=…&state=…`.
+4. Server verifies state cookie matches, exchanges code for access token, fetches `/user` + `/user/emails`, looks up by GitHub ID (or email fallback for legacy accounts), creates session, 302 to original `?redirect=…` path.
+
+Existing email-registered users get their GitHub account auto-linked
+on first OAuth login — same email = same hopssh user. Brand-new
+users are created with a synthetic placeholder password (forces them
+back through OAuth on subsequent logins).
+
 ### Testing the mesh locally
 
 For local mesh testing, you need the control plane to have a reachable IP.

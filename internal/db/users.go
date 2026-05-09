@@ -96,3 +96,39 @@ func (s *UserStore) Count() (int, error) {
 	count, err := q.CountUsers(context.Background())
 	return int(count), err
 }
+
+// GetByGitHubID looks up a user by their GitHub user ID. Returns
+// (nil, nil) when no user has linked that GitHub account. Used by the
+// OAuth callback to dispatch returning-user vs. new-user paths.
+func (s *UserStore) GetByGitHubID(githubID string) (*User, error) {
+	if githubID == "" {
+		return nil, nil
+	}
+	q := dbsqlc.New(WrapDB(s.rdb))
+	row, err := q.GetUserByGitHubID(context.Background(), &githubID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get user by github id: %w", err)
+	}
+	return &User{
+		ID:           row.ID,
+		Email:        row.Email,
+		Name:         row.Name,
+		PasswordHash: row.PasswordHash,
+		GitHubID:     row.GithubID,
+		CreatedAt:    row.CreatedAt,
+	}, nil
+}
+
+// SetGitHubID links an existing user account (looked up by email at
+// OAuth callback time) to a GitHub user ID. Idempotent — overwriting
+// the same value is a no-op at the SQLite level.
+func (s *UserStore) SetGitHubID(userID, githubID string) error {
+	q := dbsqlc.New(WrapDB(s.wdb))
+	return q.SetUserGitHubID(context.Background(), dbsqlc.SetUserGitHubIDParams{
+		ID:       userID,
+		GithubID: &githubID,
+	})
+}
