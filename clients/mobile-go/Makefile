@@ -23,9 +23,13 @@ PKG  := github.com/trustos/hopssh/clients/mobile-go/mobilehop
 .PHONY: all
 all: android-aar ios-xcframework
 
+# -androidapi 21: NDK r26+ requires API 21+ (gomobile defaults to 16,
+# which the NDK rejects with "unsupported API version 16 (not in 21..34)").
+# Android 5.0 Lollipop (API 21) is the de-facto floor for modern Android
+# work and matches our other mobile-toolchain defaults.
 .PHONY: android-aar
 android-aar: | $(DIST)
-	gomobile bind -target=android -o $(DIST)/mobilehop.aar -javapkg=com.hopssh $(PKG)
+	gomobile bind -target=android -androidapi 21 -o $(DIST)/mobilehop.aar -javapkg=com.hopssh $(PKG)
 	@echo "==> $(DIST)/mobilehop.aar"
 
 .PHONY: ios-xcframework
