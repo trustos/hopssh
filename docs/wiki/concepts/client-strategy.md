@@ -28,14 +28,14 @@ One Tauri 2 + Svelte 5 UI codebase across iOS, Android, macOS, Windows, Linux. D
 | **iOS** | Tauri UI + NEPacketTunnelProvider + gomobile xcframework | ✅ `internal/client/` (Phase NN); ❌ gomobile binding (NN+1) | Tauri 2 + Svelte 5 | Substrate ready | — |
 | **Android** | Tauri UI + VpnService + gomobile aar | ✅ `internal/client/` (Phase NN); ❌ gomobile binding (NN+1) | Tauri 2 + Svelte 5 | Substrate ready | — |
 
-**The `internal/client/` substrate landed in Phase NN (2026-05-09).** ~22k LOC + 89 files extracted from `cmd/agent/` (which was `package main`); see [[../phases/nn-client-substrate]] for the extraction ledger. The package exposes a gomobile + Rust-FFI compatible public API (`Client`, `Config`, `EnrollOptions`, `Snapshot`, `EnrollmentSummary`, `PeerInfo`, `Event`, `EventCallback`, `SubscriptionID`, `InstanceHTTPHook`) with constraint tripwires in `internal/client/api_constraints_test.go`.
+**The `internal/client/` substrate landed in Phase NN (2026-05-09).** ~22k LOC + 89 files extracted from `cmd/agent/` (which was `package main`); see [[../phases/phase-nn]] for the extraction post-mortem. The package exposes a gomobile + Rust-FFI compatible public API (`Client`, `Config`, `EnrollOptions`, `Snapshot`, `EnrollmentSummary`, `PeerInfo`, `Event`, `EventCallback`, `SubscriptionID`, `InstanceHTTPHook`) with constraint tripwires in `internal/client/api_constraints_test.go`.
 
 ## Per-platform decisions (ADRs)
 
 - [[../decisions/client-macos-architecture]] — Sidecar Tauri + userspace Nebula default + system-mode upgrade. **Shipped v0.10.96.**
 - [[../decisions/client-windows-linux-architecture]] — Sidecar Tauri delta on top of macOS for Windows + Linux desktop. Plan ready.
-- [[../decisions/client-ios-architecture]] — Tauri main app + Network Extension target + gomobile xcframework. Plan ready, substrate-blocked.
-- [[../decisions/client-android-architecture]] — Tauri + VpnService foreground + gomobile aar. Plan ready, substrate-blocked.
+- [[../decisions/client-ios-architecture]] — Tauri main app + Network Extension target + gomobile xcframework. Substrate built (Phase NN, v0.11.5); gomobile binding (NN+1) + iOS scaffolding (NN+2) are the remaining open work.
+- [[../decisions/client-android-architecture]] — Tauri + VpnService foreground + gomobile aar. Substrate built (Phase NN, v0.11.5); gomobile binding (NN+1) + Android scaffolding (NN+3) are the remaining open work.
 
 ## Context
 

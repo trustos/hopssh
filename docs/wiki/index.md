@@ -61,6 +61,7 @@ Per-phase shipped state, post-mortems, what was learned.
 - [[phases/phase-ledger]] — single-page canonical table mapping every phase letter → version → commit → 1-line summary → status (live / superseded). Built 2026-05-09 from `git log` + cross-referenced with CLAUDE.md Discovery Log.
 - [[phases/phase-s]] — renewal loop survives macOS deep-sleep (v0.10.82, 2026-05-02)
 - [[phases/phase-t]] — dashboard table column toggles + RTT replaces dead Handshake (v0.10.83 + v0.10.84, 2026-05-02 → 2026-05-03)
+- [[phases/phase-nn]] — `internal/client/` substrate extraction (v0.11.5, 2026-05-09) — unblocks iOS + Android via gomobile
 
 ## Benchmarks
 

@@ -88,4 +88,4 @@ Single source of truth for every shipped phase: letter → version → commit �
 - [[../decisions/phase-s-renewal-ticker]] — Phase S decision record (only ADR-style phase write-up so far).
 - [[../concepts/desktop-client]] — current shipped desktop-client capability inventory.
 - [[../concepts/watchdog]] — three-watchdog architecture (Phase P + v0.10.36 + Phase DD).
-- [[phase-s]], [[phase-t]] — only two per-phase post-mortem pages exist; the rest live in CLAUDE.md Discovery Log entries.
+- [[phase-s]], [[phase-t]], [[phase-nn]] — three per-phase post-mortem pages exist; the rest live in CLAUDE.md Discovery Log entries.
