@@ -54,6 +54,17 @@ type OAuthHandler struct {
 const oauthStateCookie = "oauth_state"
 const oauthStateTTL = 10 * time.Minute
 
+// GitHub API base URLs. Pulled into package-level vars (not consts) so
+// the auth_oauth_e2e_test.go hermetic test can swap in a stub server.
+// Production code never mutates these — they're effectively constants
+// at runtime. Don't expose them in any public API surface.
+var (
+	githubAuthorizeURL = "https://github.com/login/oauth/authorize"
+	githubTokenURL     = "https://github.com/login/oauth/access_token"
+	githubUserURL      = "https://api.github.com/user"
+	githubEmailsURL    = "https://api.github.com/user/emails"
+)
+
 // Status returns whether OAuth providers are configured. Public
 // endpoint; called by the frontend on every login-page load to decide
 // which buttons to enable.
@@ -281,7 +292,7 @@ func buildGitHubAuthURL(p *OAuthProvider, state, callbackURL string) string {
 	v.Set("scope", "read:user user:email")
 	v.Set("state", state)
 	v.Set("allow_signup", "true")
-	return "https://github.com/login/oauth/authorize?" + v.Encode()
+	return githubAuthorizeURL + "?" + v.Encode()
 }
 
 // exchangeGitHubCode swaps the authorization code for an access token.
@@ -293,7 +304,7 @@ func exchangeGitHubCode(ctx context.Context, p *OAuthProvider, code, callbackURL
 	form.Set("code", code)
 	form.Set("redirect_uri", callbackURL)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", "https://github.com/login/oauth/access_token", strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", githubTokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
 		return "", err
 	}
@@ -375,7 +386,7 @@ func fetchGitHubProfile(ctx context.Context, accessToken string) (githubProfile,
 	}
 
 	// 1) Profile.
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/user", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", githubUserURL, nil)
 	if err != nil {
 		return githubProfile{}, err
 	}
@@ -398,7 +409,7 @@ func fetchGitHubProfile(ctx context.Context, accessToken string) (githubProfile,
 
 	// 2) Emails (only needed if profile email is private).
 	if p.PublicMail == "" {
-		req2, err := http.NewRequestWithContext(ctx, "GET", "https://api.github.com/user/emails", nil)
+		req2, err := http.NewRequestWithContext(ctx, "GET", githubEmailsURL, nil)
 		if err != nil {
 			return p, nil // don't fail the whole flow
 		}

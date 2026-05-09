@@ -1190,9 +1190,13 @@ func (h *ProxyHandler) UpdateRoutes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Validate each CIDR. Reject defaults / loopback / link-local
-	// to keep the v1 surface narrow — exit-node support is the
-	// follow-up phase that opens these gates with an explicit flag.
+	// Validate each CIDR. Reject defaults / loopback / link-local to
+	// keep the v1 surface narrow — exit-node support is the follow-up
+	// phase that opens these gates with an explicit flag.
+	//
+	// Dedup happens AFTER canonicalisation so non-canonical input
+	// (e.g. "10.0.5.0/16" with host bits set, masked to "10.0.0.0/16")
+	// collapses with its canonical sibling.
 	cleaned := make([]db.NodeRoute, 0, len(body.Routes))
 	seen := map[string]bool{}
 	for _, raw := range body.Routes {
@@ -1200,10 +1204,6 @@ func (h *ProxyHandler) UpdateRoutes(w http.ResponseWriter, r *http.Request) {
 		if c == "" {
 			continue
 		}
-		if seen[c] {
-			continue
-		}
-		seen[c] = true
 		prefix, perr := netip.ParsePrefix(c)
 		if perr != nil {
 			http.Error(w, "invalid CIDR: "+c, http.StatusBadRequest)
@@ -1217,7 +1217,12 @@ func (h *ProxyHandler) UpdateRoutes(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "loopback / link-local / multicast routes are not allowed: "+c, http.StatusBadRequest)
 			return
 		}
-		cleaned = append(cleaned, db.NodeRoute{Route: prefix.Masked().String()})
+		canonical := prefix.Masked().String()
+		if seen[canonical] {
+			continue
+		}
+		seen[canonical] = true
+		cleaned = append(cleaned, db.NodeRoute{Route: canonical})
 	}
 
 	if err := h.Nodes.UpdateRoutes(node.ID, cleaned); err != nil {
