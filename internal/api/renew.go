@@ -450,6 +450,19 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	if amRelay {
 		resp["amRelay"] = true
 	}
+
+	// Roadmap #5 — Subnet routing. Push the requesting node's route
+	// list down so the agent can write a `tun.unsafe_routes` block in
+	// nebula.yaml on the next reload. Empty list omits the field
+	// (backwards-compatible — older agents ignore it).
+	if routes, _ := h.Nodes.GetRoutes(node.ID); len(routes) > 0 {
+		out := make([]string, 0, len(routes))
+		for _, r := range routes {
+			out = append(out, r.Route)
+		}
+		resp["routes"] = out
+	}
+
 	writeJSON(w, resp)
 }
 

@@ -122,6 +122,7 @@ type Node struct {
 	PeerState           *string
 	AgentVersion        *string
 	ClientType          *string
+	Routes              *string
 }
 
 type Session struct {

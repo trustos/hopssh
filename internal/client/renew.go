@@ -223,6 +223,11 @@ func sendHeartbeat(inst *meshInstance) error {
 		// DNS hostnames). Optional; older server builds omit it.
 		// Stored on inst.peerInfoCache and surfaced via /local/peers.
 		PeerInfo map[string]peerInfoEntry `json:"peerInfo"`
+		// Routes is the per-node subnet-routing list (roadmap #5).
+		// Server-supplied CIDRs the node should advertise as
+		// `tun.unsafe_routes` in nebula.yaml. Backwards-compatible:
+		// older server builds omit; agent leaves existing routes alone.
+		Routes []string `json:"routes,omitempty"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
 		if len(body.PeerEndpoints) > 0 {
@@ -233,6 +238,11 @@ func sendHeartbeat(inst *meshInstance) error {
 		}
 		updatePeerInfoCache(inst, body.PeerInfo)
 		_ = saveRelayState(inst, body.AmRelay, body.Relays)
+		// Apply the routes list. applyRoutesUpdate persists to disk
+		// + writes the unsafe_routes block to nebula.yaml + triggers
+		// a Nebula reload only when the route list actually changed.
+		// No-op when both old and new lists are empty.
+		applyRoutesUpdate(inst, body.Routes)
 		// Persist networkId on first successful heartbeat (or refresh
 		// if the registry value drifted — defensive). Idempotent for
 		// stable enrollments; SetNetworkID returns nil with no write

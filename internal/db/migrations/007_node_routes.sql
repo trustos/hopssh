@@ -1,0 +1,14 @@
+-- Roadmap #5 — Subnet routing.
+--
+-- Per-node CIDR list of "subnets this node will route mesh traffic to."
+-- Empty / NULL means the node is a regular endpoint (not a gateway).
+-- Multiple nodes can advertise overlapping routes; mesh peers pick whichever
+-- happens to be reachable. Routes are pushed to the agent in the heartbeat
+-- response and emitted as Nebula's `tun.unsafe_routes` block on next reload.
+--
+-- JSON shape: array of route objects so we can extend with metric / mtu later
+-- without another migration. Today only `route` (CIDR) is consumed.
+--
+-- Example:
+--   [{"route":"10.0.0.0/16"},{"route":"192.168.50.0/24"}]
+ALTER TABLE nodes ADD COLUMN routes TEXT;

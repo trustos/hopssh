@@ -94,6 +94,10 @@ export const nodes = {
 		request<{ name: string; dnsName: string }>('PATCH', `/api/networks/${e(networkId)}/nodes/${e(nodeId)}`, { name }),
 	updateCapabilities: (networkId: string, nodeId: string, capabilities: string[]) =>
 		request<{ capabilities: string[] }>('PUT', `/api/networks/${e(networkId)}/nodes/${e(nodeId)}/capabilities`, { capabilities }),
+	// Roadmap #5 — Subnet routing. Replaces the full route list for one node.
+	// Empty array clears routes (node stops being a gateway). Owner-only.
+	updateRoutes: (networkId: string, nodeId: string, routes: string[]) =>
+		request<{ routes: string[] }>('PUT', `/api/networks/${e(networkId)}/nodes/${e(nodeId)}/routes`, { routes }),
 	delete: (networkId: string, nodeId: string) =>
 		request<void>('DELETE', `/api/networks/${e(networkId)}/nodes/${e(nodeId)}`),
 	health: (networkId: string, nodeId: string) =>

@@ -188,6 +188,17 @@ func (q *Queries) GetNodeByID(ctx context.Context, id string) (GetNodeByIDRow, e
 	return i, err
 }
 
+const getNodeRoutes = `-- name: GetNodeRoutes :one
+SELECT routes FROM nodes WHERE id = ?
+`
+
+func (q *Queries) GetNodeRoutes(ctx context.Context, id string) (*string, error) {
+	row := q.db.QueryRowContext(ctx, getNodeRoutes, id)
+	var routes *string
+	err := row.Scan(&routes)
+	return routes, err
+}
+
 const heartbeatNode = `-- name: HeartbeatNode :exec
 UPDATE nodes
 SET last_seen_at = unixepoch(),
@@ -585,6 +596,20 @@ UPDATE nodes SET last_seen_at = unixepoch(), status = 'online' WHERE id = ?
 
 func (q *Queries) UpdateNodeLastSeen(ctx context.Context, id string) error {
 	_, err := q.db.ExecContext(ctx, updateNodeLastSeen, id)
+	return err
+}
+
+const updateNodeRoutes = `-- name: UpdateNodeRoutes :exec
+UPDATE nodes SET routes = ? WHERE id = ?
+`
+
+type UpdateNodeRoutesParams struct {
+	Routes *string
+	ID     string
+}
+
+func (q *Queries) UpdateNodeRoutes(ctx context.Context, arg UpdateNodeRoutesParams) error {
+	_, err := q.db.ExecContext(ctx, updateNodeRoutes, arg.Routes, arg.ID)
 	return err
 }
 

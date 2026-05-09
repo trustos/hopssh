@@ -515,6 +515,54 @@ func (s *NodeStore) UpdateCapabilities(id string, caps []string) error {
 	})
 }
 
+// NodeRoute is one entry in a node's `routes` JSON column. Roadmap #5
+// (subnet routing): the node will route mesh traffic to this CIDR.
+// Schema is shaped as an array-of-objects to leave room for extra
+// per-route knobs (metric, mtu) without another migration.
+type NodeRoute struct {
+	Route string `json:"route"`
+}
+
+// UpdateRoutes sets the per-node route list. routes==nil clears the
+// column (NULL) — equivalent to "this node is no longer a gateway."
+// Caller must validate CIDRs before passing in.
+func (s *NodeStore) UpdateRoutes(id string, routes []NodeRoute) error {
+	q := dbsqlc.New(WrapDB(s.wdb))
+	if len(routes) == 0 {
+		return q.UpdateNodeRoutes(context.Background(), dbsqlc.UpdateNodeRoutesParams{
+			Routes: nil,
+			ID:     id,
+		})
+	}
+	b, err := json.Marshal(routes)
+	if err != nil {
+		return err
+	}
+	js := string(b)
+	return q.UpdateNodeRoutes(context.Background(), dbsqlc.UpdateNodeRoutesParams{
+		Routes: &js,
+		ID:     id,
+	})
+}
+
+// GetRoutes returns the per-node route list. Returns (nil, nil) when
+// the node has no routes configured.
+func (s *NodeStore) GetRoutes(id string) ([]NodeRoute, error) {
+	q := dbsqlc.New(WrapDB(s.rdb))
+	raw, err := q.GetNodeRoutes(context.Background(), id)
+	if err != nil {
+		return nil, fmt.Errorf("get node routes: %w", err)
+	}
+	if raw == nil || *raw == "" {
+		return nil, nil
+	}
+	var routes []NodeRoute
+	if err := json.Unmarshal([]byte(*raw), &routes); err != nil {
+		return nil, fmt.Errorf("decode node routes: %w", err)
+	}
+	return routes, nil
+}
+
 func (s *NodeStore) Rename(id, hostname, dnsName string) error {
 	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.RenameNode(context.Background(), dbsqlc.RenameNodeParams{

@@ -177,6 +177,10 @@ func NewRouter(
 		// Node management.
 		r.With(wt).Patch("/api/networks/{networkID}/nodes/{nodeID}", proxyH.RenameNode)
 		r.With(wt).Put("/api/networks/{networkID}/nodes/{nodeID}/capabilities", proxyH.UpdateCapabilities)
+		// Roadmap #5 — Subnet routing. Owner-only PUT replaces the full
+		// route list for the named node; empty list clears the routes.
+		// Routes are pushed to the agent in the next heartbeat response.
+		r.With(wt).Put("/api/networks/{networkID}/nodes/{nodeID}/routes", proxyH.UpdateRoutes)
 		r.With(wt).Delete("/api/networks/{networkID}/nodes/{nodeID}", proxyH.DeleteNode)
 		r.With(wt).Post("/api/networks/{networkID}/nodes/prune", proxyH.PruneOfflineNodes)
 

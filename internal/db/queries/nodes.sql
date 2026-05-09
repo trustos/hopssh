@@ -82,6 +82,12 @@ UPDATE nodes SET dns_name = ?, hostname = ? WHERE id = ?;
 -- name: UpdateNodeCapabilities :exec
 UPDATE nodes SET capabilities = ? WHERE id = ?;
 
+-- name: UpdateNodeRoutes :exec
+UPDATE nodes SET routes = ? WHERE id = ?;
+
+-- name: GetNodeRoutes :one
+SELECT routes FROM nodes WHERE id = ?;
+
 -- name: DeleteNode :exec
 DELETE FROM nodes WHERE id = ?;
 

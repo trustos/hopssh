@@ -12,6 +12,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -1154,6 +1155,92 @@ func (h *ProxyHandler) UpdateCapabilities(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, map[string]interface{}{"capabilities": body.Capabilities})
+}
+
+// UpdateRoutes sets the per-node subnet-routing list. Roadmap #5:
+// network owners designate certain nodes as gateways for non-mesh
+// CIDRs (home LAN, cloud VPC). Routes are pushed to the agent in the
+// next heartbeat response and emitted as Nebula's `tun.unsafe_routes`
+// block on the next config reload.
+//
+// Auth: admin-only (network owner). Same gate as UpdateCapabilities.
+//
+// CIDR validation: rejects malformed input + the loopback / link-local
+// /32s that would route those addresses through the mesh by accident.
+// `0.0.0.0/0` (default route / exit node) is INTENTIONALLY rejected
+// today — exit-node support is roadmap #6 and needs an explicit opt-in
+// flag to avoid users accidentally tunnelling all traffic.
+func (h *ProxyHandler) UpdateRoutes(w http.ResponseWriter, r *http.Request) {
+	_, node, err := h.requireAdmin(r)
+	if err != nil {
+		if err.Error() == "admin access required" {
+			http.Error(w, err.Error(), http.StatusForbidden)
+		} else {
+			http.Error(w, err.Error(), http.StatusNotFound)
+		}
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var body struct {
+		Routes []string `json:"routes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+
+	// Validate each CIDR. Reject defaults / loopback / link-local
+	// to keep the v1 surface narrow — exit-node support is the
+	// follow-up phase that opens these gates with an explicit flag.
+	cleaned := make([]db.NodeRoute, 0, len(body.Routes))
+	seen := map[string]bool{}
+	for _, raw := range body.Routes {
+		c := strings.TrimSpace(raw)
+		if c == "" {
+			continue
+		}
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
+		prefix, perr := netip.ParsePrefix(c)
+		if perr != nil {
+			http.Error(w, "invalid CIDR: "+c, http.StatusBadRequest)
+			return
+		}
+		if prefix.Bits() == 0 {
+			http.Error(w, "default route (0.0.0.0/0) is not allowed in v1 — use exit-node support (roadmap #6) when shipped", http.StatusBadRequest)
+			return
+		}
+		if prefix.Addr().IsLoopback() || prefix.Addr().IsLinkLocalUnicast() || prefix.Addr().IsMulticast() {
+			http.Error(w, "loopback / link-local / multicast routes are not allowed: "+c, http.StatusBadRequest)
+			return
+		}
+		cleaned = append(cleaned, db.NodeRoute{Route: prefix.Masked().String()})
+	}
+
+	if err := h.Nodes.UpdateRoutes(node.ID, cleaned); err != nil {
+		http.Error(w, "failed to update routes: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	h.InvalidateProxyCache(node.NetworkID, node.ID)
+
+	if h.EventHub != nil {
+		h.EventHub.Publish(node.NetworkID, Event{Type: "node.routes", Data: map[string]interface{}{"nodeId": node.ID, "routes": cleaned}})
+	}
+	if h.Events != nil {
+		targetID := node.ID
+		details := jsonDetails(map[string]any{"routes": cleaned})
+		h.Events.Record(node.NetworkID, "node.routes", &targetID, nil, details)
+	}
+
+	out := make([]string, len(cleaned))
+	for i, r := range cleaned {
+		out[i] = r.Route
+	}
+	writeJSON(w, map[string]interface{}{"routes": out})
 }
 
 func (h *ProxyHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
