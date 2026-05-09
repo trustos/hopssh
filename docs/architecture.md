@@ -133,6 +133,166 @@ Capabilities are toggled per-node from the dashboard:
 
 ---
 
+## Multi-network per agent (v0.10.0+)
+
+A single agent process can join 2+ networks simultaneously. Each network is an independent `meshInstance` with its own Nebula CA, lighthouse, DNS domain, listen port, and renewal/heartbeat goroutines.
+
+### On-disk layout
+
+```
+<configDir>/
+  enrollments.json           Index — name → endpoint → network UUID → listen port
+  enrollments.json.bak       Sibling backup (rewritten after every successful save)
+  home/                      Per-enrollment subdir (one per network)
+    node.crt
+    node.key
+    ca.crt
+    nebula.yaml              listenPort = 4242, dev = hop-home
+    agent-token.enc
+    peers.json
+    tun-mode                 "kernel" | "userspace" — runtime-mutable
+  work/
+    nebula.yaml              listenPort = 4243, dev = hop-work
+    ...
+```
+
+### Critical invariants
+
+- **Per-enrollment listen ports.** Each enrollment gets a deterministic port (4242, 4243, 4244, …) allocated by `enrollmentRegistry.NextAvailableListenPort`. Random kernel-assigned ports shift across restarts — defeating NAT-PMP, leaving the lighthouse with stale `udpAddrs`, and hanging direct P2P. The port is persisted in the enrollment registry.
+- **Per-enrollment kernel TUN device names.** On Linux, two instances cannot both create `nebula1` (EEXIST). Each enrollment writes `dev: hop-<enrollment>` into its `nebula.yaml`, truncated to IFNAMSIZ=15. macOS ignores this knob (kernel auto-allocates `utunN`) but Linux + Windows require unique names.
+- **PKI paths re-resolved on every boot.** `ensureP2PConfig` rewrites `pki.ca/cert/key` in `nebula.yaml` to match `inst.dir()` on every start — idempotent for correct configs, self-healing for migrated/drifted ones.
+- **Same-network duplicate rejection.** `existingEnrollmentForNetwork(reg, endpoint, caFingerprint)` blocks a second enroll into the same network, even if the user picks a different local name.
+- **Live runtime add/remove (v0.10.34).** `POST /local/connect` and `POST /local/disconnect` add/remove instances without restarting the agent. Wires through `connectFn`/`disconnectFn` callbacks from `runServe` into the local API. Failure during runtime connect propagates an error instead of `log.Fatal`-ing.
+
+### Why N-instance-per-network is the canonical model
+
+Defined Networking's [multi-network guide](https://www.defined.net/blog/multiple-networks/) and Nebula's own design require this shape — single-instance multi-overlay has been requested upstream since 2020 ([slackhq/nebula#235](https://github.com/slackhq/nebula/issues/235), [#251](https://github.com/slackhq/nebula/issues/251), [#306](https://github.com/slackhq/nebula/issues/306)) with no implementation. The blockers are in Nebula's trust model (per-overlay lighthouse subnet check, per-instance firewall scope), not in our code. A `pki.ca` PEM bundle of multiple CAs is for CA rotation — it does NOT enable joining multiple overlays from one instance.
+
+---
+
+## Three-watchdog reliability architecture
+
+Three independent watchdogs cover three distinct silent-failure modes. All three share the same primitive: **stamp + age threshold + cooldown + restartFn**, where `restartFn` closes over the v0.10.34 lifecycle infrastructure (close old svc, reconnect a fresh `meshInstance`).
+
+| Watchdog | Detects | Stamp | Threshold | Shipped |
+|---|---|---|---|---|
+| **Renewal silent-death** | Renewal goroutine wedged or panicked | `lastRenewalActivityAt` (top of every renewal tick + before/after each POST) | `expectedCertValidity / 4` (~6h on 24h certs) | Phase P (v0.10.79) |
+| **Stuck data plane** | Mesh has peers but every probe fails | `peers > 0 && probed > 0 && succeeded == 0` for `watchdogStuckThreshold` (3) cycles | ~4.5 min of confirmed stuck-state | v0.10.36 |
+| **watcher wedge** | `watchNetworkChanges` deadlocked inside vendor Nebula call | `lastWatcherActivityAt` (top of every tick body) | 3 minutes | Phase DD (v0.10.96) |
+
+### Common shape (cmd/agent/{renew,keepalive,watcher}_watchdog.go)
+
+```go
+// All three follow the same structure:
+//   1. Long-running goroutine stamps activity at the TOP of every iteration.
+//   2. Watchdog goroutine ticks every 30s, compares stamp age to threshold.
+//   3. On trip: write goroutine pprof dump to <configDir>/<name>/<class>-stuck-<ts>.txt,
+//      log CRITICAL, invoke inst.restartFn (subject to 5-min cooldown).
+//   4. inst.restartFn closes over connectFn(name) — the v0.10.34 lifecycle that
+//      tears down the dead instance and starts a fresh meshInstance from disk.
+```
+
+### Why three separate watchdogs
+
+The three classes can fail independently. Phase P's renewal watchdog protects only `lastRenewalActivityAt`. v0.10.36's keepalive watchdog requires `peers > 0` (false for hours after the lighthouse-filter post-Phase V left only one peer that drifted offline). Phase DD's watcher wedge at `cmd/agent/nebula.go:272-273` (vendor `RebindUDPServer` / `CloseAllTunnels` deadlock) leaves heartbeat firing fine — UI shows green, mesh is dead. Each pair of stamps is orthogonal; one watchdog cannot substitute for another.
+
+### Hard timeouts on vendor Nebula calls (Phase DD F2)
+
+`watchNetworkChanges`'s rebind block wraps `RebindUDPServer` and `CloseAllTunnels` in `runWithTimeout(name, label, 5*time.Second, fn)` so the watcher self-recovers without needing F1's auto-restart in the common case. The leaked goroutine on timeout is the accepted cost — alternative is the entire watcher wedging for hours. `defer recover()` only catches panics, not deadlocks; only timeouts catch this.
+
+### UI honesty axis (Phase DD F3)
+
+`enrollmentStatus.Connected` derives from `certValid && watcherAlive && (activeFlow || recentHeartbeat)`. Without `watcherAlive`, UI shows green for hours while the data plane is dead because heartbeat is on a separate goroutine and stays fresh. The `recentHeartbeat` axis alone does NOT protect against this; only watcher-stamp freshness does.
+
+See [`docs/wiki/concepts/watchdog.md`](wiki/concepts/watchdog.md) for the full design + per-watchdog forensic dump format.
+
+---
+
+## System-mode mirror handoff (macOS)
+
+The macOS desktop client's mental model: bundled child agent (`hopssh.app/Contents/Resources/binaries/hop-agent`) for first-run, opt-in upgrade to a system-mode `LaunchDaemon` (`/Library/LaunchDaemons/com.hopssh.agent.plist`) that owns the mesh state-of-record and runs as root with kernel-utun. Both modes expose a loopback HTTP local-API; the .app must attach to whichever is live.
+
+### Mirror files
+
+When the LaunchDaemon (or any system-mode agent) starts, it writes two files into the user's home:
+
+```
+~/Library/Application Support/hopssh/
+  system-local-api-port    Mode 0644 — readable by the user (PID:port:expiry)
+  system-local-api-token   Mode 0600 — bearer token, owner-readable only
+```
+
+The `.app`'s Tauri shell reads these on launch and on file-change events (notify crate kqueue). Phase X's TCP-probe (`endpoint_alive`) validates the cached endpoint before treating it as healthy — kernel sockets can be silently dead even when "still set" in a state pool. Phase W's 10×100ms retry budget (`try_attach_to_system_agent`) handles the launch race where the daemon is mid-respawn.
+
+### Boot-before-login chown self-heal (Phase Z)
+
+Mirror files are user-owned (so the .app can read them) but the LaunchDaemon runs as root. `chownMirrorFiles` resolves the chown target via two-layer fallback: (1) `resolveConsoleUser` if `/dev/console` is owned by a real user; (2) stat the mirror dir's owner (created by the user during `hop-agent install --migrate-from`, so dir owner = correct chown target — independent of `/dev/console` state). This catches the boot-before-login window where `/dev/console` is root-owned. `runMirrorChownSelfHeal` (30s tick) re-runs the chown if files revert to root-owned — once chown succeeds the loop becomes a no-op.
+
+### Lifecycle
+
+| Event | What happens |
+|---|---|
+| .app launch, mirror files exist | Tauri's `try_attach_to_system_agent` reads files, TCP-probes the port, attaches |
+| .app launch, mirror files missing | Spawn bundled child agent (gvisor userspace, runs as user) |
+| LaunchDaemon restart (kickstart, dev-deploy, crash) | Mirror files atomic-rewrite with new port + token; notify watcher fires; .app re-attaches |
+| Notify event missed | Phase X periodic re-probe (5s for first 60s, 30s after) catches it |
+| User clicks Retry on Disconnected screen | `retry_attach_system_agent` Tauri command forces explicit re-probe |
+| convert_to_system_service | Spawn `osascript … with administrator privileges` script that installs LaunchDaemon, kicks bundled child to die, .app re-attaches via `agent-ready` event |
+| revert_to_bundled | Daemon stop + uninstall, mirror files removed, .app re-spawns bundled child |
+| uninstall_hopssh_full | Disable autostart (Phase AA F2) BEFORE running privileged uninstall script — plugin's `disable()` removes plist AND unloads from launchd; just deleting the file leaves a brief window where launchd has it loaded |
+
+See [`docs/wiki/concepts/macos-system-mode.md`](wiki/concepts/macos-system-mode.md) for the full handoff diagram + mirror-token rotation.
+
+---
+
+## Desktop client architecture (macOS, v0.10.85+)
+
+Tauri 2 + Svelte 5 menubar app. Sidecar `hop-agent` binary (bundled in `hopssh.app/Contents/Resources/binaries/`). Cross-platform Svelte UI; per-platform Rust shell wraps OS-specific machinery.
+
+### Process model
+
+```
+hopssh.app (PID 1)
+├── Tauri 2 Rust shell (lib.rs)
+│   ├── Tray icon (NSStatusItem, template-mode)
+│   ├── Menubar window (Svelte UI hosted by WKWebView)
+│   ├── Optional Terminal webview windows (one per peer SSH session)
+│   └── 22 Tauri commands exposed to JS (status, enroll, leave, set_*, …)
+└── Bundled mode only:
+    └── hop-agent child (gvisor userspace, runs as user)
+        └── Loopback local-API on 127.0.0.1:RAND port
+
+System-mode (post-convert):
+hopssh.app (PID N)         /Library/LaunchDaemons/com.hopssh.agent.plist
+├── Rust shell                ↓
+└── Reads mirror files     hop-agent (root, kernel-utun)
+    + attaches               └── Loopback local-API on 127.0.0.1:RAND port
+```
+
+### Critical features (Phase V → II.4)
+
+| Feature | Phase | Mechanism |
+|---|---|---|
+| Member-role enrollment | V (v0.10.85) | Server's `/api/enroll`/`/api/device/authorize` relaxed from `CanAccessNetwork` to `CanEnrollNode`; `existingEnrollmentForNetwork` prevents orphan nodes |
+| Stale endpoint recovery | X (v0.10.89) | TCP-probe `endpoint_alive` validates cached endpoint before treating as healthy |
+| Autostart on login | Y (v0.10.90) | tauri-plugin-autostart writes `~/Library/LaunchAgents/com.hopssh.desktop.plist`; auto-enable on first convert-to-system if `start_at_login_explicit == false` |
+| OS Settings → Login Items registers desktop autostart | Y | `hop-agent install` + LaunchDaemon's `RunAtLoad: true` are *agent* persistence; the .app needs its own LaunchAgent — these are decoupled by design |
+| Self-heal mirror chown | Z (v0.10.91) | `chownMirrorFiles` two-layer fallback + `runMirrorChownSelfHeal` 30s loop |
+| Three-watchdog ride-along | DD (v0.10.96) | UI flips to "agent connection issue — recovering automatically" within ~30s of watcher silence |
+| In-app Activity tab | FF (v0.10.98) | Subscribes to agent's existing SSE event stream; ring buffer ~100 events |
+| Diagnostics tools | GG (v0.10.99) | "View agent logs" → `osascript` Console.app filtered to hopssh process |
+| Read-only DNS records | HH (v0.11.0) | Surfaces records via existing peer-info data flow; "Manage in dashboard" link for create/delete |
+| In-app Terminal | II.3 (v0.11.3) | `open_terminal_webview` Tauri command opens new webview pointed at dashboard's `/terminal/{networkId}/{nodeId}` route, cookie-shared with main window |
+| OS brand-mark icons | II.4 (v0.11.4) | Inline SVG (Apple/Tux/Windows-pane) on desktop and dashboard peer rows; `title=` tooltip on desktop + shadcn `<Tooltip>` on dashboard |
+
+### Why webview Terminal (Phase II.3) over xterm.js shipped inside the .app
+
+Reuse-the-existing-component path. The dashboard already ships a working xterm.js + WebSocket-proxy at `/terminal/{networkId}/{nodeId}`. Tauri webviews share cookie storage with the main window, so first-launch login persists. Three benefits over re-implementing in the .app: (1) one Svelte UI codebase across desktop + dashboard; (2) WebSocket auth uses the same session cookie path the dashboard already uses; (3) the dashboard's terminal route ships in lockstep with the .app — no version skew between two implementations.
+
+See [`docs/wiki/concepts/desktop-client.md`](wiki/concepts/desktop-client.md) for the 22-command Tauri command catalog + post-ship-update inventory.
+
+---
+
 ## Data Model
 
 ```sql

@@ -26,10 +26,15 @@ Authoritative gate for the public 0.12.0 / 1.0 release. Items below are organize
 
 ### Distribution + signing
 
-- [ ] **Apple Developer Program account** — required for proper notarization. Currently shipping ad-hoc-signed `.app` via `curl install-mac.sh` Gatekeeper bypass. Works but not the recommended path for public release.
-- [ ] **Notarization pipeline** — `xcrun notarytool submit` + `xcrun stapler staple` in CI. Will resolve the Sequoia/Tahoe Gatekeeper friction on DMG path (curl-pipe path stays as the install-script alternative).
-- [ ] **Cross-platform desktop builds** — currently macOS-only. Per `docs/wiki/decisions/client-windows-linux-architecture.md` the Windows + Linux desktop work is planned but not yet started. **Release decision**: ship 1.0 with macOS-only desktop and Linux/Windows in 1.1, OR delay 1.0 until cross-platform is ready. Recommend the former — Mac-only is honest about the user base and the agent already runs everywhere via CLI.
-- [x] **Curl-pipeable installer** — `curl https://hopssh.com/install-mac.sh | bash` works (per `internal/api/distribution.go`).
+Notarization unblocks the DMG drag-to-Applications install path; the curl-pipe path keeps working independently. Notarization is a numbered-prerequisite chain — each step depends on the previous.
+
+1. [ ] **Apple Developer Program account** ($99/yr). **BLOCKED ON USER** — Apple ID must enroll at https://developer.apple.com/programs/. Without this, every step below is unreachable.
+2. [ ] **Developer ID Application certificate** — issued via Apple Developer portal (Certificates → Production → Developer ID Application), `.p12` exported, base64-encoded into CI as `APPLE_CERTIFICATE_BASE64`.
+3. [ ] **Hardened runtime + entitlements** — `clients/desktop/src-tauri/tauri.conf.json::bundle.macOS.hardenedRuntime: true` and an `entitlements.plist` listing at minimum `com.apple.security.network.{client,server}`.
+4. [ ] **CI secrets populated** — `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_APP_PASSWORD` (app-specific password from Apple ID), `APPLE_CERTIFICATE_PASSWORD`. All wired into `.github/workflows/release-desktop.yml`.
+5. [ ] **`xcrun notarytool submit ... --wait` + `xcrun stapler staple`** in the release pipeline. Resolves Sequoia/Tahoe Gatekeeper friction on the DMG path. See [`docs/wiki/runbooks/notarization-pipeline.md`](wiki/runbooks/notarization-pipeline.md) for the full runbook.
+6. [ ] **Cross-platform desktop builds** — currently macOS-only. Per `docs/wiki/decisions/client-windows-linux-architecture.md` the Windows + Linux desktop work is planned but not yet started. **Release decision**: ship 1.0 with macOS-only desktop and Linux/Windows in 1.1, OR delay 1.0 until cross-platform is ready. Recommend the former — Mac-only is honest about the user base and the agent already runs everywhere via CLI.
+- [x] **Curl-pipeable installer** — `curl https://hopssh.com/install-mac.sh | bash` works (per `internal/api/distribution.go`). Independent of notarization (curl-downloaded files have no `com.apple.quarantine` xattr — Gatekeeper has no quarantine to gate against).
 
 ## Should-have (highly recommended)
 

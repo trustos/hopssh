@@ -2,13 +2,32 @@
 type: decision
 title: macOS client architecture — Tauri shell + sidecar hop-agent
 status: accepted
-last_compiled: 2026-05-07
+last_compiled: 2026-05-09
 sources:
   - clients/desktop/src-tauri/src/lib.rs
   - clients/desktop/src-tauri/src/agent.rs
   - clients/desktop/src/App.svelte
   - cmd/agent/migrate.go (system-mode handoff)
-shipped: v0.10.96
+shipped: v0.11.4
+---
+
+## Post-ship updates (Phase EE → II.4 + KK, 2026-05-08 → 2026-05-09)
+
+After this ADR's last_compiled date (2026-05-07), the following phases shipped on top of the macOS baseline. They didn't change any architectural decision in the body below; they added capabilities on the already-decided foundation. The ADR remains accepted; this section makes the post-ADR evolution visible without rewriting earlier reasoning.
+
+| Phase | Version | Capability |
+|---|---|---|
+| EE | v0.10.97 | Polish bundle: prefs corruption logging, account identity in Connected.svelte, disabled-button tooltips, onboarding error specificity, post-uninstall blocking overlay |
+| FF | v0.10.98 | In-app Activity view (SSE event ring buffer, filter by network) |
+| GG | v0.10.99 | Diagnostics in Settings → About: View agent logs (Console.app filter) + Copy diagnostic info |
+| HH | v0.11.0 | Read-only DNS records section in Connected, "Manage in dashboard" link for owner-gated writes |
+| II | v0.11.1 | osascript SSH-to-peer (stopgap, superseded same day) |
+| II.2 | v0.11.2 | Peer row OS icons (initial inline-SVG pass) + lighthouse special-case (no SSH/Terminal action) |
+| II.3 | v0.11.3 | In-app Terminal via Tauri webview pointed at dashboard's `/terminal/{networkId}/{nodeId}` route, cookie-shared |
+| II.4 | v0.11.4 | OS brand-mark icons + tooltips (native HTML `title=` on desktop, shadcn `<Tooltip>` on dashboard) |
+| KK | (no version) | Adopted Karpathy behavioral guidelines into CLAUDE.md + as `.claude/skills/karpathy-guidelines/SKILL.md` |
+
+For the canonical phase-letter→version→commit table see [`docs/wiki/phases/phase-ledger.md`](../phases/phase-ledger.md). For the live capability inventory see [[../concepts/desktop-client]].
 ---
 
 # macOS client architecture — Tauri shell + sidecar hop-agent

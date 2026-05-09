@@ -2,7 +2,7 @@
 type: decision
 title: Windows + Linux desktop client architecture (delta on top of macOS)
 status: proposed
-last_compiled: 2026-05-07
+last_compiled: 2026-05-09
 sources:
   - cmd/agent/wintun
   - cmd/agent/service_windows.go
@@ -291,6 +291,29 @@ Stamp + threshold + cooldown + restartFn for each long-running goroutine doing l
 **Apply universally:** the agent code is identical across desktop platforms — the three watchdogs already work on Windows + Linux. The only Windows/Linux delta: forensic dump path conventions. macOS writes to `<configDir>/<network>/<class>-stuck-<ts>.txt`; Windows uses `%PROGRAMDATA%\hopssh\<network>\` for system-mode service, Linux uses `/var/lib/hopssh/<network>/`. Existing `inst.dir()` already abstracts this.
 
 See [[../concepts/watchdog]] for the three-watchdog architecture, [[../incidents/2026-05-07-mbp-watcher-wedge]] for the motivating incident, and [[../concepts/desktop-client]] for the macOS shipped state these lessons came from.
+
+## Lessons from macOS Phase EE → II.4 (2026-05-08 → 2026-05-09)
+
+These shipped after the previous "Lessons" section was last compiled. They build on the Phase V→DD foundations rather than replacing any of them. Patterns are listed as cross-platform applicability tables — most are universal because the Svelte UI is shared; only platform-specific machinery differs.
+
+| Phase | Pattern | Cross-platform applicability |
+|---|---|---|
+| EE F1 | `desktop-prefs.json` corruption logging instead of silent fallback | All — Tauri prefs file path differs per OS but the corruption-logged-not-eaten pattern is universal |
+| EE F2 | Account identity affordance in Connected.svelte | All — `os.Hostname()` works everywhere; the Svelte component is shared |
+| EE F3 | Disabled-button tooltips with reason copy | All — native HTML `title=` works in WebView2 (Windows) and WebKitGTK (Linux) too |
+| EE F4 | Onboarding error specificity (preserve agent error message) | All — same Svelte component + same agent error returns |
+| EE F5 | Post-uninstall blocking overlay + state cleanup | All; **Windows** uses `MsiExec.exe /x` not `osascript`, **Linux** uses `apt remove` / `dnf remove` / AppImage delete, but the UX pattern (auto-redirect to a blocking quit overlay + clear in-memory state) is uniform |
+| FF | In-app Activity view (SSE event ring buffer) | All — Svelte component + agent SSE stream are platform-independent |
+| GG | Diagnostics: View agent logs + Copy diagnostic info | **Per-platform**: macOS=Console.app via `osascript`; Windows=Event Viewer or `wevtutil qe` to a temp file then open Notepad; Linux=`journalctl --user-unit=hopssh -e` piped to a viewer or open `/var/log/hop-agent.log` in the user's `$EDITOR`. The "Copy diagnostic info" assemble-and-copy flow is universal. |
+| HH | Read-only DNS records section + "Manage in dashboard" link | All — the DNS data is in peer-info regardless of platform |
+| II.3 | In-app Terminal via Tauri webview pointed at dashboard's `/terminal/` route | All — Tauri's webview API is cross-platform; cookie storage is shared across webviews on every desktop platform |
+| II.4 | OS brand-mark icons + tooltips on peer rows | All — inline SVG renders identically; `title=` tooltip on desktop, shadcn `<Tooltip>` on dashboard |
+| KK | Karpathy behavioral guidelines vendored into CLAUDE.md + skill | Process-only; not a code feature |
+
+**Items that DO NOT cross-port directly:**
+- **Phase EE F5's macOS-specific osascript-driven uninstall** stays macOS-only. Windows uses `MsiExec.exe /x{ProductGUID}` (or the registry-driven Add/Remove Programs flow); Linux uses the package manager that installed the app. The uninstall *flow* (disable autostart first, then run privileged uninstall, then clear UI state) is universal.
+- **Phase II.3's dashboard-webview cookie share** works on all desktop platforms (cookies are scoped to the bundled WebView's profile dir on each), but uses different underlying webviews (WKWebView on macOS, WebView2 on Windows, WebKitGTK on Linux). Tauri abstracts this; verify cookie persistence on each platform during the cross-platform-build phase.
+- **Phase GG diagnostic-tools** explicitly need per-platform implementations as listed in the table above. The Svelte component dispatches to a platform-keyed Tauri command.
 
 Shared:
 11. **Download page layout at hopssh.com**: one "Download" button that sniffs UA and offers the right file, vs a table with all 5 platforms + architectures explicit. **Recommend** smart default + explicit table below for "other platforms". Matches Tailscale's pattern.

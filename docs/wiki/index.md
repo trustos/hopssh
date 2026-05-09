@@ -74,6 +74,7 @@ Symptom → action operational wisdom.
 
 - [[runbooks/mesh-dead-kickstart]] — kick the LaunchDaemon when the mesh appears dead but the agent is running
 - [[runbooks/refresh-system-mode-binary]] — Phase J workaround: manually refresh `/usr/local/bin/hop-agent` from the .app
+- [[runbooks/notarization-pipeline]] — macOS Developer ID + notarytool + stapler pipeline (planning; blocked on Apple Developer Program enrollment)
 
 ## How this maps to existing files
 

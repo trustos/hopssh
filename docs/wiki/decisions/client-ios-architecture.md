@@ -2,7 +2,7 @@
 type: decision
 title: iOS client architecture — Tauri main app + Network Extension + gomobile xcframework
 status: proposed
-last_compiled: 2026-05-07
+last_compiled: 2026-05-09
 sources:
   - cmd/agent/client.go (model for mobilehop.NewClient)
   - cmd/agent/nebula.go (model for in-extension network-change handling)
@@ -29,9 +29,16 @@ The reasoning that produced this decision came from:
 
 ## Status
 
-**Proposed.** Substrate-blocked: requires `internal/client/` refactor (extracting `cmd/agent/{client,enroll,nebula,renew}.go` into a shared package) + a new `clients/mobile-go/mobilehop/` gomobile binding that compiles to `MobileHop.xcframework`. Verified 2026-05-07: `internal/client/` does not exist yet; no `.xcframework` artifacts on disk.
+**Proposed. Substrate-blocked.** Re-verified 2026-05-09: `internal/client/` directory still does not exist; no `.xcframework` artifacts on disk; no `clients/mobile-go/` tree. iOS work cannot start until the substrate is built.
 
-Apple Developer Program ($99/yr) + Network Extension entitlement (1-2 week separate review beyond App Store review) are external prerequisites.
+Required substrate (none of these exist as of 2026-05-09):
+- `internal/client/` — shared package extracted from `cmd/agent/{client,enroll,nebula,renew}.go`. The same package will back the Android client and any future mobile/embedded targets.
+- `clients/mobile-go/mobilehop/` — gomobile binding compiling the shared package to `MobileHop.xcframework`.
+- iOS Network Extension scaffolding inside `clients/desktop/src-tauri/` (PacketTunnelProvider target + entitlements + App Group config).
+
+External prerequisites:
+- Apple Developer Program account ($99/yr) — see [`docs/wiki/runbooks/notarization-pipeline.md`](../runbooks/notarization-pipeline.md) for the same enrollment that gates macOS notarization.
+- Network Extension entitlement — Apple grants this on a per-team basis after a 1-2 week review separate from App Store review.
 
 See [[../concepts/client-strategy]] for the overall 5-platform strategy and [[client-macos-architecture]] for the desktop peer.
 
@@ -443,3 +450,23 @@ The mobile gomobile core inherits the renewal + watcher watchdogs through `inter
 **Hard timeouts on vendor-Nebula calls:** Phase DD added `runWithTimeout` wrappers around `RebindUDPServer` + `CloseAllTunnels` because deadlocks aren't panics and `defer recover()` doesn't catch them. The same wrappers carry over to `mobilehop.Rebind()` callers. The Network Extension's NWPathMonitor → Rebind path MUST use the timeout-wrapped version to prevent a wedged Rebind from killing the entire extension's path-change handling.
 
 See [[../concepts/desktop-client]] for the macOS shipped state these lessons came from.
+
+## Lessons from macOS Phase EE → II.4 (2026-05-08 → 2026-05-09)
+
+Polish + diagnostics + UI features that shipped after the previous "Lessons" section was last compiled. The Svelte UI is shared, so most patterns port automatically; the iOS-specific deltas are in the table below.
+
+| Phase | Pattern | iOS applicability |
+|---|---|---|
+| EE F1 | desktop-prefs.json corruption logging | All — but iOS uses `UserDefaults` (suite name keyed to App Group), not a JSON file; same "log warning, fall back to defaults" discipline applies |
+| EE F2 | Account identity in Connected.svelte | All — iOS reads device name via `UIDevice.current.name` (or shows the App Group user identity); component is shared |
+| EE F3 | Disabled-button tooltips | **iOS-specific delta**: native HTML `title=` doesn't surface on iOS Safari/WKWebView taps. Replace with iOS-native popover (`UIPopoverPresentationController` shim called from JS via Tauri) OR a tap-to-toast pattern. The intent ("user always knows why a control is disabled") is universal; the mechanism is platform-keyed. |
+| EE F4 | Onboarding error specificity | All — same Svelte component + same error returns (just travel through `mobilehop.Enroll()` instead of HTTP) |
+| EE F5 | Post-uninstall blocking overlay | **N/A on iOS** — uninstall = user deletes the app from Home Screen; iOS handles atomically. No app-side cleanup flow needed. |
+| FF | In-app Activity view (SSE event ring buffer) | All — but **iOS-specific delta**: SSE doesn't work over a Network Extension's containment boundary. Activity events bridge from extension → app via `IPCConnection` (Apple's recommended NEMachServiceName) or shared App Group container file. Ring buffer + Svelte component unchanged. |
+| GG | Diagnostics (View logs + Copy info) | **iOS-specific delta**: no Console.app analogue. View logs = render shared App Group file in an in-app text viewer; ⤴ Share sheet to email / messages / AirDrop for support tickets. "Copy diagnostic info" works identically. |
+| HH | Read-only DNS records + Manage in dashboard | All — opens the dashboard URL in `SFSafariViewController` (or system browser) for write operations, since the .app's WKWebView already authenticates via cookie share for the Terminal flow |
+| II.3 | In-app Terminal via webview pointed at dashboard's `/terminal/` route | All — `WKWebView` + Tauri's iOS support handles cookie share automatically. Verify on iPad screen sizes (xterm.js viewport keyboard interactions are the largest QA risk — already noted in §iOS-specific risks above) |
+| II.4 | OS brand-mark icons + tooltips | All — inline SVG renders in WKWebView identically; replace tooltip mechanism per EE F3 row above |
+| KK | Karpathy behavioral guidelines | Process-only; no code change |
+
+**Substrate-not-built reminder.** All of the above iOS items are paper-blocked on `internal/client/` + `MobileHop.xcframework` not existing. Do not start Phase EE→II.4 iOS port work until the substrate ships. Re-verify with `ls internal/client/ clients/mobile-go/` before starting.

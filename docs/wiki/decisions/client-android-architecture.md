@@ -2,7 +2,7 @@
 type: decision
 title: Android client architecture — Tauri + VpnService foreground + gomobile aar
 status: proposed
-last_compiled: 2026-05-07
+last_compiled: 2026-05-09
 sources:
   - cmd/agent/client.go
   - cmd/agent/nebula.go
@@ -30,9 +30,16 @@ The reasoning that produced this decision came from:
 
 ## Status
 
-**Proposed.** Substrate-blocked: requires `internal/client/` refactor + a new `clients/mobile-go/mobilehop/` gomobile binding compiling to `mobilehop.aar`. Verified 2026-05-07: `internal/client/` does not exist yet; no `.aar` artifacts on disk.
+**Proposed. Substrate-blocked.** Re-verified 2026-05-09: `internal/client/` directory still does not exist; no `.aar` artifacts on disk; no `clients/mobile-go/` tree. Android work cannot start until the substrate is built (the same substrate that gates iOS — see [[client-ios-architecture]] § Status).
 
-Google Play Console ($25 one-time) + Play Store VPN policy review (1-3 days typical, 7-14 days for first submission) are external prerequisites.
+Required substrate (none of these exist as of 2026-05-09):
+- `internal/client/` — shared package extracted from `cmd/agent/{client,enroll,nebula,renew}.go`. Same package backs the iOS client.
+- `clients/mobile-go/mobilehop/` — gomobile binding compiling the shared package to `mobilehop.aar`.
+- Android VpnService scaffolding inside `clients/desktop/src-tauri/gen/android/` (HopsshVpnService Kotlin class + manifest entries + permissions).
+
+External prerequisites:
+- Google Play Console ($25 one-time) — required to publish to Play Store.
+- Play Store VPN policy review (1-3 days typical, 7-14 days for first submission) — Google reviews VPN apps for misuse before allowing publication.
 
 See [[../concepts/client-strategy]] for the overall 5-platform strategy and [[client-ios-architecture]] for the mobile peer (iOS architecture is more complex — App Groups + Keychain sharing — Android shares everything in-process).
 
@@ -485,3 +492,23 @@ The mobile gomobile core inherits the renewal + watcher watchdogs through `inter
 **Forensic dump path:** `<filesDir>/<network>/<class>-stuck-<ts>.txt` (Android's app-private files dir). Existing `inst.dir()` already abstracts this — the gomobile core works without modification.
 
 See [[../concepts/watchdog]] for the three-watchdog architecture, [[../incidents/2026-05-07-mbp-watcher-wedge]] for the motivating incident, and [[../concepts/desktop-client]] for the macOS shipped state these lessons came from.
+
+## Lessons from macOS Phase EE → II.4 (2026-05-08 → 2026-05-09)
+
+Polish + diagnostics + UI features that shipped after the previous "Lessons" section was last compiled. The Svelte UI is shared, so most patterns port automatically; the Android-specific deltas are in the table below.
+
+| Phase | Pattern | Android applicability |
+|---|---|---|
+| EE F1 | desktop-prefs.json corruption logging | All — Android uses `SharedPreferences` (or DataStore) instead of a JSON file; same "log warning, fall back to defaults" discipline |
+| EE F2 | Account identity in Connected.svelte | All — Android reads `Settings.Global.DEVICE_NAME` or App Group user identity; component is shared |
+| EE F3 | Disabled-button tooltips | **Android-specific delta**: native HTML `title=` doesn't surface on Android WebView taps. Replace with Material Tooltip (`com.google.android.material.tooltip.Tooltip`) bridged from JS via Tauri command, OR a tap-to-toast pattern. Same intent as iOS EE F3 row. |
+| EE F4 | Onboarding error specificity | All — same Svelte component + same error returns (just travel through `mobilehop.Enroll()` instead of HTTP) |
+| EE F5 | Post-uninstall blocking overlay | **N/A on Android** — uninstall = user removes from app drawer / Settings → Apps; Android handles atomically (clears app private dirs, revokes VpnService permission). No app-side cleanup flow needed. |
+| FF | In-app Activity view (SSE event ring buffer) | All — but **Android-specific delta**: SSE within a single process works fine; the event source is the in-process gomobile instance, not an HTTP endpoint, so subscription is a direct callback. Ring buffer + Svelte component unchanged. |
+| GG | Diagnostics (View logs + Copy info) | **Android-specific delta**: no Console.app. View logs = render `<filesDir>/hop-agent.log` in an in-app text viewer; share via Android share sheet for support tickets. "Copy diagnostic info" works identically. |
+| HH | Read-only DNS records + Manage in dashboard | All — opens dashboard URL in Custom Tabs (preferred) or system browser for write operations |
+| II.3 | In-app Terminal via webview pointed at dashboard's `/terminal/` route | All — Android WebView + Tauri's Android support shares cookie storage with the main webview; verify on tablet screen sizes (xterm.js viewport keyboard interactions are the largest QA risk per §Android-specific risks) |
+| II.4 | OS brand-mark icons + tooltips | All — inline SVG renders in Android WebView identically; replace tooltip mechanism per EE F3 row above |
+| KK | Karpathy behavioral guidelines | Process-only; no code change |
+
+**Substrate-not-built reminder.** All of the above Android items are paper-blocked on `internal/client/` + `mobilehop.aar` not existing. Do not start Phase EE→II.4 Android port work until the substrate ships. Re-verify with `ls internal/client/ clients/mobile-go/` before starting.
