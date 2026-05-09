@@ -1,27 +1,50 @@
 # hopssh — Product Roadmap
 
-*Last updated: 2026-04-19*
+*Last updated: 2026-05-09*
+
+> Per-phase ledger of every shipped phase + version + commit lives at [`docs/wiki/phases/phase-ledger.md`](wiki/phases/phase-ledger.md). This roadmap is the forward-looking strategy doc; the ledger is the historical record.
 
 ---
 
 ## Current State
 
-hopssh is a working encrypted mesh networking platform. Phase 1 (mesh core) is complete. See [features.md](features.md) for the full inventory of shipped capabilities.
+hopssh is a working encrypted mesh networking platform. Phase 1 (mesh core) is complete and Phase 2A (selfhoster delight) has shipped substantial pieces. See [features.md](features.md) for the full shipping inventory and [the phase ledger](wiki/phases/phase-ledger.md) for version-by-version history.
 
 **What ships today:**
 - Self-hosted single binary (API + web UI + SQLite + lighthouse + relay + DNS)
 - P2P mesh networking on Nebula with per-network CA isolation
+- **Multi-network per agent** (Phases A–E, April 2026) — one host can join 2+ networks; per-enrollment subdirs + DNS + listen ports
 - Web terminal (browser-based PTY through the mesh)
 - Port forwarding and HTTP proxy to node-local services
-- 4 enrollment modes (device flow, token, bundle, client join)
+- 4 enrollment modes (device flow, token, bundle, client join) + member-role enrollment (Phase V, v0.10.85)
 - Built-in DNS with user-defined domains per network
 - Teams with invite links, admin/member roles, network sharing
 - Audit logging, real-time WebSocket events, persistent activity log with search/filter/time-range, self-update
 - Per-node P2P / relay badge + per-peer drill-down table + network topology diagram (cytoscape)
-- Control plane + per-agent version surfaced in the dashboard with drift highlight
+- Control plane + per-agent version surfaced in the dashboard with drift highlight; `/version` reports `max(current, fetched)` (Phase CC) so the dashboard's update banner doesn't flash stale during release windows
+- **Three-watchdog agent architecture** (renewal silent-death watchdog Phase P; data-plane stuck watchdog v0.10.36; watchNetworkChanges wedge watchdog Phase DD) — every long-running goroutine doing load-bearing work has activity-stamping + restart-on-silence + forensic dump
+- **Sleep-wake-survival cert renewal** (Phase S) — `time.NewTicker(60s)` re-reading wall-clock NotAfter survives macOS Clamshell-Sleep / DarkWake
+- **macOS desktop client** (Tauri 2 + Svelte 5, Phase A→II.4) — menubar app with autostart on login (Phase Y), system-mode toggle, in-app Terminal via dashboard webview (Phase II.3), Activity tab (Phase FF), diagnostics in Settings → About (Phase GG), DNS records read-only view (Phase HH), OS brand-mark icons + lighthouse special-case (Phases II.2/II.4)
 - Docker, systemd, launchd, non-root agent, cross-platform releases
 - macOS batch syscalls (`sendmsg_x`/`recvmsg_x`) — 17% → 35-53% tunnel efficiency
 - macOS TUN batch reads, control-lane priority queue, TUN buffer caching, AES-GCM default
+
+## Recent Releases (v0.10.79 → v0.11.4, 2026-05-02 → 2026-05-09)
+
+Eight days, ~30 tagged ships, focused on desktop client polish + reliability watchdogs + multi-network maturation. See the [phase ledger](wiki/phases/phase-ledger.md) for the full list. Highlights:
+
+- **v0.10.79 (Phase P)** — Renewal-goroutine watchdog + UI honesty derivation (Connected requires `certValid && (peers > 0 || recentHeartbeat)`).
+- **v0.10.82 (Phase S)** — Cert renewal survives macOS deep sleep (60s wall-clock ticker).
+- **v0.10.85 (Phase V)** — Member users (non-admin) can enroll devices into shared networks. Server-side `CanAccessNetwork` relax to `CanView` on the enrollment-write path.
+- **v0.10.87–v0.10.89 (Phases W + X)** — Desktop client recovers from system-mode `launchctl kickstart` / dev-deploy / daemon flap. State-endpoint validated via 200ms TCP probe; SSE-failure path triggers re-attach.
+- **v0.10.90 (Phase Y)** — Desktop `.app` autostart on macOS login via `tauri-plugin-autostart`.
+- **v0.10.91–v0.10.92 (Phases Z + AA)** — System-mode mirror file chown self-heal across boot-before-login + uninstall hygiene that catches Phase Y's autostart artifact.
+- **v0.10.93 (Phase BB)** — UX copy audit: 28 protocol-jargon strings rewritten ("mesh"→"network", "data-plane"→"connection"). Affirmative phrasing per Apple HIG ("Show in Dock" not "Hide from Dock").
+- **v0.10.96 (Phase DD)** — Third independent watchdog covering `watchNetworkChanges` wedges (vendor-Nebula deadlocks). Hard 5s timeouts on `RebindUDPServer` / `CloseAllTunnels`.
+- **v0.10.97–v0.11.1 (Phases EE / FF / GG / HH / II)** — Desktop polish bundle (prefs corruption logging, account identity, tooltips, post-uninstall auto-quit) + Activity tab + diagnostics tools + DNS records read-only view.
+- **v0.11.3 (Phase II.3)** — In-app Terminal via dashboard webview. Replaces the brief Phase II osascript SSH path with the same xterm.js the dashboard already serves. Server-side: heartbeat carries `networkId` + per-peer `nodeId` for URL construction.
+- **v0.11.4 (Phase II.4)** — OS brand-mark icons with hover tooltips on both desktop client AND dashboard. Shared SVG paths; shadcn Tooltip in the dashboard, native HTML `title=` in the desktop client (no shadcn dep there).
+- **Phase KK (2026-05-09)** — Adopted [forrestchang/andrej-karpathy-skills](https://github.com/forrestchang/andrej-karpathy-skills) (MIT) as both an always-on rule set in `CLAUDE.md` § Behavioral guidelines and an explicitly-invocable skill at `.claude/skills/karpathy-guidelines/SKILL.md`.
 
 ---
 
@@ -42,11 +65,11 @@ See [competitive-analysis.md](competitive-analysis.md) for the full matrix.
 - No SSO/OIDC (DN, Tailscale, ZeroTier all have it — table stakes for teams)
 - No scoped API keys (DN and Tailscale have them)
 - No granular firewall rules (DN has roles+tags, Tailscale has ACLs+grants, ZeroTier has flow rules)
-- No mobile or desktop apps (all three competitors have them — mobile is a top-3 complaint for ZT and DN)
+- ~~No mobile or desktop apps~~ — **macOS desktop SHIPS** (Phases A→II.4, v0.11.4 current). iOS / Android / Windows / Linux desktop still pending; planning at [`docs/wiki/decisions/`](wiki/decisions/) covers all four.
 - No webhooks, log streaming, or Terraform provider (Tailscale leads here; DN lacks Terraform — opportunity)
 - No subnet routing or exit nodes (Tailscale and ZeroTier have them — big homelab use case)
 - No session recording (Tailscale has it — enterprise gate)
-- No connection diagnostics ("why is this relayed?" — no competitor answers this well either)
+- ~~No connection diagnostics~~ — **PARTIAL.** Desktop client gets diagnostics in Settings → About (Phase GG): "View agent logs" opens Console.app + "Copy diagnostic info" formats version + commit + per-enrollment state for support tickets. Dashboard "Diagnose this connection — why is this relayed?" still TBD (roadmap #4 below).
 
 ---
 
@@ -65,7 +88,7 @@ Ship the features selfhosters are actively asking for across competitor communit
 | 1 | **Expand free tier to 25 nodes** | Increase from 10 to 25 nodes on the free tier. | Our 10-node free tier is the smallest in market. DN offers 100, ZeroTier offers 25. ZT's reduction from 100→25 caused massive backlash — shows free tier matters to selfhosters. 25 is enough for serious evaluation without killing conversion. | S | Trivial — config change only | — |
 | 2 | **P2P/relay status per node** ✅ v0.9.10 | Show connection type (P2P, relayed, offline) per node in the dashboard. Agent reports peer counts in heartbeat; server derives a `connectivity` string (direct/mixed/relayed/idle); dashboard shows a colored badge per node. | **#1 ZeroTier complaint by volume.** Users can't tell if connections are P2P or relayed. No competitor shows this in the dashboard — Tailscale requires CLI, ZeroTier requires `zerotier-cli peers` (cryptic output). Selfhosters obsess over their network health. | S | **Shipped** — `cmd/agent/peerstate.go`, migration 002, `internal/api/types.go:deriveConnectivity`, dashboard badge + tooltip. | — |
 | 3 | **GitHub OAuth** | Add GitHub as a login provider. OAuth redirect + callback handler, user lookup/creation by `github_id`. | Selfhosters are developers. GitHub login removes all friction from the first experience. Tailscale and ZeroTier have it. | S | High — `github_id` column already exists in `users` table, session creation path is reusable. ~200-300 LOC. | — |
-| 4 | **Connection diagnostics** | "Diagnose" action per node in dashboard: connection type, latency, NAT type, handshake age, packet loss. Agent exposes a `/stats` endpoint queried on-demand. | "Why is my connection relayed?" is the most common support question across ZT, TS, and DN. No competitor answers it well. Selfhosters want to understand their network, not just use it. One-click dashboard action beats CLI-only investigation. | M | Moderate — Nebula's host map has peer state. Need vendor inspection for `GetHostMap()` or equivalent. Agent stats endpoint + dashboard UI. ~400-600 LOC. | #2 |
+| 4 | **Connection diagnostics** ⏳ partial (Phase GG, v0.10.99) | "Diagnose" action per node in dashboard: connection type, latency, NAT type, handshake age, packet loss. Agent exposes a `/stats` endpoint queried on-demand. | "Why is my connection relayed?" is the most common support question across ZT, TS, and DN. No competitor answers it well. Selfhosters want to understand their network, not just use it. One-click dashboard action beats CLI-only investigation. | M | **Desktop client side shipped** — Settings → About → "Copy diagnostic info" + "View agent logs" via Tauri commands `copy_diagnostic_info` + `open_agent_logs`. Dashboard-side per-node "Diagnose" action still TBD; would build on the same per-peer RTT data already shipping in `/local/peers` + the dashboard's network-detail page. | #2 |
 | 5 | **Subnet routing** | Allow designated nodes to route traffic to non-overlay subnets (LAN, cloud VPCs). Dashboard UI to configure routes per node. | **THE homelab gateway feature.** "Access my LAN through the mesh" is the #1 reason selfhosters adopt a mesh VPN. TS has it but it's flaky (their #6 complaint — failover, MTU issues). ZT has managed routes. DN has it. Opportunity to do it right. | M | High — Nebula supports `unsafe_routes` natively, just not exposed. Add `routes` column to networks, generate route config in agent Nebula template. Note: routing node must run as root. ~300-500 LOC. | — |
 | 6 | **Exit nodes** | Designate a node as an exit node to route all traffic (or specific domains) through the mesh. | "Route all my traffic through my home server" — the second most common homelab use case after LAN access. Tailscale has it, ZeroTier has default route. Essential for selfhosters traveling or on untrusted WiFi. | S | High — straightforward Nebula `unsafe_routes` with `0.0.0.0/0`. Just config generation + UI toggle. 3-5 days. | #5 |
 | 7 | **Bulk node operations** | Select multiple nodes → authorize, delete, change capabilities, move to group. Batch API endpoints. | ZeroTier users complain about authorizing nodes one-by-one. Tailscale admin console lacks bulk operations. Any selfhoster with 10+ nodes (Pi, NAS, VPS, etc.) needs this. | S | High — existing API handlers process single nodes. Add batch wrappers + multi-select UI. ~200-400 LOC. | — |
