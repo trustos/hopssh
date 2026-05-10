@@ -98,7 +98,7 @@
     updateInstallError = null;
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      await invoke('install_update_mac');
+      await invoke('install_update');
       // Terminal is now open running the install script. The
       // script will SIGKILL hopssh-desktop and relaunch the new
       // .app at the end. Nothing for us to do here — the next
@@ -196,6 +196,17 @@
   // True when the agent reports it's the launchd-spawned system daemon.
   // When false, the agent is a child of the .app (bundled mode).
   let inSystemMode = $derived(agent.status?.runMode === 'system');
+
+  // Platform gating. agent.status?.os is set by /local/status to
+  // Go's runtime.GOOS — `darwin`, `linux`, `windows`. Several
+  // controls below (Run-in-the-background, CLI symlink, system-mode
+  // Reset/Uninstall via privileged osascript) only have macOS
+  // implementations today; we hide them on non-mac so the user
+  // doesn't see "macOS-only" Err strings when clicking. Cross-
+  // platform alternatives (Update via browser to /download, Agent
+  // logs via the OS file manager opened on the config dir) work
+  // everywhere.
+  let isMacOS = $derived(agent.status?.os === 'darwin');
 
   // The current version we display is whatever the running agent is
   // reporting via /local/status — that's what's actually IN USE on
@@ -429,6 +440,16 @@
         </h3>
       </div>
 
+      {#if isMacOS}
+      <!-- "Run in the background" is macOS-only today — it relies on
+           the privileged convert_to_system_service / revert_to_bundled
+           commands that wrap macOS-specific osascript +
+           LaunchDaemon plists. Linux + Windows equivalents (systemd
+           user units / SCM service for the .app's hop-agent child)
+           are tracked but not yet implemented; until they ship,
+           hopssh on Linux + Windows runs in bundled mode only and
+           the toggle is hidden so users don't see "macOS-only"
+           errors when clicking. -->
       <div class="px-4 py-3">
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0 flex-1">
@@ -493,6 +514,7 @@
           {bgDone}
         </div>
       {/if}
+      {/if}
 
       <!-- Phase Y (v0.10.90): "Open hopssh on login" toggle.
            Sits between Run-in-the-background and Hide-from-Dock per
@@ -529,12 +551,15 @@
         </div>
       </div>
 
+      {#if isMacOS}
       <!-- Phase BB (v0.10.93): "Show hopssh in Dock" — affirmative
            rename of the prior negative-phrasing Dock-visibility toggle.
            UI layer inverts to showInDock; underlying pref keeps its
            backward-compat name. Default ON (Dock icon visible) matches
            the typical Mac app expectation; turning off demotes hopssh
-           to a menubar-only utility, Tailscale-style. -->
+           to a menubar-only utility, Tailscale-style. macOS-only —
+           Linux + Windows have no Dock concept; the underlying
+           set_activation_policy is a no-op there. -->
       <div class="border-t border-zinc-800 px-4 py-3">
         <div class="flex items-start justify-between gap-3">
           <div class="min-w-0 flex-1">
@@ -562,6 +587,7 @@
           </div>
         </div>
       </div>
+      {/if}
     </section>
   {/if}
 
@@ -725,6 +751,7 @@
           </div>
         </div>
 
+        {#if isMacOS}
         <div class="border-b border-red-900/60 px-4 py-3">
           <div class="flex items-start justify-between gap-3">
             <div class="min-w-0 flex-1">
@@ -810,6 +837,26 @@
             </div>
           </div>
         </div>
+        {:else}
+        <!-- Linux + Windows fallback: the privileged Reset / Uninstall
+             flows are macOS-only today — they wrap osascript +
+             admin-prompt for system-mode cleanup. On Linux + Windows
+             the bundled mode runs as the user with no system-level
+             integration, so a "reset" is just `Sign out of all
+             networks` (above) + manually deleting ~/.config/hopssh,
+             and "uninstall" is the user's package manager
+             (`apt remove hopssh` / Add-or-remove-programs). Surface
+             that as a guidance line instead of broken buttons. -->
+        <div class="px-4 py-3 text-[11px] text-zinc-400 leading-relaxed">
+          <p class="font-medium text-zinc-300">Reset or uninstall hopssh</p>
+          <p class="mt-1">
+            Sign out above to clear all networks. To wipe certificates,
+            delete the config directory shown in About below. To remove
+            the app entirely, use your package manager
+            ({agent.status?.os === 'linux' ? 'apt remove hopssh / dnf remove hopssh' : 'Settings → Apps → hopssh → Uninstall'}).
+          </p>
+        </div>
+        {/if}
 
         {#if dangerError}
           <div class="border-t border-red-900/60 px-4 py-2 text-xs text-amber-400">
@@ -876,9 +923,17 @@
             Update available: <span class="font-mono">{updateState.latest}</span>
           </p>
           <p class="mt-1 text-[12px] leading-relaxed text-zinc-300">
-            Opens Terminal to download and install the new version.
-            You'll be asked for your admin password once. hopssh
-            relaunches automatically when the install finishes.
+            {#if isMacOS}
+              Opens Terminal to download and install the new version.
+              You'll be asked for your admin password once. hopssh
+              relaunches automatically when the install finishes.
+            {:else}
+              Opens
+              <span class="font-mono text-emerald-300">hopssh.com/download</span>
+              in your browser. Re-download the installer for your
+              platform and run it — your existing networks + settings
+              are preserved.
+            {/if}
           </p>
           {#if updateInstallError}
             <div class="mt-2 rounded-md border border-amber-900/40 bg-amber-950/30 px-3 py-2 text-[11px] text-amber-300">
@@ -892,7 +947,11 @@
               class="rounded-md bg-emerald-500 px-3 py-1.5 text-xs font-medium text-zinc-950 hover:bg-emerald-400 disabled:opacity-60"
               onclick={installUpdateNow}
             >
-              {updateInstalling ? 'Opening Terminal…' : 'Install update now'}
+              {#if updateInstalling}
+                {isMacOS ? 'Opening Terminal…' : 'Opening browser…'}
+              {:else}
+                {isMacOS ? 'Install update now' : 'Open download page'}
+              {/if}
             </button>
           </div>
         </div>
@@ -936,19 +995,24 @@
           {agent.status?.configDir}
         </dd>
       </div>
-      <!-- Phase GG (v0.10.99): diagnostics tools. View agent logs
-           opens Console.app (macOS native log viewer). Copy diagnostic
-           info concatenates version + run mode + enrollment state into
-           a paste-friendly block for support tickets. -->
+      <!-- Phase GG (v0.10.99): diagnostics tools. View agent logs:
+           macOS opens Console.app pointing at /var/log/hop-agent.log;
+           Linux + Windows open the agent's config dir in the file
+           manager (where forensic dumps land — stuck-state-*.txt,
+           watcher-stuck-*.txt, etc.). Copy diagnostic info
+           concatenates version + run mode + enrollment state into a
+           paste-friendly block for support tickets. -->
       {#if isTauri}
         <div class="flex flex-col gap-2 px-4 py-3">
           <button
             type="button"
             class="rounded-md bg-zinc-800 px-3 py-1.5 text-xs hover:bg-zinc-700"
             onclick={doViewLogs}
-            title="Open the agent's log file in Console.app"
+            title={isMacOS
+              ? "Open the agent's log file in Console.app"
+              : "Open the agent's config directory in the file manager"}
           >
-            View agent logs
+            {isMacOS ? 'View agent logs' : 'Open config directory'}
           </button>
           <button
             type="button"

@@ -242,41 +242,58 @@ fn get_hide_from_dock() -> bool {
 /// (us!) mid-execution. If we ran it as a child of this process,
 /// our SIGKILL would also kill the install. Decoupling via Terminal
 /// means the install survives our own death.
-#[cfg(target_os = "macos")]
+/// Cross-platform updater entry point. macOS still goes through
+/// Terminal+install-mac.sh (in-place upgrade). Linux + Windows open
+/// the dashboard's /download page in the user's default browser —
+/// they re-grab the latest .deb / .msi and run their package
+/// manager. We can't do an in-place upgrade on Linux without writing
+/// to /usr/lib/hopssh which needs sudo (so a graphical pkexec prompt),
+/// and the user's package manager is the right ownership boundary
+/// anyway. Windows similarly: a fresh .msi run by the user is the
+/// least-surprise upgrade path until we wire signed Tauri auto-update.
 #[tauri::command]
-fn install_update_mac() -> Result<(), String> {
-    // Order matters here. `activate` is what brings Terminal.app to the
-    // front — and if Terminal isn't already running, it launches it
-    // with a default empty window. If we then call `do script`, that
-    // opens a SECOND window for the actual command, leaving the user
-    // staring at two Terminal windows when they expected one.
-    //
-    // Putting `do script` FIRST means Terminal launches with the
-    // command-running window as its initial window. The trailing
-    // `activate` then just brings the existing window to the front
-    // without spawning a duplicate.
-    let cmd = r#"tell application "Terminal"
+fn install_update(_app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        // Order matters here. `activate` is what brings Terminal.app to the
+        // front — and if Terminal isn't already running, it launches it
+        // with a default empty window. If we then call `do script`, that
+        // opens a SECOND window for the actual command, leaving the user
+        // staring at two Terminal windows when they expected one.
+        //
+        // Putting `do script` FIRST means Terminal launches with the
+        // command-running window as its initial window. The trailing
+        // `activate` then just brings the existing window to the front
+        // without spawning a duplicate.
+        let cmd = r#"tell application "Terminal"
     do script "curl -fsSL https://hopssh.com/install-mac.sh | bash"
     activate
 end tell"#;
-    let output = std::process::Command::new("osascript")
-        .arg("-e")
-        .arg(cmd)
-        .output()
-        .map_err(|e| format!("osascript spawn failed: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "osascript failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+        let output = std::process::Command::new("osascript")
+            .arg("-e")
+            .arg(cmd)
+            .output()
+            .map_err(|e| format!("osascript spawn failed: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "osascript failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
     }
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-#[tauri::command]
-fn install_update_mac() -> Result<(), String> {
-    Err("install_update_mac is macOS-only".into())
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Linux + Windows: open the dashboard /download page in the
+        // default browser. tauri-plugin-opener delegates to xdg-open on
+        // Linux and ShellExecute on Windows — the same path that opens
+        // the device-flow verification URL.
+        use tauri_plugin_opener::OpenerExt;
+        _app.opener()
+            .open_url("https://hopssh.com/download", None::<&str>)
+            .map_err(|e| format!("failed to open browser to /download: {e}"))?;
+        Ok(())
+    }
 }
 
 /// Phase GG (v0.10.99): open Console.app pointing at the agent's log
@@ -286,31 +303,82 @@ fn install_update_mac() -> Result<(), String> {
 /// it under the hopssh process. We try the system-mode path first; if
 /// the file doesn't exist (bundled mode), fall back to opening Console
 /// without a target so the user can filter manually.
-#[cfg(target_os = "macos")]
+/// Cross-platform agent-logs viewer.
+/// - macOS: open Console.app pointing at /var/log/hop-agent.log when
+///   in system mode, or just open Console (filter manually) in bundled
+///   mode where the agent's stderr lands in the .app's stderr.
+/// - Linux: open the agent's config directory in the file manager.
+///   The bundled hop-agent's stderr goes through the .app's stderr
+///   to journalctl --user (when launched via .desktop unit). We can't
+///   easily open journalctl in a viewer, so we surface the config dir
+///   instead — that's where forensic dumps (stuck-state-*.txt,
+///   watcher-stuck-*.txt, renewal-stuck-*.txt) land if any watchdog
+///   trips. Power users can also `journalctl --user -t hopssh.desktop`
+///   from a terminal.
+/// - Windows: open the agent's config directory in Explorer. Same
+///   reasoning as Linux — forensic dumps live there.
 #[tauri::command]
-fn open_agent_logs() -> Result<(), String> {
-    let system_log = "/var/log/hop-agent.log";
-    let mut cmd = std::process::Command::new("open");
-    cmd.arg("-a").arg("Console");
-    if std::path::Path::new(system_log).exists() {
-        cmd.arg(system_log);
+fn open_agent_logs(_app: AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let system_log = "/var/log/hop-agent.log";
+        let mut cmd = std::process::Command::new("open");
+        cmd.arg("-a").arg("Console");
+        if std::path::Path::new(system_log).exists() {
+            cmd.arg(system_log);
+        }
+        let output = cmd
+            .output()
+            .map_err(|e| format!("open Console failed: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "open Console failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(())
     }
-    let output = cmd
-        .output()
-        .map_err(|e| format!("open Console failed: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "open Console failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        ));
+    #[cfg(not(target_os = "macos"))]
+    {
+        // Resolve the user-mode config dir the same way internal/client
+        // does on this platform: $XDG_CONFIG_HOME/hopssh on Linux,
+        // %APPDATA%\hopssh on Windows.
+        let config_dir: std::path::PathBuf;
+        #[cfg(target_os = "linux")]
+        {
+            let base = std::env::var("XDG_CONFIG_HOME")
+                .ok()
+                .filter(|s| !s.is_empty())
+                .map(std::path::PathBuf::from)
+                .or_else(|| {
+                    std::env::var("HOME")
+                        .ok()
+                        .map(|h| std::path::PathBuf::from(h).join(".config"))
+                })
+                .ok_or_else(|| "neither XDG_CONFIG_HOME nor HOME is set".to_string())?;
+            config_dir = base.join("hopssh");
+        }
+        #[cfg(target_os = "windows")]
+        {
+            let base = std::env::var("APPDATA")
+                .map_err(|_| "APPDATA env var not set".to_string())?;
+            config_dir = std::path::PathBuf::from(base).join("hopssh");
+        }
+        if !config_dir.exists() {
+            return Err(format!(
+                "agent config directory does not exist yet at {}",
+                config_dir.display()
+            ));
+        }
+        // tauri-plugin-opener.open_path delegates to xdg-open on Linux
+        // and ShellExecute on Windows — same path that opens the
+        // device-flow verification URL.
+        use tauri_plugin_opener::OpenerExt;
+        _app.opener()
+            .open_path(config_dir.display().to_string(), None::<&str>)
+            .map_err(|e| format!("failed to open file manager: {e}"))?;
+        Ok(())
     }
-    Ok(())
-}
-
-#[cfg(not(target_os = "macos"))]
-#[tauri::command]
-fn open_agent_logs() -> Result<(), String> {
-    Err("open_agent_logs is macOS-only".into())
 }
 
 /// Phase II.3 (v0.11.3): open the dashboard's xterm.js terminal page
@@ -1292,7 +1360,7 @@ pub fn run() {
             get_hide_from_dock,
             set_hide_from_dock,
             check_remote_version,
-            install_update_mac,
+            install_update,
             open_agent_logs,
             copy_diagnostic_info,
             open_terminal_webview
@@ -2218,7 +2286,7 @@ mod tests {
         );
     }
 
-    /// Tripwire: the install_update_mac AppleScript must run `do script`
+    /// Tripwire: the install_update AppleScript must run `do script`
     /// BEFORE `activate`. Reverse order causes a chronic two-window
     /// glitch: when Terminal isn't already running, `activate` first
     /// launches Terminal with a default empty window, then `do script`
@@ -2227,14 +2295,14 @@ mod tests {
     /// command runs in Terminal's initial window and `activate` just
     /// brings it forward.
     #[test]
-    fn install_update_mac_do_script_before_activate() {
+    fn install_update_do_script_before_activate() {
         let src = std::fs::read_to_string(file!())
             .expect("must be able to read lib.rs source for self-scan");
-        // Find the AppleScript heredoc inside install_update_mac. The
+        // Find the AppleScript heredoc inside install_update. The
         // raw-string opener is unique enough to anchor on.
         let heredoc_open = "r#\"tell application \"Terminal\"";
         let start = src.find(heredoc_open).expect(
-            "expected AppleScript heredoc (r#\"tell application \"Terminal\") in install_update_mac"
+            "expected AppleScript heredoc (r#\"tell application \"Terminal\") in install_update"
         );
         // Heredoc closes with the matching r#"..."# delimiter.
         let after = &src[start..];
@@ -2242,14 +2310,98 @@ mod tests {
         let script = &after[..end];
 
         let do_idx = script.find("do script").expect(
-            "install_update_mac AppleScript must call `do script`"
+            "install_update AppleScript must call `do script`"
         );
         let act_idx = script.find("activate").expect(
-            "install_update_mac AppleScript must call `activate`"
+            "install_update AppleScript must call `activate`"
         );
         assert!(
             do_idx < act_idx,
-            "install_update_mac ORDERING REGRESSION: `do script` (offset {do_idx}) must come BEFORE `activate` (offset {act_idx}) — reverse order opens TWO Terminal windows when Terminal isn't already running. Script: {script}"
+            "install_update ORDERING REGRESSION: `do script` (offset {do_idx}) must come BEFORE `activate` (offset {act_idx}) — reverse order opens TWO Terminal windows when Terminal isn't already running. Script: {script}"
+        );
+    }
+
+    /// Tripwire: install_update + open_agent_logs must have non-macOS
+    /// implementations that DON'T return a "macOS-only" Err. v0.11.20
+    /// shipped with these as Err-only on Linux/Windows, surfacing
+    /// "install_update_mac is macOS-only" as a visible error in
+    /// Settings → Updates. This guards against regression — every
+    /// command Settings.svelte invokes from a non-macOS-gated UI
+    /// section must work cross-platform.
+    #[test]
+    fn cross_platform_commands_have_non_macos_impls() {
+        let src = std::fs::read_to_string(file!())
+            .expect("must be able to read lib.rs source for self-scan");
+
+        // 1. install_update must have a #[cfg(not(target_os = "macos"))]
+        //    branch that calls openurl on /download (NOT returns Err).
+        let install_update_start = src
+            .find("fn install_update(")
+            .expect("install_update function not found");
+        let install_update_body = &src[install_update_start..];
+        let install_update_end = install_update_body
+            .find("\n}\n")
+            .expect("install_update function body terminator not found");
+        let install_update_src = &install_update_body[..install_update_end];
+        assert!(
+            install_update_src.contains("cfg(not(target_os = \"macos\"))"),
+            "install_update missing non-macOS branch — Linux/Windows users would see macOS-only error"
+        );
+        assert!(
+            install_update_src.contains("hopssh.com/download"),
+            "install_update non-macOS branch must open /download in browser; install_update body: {install_update_src}"
+        );
+        assert!(
+            !install_update_src.contains("\"install_update_mac is macOS-only\""),
+            "install_update must not return the legacy macOS-only Err"
+        );
+
+        // 2. open_agent_logs must have a non-macOS impl that calls
+        //    open_path on the config dir (NOT returns Err).
+        let logs_start = src
+            .find("fn open_agent_logs(")
+            .expect("open_agent_logs function not found");
+        let logs_body = &src[logs_start..];
+        let logs_end = logs_body
+            .find("\n}\n")
+            .expect("open_agent_logs function body terminator not found");
+        let logs_src = &logs_body[..logs_end];
+        assert!(
+            logs_src.contains("cfg(not(target_os = \"macos\"))"),
+            "open_agent_logs missing non-macOS branch"
+        );
+        assert!(
+            logs_src.contains("config_dir"),
+            "open_agent_logs non-macOS branch must resolve + open the config_dir"
+        );
+        assert!(
+            !logs_src.contains("\"open_agent_logs is macOS-only\""),
+            "open_agent_logs must not return the legacy macOS-only Err"
+        );
+    }
+
+    /// Tripwire: install_update is registered in the Tauri invoke
+    /// handler under its new name (renamed from install_update_mac
+    /// in v0.11.21).
+    #[test]
+    fn install_update_registered_in_invoke_handler() {
+        let src = std::fs::read_to_string(file!())
+            .expect("must be able to read lib.rs source for self-scan");
+        let handler_start = src
+            .find("invoke_handler(tauri::generate_handler![")
+            .expect("invoke_handler not found");
+        let handler_body = &src[handler_start..];
+        let handler_end = handler_body
+            .find("])")
+            .expect("invoke_handler closing ]) not found");
+        let handler_src = &handler_body[..handler_end];
+        assert!(
+            handler_src.contains("install_update,") || handler_src.contains("install_update\n"),
+            "install_update missing from invoke_handler — JS calls would fail"
+        );
+        assert!(
+            !handler_src.contains("install_update_mac,"),
+            "install_update_mac (legacy name) still registered; should be replaced by install_update"
         );
     }
 

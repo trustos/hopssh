@@ -147,14 +147,18 @@
           stage = 'completing';
           await agent.refresh();
           // Decide whether to surface the post-enrollment "Run in the
-          // background" prompt. We only ask once per Mac via a
+          // background" prompt. We only ask once per device via a
           // localStorage flag — after the first decision the user can
           // change their mind anytime in Settings → Preferences.
-          // Skip when already in system mode (re-enrolling on a Mac
-          // that's already converted).
+          // Skip when already in system mode (re-enrolling on a device
+          // that's already converted). Also skip on non-macOS — the
+          // convert_to_system_service Tauri command is macOS-only
+          // today, so showing the prompt on Linux/Windows would lead
+          // to a "macOS-only" error when the user clicks Accept.
           const alreadyAsked = localStorage.getItem('hopssh.onboarding.bgPromptShown') === '1';
           const alreadyInSystemMode = agent.status?.runMode === 'system';
-          if (!alreadyAsked && !alreadyInSystemMode) {
+          const isMacOS = agent.status?.os === 'darwin';
+          if (!alreadyAsked && !alreadyInSystemMode && isMacOS) {
             stage = 'bgprompt';
           } else {
             stage = 'done';
@@ -250,7 +254,8 @@
       enrollmentNotConnected = null;
       const alreadyAsked = localStorage.getItem('hopssh.onboarding.bgPromptShown') === '1';
       const alreadyInSystemMode = agent.status?.runMode === 'system';
-      if (!alreadyAsked && !alreadyInSystemMode) {
+      const isMacOS = agent.status?.os === 'darwin';
+      if (!alreadyAsked && !alreadyInSystemMode && isMacOS) {
         stage = 'bgprompt';
       } else {
         stage = 'done';
