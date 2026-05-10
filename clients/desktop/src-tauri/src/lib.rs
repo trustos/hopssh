@@ -284,16 +284,108 @@ end tell"#;
     }
     #[cfg(not(target_os = "macos"))]
     {
-        // Linux + Windows: open the dashboard /download page in the
-        // default browser. tauri-plugin-opener delegates to xdg-open on
-        // Linux and ShellExecute on Windows — the same path that opens
-        // the device-flow verification URL.
-        use tauri_plugin_opener::OpenerExt;
-        _app.opener()
-            .open_url("https://hopssh.com/download", None::<&str>)
-            .map_err(|e| format!("failed to open browser to /download: {e}"))?;
-        Ok(())
+        open_url_with_fallback(_app, "https://hopssh.com/download")
     }
+}
+
+/// Cross-platform URL-open with Linux fallback chain.
+///
+/// On macOS + Windows, delegate to tauri-plugin-opener (the platform
+/// default-browser handler is reliable). On Linux, xdg-open is
+/// commonly broken on Ubuntu + snap firefox setups: when
+/// `~/.config/mimeapps.list` doesn't exist AND `xdg-settings get
+/// default-web-browser` returns nothing, xdg-open exits 0 without
+/// actually launching anything. Detect that case and fall through to
+/// direct browser invocation in priority order.
+///
+/// This is the function frontend should call (via the
+/// `open_external_url` Tauri command) for any URL we WANT the user to
+/// see — device-flow verification URL, /download page, dashboard
+/// links. Browser-open silent failures used to leave users staring at
+/// a "We opened a browser tab" message with nothing happening. Now:
+/// either xdg-open works, or we directly launch firefox / chromium /
+/// chrome / brave / vivaldi (whichever is installed first), or as a
+/// last resort we return an error so the JS layer can surface a
+/// "couldn't open browser, copy this URL" UI.
+#[cfg(target_os = "linux")]
+fn open_url_with_fallback(_app: AppHandle, url: &str) -> Result<(), String> {
+    // First, check if a default browser is registered. If yes, trust
+    // xdg-open (the most common case on properly-configured desktops).
+    let xdg_settings_ok = std::process::Command::new("xdg-settings")
+        .args(["get", "default-web-browser"])
+        .output()
+        .ok()
+        .map(|o| o.status.success() && !o.stdout.is_empty() && o.stdout != b"\n")
+        .unwrap_or(false);
+
+    if xdg_settings_ok {
+        // Standard path: xdg-open will route to the registered handler.
+        use tauri_plugin_opener::OpenerExt;
+        if _app.opener().open_url(url, None::<&str>).is_ok() {
+            return Ok(());
+        }
+    }
+
+    // Fallback chain: try common Linux browsers directly. Stop at the
+    // first one that spawns successfully (we can't easily detect window
+    // visibility, but a successful spawn is much better than xdg-open's
+    // silent exit-0). This preserves the user's choice when a browser
+    // IS installed and registered, and only kicks in for the
+    // "no default browser" failure mode.
+    let candidates = [
+        "firefox",
+        "firefox-esr",
+        "chromium",
+        "chromium-browser",
+        "google-chrome",
+        "brave-browser",
+        "vivaldi",
+        // snap firefox sometimes needs to be invoked differently
+        "/snap/bin/firefox",
+    ];
+    for browser in candidates.iter() {
+        if std::process::Command::new(browser)
+            .arg(url)
+            // Detach: the browser should outlive a quick-spawn caller.
+            // setsid puts it in its own session group; we don't wait on it.
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            log::info!("opened {url} via direct browser invocation: {browser}");
+            return Ok(());
+        }
+    }
+
+    Err(format!(
+        "could not open {url}: xdg-open is not configured and no installed browser was found (tried: firefox, chromium, chrome, brave, vivaldi). Copy the URL manually to open it."
+    ))
+}
+
+#[cfg(any(target_os = "macos", target_os = "windows"))]
+fn open_url_with_fallback(app: AppHandle, url: &str) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| format!("failed to open browser to {url}: {e}"))
+}
+
+/// Tauri command exposing open_url_with_fallback to the JS layer.
+/// Frontend calls this for any URL it wants to open in the user's
+/// browser (device-flow verification, /download, dashboard links).
+/// On Linux, falls through to direct browser invocation if xdg-open
+/// is misconfigured (Ubuntu + snap firefox without
+/// ~/.config/mimeapps.list — common case).
+///
+/// URL-injection safety: validate scheme is http(s) before invoking.
+#[tauri::command]
+fn open_external_url(app: AppHandle, url: String) -> Result<(), String> {
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return Err(format!("refusing to open non-http(s) URL: {url}"));
+    }
+    open_url_with_fallback(app, &url)
 }
 
 /// Phase GG (v0.10.99): open Console.app pointing at the agent's log
@@ -1361,6 +1453,7 @@ pub fn run() {
             set_hide_from_dock,
             check_remote_version,
             install_update,
+            open_external_url,
             open_agent_logs,
             copy_diagnostic_info,
             open_terminal_webview
@@ -2402,6 +2495,75 @@ mod tests {
         assert!(
             !handler_src.contains("install_update_mac,"),
             "install_update_mac (legacy name) still registered; should be replaced by install_update"
+        );
+    }
+
+    /// Tripwire: open_external_url is registered + the Linux fallback
+    /// chain is wired. v0.11.23 ships this command because Tauri's
+    /// plugin-opener.openUrl delegates to xdg-open which silently
+    /// exits 0 on Ubuntu + snap firefox setups (no
+    /// ~/.config/mimeapps.list = no default registered = silent
+    /// no-op). The fallback chain detects this case via xdg-settings
+    /// and falls through to direct browser invocation (firefox,
+    /// chromium, chrome, brave, vivaldi). User-visible bug — onboarding
+    /// device-flow stuck on "We opened a browser tab" with nothing
+    /// actually happening — guarded with this tripwire.
+    #[test]
+    fn open_external_url_has_linux_fallback_chain() {
+        let src = std::fs::read_to_string(file!())
+            .expect("must be able to read lib.rs source for self-scan");
+
+        // Command must be registered.
+        let handler_start = src
+            .find("invoke_handler(tauri::generate_handler![")
+            .expect("invoke_handler not found");
+        let handler_body = &src[handler_start..];
+        let handler_end = handler_body.find("])").expect("invoke_handler closing ]) not found");
+        let handler_src = &handler_body[..handler_end];
+        assert!(
+            handler_src.contains("open_external_url"),
+            "open_external_url must be registered in invoke_handler"
+        );
+
+        // The Linux fallback chain must include at least firefox + chromium
+        // and must check xdg-settings before trusting xdg-open.
+        let linux_fn_start = src
+            .find("#[cfg(target_os = \"linux\")]\nfn open_url_with_fallback(")
+            .expect("Linux open_url_with_fallback not found");
+        let linux_fn_body = &src[linux_fn_start..];
+        let linux_fn_end = linux_fn_body
+            .find("\n}\n")
+            .expect("Linux open_url_with_fallback body terminator not found");
+        let linux_src = &linux_fn_body[..linux_fn_end];
+
+        for browser in &["firefox", "chromium", "chrome"] {
+            assert!(
+                linux_src.contains(browser),
+                "Linux fallback chain must include {browser} as a candidate"
+            );
+        }
+        assert!(
+            linux_src.contains("xdg-settings"),
+            "Linux fallback must probe xdg-settings before trusting xdg-open"
+        );
+        assert!(
+            linux_src.contains("default-web-browser"),
+            "xdg-settings probe must check default-web-browser"
+        );
+
+        // open_external_url must validate http(s) scheme to prevent
+        // arbitrary command injection through file:// or javascript:.
+        let cmd_start = src
+            .find("fn open_external_url(")
+            .expect("open_external_url function not found");
+        let cmd_body = &src[cmd_start..];
+        let cmd_end = cmd_body
+            .find("\n}\n")
+            .expect("open_external_url body terminator not found");
+        let cmd_src = &cmd_body[..cmd_end];
+        assert!(
+            cmd_src.contains("http://") && cmd_src.contains("https://"),
+            "open_external_url must validate URL scheme (http:// + https://)"
         );
     }
 

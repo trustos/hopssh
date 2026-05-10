@@ -71,12 +71,19 @@ func (c *Client) connect(name string) error {
 		// startInstance falls back to OS stack and returns nil even when
 		// both kernel TUN and userspace Nebula failed (e.g. resource
 		// still busy). Detect that here so the API caller sees a real
-		// error and the retry loop fires.
+		// error and the retry loop fires. inst.lastMeshErr captures the
+		// underlying Nebula error so we can surface the actual cause
+		// (cert-expired, port-in-use, config issue) instead of a
+		// hand-wavy fallback.
 		if inst.control() == nil {
+			meshErr := inst.lastMeshErr
 			c.instances.remove(name)
 			inst.close()
 			c.servers.shutdownInstance(name)
-			return nil, fmt.Errorf("nebula did not start (kernel TUN + userspace both failed; likely 'address already in use' or 'device or resource busy')")
+			if meshErr != nil {
+				return nil, fmt.Errorf("nebula did not start: %w", meshErr)
+			}
+			return nil, fmt.Errorf("nebula did not start (no specific error captured)")
 		}
 		return inst, nil
 	}
@@ -108,12 +115,17 @@ func (c *Client) connect(name string) error {
 	}
 
 	// Classify the final retry-loop error so the UI can show an
-	// actionable message instead of a generic "address already in use"
-	// hedge. Most common production case: parallel hop-agent install
-	// (system LaunchDaemon left over after .app download, or dev
-	// `hop-agent serve` in a terminal) holding the bundled-agent's
-	// chosen UDP port.
+	// actionable message instead of a generic hedge. Three real classes
+	// in production: (1) port collision (parallel install / dev
+	// `hop-agent serve`), (2) cert clock-skew (VM with stale clock —
+	// cert NotBefore in the future reads as "expired" via Nebula's
+	// IsExpired check), (3) config / network issues. Match on the
+	// underlying error from startMeshWithError, not the wrapping
+	// scaffold, so we don't misclassify cert-skew as port-collision.
 	es := lastErr.Error()
+	if strings.Contains(es, "certificate for this host is expired") || strings.Contains(es, "cert is expired") {
+		return fmt.Errorf("connect failed: this device's certificate is invalid for the current time — your clock may be off from the server. Sync your system clock and try Connect again. (underlying: %s)", es)
+	}
 	if strings.Contains(es, "address already in use") || strings.Contains(es, "device or resource busy") {
 		return fmt.Errorf("connect failed after 4 attempts: another hop-agent on this device is using the network port. Open Settings → Danger zone → Reset to remove the conflicting install, then try Connect again. (underlying: %s)", es)
 	}
@@ -202,14 +214,22 @@ func (c *Client) startInstance(ctx context.Context, inst *meshInstance) error {
 		}
 	}
 
-	meshSvc := startMesh(cfgPath, tunMode)
+	meshSvc, meshErr := startMeshWithError(cfgPath, tunMode)
 	if meshSvc == nil {
+		// Stash the underlying error so connect()'s retry-loop
+		// fallthrough can surface a user-actionable message that
+		// distinguishes port-bind failures from cert / clock / config
+		// failures. Pre-fix the user always saw "another hop-agent is
+		// using the network port" regardless of root cause — see
+		// v0.11.23 incident notes.
+		inst.lastMeshErr = meshErr
 		log.Printf("[agent %s] all Nebula modes failed — falling back to OS stack", inst.name())
 		if handler != nil {
 			c.servers.startOSListener(inst, handler, fmt.Sprintf(":%d", agentAPIPort))
 		}
 		return nil
 	}
+	inst.lastMeshErr = nil
 	inst.setSvc(meshSvc)
 	log.Printf("[agent %s] Nebula mesh connected (mode: %s)", inst.name(), tunMode)
 

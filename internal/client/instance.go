@@ -60,6 +60,15 @@ type meshInstance struct {
 	// the newly-created mesh service.
 	onRestart func(meshService)
 
+	// lastMeshErr captures the underlying error from the most recent
+	// startMeshWithError call when the mesh failed to bring up. Non-nil
+	// only when control() == nil. Read by Client.connect to surface a
+	// user-actionable error that distinguishes port-bind failures from
+	// cert-clock-skew, network, or config failures (pre-fix the connect
+	// retry loop reported "another hop-agent is using the network port"
+	// for ALL classes of failure regardless of root cause).
+	lastMeshErr error
+
 	// customDir, if non-empty, overrides the default
 	// <configDir>/<name> location for this instance's on-disk state.
 	// Used by `hop-agent client` for its ephemeral `/etc/hop-client`

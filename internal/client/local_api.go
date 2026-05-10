@@ -669,6 +669,42 @@ func (s *localAPIServer) handleEnrollDeviceFlowStart(w http.ResponseWriter, r *h
 		}
 	}
 
+	// Clock-skew gate. EnsureClockSane probes the endpoint's HTTP Date
+	// header and (on macOS root / Linux root) attempts an NTP resync if
+	// skew exceeds 30 minutes. Non-root bundled-mode agents (Linux .deb
+	// desktop, common case post-Stages-5+6) can't actually step the clock
+	// — but we still need to detect the skew BEFORE the user goes to the
+	// browser to approve, because the cert issued during /api/device/poll
+	// will have NotBefore set to the server's "now". If the local clock
+	// is N seconds behind, the cert won't be valid until N seconds elapse
+	// — and Nebula refuses to load a not-yet-valid cert with the error
+	// "nebula certificate for this host is expired" (it's actually
+	// not-yet-valid, but Nebula's IsExpired() lumps both checks together).
+	// Surface a clear, actionable error here instead of letting the user
+	// complete onboarding and then fail at auto-connect with a misleading
+	// "kernel TUN + userspace both failed" error.
+	skewCtx, skewCancel := context.WithTimeout(r.Context(), 15*time.Second)
+	skew := EnsureClockSane(skewCtx, endpoint)
+	skewCancel()
+	abs := skew
+	if abs < 0 {
+		abs = -abs
+	}
+	if abs > 60*time.Second {
+		platformHint := "open System Settings → Date & Time and enable automatic time"
+		switch runtime.GOOS {
+		case "linux":
+			platformHint = "run `sudo timedatectl set-ntp true` in a terminal, or check chrony/systemd-timesyncd"
+		case "windows":
+			platformHint = "open Settings → Time & Language → Date & Time and enable Set time automatically"
+		}
+		writeJSONError(w, http.StatusPreconditionFailed,
+			fmt.Sprintf(
+				"Your device clock is %s off from the server. The certificate issued during enrollment would be invalid until your clock catches up. To fix: %s, then try again.",
+				skew.Round(time.Second), platformHint))
+		return
+	}
+
 	postCtx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 	httpReq, err := http.NewRequestWithContext(postCtx, "POST", endpoint+"/api/device/code", nil)
