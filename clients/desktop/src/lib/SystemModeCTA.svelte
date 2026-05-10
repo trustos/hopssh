@@ -23,13 +23,19 @@
   let withinDismissWindow = $derived(
     dismissedAt !== null && Date.now() - dismissedAt < DISMISS_WINDOW_MS
   );
+  // convert_to_system_service is macOS-only today (LaunchDaemon +
+  // osascript admin prompt). On Linux + Windows the CTA's "Enable"
+  // button would hit a "macOS-only" Err. Hide the upsell on
+  // non-macOS until systemd / Windows SCM equivalents land.
+  let isMacOS = $derived(agent.status?.os === 'darwin');
 
   // Show only when:
   // - we're in bundled mode (system mode = nothing to upsell)
   // - at least one network is connected (priming requires concrete value)
   // - user hasn't dismissed in the past 7 days
+  // - we're on macOS (convert_to_system_service is mac-only)
   let visible = $derived(
-    runMode === 'bundled' && anyConnected && !withinDismissWindow
+    runMode === 'bundled' && anyConnected && !withinDismissWindow && isMacOS
   );
 
   async function enable() {
