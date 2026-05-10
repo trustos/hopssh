@@ -47,7 +47,6 @@
   let pollDeadline = $state<number | null>(null);
   let errorMessage = $state('');
   let pollHandle: number | null = null;
-  let showCode = $state(false); // disclosure for "approve from another device"
 
   function effectiveEndpoint(): string {
     return endpointMode === 'hosted' ? HOSTED_URL : selfHostedUrl.trim();
@@ -78,7 +77,6 @@
     }
     stage = 'starting';
     errorMessage = '';
-    showCode = false;
     try {
       const r = await local.enrollDeviceFlowStart({ endpoint });
       userCode = r.userCode;
@@ -87,7 +85,18 @@
       stage = 'pending';
       // Open the browser with the embedded ?code= URL — no manual paste
       // required when the user is signed in with a single admin network.
-      void openExternal(verificationUrl);
+      // openExternal can fail silently on Linux when xdg-open exits 0
+      // without launching a browser (snap firefox + missing
+      // ~/.config/mimeapps.list is the typical case). The pending UI now
+      // surfaces the verification URL + userCode prominently as a fallback
+      // — see the "If your browser didn't open" block in the pending stage.
+      try {
+        await openExternal(verificationUrl);
+      } catch (err) {
+        console.warn('[onboarding] openExternal failed:', err);
+        // Stay in pending — the user can still approve manually via the
+        // visible URL.
+      }
       poll(r.deviceCode, r.interval * 1000);
     } catch (e: unknown) {
       errorMessage = e instanceof Error ? e.message : String(e);
@@ -175,16 +184,12 @@
     verificationUrl = '';
     pollDeadline = null;
     errorMessage = '';
-    showCode = false;
   }
 
   onDestroy(() => {
     if (pollHandle !== null) window.clearTimeout(pollHandle);
   });
 
-  function copyCodeWithPrefix() {
-    void navigator.clipboard.writeText(userCode);
-  }
   function copyCodeBare() {
     void navigator.clipboard.writeText(userCode.replace(/^HOP-/i, ''));
   }
@@ -472,42 +477,40 @@
         Browser didn't open? Click here.
       </button>
 
-      <details
-        class="mt-6"
-        ontoggle={(e) => (showCode = (e.currentTarget as HTMLDetailsElement).open)}
-      >
-        <summary class="cursor-pointer text-xs text-zinc-400 hover:text-zinc-200">
-          Approving from another device?
-        </summary>
-        <div class="mt-3 rounded-md border border-zinc-800 bg-zinc-900 px-4 py-3">
-          <div class="text-[11px] uppercase tracking-wide text-zinc-500">Enter this code</div>
-          <div class="mt-1 flex items-center justify-between gap-2">
-            <span class="font-mono text-2xl tracking-widest text-emerald-400">{userCode}</span>
-            <div class="flex flex-col gap-1">
-              <button
-                class="rounded-md bg-zinc-800 px-2 py-1 text-[11px] hover:bg-zinc-700"
-                onclick={copyCodeBare}
-                type="button"
-                title="Copy just the 4 characters"
-              >
-                Copy 4 chars
-              </button>
-              <button
-                class="rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 hover:text-zinc-200"
-                onclick={copyCodeWithPrefix}
-                type="button"
-                title="Copy with HOP- prefix"
-              >
-                Copy with HOP-
-              </button>
-            </div>
-          </div>
-        </div>
-        <p class="mt-2 text-[11px] text-zinc-500">
-          Open <span class="font-mono text-zinc-400">{verificationUrl.replace(/\?.*$/, '')}</span>
+      <!-- Always-visible fallback: on Linux, openExternal can silently
+           fail when no default browser is registered (xdg-open exits 0
+           without launching anything — snap firefox is the typical case).
+           Make the URL + userCode prominent so the user can always approve
+           manually without hunting through a hidden details element. -->
+      <div class="mt-6 rounded-md border border-zinc-800 bg-zinc-900 px-4 py-3">
+        <div class="text-[11px] uppercase tracking-wide text-zinc-500">If your browser didn't open</div>
+        <p class="mt-2 text-xs text-zinc-300">
+          Visit
+          <span class="break-all font-mono text-emerald-400">{verificationUrl}</span>
           on any device that's signed in.
         </p>
-      </details>
+        <div class="mt-3 flex items-center justify-between gap-2">
+          <span class="font-mono text-xl tracking-widest text-emerald-400">{userCode}</span>
+          <div class="flex flex-col gap-1">
+            <button
+              class="rounded-md bg-zinc-800 px-2 py-1 text-[11px] hover:bg-zinc-700"
+              onclick={copyCodeBare}
+              type="button"
+              title="Copy just the 4 characters"
+            >
+              Copy code
+            </button>
+            <button
+              class="rounded-md border border-zinc-700 px-2 py-1 text-[11px] text-zinc-400 hover:text-zinc-200"
+              onclick={() => navigator.clipboard.writeText(verificationUrl)}
+              type="button"
+              title="Copy the full URL"
+            >
+              Copy URL
+            </button>
+          </div>
+        </div>
+      </div>
 
       <button
         class="mt-6 text-xs text-zinc-400 hover:text-zinc-200"

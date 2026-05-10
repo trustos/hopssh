@@ -130,8 +130,18 @@ func NewRouter(
 	r.With(publicRL.Limit, wt).Post("/api/enroll", enrollH.Enroll)
 
 	// Device flow (public — agent-initiated).
+	// /api/device/code stays on the strict publicRL (abuse vector: cheap to
+	// generate codes, expensive to clean up). /api/device/poll gets its own
+	// generous limiter — RFC 8628 §3.5 mandates a poll interval (we return
+	// 5s) which translates to 12 polls/min/agent. The strict 10/min publicRL
+	// would 429 every onboarding flow ~100s in (when the burst-20 bucket
+	// runs out). The deviceCode itself is single-use + 10min TTL + server-
+	// controlled cadence, so per-IP limiting adds no real anti-abuse value.
+	// 60/min is generous enough for shared-NAT homes with multiple agents
+	// onboarding in parallel.
+	devicePollRL := auth.NewRateLimiter(60, 120, time.Minute, TrustedProxy)
 	r.With(publicRL.Limit, wt).Post("/api/device/code", deviceH.RequestCode)
-	r.With(publicRL.Limit, wt).Post("/api/device/poll", deviceH.Poll)
+	r.With(devicePollRL.Limit, wt).Post("/api/device/poll", deviceH.Poll)
 
 	// Cert renewal + heartbeat (public — agent authenticates via bearer token).
 	r.With(publicRL.Limit, wt).Post("/api/renew", renewH.Renew)
