@@ -65,6 +65,12 @@ var watcherWatchdogInterval = 30 * time.Second
 func runWatcherWatchdog(ctx context.Context, inst *meshInstance) {
 	const cooldown = 30 * time.Minute
 	var lastTripAt time.Time
+	// Phase EE (v0.11.24): consecutive restartFn failures. After N=3 we
+	// escalate to osExitFn(75) so launchd / systemd / SCM respawns the
+	// agent — releases any wedged kernel UDP sockets that restartFn
+	// can't clear via inst.close(). See watchdog_escalation.go for the
+	// full rationale.
+	var consecutiveFailures int
 
 	t := time.NewTicker(watcherWatchdogInterval)
 	defer t.Stop()
@@ -103,8 +109,15 @@ func runWatcherWatchdog(ctx context.Context, inst *meshInstance) {
 			if err := inst.restartFn(); err != nil {
 				log.Printf("[watcher-watchdog %s] auto-restart failed: %v (next attempt in %s)",
 					inst.name(), err, cooldown)
+				if recordRestartFailure("watcher-watchdog", inst.name(), &consecutiveFailures) {
+					// osExitFn(75) was called; in production this never
+					// returns. In tests the injected fake DOES return,
+					// so bail out of the goroutine to avoid spinning.
+					return
+				}
 			} else {
 				log.Printf("[watcher-watchdog %s] auto-restart triggered", inst.name())
+				recordRestartSuccess(&consecutiveFailures)
 			}
 		} else {
 			log.Printf("[watcher-watchdog %s] no restartFn wired — agent will not self-recover. Manual `launchctl kickstart` needed.",

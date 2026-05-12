@@ -1450,6 +1450,10 @@ const renewalWatchdogInterval = 5 * time.Minute
 func runRenewalWatchdog(ctx context.Context, inst *meshInstance) {
 	const cooldown = 30 * time.Minute
 	var lastTripAt time.Time
+	// Phase EE (v0.11.24): consecutive restartFn failures. After N=3 we
+	// escalate via recordRestartFailure → osExitFn(75) for supervisor
+	// respawn. See watchdog_escalation.go for the rationale.
+	var consecutiveFailures int
 
 	t := time.NewTicker(renewalWatchdogInterval)
 	defer t.Stop()
@@ -1489,8 +1493,15 @@ func runRenewalWatchdog(ctx context.Context, inst *meshInstance) {
 			if err := inst.restartFn(); err != nil {
 				log.Printf("[renew-watchdog %s] auto-restart failed: %v (next attempt in %s)",
 					inst.name(), err, cooldown)
+				if recordRestartFailure("renew-watchdog", inst.name(), &consecutiveFailures) {
+					// Phase EE: osExitFn(75) called; production never
+					// returns. Tests inject a no-op fake — bail to
+					// avoid spinning.
+					return
+				}
 			} else {
 				log.Printf("[renew-watchdog %s] auto-restart triggered", inst.name())
+				recordRestartSuccess(&consecutiveFailures)
 			}
 		} else {
 			log.Printf("[renew-watchdog %s] no restartFn wired — agent will not self-recover. Manual `launchctl kickstart` needed.",

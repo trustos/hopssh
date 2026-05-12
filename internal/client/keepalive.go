@@ -224,9 +224,14 @@ func watchdogTrip(inst *meshInstance, cycle uint64, stuckCount int) {
 				"error": err.Error(),
 			},
 		})
+		// Phase EE (v0.11.24): escalate to process exit after N
+		// consecutive failures so launchd / systemd / SCM respawns
+		// the agent and releases any wedged kernel UDP sockets.
+		recordRestartFailure("WATCHDOG", inst.name(), &inst.watchdogConsecutiveFailures)
 		return
 	}
 	log.Printf("[agent %s] WATCHDOG: auto-restart returned cleanly; new instance should be running", inst.name())
+	recordRestartSuccess(&inst.watchdogConsecutiveFailures)
 	publishToEventBus(localEvent{
 		Time: time.Now(),
 		Type: "instance.watchdog-recovered",

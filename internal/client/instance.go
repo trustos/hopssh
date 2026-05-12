@@ -150,6 +150,15 @@ type meshInstance struct {
 	// CPU restart-cycling if the underlying issue is persistent.
 	lastWatchdogRestartAt time.Time
 
+	// watchdogConsecutiveFailures counts how many consecutive times
+	// watchdogTrip's restartFn invocation has returned an error.
+	// Phase EE (v0.11.24): after escalateAfterN consecutive failures,
+	// recordRestartFailure escalates to osExitFn(75) so launchd /
+	// systemd / SCM respawns the agent — releases any wedged kernel
+	// UDP sockets that restartFn can't clear via inst.close(). Reset
+	// to 0 on a successful restart. See watchdog_escalation.go.
+	watchdogConsecutiveFailures int
+
 	// meshIPMu + cachedMeshIP + cachedMeshSubnet back the meshIP() and
 	// meshSubnet() lazy readers. Cached for the instance lifetime — the
 	// cert's VPN IP and subnet don't change across renewals (only the
