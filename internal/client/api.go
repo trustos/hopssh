@@ -16,7 +16,9 @@ package client
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -60,6 +62,17 @@ type Client struct {
 	nextSub  uint64
 	subChans map[uint64]chan Event
 	subCBs   map[uint64]EventCallback
+
+	// bootErrors records the most recent Client.connect failure per
+	// enrollment, indexed by enrollment name. Phase GG (v0.11.26):
+	// surfaces via /local/status.EnrollmentStatus.LastError so the
+	// .app + dashboard can show WHICH enrollment failed and WHY
+	// (cert expired, port collision, clock skew) instead of the
+	// user just observing a tight launchd respawn loop with no
+	// actionable info. Recorded by Start(); cleared on a successful
+	// reconnect via Connect() / connect.
+	bootErrorsMu sync.Mutex
+	bootErrors   map[string]string
 }
 
 // NewClient validates Config + ConfigDir, loads the enrollment registry. Does
@@ -124,16 +137,36 @@ func (c *Client) Start(ctx context.Context) error {
 		EnsureClockSane(c.runCtx, list[0].Endpoint)
 	}
 
-	// Spawn an instance per live enrollment. Errors are non-fatal: a bad
-	// boot of one enrollment must not prevent the others from coming up.
+	// Phase GG (v0.11.26): per-enrollment connect failures are non-fatal
+	// to Start. Pre-fix, a single bad enrollment (expired cert, port
+	// conflict, clock skew) caused Start to return error → main.go
+	// log.Fatalf → process exit → launchd respawn → tight ~15s restart
+	// loop that took down EVERY enrollment along with the broken one AND
+	// prevented client.StartLocalAPI from ever running, leaving the
+	// .app's mirror token file stale at its last successful boot
+	// (observed live: MBP mirror file last updated May 14, agent
+	// restarting every 15s for hours). Now: log each per-enrollment
+	// failure, record it for surfacing via /local/status's LastError
+	// field, continue with the remaining enrollments. Start returns
+	// error ONLY if every enrollment failed.
+	var attempted, failed int
 	for _, e := range c.enrolls.List() {
+		attempted++
 		if err := c.connect(e.Name); err != nil {
-			// Match runServe's pre-extraction behavior: log.Fatalf at
-			// boot. Phase NN will reconsider in M3 — for now, preserve
-			// the historic "boot fails loud" semantics so the desktop
-			// shell's parallel-install check still bubbles up.
-			return err
+			log.Printf("[client] enrollment %q connect failed (agent continues; see /local/status lastError): %v",
+				e.Name, err)
+			c.recordBootError(e.Name, err)
+			failed++
+			continue
 		}
+		c.clearBootError(e.Name)
+	}
+	if attempted > 0 && failed == attempted {
+		return fmt.Errorf("all %d enrollment(s) failed to boot — see per-enrollment lastError in /local/status", failed)
+	}
+	if failed > 0 {
+		log.Printf("[client] %d of %d enrollment(s) failed to boot — agent continues with the working ones",
+			failed, attempted)
 	}
 	return nil
 }
@@ -160,7 +193,52 @@ func (c *Client) Stop() error {
 // already connected. Public method form of v0.10.34's connectFn closure.
 func (c *Client) Connect(ctx context.Context, name string) error {
 	_ = ctx // current connect path uses c.runCtx; future per-call ctx may swap
-	return c.connect(name)
+	err := c.connect(name)
+	if err != nil {
+		c.recordBootError(name, err)
+	} else {
+		c.clearBootError(name)
+	}
+	return err
+}
+
+// recordBootError stores the most recent Client.connect failure for an
+// enrollment so /local/status can surface it via EnrollmentStatus.LastError.
+// Phase GG (v0.11.26): replaces the old "agent restart-loops with no
+// actionable error" UX with "agent stays alive, .app shows which
+// enrollment failed and why".
+func (c *Client) recordBootError(name string, err error) {
+	if err == nil {
+		return
+	}
+	c.bootErrorsMu.Lock()
+	defer c.bootErrorsMu.Unlock()
+	if c.bootErrors == nil {
+		c.bootErrors = map[string]string{}
+	}
+	c.bootErrors[name] = err.Error()
+}
+
+// clearBootError removes a stored boot error after a successful reconnect.
+// Idempotent — safe to call when no error is recorded.
+func (c *Client) clearBootError(name string) {
+	c.bootErrorsMu.Lock()
+	defer c.bootErrorsMu.Unlock()
+	if c.bootErrors == nil {
+		return
+	}
+	delete(c.bootErrors, name)
+}
+
+// LastBootError returns the most recent Client.connect failure for an
+// enrollment, or "" when none. Exported so the local-API status handler
+// can surface it via EnrollmentStatus.LastError, and so the desktop
+// client + dashboard can show actionable per-enrollment errors instead
+// of forcing the user to dig through log files.
+func (c *Client) LastBootError(name string) string {
+	c.bootErrorsMu.Lock()
+	defer c.bootErrorsMu.Unlock()
+	return c.bootErrors[name]
 }
 
 // Disconnect tears down a single named enrollment. Idempotent. Public method

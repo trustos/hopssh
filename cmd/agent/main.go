@@ -160,8 +160,22 @@ func runServe(args []string) {
 	// enrollment landing through the local API would call the auto-connect
 	// path with c.runCtx == nil → panic in startInstance's
 	// context.WithCancel (the v0.11.18 Linux fresh-install crash).
+	//
+	// Phase GG (v0.11.26): never log.Fatalf on Start error. Pre-fix, a
+	// single bad enrollment (expired cert, port conflict, clock skew) caused
+	// Start to return error → log.Fatalf → process exit code 1 → launchd
+	// KeepAlive=true respawn → tight ~15s restart loop. The restart loop
+	// took down ALL enrollments (home + member-test along with the broken
+	// one) AND prevented client.StartLocalAPI from ever running, leaving
+	// the .app's system-mode mirror token file stale at its last successful
+	// boot (observed live on the user's MBP: mirror file last touched May
+	// 14, agent restarting every 15s for hours). Now: log loudly,
+	// continue. local-api runs regardless so the user can re-enroll the
+	// broken network from Settings → Danger zone instead of being told
+	// "hopssh isn't running" by the .app.
 	if err := c.Start(shutdownCtx); err != nil {
-		log.Fatalf("[agent] start: %v", err)
+		log.Printf("[agent] CRITICAL: Client.Start: %v", err)
+		log.Printf("[agent] agent will stay alive serving local API so you can fix this from the desktop client (Settings → Danger zone → Reset, or re-enroll the broken network)")
 	}
 
 	// Loopback HTTP API used by the desktop GUI shell (Tauri).

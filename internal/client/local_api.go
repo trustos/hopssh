@@ -454,6 +454,18 @@ func (s *localAPIServer) enrollmentStatus(e *Enrollment) EnrollmentStatus {
 		}
 	}
 
+	// Phase GG (v0.11.26): surface boot-time connect failures so the
+	// .app/dashboard show actionable per-enrollment errors instead of the
+	// user staring at "hopssh isn't running". Don't override an existing
+	// LastError (e.g. the cert-expired message from the cert-read branch
+	// above) — bootError is the catch-all for failures that aren't
+	// otherwise diagnosable (port conflicts, clock skew, etc.).
+	if es.LastError == "" {
+		if bootErr := s.client.LastBootError(e.Name); bootErr != "" {
+			es.LastError = bootErr
+		}
+	}
+
 	return es
 }
 
