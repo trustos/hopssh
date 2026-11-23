@@ -2,7 +2,7 @@
 type: runbook
 title: Mesh appears dead — kickstart launchd
 status: current
-last_compiled: 2026-05-03
+last_compiled: 2026-11-23
 sources:
   - cmd/agent/service.go
   - docs/wiki/concepts/macos-system-mode.md
@@ -11,6 +11,10 @@ sources:
 # Mesh appears dead — kickstart launchd
 
 **TL;DR.** When a system-mode agent is running but the mesh is unreachable, kick the LaunchDaemon to force an immediate cert refresh + reconnect.
+
+> **An expired cert on v0.10.82 to v0.11.26 is not fixed by a kickstart.** The agent tears the network down before its renewal can finish. Install an agent with Phase HH first (it renews before starting Nebula). See [[../incidents/2026-11-18-mbp-all-certs-expired]].
+>
+> **If the machine was silent for more than 7 days, its node is gone from the server** (control planes v0.10.51 to v0.11.26 delete it, unless `HOPSSH_NODE_PRUNE_AGE_HOURS=0`). Look for it in the dashboard. Not listed means no agent version can bring it back: leave the network and enroll again.
 
 ## Symptom
 

@@ -2,7 +2,7 @@
 type: concept
 title: Agent watchdog architecture (3 independent watchdogs)
 status: current
-last_compiled: 2026-05-09
+last_compiled: 2026-11-23
 sources:
   - internal/client/keepalive.go (was cmd/agent/keepalive.go pre-Phase-NN)
   - internal/client/renew.go (runRenewalWatchdog)
@@ -18,13 +18,22 @@ sources:
 
 ## TL;DR
 
-The agent has **three independent watchdogs**, each scoped to one class of silent failure that the others can't catch. All three share the same primitive: stamp activity → assert on stamp age → on trip, write goroutine pprof dump to disk, then invoke `restartFn` (the v0.10.36 lifecycle infrastructure that closes the running svc and reconnects). Cooldowns prevent restart-loops on persistent issues. None of the three is sufficient alone.
+The agent has **three independent watchdogs**, each scoped to one class of silent failure that the others can't catch. All three share the same primitive: stamp activity → assert on stamp age → on trip, write goroutine pprof dump to disk, then invoke `restartFn` (closes that instance and reconnects). Cooldowns prevent restart-loops on persistent issues. None of the three is sufficient alone.
 
 | Watchdog | Watches | Trip condition | Threshold | Shipped |
 |---|---|---|---|---|
 | Renewal | `lastRenewalActivityAt` (stamped by `runCertRenewal`) | silence > `renewalSilenceThreshold` (= cert validity / 4 = **6h** on 24h certs) | 5 min check interval, 30 min cooldown | Phase P (v0.10.79 / v0.10.82) |
 | Data plane | TCP-probe success rate against peer mesh API listeners | `peers > 0 && probed > 0 && all-fail` for **3 consecutive 90s cycles** (~270s) | 90s probe cadence, 5 min cooldown | v0.10.36 |
 | Watcher | `lastWatcherActivityAt` (stamped at top of `watchNetworkChanges` tick body) | silence > `watcherSilenceThreshold` (= **3 min**) | 30s check interval, 30 min cooldown | Phase DD (v0.10.96) |
+
+> **From v0.10.36 to v0.11.26 no watchdog restart did anything.** `restartFn` was `connect(name)`, which returns "already up" while the instance has a Nebula, and watchdogs only fire while it has one. So no "auto-recovered" in the history below is evidence that a restart helped.
+
+## Restarts (Phase HH, unreleased)
+
+- `restartFn` is `c.restartInstance(name, inst)`: tear that instance down, reconnect, and leave a newer instance alone. Waits at most 20 s for the teardown.
+- **A restart costs connections now, so it backs off per enrollment:** 5 min, doubling to 6 h, forgotten after 12 h without one. The state is on the `Client`, not on the instance being replaced.
+- If the port or TUN device is still held after a watchdog teardown, the recovery loop counts it, and three in a row exit the process (Phase EE, code 75).
+- The keepalive of an in-app network dials through its own netstack (`meshDialer`). "Connection refused" counts as alive: the packet made the round trip.
 
 ## Why three, not one
 

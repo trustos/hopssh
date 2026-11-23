@@ -31,8 +31,10 @@ Real-world things — machines, networks, services, accounts.
 Architectural ideas the code embodies but doesn't explain.
 
 - [[concepts/sleep-wake]] — what survives sleep on macOS, what doesn't, why
-- [[concepts/cert-renewal]] — 24h cert lifecycle, Phase S 60s ticker, retry-with-backoff
+- [[concepts/cert-renewal]] — 24h cert lifecycle, fixed renewal instant, Phase HH pre-start renewal + recovery loop
 - [[concepts/watchdog]] — Phase P2 stuck-data-plane watchdog, restartFn, forensic dumps
+- [[concepts/e2e-tests]] — the real server and the real agent under test: how to run it, what is covered, what is not, pinned gaps. **Read before changing a route, a permission, renewal or the database.**
+- [[concepts/macos-udp-send]] — batched sends on macOS; why packets waited or were dropped until patch 28. **Read before touching the Darwin UDP patches.**
 - [[concepts/macos-system-mode]] — bundled gvisor vs LaunchDaemon kernel-utun, mirror-token + mirror-port handoff
 - [[concepts/desktop-client]] — Tauri 2 + Svelte 5 macOS app: shipped capabilities (Phase V→DD), 22 commands, forward gaps
 - [[concepts/client-strategy]] — unified Tauri 2 delivery across iOS/Android/macOS/Windows/Linux: shared Svelte UI + gomobile core. **Substrate built (Phase NN, 2026-05-09)** — `internal/client/` extracted from `cmd/agent/`; iOS + Android substrate-ready (gomobile binding pending NN+1).
@@ -54,6 +56,13 @@ Forensic post-mortems of specific failure events.
 - [[incidents/2026-05-02-mbp-watchdog-deploy-bounce]] — work-network watchdog tripped during v0.10.84 control-plane rollout; auto-recovered (resolved)
 - [[incidents/2026-05-07-mbp-watcher-wedge]] — watchNetworkChanges deadlocked in vendor Nebula call; third watchdog class added in Phase DD (v0.10.96, resolved)
 - [[incidents/2026-05-09-linux-desktop-stuck-onboarding]] — Linux .deb fresh-install panic: nil c.runCtx in startInstance because Start was skipped on no-enrollments branch; two-layer fix in v0.11.19 (resolved)
+- [[incidents/2026-11-18-mbp-all-certs-expired]] — every network "certificate expired" + "no live instance", never recovers. Main cause: agents since v0.10.82 never renewed *before* expiry. Plus: recovery died with the failed instance, watchdog restarts were no-ops, closing an in-app network could end the agent, macOS held back or dropped packets, **the server deleted every machine that was off for a week**, no SQLite setting was in effect. Fixed in the tree, **not released**. **Read before touching renewal, watchdogs, rate limits or connect/disconnect.**
+
+## Evaluations
+
+- `raw/evaluation/2026-11-23-code-and-ssh-review.md` — code health, security, the SSH path; ranked gaps
+- `raw/evaluation/2026-11-23-p2p-ssh-competitors.md` — what Tailscale, NetBird, ZeroTier and others ship for SSH; where a small product can win
+- `raw/nebula-upgrade/2026-11-18-upstream-survey.md` — Nebula v1.10.3 → v1.11.2 / v1.12.0
 
 ## Phases
 
@@ -76,6 +85,7 @@ Symptom → action operational wisdom.
 
 - [[runbooks/mesh-dead-kickstart]] — kick the LaunchDaemon when the mesh appears dead but the agent is running
 - [[runbooks/refresh-system-mode-binary]] — Phase J workaround: manually refresh `/usr/local/bin/hop-agent` from the .app
+- [[runbooks/release-v0.11.27]] — release v0.11.27: the order, the checks, going back, and enrolling every device again
 - [[runbooks/notarization-pipeline]] — macOS Developer ID + notarytool + stapler pipeline (planning; blocked on Apple Developer Program enrollment)
 
 ## How this maps to existing files

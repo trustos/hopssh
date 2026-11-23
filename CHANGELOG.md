@@ -6,6 +6,49 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [v0.11.27] — 2026-11-24
+
+Certificates that expire and devices that never come back. Versions v0.11.5 to v0.11.26 are not listed here; see `git log`.
+
+**Before you update.** Move the server first, then every device; an older server and a newer agent work together, and the other way round. A device that a server on v0.10.51 to v0.11.26 did not hear from for more than 7 days is gone from it: on that device, leave the network and enroll again. Updating alone does not bring it back.
+
+### Security
+- The admin of one network could remove members and invites of another, if they knew the ID. The ID has to belong to the network in the URL now.
+- The browser proxy passed the dashboard's session cookie on to the device behind it, and that device could replace the viewer's session. Both directions are stripped.
+- `hop-agent update` refuses a download when the checksums cannot be fetched or read, or don't list the file. Before, it carried on.
+- A program started from the web terminal inherited the mesh network device, could read its unencrypted traffic and kept it open after the terminal was gone (Linux, macOS).
+- Dependencies: Go 1.26, chi 5.5.0, quic-go 0.65.0, x/crypto 0.59.0, x/net 0.63.0, and the npm packages of the dashboard and the desktop app.
+
+### Changed
+- **The server no longer deletes devices because they are quiet.** It deleted every device that was silent for 7 days. Deleting is opt-in now: `HOPSSH_NODE_PRUNE_AGE_HOURS=<hours>`. The dashboard's "Clean up" button stays and says what it does.
+- Agents renew at half of the certificate's life (about every 12 h). Before, they renewed only after it had expired.
+- `/api/renew` and `/api/heartbeat` have a rate limit of their own (600 per minute and address) and no longer share the login's.
+- A renewal or heartbeat that fails because of the server's database answers 500, not 401.
+- After a 401 an agent asks once an hour and keeps running.
+
+### Fixed
+- Agent: a network whose certificate expired comes back by itself, after a reboot, with Connect, and after half a year off. It renews before it starts and keeps retrying.
+- Agent: the watchdogs' restarts restart something. Since v0.10.36 they did nothing. They wait longer after each one (5 minutes to 6 hours).
+- Agent: a renewal that ends after Disconnect no longer starts the network again or holds its port; an empty `nebula.yaml` no longer crashes it on every start; three data races.
+- Agent and server: closing an in-app network could end the whole process. On the server this happened when the lighthouse of an idle network was closed.
+- Agent: each close of an in-app network leaked its network stack (about 1.3 MB).
+- Linux: closing a network releases its UDP port and its device at once. Renewing, reconnecting, or creating a network again could fail with "address already in use" or "device or resource busy".
+- macOS: single packets were held back until the next batch, and one unreachable address made the others' packets disappear.
+- macOS: the check for a free UDP port did not see Nebula's port.
+- Server: the database settings (WAL, wait when busy, foreign keys) were never in effect. Requests failed with "database is locked" under load, and deleting a network left its rows behind.
+- Server: every request through the browser proxy left a connection to the device open.
+- Dashboard: "Clean up" deleted the devices and then showed an error.
+
+### Added
+- End-to-end tests that run the real server and the real agent (`internal/e2etest`, [`docs/wiki/concepts/e2e-tests.md`](docs/wiki/concepts/e2e-tests.md)), also as root with a kernel device in CI.
+
+### Known problems
+- Every member of a network can open a terminal on every device, as the user the agent runs as.
+- A deleted device can still join the mesh until its certificate expires (24 h at most).
+- Every renewal ends the open connections of an in-app network.
+- The install scripts accept a missing checksum, and nothing is signed.
+- Full list: [`docs/wiki/open-questions.md`](docs/wiki/open-questions.md).
+
 ## [v0.11.4] — 2026-05-09
 
 ### Added

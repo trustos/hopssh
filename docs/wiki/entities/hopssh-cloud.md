@@ -2,7 +2,7 @@
 type: entity
 title: hopssh.com control plane (cloud)
 status: current
-last_compiled: 2026-05-03
+last_compiled: 2026-11-24
 sources:
   - CLAUDE.md (Discovery Log)
   - oci_nomad_cluster/jobs/hopssh.nomad.hcl
@@ -26,13 +26,18 @@ Single Go binary (`hop-server`) deployed on Oracle Cloud arm64 worker, fronted b
 1. `make release` (or manual `git tag vX.Y.Z && git push origin vX.Y.Z`) — CI builds + publishes `ghcr.io/trustos/hopssh:vX.Y.Z` image.
 2. Bump image tag in `oci_nomad_cluster/jobs/hopssh.nomad.hcl`, commit + push.
 3. GitHub Actions runner on the OCI cluster pulls + redeploys via `nomad job run`. Container swap takes ~5–7 minutes.
-4. Verify via `curl -sf https://hopssh.com/version`.
+4. Verify via `curl -sf https://hopssh.com/version`: look at `current`. `version` is the newer of that and the latest GitHub release, so it changes as soon as the release is published, before the deploy.
 
 ## Side effects of deploys (worth knowing)
 
 - During the swap, the Nebula instances bounce. **Agents see `Close tunnel received, tearing down. certName=hopssh-server` for the lighthouse vpnAddrs**.
 - Heartbeat 404s appear briefly mid-rollout (Traefik routes mid-update).
 - **The Phase P2 [[../concepts/watchdog]] correctly fires** if a per-network keepalive sees 3 consecutive stuck cycles (~270s) of probe failures. This happened on 2026-05-02 v0.10.84 deploy → forensic dump on the [[mbp]]. Functionally correct (auto-recovered) but noisy.
+
+## Settings worth knowing
+
+- `HOPSSH_NODE_PRUNE_AGE_HOURS=0` since 2026-11-24: without it v0.11.26 deletes devices that were silent for 7 days. Keep it for as long as a v0.11.26 image may run.
+- The data is on a local ext4 disk of the one worker (checked 2026-11-24), so WAL is safe.
 
 ## Cluster notes
 

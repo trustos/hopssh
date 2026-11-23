@@ -12,6 +12,8 @@ sources:
 
 **TL;DR.** Long-duration `time.After` is anchored to the monotonic clock; on Darwin the monotonic clock freezes during deep sleep, so a `time.After(5h49m)` scheduled before bed can take days to fire on a laptop. Replaced with a 60-second ticker that re-reads cert NotAfter against wall-clock on every tick.
 
+> **2026-11-23:** the ticker is right, but this change also recomputed the deadline from "what remains" on every tick, so until v0.11.26 a cert was renewed only after it expired. See [[../incidents/2026-11-18-mbp-all-certs-expired]].
+
 ## Context
 
 Production incident, 2026-05-02: a laptop scheduled cert renewal at 22:59:50 for `+5h49m54s`. The renewal goroutine never woke. `pmset -g log` proved the laptop entered Clamshell Sleep at 23:08:12 and cycled Sleep ↔ DarkWake every ~15 min for the entire night. Each DarkWake is ~45s of awake-time; deep sleep accumulates ~95% of the wall-clock window.

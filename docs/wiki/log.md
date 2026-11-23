@@ -84,3 +84,71 @@ Extracted ~22k LOC of client-lifecycle code (89 files) from `cmd/agent/` (which 
 This unblocks Phase NN+1 (`clients/mobile-go/mobilehop/` gomobile binding), NN+2 (iOS NEPacketTunnelProvider), NN+3 (Android VpnService) — all three were paper-blocked on the substrate per the iOS + Android ADRs. ADR statuses flipped from `proposed/substrate-blocked` to `substrate-built` with progress-checklist marking the substrate done and the gomobile binding + VPN-extension scaffolding as the remaining open work.
 
 Pages touched: 0 created, 6 updated (`docs/wiki/decisions/client-ios-architecture.md` + `client-android-architecture.md` status + path citations; `docs/wiki/concepts/client-strategy.md` status snapshot + project structure; `docs/wiki/concepts/cert-renewal.md` + `watchdog.md` source path updates; `docs/architecture.md` watchdog section header). Plus `CLAUDE.md` Discovery Log entry, `docs/development.md` project structure section, this `log.md`.
+
+## [2026-11-18] ingest | Phase HH (2nd) — all certs expired on MBP after ~6 months; three-layer root cause + fix (v0.11.27)
+
+> **Wrong in parts, corrected by the 2026-11-23 entry below:** the main cause was missed, the household explanation in (A) is unproven, and nothing was shipped.
+
+On yavors-macbook-pro, both enrollments showed "certificate expired" plus `no live instance` and never recovered. Three root causes:
+
+- (A) the server put `/api/renew` + `/api/heartbeat` on the anonymous 10/min/IP `publicRL`, so heartbeats behind one household NAT starved renewals (production does set `--trusted-proxy`, so buckets are per household, not global);
+- (B) `Client.connect` tears down an instance whose Nebula failed to start (an expired cert), which killed the renewal goroutine that would have fixed it (regression since v0.11.6);
+- (C) every watchdog `restartFn` had been a no-op since v0.10.36, because `connect` short-circuits on "already up".
+
+The fix:
+
+- a dedicated `agentRL`;
+- pre-start renewal (`ensureUsableCert`);
+- a per-enrollment wall-clock recovery loop owned by the `Client`;
+- `restartInstance` as the real restart.
+
+It is covered by 33 agent tests and 2 router tests. In the same pass: Go 1.25.8 → 1.26.0, dependency bumps (chi, quic-go, x/crypto, x/net, x/sys), CI reads `go-version-file: go.mod`, the Dockerfile moved to golang:1.26, and `npm audit fix` ran. govulncheck is clean.
+
+Pages touched: 1 created (`incidents/2026-11-18-mbp-all-certs-expired.md`), 4 updated (`concepts/cert-renewal.md`, `phases/phase-ledger.md`, `index.md`, `open-questions.md`). Plus the `CLAUDE.md` Discovery Log entry.
+
+## [2026-11-18] ingest | Nebula upstream survey (v1.10.3 → v1.11.2 / v1.12.0)
+
+A background research pass compared our Nebula pin (v1.10.3, 25 patches) with upstream through v1.12.0. The raw survey is at `raw/nebula-upgrade/2026-11-18-upstream-survey.md`; I spot-checked the PR and release facts with `gh api`.
+
+Recommended target: v1.11.2. It brings firewall-bypass fixes, a relay re-establishment fix and hostmap/roam race fixes, and lets us drop patches 01 and 03. Patch 25 (clock-skew) stays ours. About 10–14 patches need real rework.
+
+Also corrected stale CLAUDE.md "Vendor Patch" claims:
+- PR #1375 was closed unmerged; the actual fix is #1661 in v1.11.0;
+- `scripts/check-nebula-patch.sh` doesn't exist;
+- there are 25 patches, not 1.
+
+Pages touched: 1 raw source created, `open-questions.md` updated (upgrade entry + patch-12/Makefile entry), `CLAUDE.md` Vendor Patch section rewritten.
+
+## [2026-11-23] correct | Phase HH (2nd) — main cause found, 2026-11-18 explanations corrected, project evaluated
+
+Ran the released code instead of reasoning about it. The main cause is that agents since v0.10.82 never renew before expiry. Also found and fixed: work on closed instances, a process exit when closing an in-app network, a boot panic on an empty `nebula.yaml`, macOS packets held back or dropped, a netstack leak per close, and four bugs in the 2026-11-18 watchdog change itself. New vendor patches 27–30. Patch 12 turned out to be in no clean build. Nothing is committed, released or deployed.
+
+Pages touched: 2 created (`concepts/macos-udp-send.md`, two reports in `raw/evaluation/`), incident page rewritten, 9 updated (`cert-renewal`, `watchdog`, `mesh-dead-kickstart`, `phase-s`, `phase-s-renewal-ticker`, `index`, `phase-ledger`, `open-questions`, this log), `CLAUDE.md`, `patches/README.md`.
+
+## [2026-11-23] ingest | End-to-end tests with the real server and the real agent
+
+The question was whether the fixes have proper E2E tests, mainly of the API. They did not: the existing ones ran real Nebula against a fake control plane, and 22.7 % of the server-side statements were run by any test. Built `internal/e2etest` (the real `hop-server` as a process), 17 API tests, 7 agent tests (the real agent as a process) and tests for `db`, `mesh` and `selfupdate`. On their first runs they found L, M, N, O, Q, S and T; all fixed. What is wrong and not fixed is pinned with `KnownGap`. 81 planted bugs, all caught. `TestE2E_Upgrade` goes from v0.11.26 to this tree and back.
+
+Corrected on the way: "v0.11.27 recovers the MBP" (not if the machine was silent for more than 7 days, L), the recovery loop gave up for good after a 401 (now asks hourly), and the runbook.
+
+Pages touched: 1 created (`concepts/e2e-tests.md`), 8 updated (incident page, `cert-renewal`, `mesh-dead-kickstart`, `index`, `phase-ledger`, `open-questions`, `development.md`, `features.md`), `CLAUDE.md`.
+
+## [2026-11-23] ingest | The tests under the race detector and on Linux
+
+`-race` found one data race in the agent (U). The first run on Linux (local Fedora VM, arm64) failed in six places, all one bug: a closed network keeps its UDP port until the next packet (V). A new root test for kernel TUN found that the device stays too (W) and that programs started from the web terminal inherit it (X). Vendor patches 31 and 32; CI has a step for the root test. Linux passes since.
+
+Pages touched: 4 updated (incident page, `e2e-tests`, `open-questions`, this log), `CLAUDE.md`, `patches/README.md`.
+
+## [2026-11-24] ingest | Switched-off tripwires, WebSocket and clipboard tests, coverage
+
+Read every skipped test. Four that guarded the watchdogs' wiring had been off since May 2026; `TestE2E_BackgroundWork` (and one source scan) replaces them. 14 wiring bugs planted: without it 11 get through, with it none. The first version missed bug C itself (a watchdog "restart" that only reconnects). Four older tests failed whenever UDP 4242 was taken, since fix O made the port probe real; they use a free range now. New: WebSockets through the real agent, `TestE2E_Clipboard`, the clipboard's rate limits. 16 + 3 bugs planted there, all caught; two new gaps pinned. Coverage of the eight server-side packages: 22.7 % before the E2E tests, 72.9 % now.
+
+Test-only changes; run on macOS, not again on Linux.
+
+Pages touched: 3 updated (`e2e-tests`, `open-questions`, this log), `CLAUDE.md` (rule 14).
+
+## [2026-11-24] ingest | Production checked, release v0.11.27 prepared
+
+Looked at production before the release. No device is left on it: the sweep (L) deleted the last two on 2026-08-07. Automatic deletion is off since today (`HOPSSH_NODE_PRUNE_AGE_HOURS=0`), the database is copied, the volume is a local disk. The log explains the 429s (deleted devices that keep asking) and 8 server crashes in June 2026 (the idle reaper, G), and has networks whose lighthouse did not come back after an idle close (V). New test: `TestReapIdleInstances`; its first version passed without the patch it is meant to guard. Found by running `npm run check`: the dashboard's "Clean up" button called a function that does not exist. All tests on Linux again: pass. The workflows read `go-version-file: go.mod` since 2026-11-18, which means Go 1.26.**0**, without the 34 security fixes of its patch releases; they ask for the newest 1.26 now.
+
+Pages touched: 1 created (`runbooks/release-v0.11.27.md`), 8 updated (incident page, `cert-renewal`, `e2e-tests`, `open-questions`, `phase-ledger`, `hopssh-cloud`, `index`, this log), `CLAUDE.md` (rule 15), `CHANGELOG.md`.

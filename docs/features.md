@@ -160,7 +160,7 @@
 - **Embedded web UI** — Svelte 5 SPA built into the Go binary. No separate frontend server.
 - **SQLite database** — Pure Go (no CGO), WAL mode, lock retry with escalating backoff. 20 read connections, 1 write connection.
 - **Flags** — `--addr`, `--data`, `--endpoint`, `--lighthouse-host`, `--trusted-proxy`, `--allowed-origins`.
-- **Environment variables** — `HOPSSH_ADDR`, `HOPSSH_DATA`, `HOPSSH_ENDPOINT`, `HOPSSH_LIGHTHOUSE_HOST`, `HOPSSH_TRUSTED_PROXY`, `HOPSSH_ALLOWED_ORIGINS`, `HOPSSH_ENCRYPTION_KEY`, `HOPSSH_NODE_PRUNE_AGE_HOURS`.
+- **Environment variables** — `HOPSSH_ADDR`, `HOPSSH_DATA`, `HOPSSH_ENDPOINT`, `HOPSSH_LIGHTHOUSE_HOST`, `HOPSSH_TRUSTED_PROXY`, `HOPSSH_ALLOWED_ORIGINS`, `HOPSSH_ENCRYPTION_KEY`, `HOPSSH_NODE_PRUNE_AGE_HOURS` (delete nodes that have been offline this long; default: keep them).
 - **`install`** — Install as a system service (systemd/launchd).
 - **`uninstall`** — Remove the system service.
 - **`update`** — Self-update from GitHub releases.

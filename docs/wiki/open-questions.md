@@ -20,6 +20,146 @@ Move closed items to a "Resolved" section at the bottom rather than deleting —
 
 ## Open
 
+## 2026-11-24 — releases are not gated by the tests
+
+`release.yml` and `release-desktop.yml` start on any `v*` tag and run no test; `make release` tags whatever is checked out and pushes only the tag, so `main` can stay behind. The Docker image is built for the first time there, and the kernel-TUN step of `ci.yml` has never run in CI. **Action:** a `test` job that the build jobs need. Until then: push `main`, wait for CI, then tag ([[runbooks/release-v0.11.27]]).
+
+## 2026-11-24 — a lighthouse that fails to come back is silent
+
+The idle reaper closes a network's lighthouse after 2 h without a device; the next heartbeat starts it again through `GetInstance`. `renew.go` throws that error away (`netInst, _ =`), so a lighthouse that cannot start (V did that in production, see [[incidents/2026-11-18-mbp-all-certs-expired]]) leaves no line in the log, and the network has no relay until a later heartbeat succeeds. The reaper's own line prints a pointer (`last activity: 0x…`). Also: a device that *enrolls* into a reaped network finds no lighthouse until its first heartbeat. **Action:** log the error; consider starting the lighthouse at enrollment.
+
+## 2026-11-24 — five type errors in the dashboard
+
+`npm run check` in `frontend/`: three in `network-topology.svelte`, two in `networks/[id]/+page.svelte` (`role` as a plain string; `network` possibly null). Known since May 2026. A sixth was a real bug: the "Clean up" button called a function that does not exist, so it deleted the devices and then showed an error (fixed for v0.11.27). **Action:** fix them and run the check in CI.
+
+## 2026-11-23 — a proxied page runs as the dashboard (R)
+
+`NodeProxy` serves a node's web service under the dashboard's own origin and strips its CSP. A script on any node's page can call `/api/…` with the viewer's login. The session cookie no longer reaches the node (Q), and a node can no longer set it (T), but same-origin requests still work. **Action:** serve proxied pages from a separate host name (best), or with `Content-Security-Policy: sandbox` without `allow-same-origin` (breaks apps that need storage). Pinned by `TestE2E_Proxy`.
+
+## 2026-11-23 — API gaps pinned by the E2E tests
+
+Each has a `KnownGap` in the test named, which fails once the gap is closed, so the marker can't be forgotten. Not fixed because each is a product decision or a change of its own.
+
+| Gap | Test |
+|---|---|
+| A deleted device can join the mesh until its cert expires (≤ 24 h): nothing distributes a blocklist | `TestE2E_DeletedPeer` |
+| A deleted node's name keeps resolving: `DeleteNode` doesn't call `RefreshDNS` | `TestE2E_DNS` |
+| An outsider gets 403 instead of 404 on admin routes, so they can tell which network IDs exist (9 routes) | `TestE2E_Access` |
+| A member who opens an invite uses it up for the person it was meant for | `TestE2E_Invites` |
+| Removing a member leaves no audit trace. Nor do `StopPortForward`, `DeleteNetwork`, invite create/delete and `JoinNetwork` (read in the code, not pinned) | `TestE2E_History` |
+| Every renewal ends the open sessions of an in-app network | `TestE2E_Lifecycle` |
+| Any member runs commands on every node; the audit log doesn't say which command | `TestE2E_MemberShell` |
+| What a device copies (up to 8 KB) is sent to every open dashboard of the network, where nothing uses it | `TestE2E_Clipboard` |
+| A clip of 198 to 256 KB is refused: the limit for the request body forgets that the content is base64 | `TestE2E_Clipboard` |
+
+Seen while writing the tests, not pinned: any member can start port forwards (they listen on 127.0.0.1 of the control-plane host only) and stop anyone's; CORS allow-methods lacks PUT and PATCH; an invite accepts `maxUses: -1`; a DNS record may point outside the network; `Enroll` and device `Poll` use up the token before the 409 check; `NetworkManager.StopNetwork` during a start in flight is untested.
+
+Clipboard, seen while writing `TestE2E_Clipboard`, not pinned: `since` has seconds, so the second of two clips in one second is skipped for a device that polled in between; the limit is 60 requests a minute per address and every device polls 30 times a minute, so three devices behind one router run into it after about four minutes; a database error answers 401 (as renew and heartbeat did, a).
+
+## 2026-11-23 — peer-to-peer UDP is probably blocked by our own firewall (P)
+
+`writeNebulaConfig` allows inbound TCP and ICMP between nodes, nothing else. If that is what runs, mosh, QUIC and Screen Sharing's media cannot work between peers. Read in the config only. **Action:** send one UDP packet between two nodes and see.
+
+## 2026-11-23 — kernel TUN: what is still unproven
+
+`TestKernelTunClose_ReleasesDeviceAndPort` (root, Linux) covers V, W and X. CI runs it in its own network namespace (`.github/workflows/ci.yml`); that step has not run in CI yet, only the same commands in a local VM. **Not run:** the macOS half of patch 32 (needs root), and throughput of a Linux system-wide network with the device opened non-blocking (patch 31; the same thing wireguard-go does). **Action:** `iperf3` through a Linux system-wide network before and after, at the next dev deploy.
+
+## 2026-11-23 — creating a network answers 201 although its lighthouse did not start
+
+`CreateNetwork` only logs `[networks] failed to start lighthouse for …`. Seen on Linux because of V, which is fixed; any other cause (a port in use) still looks like success. **Action:** answer 500 and roll back, or show the network as "not running".
+
+## 2026-11-23 — logs wanted from the MBP (the original trigger is not proven)
+
+Why the certs ran out in that machine's case is inferred from released code, not from its logs. **Action:** before reinstalling, save `/var/log/hop-agent.log`, `/etc/hop-agent/*/{renewal-stuck,stuck-state,watcher-stuck}-*.txt`, `hop-agent status`, and `pmset -g log`.
+
+## 2026-11-23 — reload the certificate in place instead of restarting Nebula
+
+Every renewal (about every 12 h since the fix, 24 h before) closes the network and starts it again, which drops all tunnels, in-app connections and the web terminal's path. Nebula can swap certs through its config reload callbacks; we can't use it because `startNebula*` keeps `config.C` local. **Action:** keep the `config.C`, write the new cert, call `ReloadConfig`. Fall back to the restart if the reload is rejected. The test exists: `TestE2E_Lifecycle/force_renewal` pins today's behaviour with an open shell.
+
+Source / context: `internal/client/renew.go::reloadNebula`, `internal/client/nebula.go`
+
+## 2026-11-23 — do the macOS send bugs (I, J) explain earlier symptoms?
+
+Idle tunnels dying, Phase G, the v0.10.35 keepalive, post-sleep "handshake sent" without a packet (patch 24), the 2026-05-14 same-CGNAT relay stall. All fit; none was re-tested. **Action:** re-test with patch 28 on two Macs before working on any of them; consider removing workarounds that turn out to be for this.
+
+Source / context: [[concepts/macos-udp-send]]
+
+## 2026-11-23 — macOS code is never tested in CI
+
+CI is ubuntu-only, so all Darwin Nebula patches and their tests, the macOS part of the agent, and the 44 desktop `#[test]`s never run. `go test ./...` also skips vendored tests. **Action:** add a macos-latest job running `go test -mod=vendor -race ./internal/client ./internal/api github.com/slackhq/nebula/udp` and `cargo test`. Add govulncheck and `-race` on ubuntu. Fix first: `TestPeerCache_SaveSkipsWhenUnchanged` (flaky, about 1 in 40). On Windows the client's tests don't even compile: `renew_sleep_test.go` uses `syscall.SIGSTOP` without a build tag.
+
+## 2026-11-23 — authorization: every network member gets a shell on every node
+
+`requireNode` (`internal/api/proxy.go:68`) only needs `CanView`, so any member can open a terminal and run commands, as root on an installed service. Capabilities default to all (`terminal,health,forward`) and the agent never checks them. `NodeExec` audits no command. The mesh firewall is flat. Pinned by `TestE2E_MemberShell`. **Action:** terminal and exec need admin or an explicit per-node grant; check the capability in the agent too; audit the command.
+
+Source / context: `docs/wiki/raw/evaluation/2026-11-23-code-and-ssh-review.md`
+
+## 2026-11-23 — updates are unsigned; the install scripts still fail open
+
+The agent's own update now refuses when the checksums can't be fetched, read or don't list the file (`TestE2E_Update`). Still open: the install scripts skip an empty checksum (`internal/api/distribution.go:502`, `scripts/install.sh:83`: `… SHA256SUMS … || true`); the checksums come from the same place as the binary; nothing is signed; `tauri.conf.json:42` ships `PLACEHOLDER_REPLACE_AT_RELEASE_TIME`. Whoever controls the control plane's downloads gets root on every node. **Action:** make the scripts fail closed (small), then sign with minisign or cosign and pin the key in the agent.
+
+## 2026-11-23 — hardening notes from the evaluation
+
+- Browser shell uses a predictable `$TMPDIR/hop-shell` (`cmd/agent/shell_unix.go`).
+- Mesh DNS binds `0.0.0.0` (`internal/mesh/dns.go:88`).
+- `encryption.key` sits beside the database (`cmd/server/main.go:107`).
+- `features.md:36` says "end-to-end encrypted"; the browser terminal is plaintext in the control plane's memory.
+
+## 2026-11-23 — agent loose ends
+
+- In-app mode: `warmTunnel`, `warmPeersFromHeartbeat` and `probePeersOnce` dial through the OS, so they never reach the mesh.
+- A lost `nebula.yaml` is never regenerated, and some writers use a non-atomic `os.WriteFile`.
+- `renew.go` (heartbeat `networkId` path) loads and saves its own copy of the enrollment registry: a concurrent save can be lost.
+- An agent started with a cert past half its life restarts Nebula right after starting it.
+- The error "another hop-agent on this device is using the network port" is shown for our own orphans too.
+
+## 2026-11-18 — `renewNow` retry loop can mask a stuck renewal from the Phase P watchdog
+
+`renewNow` retries up to 12 times with backoff reaching 30 min, stamping `lastRenewalActivityAt` on each attempt. While it is retrying (for example on 429s), the watchdog sees "activity" even though no renewal succeeds, and can't tell busy-failing from healthy. Renewals now have about 12 h of margin and the recovery loop covers the expired-cert end state, but a watchdog predicate on *last successful renewal age* versus cert NotAfter would catch it hours earlier. **Action:** consider stamping success separately, and alarm when `NotAfter - now < 2h` with no success in the last N attempts.
+
+Source / context: `internal/client/renew.go::renewNow`; [[concepts/watchdog]]
+
+## 2026-11-18 — `/local/renew` (force renew) returns 503 when there is no live instance
+
+`handleForceRenew` needs an instance, so it can't help exactly when it's most needed (an enrollment down because of its cert). The Phase HH recovery loop makes this mostly moot, but it is a cheap improvement to fall back to `fetchAndInstallCert` + `connectAndSupervise` when there is no instance.
+
+Source / context: `internal/client/local_api.go::handleForceRenew`
+
+## 2026-11-18 — vendor patch 12 never applies (silently, even in CI)
+
+**2026-11-23: its code is in no clean build.** `listenInWorker` and `inBatch` exist only in the test patch 13 adds, so `go vet github.com/slackhq/nebula` fails, and release and Docker builds use the same steps. Published macOS binaries very likely never had the pipelined `listenIn` (not checked on a binary), and the 2.7× downlink numbers in `docs/performance.md` and `docs/macos-pipelined-listenin.md` describe dev builds. **Decide:** re-measure with and without it on the current tree, then port it properly or drop 12 + 13. Patch 28's `interface.go` hunk is made against a tree without 12.
+
+Patch 12 fails on a blank-line context mismatch and `make patch-vendor` carries on: the Makefile runs each `patch` with `|| true` and then deletes `*.rej`, so **any** failed patch is silently ignored, in CI too. Either refresh patch 12 against vendored Nebula v1.10.3 or fold it into the Nebula upgrade below. Make `patch-vendor` **fail** on any patch that doesn't apply, and do that *before* the upgrade.
+
+Source / context: `patches/`, `Makefile` `patch-vendor` target. `scripts/check-nebula-patch.sh` does not exist despite older docs.
+
+## 2026-11-18 — upgrade vendored Nebula v1.10.3 → v1.11.2
+
+Upstream releases since our pin are v1.11.0, v1.11.1, v1.11.2 and v1.12.0 (v1.12.0 needs Go 1.27.3 and a gvisor jump of about 2.5 years, so it is a separate project). v1.11.2 brings:
+
+- two firewall bypass fixes with no GHSA (IPv6 extension-header parsing #1789; SCTP/GRE classified as TCP/UDP #1840), plus nonce-reuse and relay replay-window hardening;
+- a relay re-establishment fix (#1805), the same symptom class as the 2026-05-14 relay stall above;
+- hostmap/roam race fixes (#1752, #1755, #1773, #1788, #1790);
+- `Control.Wait` (#1794).
+
+Patch impact:
+
+- **Drop:** 01 (fixed upstream by PR #1661) and 03.
+- **Probably drop:** 02, pending a test.
+- **Rewrite:** 08 against upstream's `ListenOut` flush callback.
+- **Real rework:** the macOS perf stack (04, 06, 07, 09, 12, 17, 19, 24), the control API (11, 20–22, which have no upstream equivalent), 15 and 26.
+- **Keep as-is:** 14 and 25 (upstream `Expired()` still has no clock-skew tolerance).
+
+Known advisory GHSA-69x3-g4r3-p962 is already patched in our v1.10.3 (and only affects P256; we use Curve25519).
+
+**Action:** make `patch-vendor` fail loudly → bump → re-port patches one by one → run the full test suite plus the Phase E multi-host smoke test (mini + MBP + Linux + Windows), with cellular and WiFi perf A/B against `results/perf-20260425-003810/`.
+
+Source / context: `docs/wiki/raw/nebula-upgrade/2026-11-18-upstream-survey.md`
+
+## 2026-11-18 — npm dev-tooling vulnerabilities need major upgrades
+
+After `npm audit fix`, the dashboard frontend's **production** dependencies are clean, but its dev/build tooling still has 13 issues (8 high, 5 low) in @sveltejs/kit, vite, vite-plugin-svelte, svelte-check, picomatch, fdir, tinyglobby, cookie and bits-ui. The desktop client has 7 high (appdmg, image-size, vite, svelte-check, ...). All are build-time only, but they need `npm audit fix --force`-class **major** upgrades (SvelteKit / vite majors), which should be a dedicated, tested change. Cargo: 0 vulnerabilities; unmaintained/unsound warnings only (glib 0.18 via Tauri's gtk-rs, chrono, proc-macro-error, zbus/zvariant), which clear when Tauri moves its gtk stack.
+
 ## 2026-05-14 — Nebula relay path silently fails for same-CGNAT peers across different private subnets
 
 Mini + MBP on home network both behind same Yettel BG CGNAT (`46.10.240.91`), but on DIFFERENT private LANs (mini `192.168.23.x`, MBP `172.17.132.x`). Direct P2P fails due to hairpin NAT (well-documented in CLAUDE.md Discovery Log `preferred_ranges`). Relay fallback through the lighthouse (`use_relays: true, relays: [10.42.1.1]`) SHOULD bridge them — but in this incident relay also timed out: MBP's log shows continuous `Attempt to relay through hosts relays=[10.42.1.1]` + `CreateRelayRequest` followed by `Handshake timed out` for vpnAddr 10.42.1.7. Manual `launchctl kickstart` on BOTH agents was the only recovery — kickstarting one alone wasn't enough. **Three hypotheses to test next session**: (1) Lighthouse's UDP source-addr cache for the mini was stale because the Nebula-UDP flow timed out on CGNAT while the HTTPS heartbeat channel stayed warm. Trace lighthouse logs on hopssh.com around 09:39 (2026-05-14) to see what destination addr it used when forwarding relay packets. (2) Yettel CGNAT hairpin restriction applies to UDP-from-lighthouse-public-IP-back-to-Yettel-internal-host too (single-NAT-but-three-hop relay). Compare with a peer on a different ISP. (3) Nebula's relay implementation has a stale-endpoint retry bug — read `vendor/github.com/slackhq/nebula/relay.go` flow. **Action**: when this recurs, capture the lighthouse-side log first (server-side `journalctl -u hopssh` filtered for `relayFrom=10.42.1.6 relayTo=10.42.1.7` or vice versa). The agent-side artifacts (kickstart logs + nebula.yaml + lighthouse: replaced static host map entry lines) are preserved in this session's transcript for reference.
@@ -41,6 +181,28 @@ Source / context: [[incidents/2026-05-07-mbp-watcher-wedge]] § "Open questions"
 ---
 
 ## Resolved
+
+## 2026-11-23 — before releasing the server: three checks (resolved 2026-11-24)
+
+1. The MBP is **not** listed. No device is: the sweep (L) deleted the last two on 2026-08-07, seven days after they went quiet. Every device has to leave and enroll again. `HOPSSH_NODE_PRUNE_AGE_HOURS=0` is set in production since 2026-11-24 (log: `auto-prune disabled`), so nothing more is deleted before the new server runs.
+2. The data volume is a local ext4 disk on the one worker, not NFS.
+3. The database was copied with SQLite's online backup (`integrity_check: ok`; 3 orphan rows; `journal_mode: delete`, which confirms N on production).
+
+## 2026-11-23 — what drains the production login rate limiter? (resolved 2026-11-24)
+
+Devices that the server itself had deleted (L). A released agent that gets 401 gives up and is started again; one such device sent 3 renewals and 3 heartbeats about every 14 s. Between 2026-11-06 and 2026-11-23 the server answered 105,260 heartbeats and 102,721 renewals with 401 and 347,149 more with 429. Other devices behind the same address share that bucket. That it was this address is inferred, not shown. The fixed agent asks once an hour after a 401, and renewals have their own limiter.
+
+## 2026-11-23 — the E2E tests had not run on Linux (resolved 2026-11-23)
+
+Run in a local Fedora VM (arm64, kernel 6.12). Six tests failed because of one product bug (V, the UDP port outlives the network); a new root test for kernel TUN found two more (W, X). Fixed by vendor patches 31 and 32; everything passes there since. See [[incidents/2026-11-18-mbp-all-certs-expired]] V, W, X.
+
+## 2026-11-18 — `TestTicker_SurvivesSIGSTOP` has a data race (resolved 2026-11-23)
+
+Its tick counter is an atomic now; `internal/client` and `cmd/agent` pass with `-race`. Running the E2E tests with `-race` found one in the product (U).
+
+## 2026-11-18 — does production pass `--trusted-proxy` behind Traefik? (resolved 2026-11-18: yes)
+
+`oci_nomad_cluster/jobs/hopssh.nomad.hcl` sets `HOPSSH_TRUSTED_PROXY = "true"`, so rate-limit buckets are per the address in `X-Forwarded-For`. **Corrected 2026-11-23:** this does not show that buckets are per household, nor what exhausted one; see "what drains the production login rate limiter?" above. Caveat: `internal/auth/ratelimit.go::clientIP` takes the **leftmost** `X-Forwarded-For` entry. That is safe only while Traefik replaces client-supplied `X-Forwarded-For` (its default for untrusted sources). If a CDN or another proxy is ever put in front, revisit this, because leftmost-XFF becomes client-spoofable and the limiter can be bypassed.
 
 ## 2026-05-09 — Linux desktop client stuck onboarding + "Load failed" on Connect (resolved 2026-05-10)
 

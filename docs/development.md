@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Go 1.24+ (`go version`)
+- Go 1.26+ (`go version`)
 - Node.js 20+ (`node --version`) — for frontend
 - `make` (pre-installed on macOS/Linux)
 - Optional: Docker (for containerized builds)
@@ -60,6 +60,27 @@ inner + deep-sign bundle, NOT linker-signed — matters for AMFI under launchd) 
 tar + install on Mac mini via `ditto --noextattr` (strips quarantine xattrs that
 break LaunchDaemon AMFI) → SCP + install on laptop → `open` on each. Ship cycle
 ~2 min for both Macs.
+
+### End-to-end tests
+
+`make test` also runs the real `hop-server` and the real agent against each other
+(about 6 minutes; needs UDP 42001 free, no root). To run only those:
+
+```bash
+go test -mod=vendor ./internal/api ./cmd/agent -run TestE2E -v
+```
+
+`go test -short` skips them. Before a release, run the upgrade test against the version
+that is out there (a directory with its `hop-server` and `hop-agent`, how to build them is
+on the page below):
+
+```bash
+HOP_E2E_OLD=<dir> go test -mod=vendor ./cmd/agent -run TestE2E_Upgrade -v
+```
+
+How they work, what they cover and how to pin a known
+gap: `docs/wiki/concepts/e2e-tests.md`. A new `/api` route must be added to the table
+in `TestE2E_Access` (who may call it), or that test fails.
 
 ### Tripwire test pattern
 
@@ -332,7 +353,7 @@ GitHub Actions (`.github/workflows/ci.yml`) runs on every push/PR:
 - `go mod download` (fetch dependencies)
 - `make build` (compile)
 - `make vet` (static analysis)
-- `make test` (unit tests)
+- `make test` (unit and end-to-end tests)
 - Cross-compile for linux/amd64 + linux/arm64 with artifact upload
 
 ## Code Quality Rules

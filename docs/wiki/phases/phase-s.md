@@ -18,6 +18,8 @@ sources:
 
 Replaced `time.After(longSleep)` in the cert-renewal outer loop with `time.NewTicker(60s)` + a wall-clock `cert.NotAfter` re-read each tick. Survives Darwin's `mach_absolute_time` freeze during Clamshell Sleep / DarkWake. Empirically validated 2026-05-02 on [[../entities/mbp]] across multiple real Sleep/DarkWake cycles.
 
+> **2026-11-23:** the ticker is right, but this change also recomputed the deadline from "what remains" on every tick, so until v0.11.26 a cert was renewed only after it expired. See [[../incidents/2026-11-18-mbp-all-certs-expired]].
+
 ## What broke
 
 [[../entities/mbp]] cert renewal scheduled at `2026-05-01 22:59:50` for `+5h49m54s` never fired. `pmset -g log` proved Clamshell Sleep at `23:08:12 May 1` then Sleep ↔ DarkWake every ~15 min through the night. Cert hard-expired at `2026-05-02 06:14:27 UTC`. Mac mini rejected every handshake with `error="certificate is expired"`. Mesh dead until manual `launchctl kickstart`.
