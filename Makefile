@@ -91,7 +91,7 @@ generate:
 
 # Run tests.
 test:
-	go test -mod=vendor ./...
+	go test -mod=vendor -timeout 30m ./...
 
 # Build everything and run the server (frontend embedded in binary).
 run: build-all

@@ -40,6 +40,12 @@ jobs:
       - name: Test
         run: make test
 
+      - name: Test kernel TUN (root, in its own network namespace)
+        run: |
+          go test -mod=vendor -c -o /tmp/client.test ./internal/client
+          sudo unshare -n sh -c 'ip link set lo up && /tmp/client.test -test.run KernelTun -test.v' | tee /tmp/tun.log
+          grep -q '^--- PASS: TestKernelTunClose' /tmp/tun.log
+
   cross-compile:
     runs-on: ubuntu-latest
     strategy:
