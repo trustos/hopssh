@@ -13,7 +13,7 @@ COPY frontend/ .
 RUN npm run build
 
 # --- Go build stage (native — cross-compile for target arch) ---
-FROM --platform=$BUILDPLATFORM golang:1.25.8-bookworm AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-bookworm AS builder
 RUN apt-get update && apt-get install -y --no-install-recommends patch && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 COPY go.mod go.sum ./

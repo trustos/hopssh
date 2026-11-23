@@ -74,7 +74,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.26' # its newest patch release: go.mod says 1.26.0
+          check-latest: true
           # setup-go@v5 auto-caches ~/.cache/go-build + ~/go/pkg/mod
           # when given cache-dependency-path. Keyed on go.sum content;
           # source changes don't poison the cache because go build
@@ -234,7 +235,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.26' # its newest patch release: go.mod says 1.26.0
+          check-latest: true
           cache-dependency-path: |
             go.sum
             clients/desktop/src-tauri/Cargo.lock
@@ -372,7 +374,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.23'
+          go-version: '1.26' # its newest patch release: go.mod says 1.26.0
+          check-latest: true
           cache-dependency-path: |
             go.sum
             clients/desktop/src-tauri/Cargo.lock

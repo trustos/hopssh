@@ -1,20 +1,21 @@
 module github.com/trustos/hopssh
 
-go 1.25.8
+go 1.26.0
 
 require (
 	github.com/creack/pty v1.1.24
-	github.com/go-chi/chi/v5 v5.2.5
+	github.com/go-chi/chi/v5 v5.5.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/miekg/dns v1.1.70
-	github.com/quic-go/quic-go v0.59.0
+	github.com/quic-go/quic-go v0.65.0
 	github.com/sirupsen/logrus v1.9.4
 	github.com/slackhq/nebula v1.10.3
 	github.com/swaggo/http-swagger/v2 v2.0.2
 	github.com/swaggo/swag/v2 v2.0.0-rc5
-	golang.org/x/crypto v0.49.0
-	golang.org/x/sys v0.42.0
+	golang.design/x/clipboard v0.7.1
+	golang.org/x/crypto v0.59.0
+	golang.org/x/sys v0.50.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.48.1
 )
@@ -58,17 +59,16 @@ require (
 	github.com/vishvananda/netlink v1.3.1 // indirect
 	github.com/vishvananda/netns v0.0.5 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
-	go.yaml.in/yaml/v3 v3.0.4 // indirect
-	golang.design/x/clipboard v0.7.1 // indirect
+	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/exp/shiny v0.0.0-20250606033433-dcc06ee1d476 // indirect
 	golang.org/x/image v0.28.0 // indirect
 	golang.org/x/mobile v0.0.0-20250606033058-a2a15c67f36f // indirect
-	golang.org/x/mod v0.33.0 // indirect
-	golang.org/x/net v0.51.0 // indirect
-	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/term v0.41.0 // indirect
+	golang.org/x/mod v0.37.0 // indirect
+	golang.org/x/net v0.63.0 // indirect
+	golang.org/x/sync v0.22.0 // indirect
+	golang.org/x/term v0.48.0 // indirect
 	golang.org/x/time v0.5.0 // indirect
-	golang.org/x/tools v0.42.0 // indirect
+	golang.org/x/tools v0.47.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
 	golang.zx2c4.com/wireguard v0.0.0-20230325221338-052af4a8072b // indirect
 	golang.zx2c4.com/wireguard/windows v0.5.3 // indirect
