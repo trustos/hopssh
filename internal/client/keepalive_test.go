@@ -140,14 +140,6 @@ func TestKeepalive_DialFn_PropagatesError(t *testing.T) {
 	}
 }
 
-// TestKeepalive_SourceOrder asserted the keepalive goroutine spawn in
-// main.go's tryStartMeshInstance passes inst.runCtx (not the agent-wide
-// ctx). Phase NN moved tryStartMeshInstance into internal/client; the
-// tripwire is reimplemented in M3 against the new file.
-func TestKeepalive_SourceOrder(t *testing.T) {
-	t.Skip("Phase NN: runMeshKeepalive spawn moved to internal/client; tripwire is reimplemented in M3")
-}
-
 // TestReadLighthouseAddrs_ParsesHosts verifies the helper correctly
 // extracts lighthouse mesh addresses from a typical nebula.yaml.
 // Uses the exact yaml shape produced by writeNebulaConfig in enroll.go.

@@ -288,14 +288,6 @@ func TestRunWithTimeout_ReturnsOnDeadline(t *testing.T) {
 
 // --- Source-scan tripwires ---
 
-// TestTryStartMeshInstance_SpawnsWatcherWatchdog asserted main.go's
-// tryStartMeshInstance spawns the watcher + renewal watchdogs. Phase NN
-// moved tryStartMeshInstance into internal/client (the Client.Connect
-// flow), so the tripwire is reimplemented in M3 against the new file.
-func TestTryStartMeshInstance_SpawnsWatcherWatchdog(t *testing.T) {
-	t.Skip("Phase NN: tryStartMeshInstance moved to internal/client; tripwire is reimplemented in M3")
-}
-
 // TestWatchNetworkChanges_StampsAtTopOfTickBody asserts the stamp call
 // appears INSIDE the for loop body and BEFORE any blocking call. If a
 // future refactor moves it after the rebind block, a wedge inside the

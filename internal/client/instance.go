@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/slackhq/nebula"
@@ -23,6 +24,21 @@ type meshInstance struct {
 
 	svcMu sync.Mutex
 	svc   meshService
+	// closed is set by close() (under svcMu) and never cleared: a closed
+	// instance must not run Nebula again. Anything that can start Nebula
+	// in the background (a renewal POST that was in flight, a retry) may
+	// finish after close(), and a Nebula started then would be an orphan —
+	// in no registry, stoppable by nobody, holding the enrollment's UDP
+	// port so every later connect fails with "address already in use".
+	closed bool
+
+	// startMu serializes the paths that start Nebula on this instance
+	// (startInstance, reloadNebula, scheduleRetryReload). Without it a
+	// renewal finishing during startup starts a second Nebula next to the
+	// first. Never taken by close(), which must not block behind a wedged
+	// start; a start that outlives close() cleans up after itself instead
+	// (setSvc returns false).
+	startMu sync.Mutex
 
 	// heartbeatTrigger is signaled from watchNetworkChanges and any
 	// other out-of-cycle wake-up path so runHeartbeat fires an extra
@@ -31,13 +47,14 @@ type meshInstance struct {
 
 	// dnsConfig is the split-DNS configuration registered with the OS
 	// for this instance (kernel TUN mode only). Populated at start,
-	// cleared on close.
+	// cleared on close. dnsMu keeps a start that races with close() from
+	// registering DNS after close() cleaned it up.
+	dnsMu     sync.Mutex
 	dnsConfig *dnsConfig
 
-	// parentCtx scopes every per-instance goroutine (heartbeat,
-	// renewal, network-change watcher) to the AGENT'S lifetime. This
-	// is derived from the outer renewCtx and is the ctx the watcher
-	// uses (since the watcher must survive cert reloads).
+	// parentCtx is the AGENT'S lifetime (derived from the outer renewCtx).
+	// Per-instance work uses lifetimeCtx() instead, so it also ends when
+	// this instance is closed.
 	parentCtx context.Context
 
 	// runCtx + runCancel scope the per-instance work (heartbeat, cert
@@ -52,7 +69,9 @@ type meshInstance struct {
 	// goroutine. Re-derived each time Nebula is (re)started so the
 	// watcher always holds a live *nebula.Control reference — a stale
 	// one would call RebindUDPServer/CloseAllTunnels on a closed
-	// instance, which the Nebula API doesn't contract against.
+	// instance, which the Nebula API doesn't contract against. Guarded by
+	// watcherMu (not svcMu: stopWatcher runs with svcMu held on reload).
+	watcherMu     sync.Mutex
 	watcherCancel context.CancelFunc
 
 	// onRestart is invoked after a cert-renewal-driven Nebula restart.
@@ -86,12 +105,12 @@ type meshInstance struct {
 	// instance. Nil if portmap is disabled or no protocol succeeded.
 	// Lives for the full instance lifetime; survives Nebula restarts
 	// (the mapping targets the stable listen port, not a specific Control).
-	portmap *portmap.Manager
+	// Set after the heartbeat and the watcher, which read it, are running.
+	portmap atomic.Pointer[portmap.Manager]
 
 	// pathQuality holds per-peer EWMA RTT samples gathered by
-	// runPathQuality. Populated lazily on instance startup; read by
-	// collectPeerState to attach RTTms to each PeerDetail in the
-	// heartbeat. Nil-safe via pathQuality.snapshot().
+	// runPathQuality; read by collectPeerState to attach RTTms to each
+	// PeerDetail in the heartbeat. Set once, in newMeshInstance.
 	pathQuality *pathQuality
 
 	// peerInfoCache holds human-readable identifiers for each peer
@@ -150,6 +169,12 @@ type meshInstance struct {
 	// CPU restart-cycling if the underlying issue is persistent.
 	lastWatchdogRestartAt time.Time
 
+	// restartNotBefore is when watchdogs may next restart this enrollment.
+	// Copied from the Client when the instance is created: a watchdog
+	// restart replaces the instance, and with it every cooldown kept on it
+	// or in its watchdog goroutines.
+	restartNotBefore time.Time
+
 	// watchdogConsecutiveFailures counts how many consecutive times
 	// watchdogTrip's restartFn invocation has returned an error.
 	// Phase EE (v0.11.24): after escalateAfterN consecutive failures,
@@ -192,6 +217,7 @@ func newMeshInstance(e *Enrollment) *meshInstance {
 	return &meshInstance{
 		enrollment:       e,
 		heartbeatTrigger: make(chan struct{}, 1),
+		pathQuality:      newPathQuality(),
 	}
 }
 
@@ -385,10 +411,65 @@ func (i *meshInstance) control() *nebula.Control {
 // setSvc atomically swaps the mesh service. Does NOT close the old one
 // — callers (startup + reload) handle that explicitly so they can
 // choose whether to tear down the old listener first.
-func (i *meshInstance) setSvc(svc meshService) {
+//
+// Returns false, without installing svc, when the instance was closed
+// while svc was starting. The caller must then close svc itself.
+func (i *meshInstance) setSvc(svc meshService) bool {
 	i.svcMu.Lock()
 	defer i.svcMu.Unlock()
+	if i.closed {
+		return false
+	}
 	i.svc = svc
+	return true
+}
+
+// isClosed reports whether close() has been called.
+func (i *meshInstance) isClosed() bool {
+	i.svcMu.Lock()
+	defer i.svcMu.Unlock()
+	return i.closed
+}
+
+// restartCoolingDown reports whether watchdog restarts are on hold because
+// the enrollment was restarted recently.
+func (i *meshInstance) restartCoolingDown() bool {
+	return time.Now().Before(i.restartNotBefore)
+}
+
+// lifetimeCtx ends when this instance is closed or the agent stops. Falls
+// back to parentCtx / Background for instances that never ran startInstance
+// (pre-start renewal, `hop-agent client`, tests).
+func (i *meshInstance) lifetimeCtx() context.Context {
+	if i.runCtx != nil {
+		return i.runCtx
+	}
+	if i.parentCtx != nil {
+		return i.parentCtx
+	}
+	return context.Background()
+}
+
+// configureSplitDNS registers the mesh domain with the OS resolver. No-op
+// once the instance is closed.
+func (i *meshInstance) configureSplitDNS() {
+	i.dnsMu.Lock()
+	defer i.dnsMu.Unlock()
+	if i.isClosed() {
+		return
+	}
+	i.dnsConfig = readDNSConfig(i)
+	configureDNS(i, i.dnsConfig)
+}
+
+// cleanupSplitDNS undoes configureSplitDNS. Idempotent.
+func (i *meshInstance) cleanupSplitDNS() {
+	i.dnsMu.Lock()
+	defer i.dnsMu.Unlock()
+	if i.dnsConfig != nil {
+		cleanupDNS(i, i.dnsConfig)
+		i.dnsConfig = nil
+	}
 }
 
 // currentSvc returns the running mesh service, or nil if Nebula hasn't
@@ -400,18 +481,18 @@ func (i *meshInstance) currentSvc() meshService {
 }
 
 // startWatcher spawns watchNetworkChanges under a fresh context
-// anchored on i.parentCtx. Any prior watcher is cancelled first so
-// the new one is the only live goroutine holding the current ctrl.
-// Called at initial startup and after every cert-renewal reload.
+// anchored on the instance's lifetime: it survives cert-renewal reloads
+// (which don't close the instance) and ends with close(). Any prior
+// watcher is cancelled first so the new one is the only live goroutine
+// holding the current ctrl. Called at initial startup and after every
+// cert-renewal reload.
 func (i *meshInstance) startWatcher(ctrl *nebula.Control) {
+	i.watcherMu.Lock()
+	defer i.watcherMu.Unlock()
 	if i.watcherCancel != nil {
 		i.watcherCancel()
 	}
-	parent := i.parentCtx
-	if parent == nil {
-		parent = context.Background()
-	}
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithCancel(i.lifetimeCtx())
 	i.watcherCancel = cancel
 	go watchNetworkChanges(ctx, i, ctrl)
 }
@@ -419,6 +500,8 @@ func (i *meshInstance) startWatcher(ctrl *nebula.Control) {
 // stopWatcher cancels the current watchNetworkChanges goroutine, if
 // any. Idempotent.
 func (i *meshInstance) stopWatcher() {
+	i.watcherMu.Lock()
+	defer i.watcherMu.Unlock()
 	if i.watcherCancel != nil {
 		i.watcherCancel()
 		i.watcherCancel = nil
@@ -435,7 +518,7 @@ func (i *meshInstance) stopWatcher() {
 // later restarts (cert renewal), reinjectPortmapAddr re-adds the mapping
 // to the new Control.
 func (i *meshInstance) startPortmap(ctx context.Context, listenPort uint16) {
-	if i.portmap != nil {
+	if i.portmap.Load() != nil {
 		return
 	}
 	pm := portmap.New(nil, listenPort)
@@ -455,17 +538,18 @@ func (i *meshInstance) startPortmap(ctx context.Context, listenPort uint16) {
 		log.Printf("[agent %s] portmap: start: %v", i.name(), err)
 		return
 	}
-	i.portmap = pm
+	i.portmap.Store(pm)
 }
 
 // reinjectPortmapAddr re-adds the current portmap mapping to a freshly-
 // started Nebula Control (called after cert-renewal reload). No-op if
 // no mapping exists.
 func (i *meshInstance) reinjectPortmapAddr() {
-	if i.portmap == nil {
+	pm := i.portmap.Load()
+	if pm == nil {
 		return
 	}
-	cur := i.portmap.Current()
+	cur := pm.Current()
 	if !cur.IsValid() {
 		return
 	}
@@ -477,11 +561,9 @@ func (i *meshInstance) reinjectPortmapAddr() {
 // stopPortmap tears down the portmap coordinator, best-effort-unmapping
 // on the router. Idempotent.
 func (i *meshInstance) stopPortmap() {
-	if i.portmap == nil {
-		return
+	if pm := i.portmap.Swap(nil); pm != nil {
+		pm.Stop()
 	}
-	i.portmap.Stop()
-	i.portmap = nil
 }
 
 // close tears down the instance: stops goroutines, closes Nebula,
@@ -490,13 +572,19 @@ func (i *meshInstance) stopPortmap() {
 // Order matters: cancel runCtx FIRST so per-instance goroutines
 // (heartbeat, renewal, path-quality) observe Done() and exit before
 // we touch the underlying Nebula svc. Otherwise a heartbeat in flight
-// could panic on inst.svc dereference, or a renewal goroutine could
-// re-spawn Nebula via reloadNebula after we've nilled svc.
+// could panic on inst.svc dereference.
+//
+// Cancelling alone is not enough: a renewal past its POST, or a Nebula
+// start already under way, won't notice ctx. Setting closed under svcMu
+// is what stops those from leaving Nebula running afterwards (see setSvc).
 func (i *meshInstance) close() {
+	i.svcMu.Lock()
+	i.closed = true
 	if i.runCancel != nil {
 		i.runCancel()
 		i.runCancel = nil
 	}
+	i.svcMu.Unlock()
 	i.stopWatcher()
 	i.stopPortmap()
 	i.svcMu.Lock()
@@ -506,10 +594,7 @@ func (i *meshInstance) close() {
 	if svc != nil {
 		svc.Close()
 	}
-	if i.dnsConfig != nil {
-		cleanupDNS(i, i.dnsConfig)
-		i.dnsConfig = nil
-	}
+	i.cleanupSplitDNS()
 }
 
 // instanceRegistry tracks live mesh instances keyed by enrollment name.

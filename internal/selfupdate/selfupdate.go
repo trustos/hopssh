@@ -195,20 +195,19 @@ func Apply(component string, release *Release, endpoint string) error {
 }
 
 func verifyChecksum(filePath, binaryName, checksumsURL string, client *http.Client) error {
+	const unchanged = "Aborting update — current binary unchanged"
 	resp, err := client.Get(checksumsURL)
-	if err != nil || resp.StatusCode != 200 {
-		// Checksums not available — skip verification with warning.
-		fmt.Println("    Warning: Could not fetch checksums, skipping verification.")
-		if resp != nil {
-			resp.Body.Close()
-		}
-		return nil
+	if err != nil {
+		return fmt.Errorf("cannot fetch checksums: %w\n%s", err, unchanged)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("cannot fetch checksums (HTTP %d) from %s\n%s", resp.StatusCode, checksumsURL, unchanged)
+	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil // skip on read error
+		return fmt.Errorf("cannot read checksums: %w\n%s", err, unchanged)
 	}
 
 	// Find expected checksum for our binary.
@@ -221,8 +220,7 @@ func verifyChecksum(filePath, binaryName, checksumsURL string, client *http.Clie
 		}
 	}
 	if expected == "" {
-		fmt.Println("    Warning: Binary not found in checksums file, skipping verification.")
-		return nil
+		return fmt.Errorf("no checksum for %s in %s\n%s", binaryName, checksumsURL, unchanged)
 	}
 
 	// Compute actual checksum.
@@ -239,7 +237,7 @@ func verifyChecksum(filePath, binaryName, checksumsURL string, client *http.Clie
 	actual := hex.EncodeToString(h.Sum(nil))
 
 	if actual != expected {
-		return fmt.Errorf("checksum verification failed for %s\n  Expected: %s\n  Got:      %s\nThe download may be corrupted. Aborting update — current binary unchanged", binaryName, expected, actual)
+		return fmt.Errorf("checksum verification failed for %s\n  Expected: %s\n  Got:      %s\nThe download may be corrupted. %s", binaryName, expected, actual, unchanged)
 	}
 	fmt.Println("    Checksum verified.")
 	return nil

@@ -229,3 +229,16 @@ func TestRunServe_StartBeforeStartLocalAPI(t *testing.T) {
 		t.Fatalf("c.Start must come BEFORE client.StartLocalAPI (Start at offset %d, StartLocalAPI at offset %d). The local API exposes connect/enroll endpoints whose handlers use c.runCtx, which is set by Start.", startIdx, apiIdx)
 	}
 }
+
+// TestRunServe_SpawnsMirrorChownSelfHeal scans the source because the loop does
+// nothing without root. Without the call the desktop app can't read the agent's
+// token after a boot that nobody was logged in for (Phase Z).
+func TestRunServe_SpawnsMirrorChownSelfHeal(t *testing.T) {
+	b, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatalf("read main.go: %v", err)
+	}
+	if !strings.Contains(string(b), "\n\tclient.RunMirrorChownSelfHeal(shutdownCtx)\n") {
+		t.Fatal("main.go must call client.RunMirrorChownSelfHeal(shutdownCtx)")
+	}
+}

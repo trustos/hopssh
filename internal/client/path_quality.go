@@ -165,9 +165,6 @@ func runPathQuality(ctx context.Context, inst *meshInstance) {
 	if inst == nil {
 		return
 	}
-	if inst.pathQuality == nil {
-		inst.pathQuality = newPathQuality()
-	}
 	pq := inst.pathQuality
 
 	t := time.NewTicker(probeInterval)

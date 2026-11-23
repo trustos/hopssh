@@ -2,6 +2,7 @@ package client
 
 import (
 	"encoding/json"
+	"math/rand"
 	"net"
 	"os"
 	"path/filepath"
@@ -169,51 +170,69 @@ func TestEnrollmentRegistry_FileFormat(t *testing.T) {
 	}
 }
 
+// freeUDPPorts returns the first of three free UDP ports in a row. Not 4242: a
+// hop-agent on this machine may hold it, and so may the tests of cmd/agent.
+func freeUDPPorts(t *testing.T) int {
+	t.Helper()
+	for i := 0; i < 100; i++ {
+		base := 20000 + rand.Intn(10000) // below the ports the OS hands out
+		if udpPortAvailable(base) && udpPortAvailable(base+1) && udpPortAvailable(base+2) {
+			return base
+		}
+	}
+	t.Fatal("no three free UDP ports in a row")
+	return 0
+}
+
 func TestEnrollmentRegistry_NextAvailableListenPort_Empty(t *testing.T) {
 	dir := t.TempDir()
+	base := freeUDPPorts(t)
 	reg, _ := loadEnrollmentRegistry(dir)
-	got := reg.NextAvailableListenPort(4242)
-	if got != 4242 {
-		t.Fatalf("empty registry should return base port; got %d", got)
+	got := reg.NextAvailableListenPort(base)
+	if got != base {
+		t.Fatalf("empty registry should return base port %d; got %d", base, got)
 	}
 }
 
 func TestEnrollmentRegistry_NextAvailableListenPort_Sequential(t *testing.T) {
 	dir := t.TempDir()
+	base := freeUDPPorts(t)
 	reg, _ := loadEnrollmentRegistry(dir)
-	if err := reg.Add(&Enrollment{Name: "home", ListenPort: 4242}); err != nil {
+	if err := reg.Add(&Enrollment{Name: "home", ListenPort: base}); err != nil {
 		t.Fatal(err)
 	}
-	if got := reg.NextAvailableListenPort(4242); got != 4243 {
-		t.Errorf("after 4242, want 4243, got %d", got)
+	if got := reg.NextAvailableListenPort(base); got != base+1 {
+		t.Errorf("after %d, want %d, got %d", base, base+1, got)
 	}
-	if err := reg.Add(&Enrollment{Name: "work", ListenPort: 4243}); err != nil {
+	if err := reg.Add(&Enrollment{Name: "work", ListenPort: base + 1}); err != nil {
 		t.Fatal(err)
 	}
-	if got := reg.NextAvailableListenPort(4242); got != 4244 {
-		t.Errorf("after 4242+4243, want 4244, got %d", got)
+	if got := reg.NextAvailableListenPort(base); got != base+2 {
+		t.Errorf("after %d+%d, want %d, got %d", base, base+1, base+2, got)
 	}
 }
 
 func TestEnrollmentRegistry_NextAvailableListenPort_FillsHole(t *testing.T) {
 	dir := t.TempDir()
+	base := freeUDPPorts(t)
 	reg, _ := loadEnrollmentRegistry(dir)
 	// Simulate user enrolled then removed the middle one — the hole at
-	// 4243 should be reusable on the next enroll.
-	_ = reg.Add(&Enrollment{Name: "home", ListenPort: 4242})
-	_ = reg.Add(&Enrollment{Name: "lab", ListenPort: 4244})
-	if got := reg.NextAvailableListenPort(4242); got != 4243 {
-		t.Errorf("with hole at 4243, want 4243, got %d", got)
+	// base+1 should be reusable on the next enroll.
+	_ = reg.Add(&Enrollment{Name: "home", ListenPort: base})
+	_ = reg.Add(&Enrollment{Name: "lab", ListenPort: base + 2})
+	if got := reg.NextAvailableListenPort(base); got != base+1 {
+		t.Errorf("with hole at %d, want %d, got %d", base+1, base+1, got)
 	}
 }
 
 func TestEnrollmentRegistry_NextAvailableListenPort_IgnoresZero(t *testing.T) {
 	dir := t.TempDir()
+	base := freeUDPPorts(t)
 	reg, _ := loadEnrollmentRegistry(dir)
-	// ListenPort=0 means "not yet assigned" — it shouldn't reserve 4242.
+	// ListenPort=0 means "not yet assigned" — it shouldn't reserve base.
 	_ = reg.Add(&Enrollment{Name: "legacy"})
-	if got := reg.NextAvailableListenPort(4242); got != 4242 {
-		t.Errorf("zero ListenPort shouldn't block 4242; got %d", got)
+	if got := reg.NextAvailableListenPort(base); got != base {
+		t.Errorf("zero ListenPort shouldn't block %d; got %d", base, got)
 	}
 }
 
@@ -228,15 +247,8 @@ func TestEnrollmentRegistry_NextAvailableListenPort_SkipsOSHeldPort(t *testing.T
 	dir := t.TempDir()
 	reg, _ := loadEnrollmentRegistry(dir)
 
-	// Hold a port at the OS level — simulates a parallel hop-agent on
-	// the same host. Pick a fresh port via :0 so we don't collide with
-	// whatever the test runner has bound.
-	holder, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
-	if err != nil {
-		t.Fatalf("hold udp port: %v", err)
-	}
-	defer holder.Close()
-	heldPort := holder.LocalAddr().(*net.UDPAddr).Port
+	// A parallel hop-agent: hold a port exactly as its Nebula does.
+	_, heldPort := nebulaSocket(t)
 
 	// Start the search at the held port — the probe should advance.
 	got := reg.NextAvailableListenPort(heldPort)
@@ -248,7 +260,7 @@ func TestEnrollmentRegistry_NextAvailableListenPort_SkipsOSHeldPort(t *testing.T
 	}
 
 	// And the picked port must itself be bindable.
-	pick, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: got})
+	pick, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: got})
 	if err != nil {
 		t.Fatalf("picked port %d should be bindable: %v", got, err)
 	}
@@ -257,12 +269,7 @@ func TestEnrollmentRegistry_NextAvailableListenPort_SkipsOSHeldPort(t *testing.T
 
 // TestUDPPortAvailable covers the helper directly.
 func TestUDPPortAvailable(t *testing.T) {
-	holder, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
-	if err != nil {
-		t.Fatalf("hold udp: %v", err)
-	}
-	defer holder.Close()
-	heldPort := holder.LocalAddr().(*net.UDPAddr).Port
+	holder, heldPort := nebulaSocket(t)
 	if udpPortAvailable(heldPort) {
 		t.Errorf("port %d is held; udpPortAvailable should be false", heldPort)
 	}

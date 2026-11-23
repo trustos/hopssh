@@ -6,10 +6,14 @@ package client
 // data-plane, Phase P renewal) follow the same pattern when they fire:
 //
 //   1. Capture a forensic dump
-//   2. Call inst.restartFn (= Client.connect(name)) to swap the wedged
+//   2. Call inst.restartFn (= Client.restartInstance) to swap the wedged
 //      Nebula svc for a fresh one
 //   3. If restartFn returns an error → log it and wait for the next
 //      cooldown window (30 min), try again
+//
+// (Since restartFn really tears the instance down, the watchdog goroutine
+// ends with it, so a failed restart is retried — and escalated here — by the
+// enrollment's recovery loop; see recovery.go.)
 //
 // Step 3 is the gap this file closes. Production evidence (2026-05-11/12,
 // MBP home enrollment): a wedged Nebula goroutine kept the kernel UDP

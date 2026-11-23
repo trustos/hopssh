@@ -229,7 +229,7 @@ func runTickerParent(t *testing.T) {
 	// Read TICK lines for 1 second, then SIGSTOP, sleep wall-clock
 	// 2s, SIGCONT, read more for 1 second.
 	startWall := time.Now()
-	ticks := []time.Time{}
+	var ticks atomic.Int64
 	stopAt := startWall.Add(1 * time.Second)
 	go func() {
 		buf := make([]byte, 64)
@@ -239,14 +239,14 @@ func runTickerParent(t *testing.T) {
 				return
 			}
 			if n > 0 {
-				ticks = append(ticks, time.Now())
+				ticks.Add(1)
 			}
 		}
 	}()
 
 	// Phase 1: read for ~1s
 	time.Sleep(time.Until(stopAt))
-	preStopCount := len(ticks)
+	preStopCount := ticks.Load()
 	if preStopCount < 3 {
 		t.Fatalf("pre-SIGSTOP: expected ≥3 ticks in 1s with 200ms cadence; got %d", preStopCount)
 	}
@@ -259,7 +259,7 @@ func runTickerParent(t *testing.T) {
 	// Wall-clock sleep 2s while child is paused. No tick log lines
 	// should arrive during this window.
 	time.Sleep(2 * time.Second)
-	pausedCount := len(ticks)
+	pausedCount := ticks.Load()
 
 	// SIGCONT the child.
 	if err := cmd.Process.Signal(syscall.SIGCONT); err != nil {
@@ -268,7 +268,7 @@ func runTickerParent(t *testing.T) {
 
 	// Read post-resume ticks.
 	time.Sleep(1 * time.Second)
-	postResumeCount := len(ticks)
+	postResumeCount := ticks.Load()
 
 	// Architectural claim: ticker resumes firing AFTER SIGCONT.
 	// We don't assert exact tick counts because pause/resume

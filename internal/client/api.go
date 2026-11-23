@@ -73,6 +73,20 @@ type Client struct {
 	// reconnect via Connect() / connect.
 	bootErrorsMu sync.Mutex
 	bootErrors   map[string]string
+
+	// Phase HH enrollment self-healing — see recovery.go.
+	// connectLocks serializes connect/disconnect per enrollment name
+	// (*sync.Mutex values). recoveries holds the running background
+	// reconnect loops; userDisconnected records an explicit Disconnect so
+	// no loop or watchdog resurrects that enrollment until the user
+	// connects it again. watchdogRestarts spaces out watchdog restarts.
+	// recoveryBackoff overrides defaultRecoveryBackoff (tests only).
+	connectLocks     sync.Map
+	recoveryMu       sync.Mutex
+	recoveries       map[string]*enrollmentRecovery
+	userDisconnected map[string]bool
+	watchdogRestarts map[string]watchdogRestartState
+	recoveryBackoff  []time.Duration
 }
 
 // NewClient validates Config + ConfigDir, loads the enrollment registry. Does
@@ -152,7 +166,10 @@ func (c *Client) Start(ctx context.Context) error {
 	var attempted, failed int
 	for _, e := range c.enrolls.List() {
 		attempted++
-		if err := c.connect(e.Name); err != nil {
+		// Phase HH: a failed enrollment keeps retrying in the background
+		// (renew-before-start + recovery loop) instead of staying dead
+		// until the next process restart.
+		if err := c.connectAndSupervise(e.Name, true); err != nil {
 			log.Printf("[client] enrollment %q connect failed (agent continues; see /local/status lastError): %v",
 				e.Name, err)
 			c.recordBootError(e.Name, err)
@@ -193,7 +210,7 @@ func (c *Client) Stop() error {
 // already connected. Public method form of v0.10.34's connectFn closure.
 func (c *Client) Connect(ctx context.Context, name string) error {
 	_ = ctx // current connect path uses c.runCtx; future per-call ctx may swap
-	err := c.connect(name)
+	err := c.connectAndSupervise(name, true)
 	if err != nil {
 		c.recordBootError(name, err)
 	} else {

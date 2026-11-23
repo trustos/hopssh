@@ -230,9 +230,13 @@ func (r *enrollmentRegistry) nextAvailableListenPortLocked(base int) int {
 // actual Nebula bind. In practice the only thing that holds these
 // ports is another hop-agent process, and they don't churn ports;
 // the race window is theoretical not practical.
+//
+// "udp4", because Nebula binds an IPv4 socket. Go turns "udp" on 0.0.0.0 into
+// a dual-stack [::] socket, which macOS lets share the port with Nebula's, so
+// that probe called every port free.
 func udpPortAvailable(port int) bool {
 	addr := &net.UDPAddr{IP: net.IPv4zero, Port: port}
-	conn, err := net.ListenUDP("udp", addr)
+	conn, err := net.ListenUDP("udp4", addr)
 	if err != nil {
 		return false
 	}

@@ -154,8 +154,9 @@ func TestStartMeshErrorPropagation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read client.go: %v", err)
 	}
-	if !strings.Contains(string(srcClient), "startMeshWithError(") {
-		t.Error("client.go::startInstance must use startMeshWithError to capture the underlying error")
+	// startMeshFn is startMeshWithError behind a test seam.
+	if !strings.Contains(string(srcClient), "startMeshFn(") {
+		t.Error("client.go::startInstance must use startMeshFn (startMeshWithError) to capture the underlying error")
 	}
 	if !strings.Contains(string(srcClient), "inst.lastMeshErr") {
 		t.Error("client.go must stash the mesh error on the instance for connect's retry classification")

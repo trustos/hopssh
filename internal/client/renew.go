@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"math/rand"
@@ -16,6 +18,7 @@ import (
 	"regexp"
 	"runtime/pprof"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -24,6 +27,33 @@ import (
 	"github.com/trustos/hopssh/internal/nebulacfg"
 	"gopkg.in/yaml.v3"
 )
+
+// errNodeRevoked is returned (wrapped) when the control plane answers 401
+// on /api/heartbeat or /api/renew: the node was deleted or its agent token
+// revoked. Retrying can never succeed, so the cert-recovery loop stops on it.
+var errNodeRevoked = errors.New("401: node deleted or token revoked")
+
+// errRateLimited is returned (wrapped) when the control plane answers 429.
+// Callers must back off for at least rateLimitedMinRetry — a fast retry
+// only re-spends the same exhausted per-IP bucket.
+var errRateLimited = errors.New("HTTP 429: rate limited by control plane")
+
+// errInstanceClosed is returned when Nebula finished starting on an instance
+// that was closed meanwhile (disconnect, watchdog restart, shutdown). The new
+// Nebula is stopped again.
+var errInstanceClosed = errors.New("instance was closed while Nebula was starting")
+
+// rateLimitedMinRetry is the minimum wait after a 429 from the control plane.
+const rateLimitedMinRetry = 60 * time.Second
+
+// nextHeartbeatRetry clamps a heartbeat retry interval after a failure:
+// a 429 never retries sooner than rateLimitedMinRetry.
+func nextHeartbeatRetry(interval time.Duration, err error) time.Duration {
+	if errors.Is(err, errRateLimited) && interval < rateLimitedMinRetry {
+		return rateLimitedMinRetry
+	}
+	return interval
+}
 
 // runHeartbeat sends periodic heartbeats to the control plane so the
 // dashboard shows the node as "online".
@@ -43,12 +73,13 @@ func runHeartbeat(ctx context.Context, inst *meshInstance) {
 	)
 
 	// Send initial heartbeat immediately.
-	failing := sendHeartbeat(inst) != nil
+	initialErr := sendHeartbeat(inst)
+	failing := initialErr != nil
 	retryInterval := initialRetry
 
 	next := normalInterval
 	if failing {
-		next = initialRetry
+		next = nextHeartbeatRetry(initialRetry, initialErr)
 	}
 
 	timer := time.NewTimer(addJitter(next))
@@ -71,6 +102,7 @@ func runHeartbeat(ctx context.Context, inst *meshInstance) {
 					retryInterval = maxRetry
 				}
 			}
+			retryInterval = nextHeartbeatRetry(retryInterval, err)
 			timer.Reset(addJitter(retryInterval))
 		} else {
 			if failing {
@@ -188,7 +220,10 @@ func sendHeartbeat(inst *meshInstance) error {
 		// loop back off. Operators will see "offline" on the
 		// dashboard and remove the node; the agent side's full
 		// cleanup ships with `hop-agent leave` (Phase D).
-		return fmt.Errorf("401: node deleted or token revoked for enrollment %q", inst.name())
+		return fmt.Errorf("%w for enrollment %q", errNodeRevoked, inst.name())
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return errRateLimited
 	}
 	if resp.StatusCode == http.StatusNoContent {
 		return nil
@@ -445,10 +480,15 @@ func warmPeers(peers []string) {
 // and renews. Catch-up cost is negligible (~one cert read + parse
 // per minute). 60s is small enough that even worst-case sleep events
 // don't push renewal past the 50% midpoint by more than a tick.
-const renewalPollInterval = 60 * time.Second
+// Var so tests can shorten it.
+var renewalPollInterval = 60 * time.Second
+
+// minRenewalInterval is the least time between two successful renewals by
+// one loop. Only reached when the local clock is far ahead of the server's.
+const minRenewalInterval = time.Hour
 
 // runCertRenewal runs a background loop that renews the Nebula certificate
-// before it expires. Renews at 50% lifetime (12h for a 24h cert).
+// before it expires. Renews halfway through its life (see renewalTime).
 // Exits the process if the node has been deleted (HTTP 401).
 //
 // Wall-clock polling architecture (Phase S, post-2026-05-02 incident):
@@ -469,6 +509,16 @@ func runCertRenewal(ctx context.Context, inst *meshInstance) {
 	ticker := time.NewTicker(renewalPollInterval)
 	defer ticker.Stop()
 
+	// lastRenewed is the wall-clock time of the last successful renewal in
+	// this loop. If the cert still looks due right after one, the local
+	// clock is far ahead of the server's; renewing on every poll would
+	// restart the tunnel every minute and fix nothing.
+	var lastRenewed time.Time
+	renewedRecently := func() bool {
+		since := time.Now().Round(0).Sub(lastRenewed)
+		return !lastRenewed.IsZero() && since >= 0 && since < minRenewalInterval
+	}
+
 	// renewNow performs the renewal POST + retry-with-backoff
 	// sequence. Returns nil on success, or last error after exhausting
 	// 12 retries. Inline so the timer logic stays compact.
@@ -483,11 +533,9 @@ func runCertRenewal(ctx context.Context, inst *meshInstance) {
 			inst.markRenewalActivity()
 			backoff := time.Minute
 			for attempt := 0; attempt < 12; attempt++ {
-				select {
-				case <-ctx.Done():
+				if !waitWallClock(ctx, backoff) {
 					log.Printf("[renew %s] retry loop exiting (ctx cancelled)", inst.name())
 					return ctx.Err()
-				case <-time.After(backoff):
 				}
 				inst.markRenewalActivity()
 				log.Printf("[renew %s] retry %d/12 attempting", inst.name(), attempt+1)
@@ -514,9 +562,14 @@ func runCertRenewal(ctx context.Context, inst *meshInstance) {
 		inst.markRenewalActivity()
 		if err != nil {
 			log.Printf("[renew %s] could not determine renewal time: %v (will retry on next poll)", inst.name(), err)
+		} else if renewAt <= 0 && renewedRecently() {
+			log.Printf("[renew %s] cert still looks due after a renewal at %s — is the system clock ahead? Not renewing again yet",
+				inst.name(), lastRenewed.Format(time.RFC3339))
 		} else if renewAt <= 0 {
-			log.Printf("[renew %s] cert needs renewal NOW (overdue or imminent)", inst.name())
-			_ = renewNow()
+			log.Printf("[renew %s] cert needs renewal NOW (past half its life)", inst.name())
+			if renewNow() == nil {
+				lastRenewed = time.Now().Round(0)
+			}
 		} else {
 			log.Printf("[renew %s] cert OK, renewal due in %s (next poll in %s)",
 				inst.name(), renewAt.Truncate(time.Second), renewalPollInterval)
@@ -534,8 +587,8 @@ func runCertRenewal(ctx context.Context, inst *meshInstance) {
 	}
 }
 
-// timeUntilRenewal reads the current cert and returns the duration until
-// renewal should happen (50% of remaining validity).
+// timeUntilRenewal reads the current cert and returns how long until it
+// should be renewed; <= 0 means now.
 func timeUntilRenewal(inst *meshInstance) (time.Duration, error) {
 	certPEM, err := os.ReadFile(filepath.Join(inst.dir(), "node.crt"))
 	if err != nil {
@@ -546,23 +599,53 @@ func timeUntilRenewal(inst *meshInstance) (time.Duration, error) {
 	if err != nil {
 		return 0, fmt.Errorf("parse cert: %w", err)
 	}
-
-	notAfter := c.NotAfter()
-	remaining := time.Until(notAfter)
-	if remaining <= 0 {
-		return 0, nil // already expired, renew immediately
-	}
-
-	// Renew at 50% of remaining lifetime, with ±10% jitter to spread load.
-	base := remaining / 2
-	jitter := time.Duration(rand.Int63n(int64(remaining)/5)) - (remaining / 10)
-	return base + jitter, nil
+	return time.Until(renewalTime(c.NotBefore(), c.NotAfter(), inst.nodeID())), nil
 }
 
-// renewCert calls the control plane's /api/renew endpoint to get a fresh cert.
+// renewalTime is when a cert should be renewed: halfway through its life,
+// ±10% of its life so agents that enrolled together don't renew together.
+//
+// It MUST be a fixed instant for a given cert. From v0.10.82 to v0.11.26 the
+// deadline was "half of the time remaining", re-evaluated on every poll —
+// which is always in the future while any time remains, so no agent ever
+// renewed before its cert had already expired (Zeno's renewal). A machine
+// that was off or offline at that moment came back with an expired cert.
+func renewalTime(notBefore, notAfter time.Time, seed string) time.Time {
+	life := notAfter.Sub(notBefore)
+	h := fnv.New32a()
+	fmt.Fprintf(h, "%s/%d", seed, notAfter.Unix())
+	// frac is in [-1, 1).
+	frac := float64(h.Sum32())/float64(1<<31) - 1
+	return notBefore.Add(life/2 + time.Duration(frac*float64(life/10)))
+}
+
+// renewCert calls the control plane's /api/renew endpoint to get a fresh
+// cert, installs it, and hot-reloads Nebula onto it.
 func renewCert(inst *meshInstance) error {
+	if err := fetchAndInstallCert(inst); err != nil {
+		return err
+	}
+
+	// Signal Nebula to reload certs (and pick up any config changes).
+	reloadNebula(inst)
+
+	log.Printf("[renew %s] certificate renewed successfully", inst.name())
+	return nil
+}
+
+// certInstallMu serializes writing a renewed node.crt + node.key pair.
+var certInstallMu sync.Mutex
+
+// fetchAndInstallCert POSTs /api/renew and atomically writes the returned
+// node.crt + node.key (plus any server-pushed Nebula config) into the
+// enrollment dir. It does NOT touch the running Nebula instance, so it is
+// safe to call before Nebula has ever started — the pre-start renewal in
+// Client.connect relies on that (recovery.go). Authenticated by the
+// agent bearer token, never by the cert, so an expired cert can always be
+// replaced.
+func fetchAndInstallCert(inst *meshInstance) error {
 	reqBody := fmt.Sprintf(`{"nodeId":%q}`, inst.nodeID())
-	req, err := http.NewRequest("POST", inst.endpoint()+"/api/renew", strings.NewReader(reqBody))
+	req, err := http.NewRequestWithContext(inst.lifetimeCtx(), "POST", inst.endpoint()+"/api/renew", strings.NewReader(reqBody))
 	if err != nil {
 		return err
 	}
@@ -587,7 +670,10 @@ func renewCert(inst *meshInstance) error {
 	if resp.StatusCode == http.StatusUnauthorized {
 		// Multi-enrollment: see the matching note in sendHeartbeat.
 		// One deleted node shouldn't take down the whole agent.
-		return fmt.Errorf("401: node deleted or token revoked for enrollment %q", inst.name())
+		return fmt.Errorf("%w for enrollment %q", errNodeRevoked, inst.name())
+	}
+	if resp.StatusCode == http.StatusTooManyRequests {
+		return errRateLimited
 	}
 
 	if resp.StatusCode != http.StatusOK {
@@ -609,8 +695,13 @@ func renewCert(inst *meshInstance) error {
 	}
 
 	// Write new cert atomically (temp file + rename) to prevent partial reads.
+	// The lock keeps two overlapping renewals from leaving one's cert next
+	// to the other's key; a crash between the two writes is caught by
+	// certStartProblem ("mismatched") on the next start.
 	certPath := filepath.Join(inst.dir(), "node.crt")
 	keyPath := filepath.Join(inst.dir(), "node.key")
+	certInstallMu.Lock()
+	defer certInstallMu.Unlock()
 
 	if err := atomicWrite(certPath, []byte(renewResp.NodeCert), 0644); err != nil {
 		return fmt.Errorf("write cert: %w", err)
@@ -625,11 +716,6 @@ func renewCert(inst *meshInstance) error {
 			log.Printf("[renew %s] failed to apply config update: %v (continuing with old config)", inst.name(), err)
 		}
 	}
-
-	// Signal Nebula to reload certs (and pick up any config changes).
-	reloadNebula(inst)
-
-	log.Printf("[renew %s] certificate renewed successfully", inst.name())
 	return nil
 }
 
@@ -692,8 +778,8 @@ func applyNebulaConfigUpdate(inst *meshInstance, update *nebulaConfigUpdate) err
 // mergeNebulaConfig applies a config update to raw YAML bytes and returns the
 // result. Pure function — no side effects, easy to test. Returns (output, changed, error).
 func mergeNebulaConfig(data []byte, update *nebulaConfigUpdate) ([]byte, bool, error) {
-	var cfg map[string]interface{}
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	cfg, err := parseNebulaYAML(data)
+	if err != nil {
 		return nil, false, fmt.Errorf("parse config: %w", err)
 	}
 
@@ -750,6 +836,20 @@ func mergeNebulaConfig(data []byte, update *nebulaConfigUpdate) ([]byte, bool, e
 	return out, true, nil
 }
 
+// parseNebulaYAML parses a nebula.yaml. An empty file (a write cut short by a
+// crash) is an error: yaml.Unmarshal accepts it and leaves a nil map, which
+// panics on the first write and took the whole agent down on every boot.
+func parseNebulaYAML(data []byte) (map[string]interface{}, error) {
+	var cfg map[string]interface{}
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return nil, err
+	}
+	if cfg == nil {
+		return nil, errors.New("file is empty")
+	}
+	return cfg, nil
+}
+
 // yamlMap returns a nested map from a config, creating it if absent.
 func yamlMap(cfg map[string]interface{}, key string) map[string]interface{} {
 	if m, ok := cfg[key].(map[string]interface{}); ok {
@@ -774,8 +874,9 @@ func ensureP2PConfig(inst *meshInstance) {
 		return
 	}
 
-	var cfg map[string]interface{}
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	cfg, err := parseNebulaYAML(data)
+	if err != nil {
+		log.Printf("[agent %s] WARNING: nebula.yaml: %v", inst.name(), err)
 		return
 	}
 
@@ -1070,8 +1171,19 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 
 // reloadNebula restarts the embedded Nebula instance to pick up new certs.
 // Supports both userspace and kernel TUN modes. Scoped to one instance.
+//
+// Never leaves Nebula running on a closed instance: a renewal that was in
+// flight when the user disconnected (or a watchdog restarted) lands here
+// after close(), and starting Nebula then would orphan it on the UDP port.
 func reloadNebula(inst *meshInstance) {
+	inst.startMu.Lock()
+	defer inst.startMu.Unlock()
 	inst.svcMu.Lock()
+	if inst.closed {
+		inst.svcMu.Unlock()
+		log.Printf("[renew %s] instance was closed — not starting Nebula", inst.name())
+		return
+	}
 
 	configPath := filepath.Join(inst.dir(), "nebula.yaml")
 	tunMode := readTunMode(inst)
@@ -1085,20 +1197,23 @@ func reloadNebula(inst *meshInstance) {
 		inst.svcMu.Unlock()
 		log.Printf("[renew %s] no embedded Nebula instance — attempting cold start with renewed cert", inst.name())
 
-		newSvc := startMesh(configPath, tunMode)
-		if newSvc == nil {
-			log.Printf("[renew %s] Nebula cold start failed even after cert renewal", inst.name())
+		newSvc, err := startMeshFn(configPath, tunMode)
+		if err != nil {
+			log.Printf("[renew %s] Nebula cold start failed even after cert renewal: %v", inst.name(), err)
 			return
 		}
 
-		inst.setSvc(newSvc)
+		if !inst.setSvc(newSvc) {
+			newSvc.Close()
+			log.Printf("[renew %s] instance was closed while Nebula was starting — stopped it", inst.name())
+			return
+		}
 
 		log.Printf("[renew %s] Nebula started after cert renewal (mode: %s)", inst.name(), tunMode)
 
 		// Configure DNS (kernel TUN mode only).
 		if tunMode == "kernel" {
-			inst.dnsConfig = readDNSConfig(inst)
-			configureDNS(inst, inst.dnsConfig)
+			inst.configureSplitDNS()
 		}
 
 		// Warm tunnels so Screen Sharing HP mode works immediately.
@@ -1118,7 +1233,7 @@ func reloadNebula(inst *meshInstance) {
 		inst.reinjectPortmapAddr()
 
 		// Swap HTTP listener from OS stack to mesh.
-		if inst.onRestart != nil {
+		if inst.onRestart != nil && !inst.isClosed() {
 			inst.onRestart(newSvc)
 		}
 		return
@@ -1167,7 +1282,11 @@ func reloadNebula(inst *meshInstance) {
 		return
 	}
 
-	inst.setSvc(newSvc)
+	if !inst.setSvc(newSvc) {
+		newSvc.Close()
+		log.Printf("[renew %s] instance was closed while Nebula was restarting — stopped it", inst.name())
+		return
+	}
 
 	// Spawn a fresh watcher against the new ctrl.
 	if ctrl := newSvc.NebulaControl(); ctrl != nil && inst.endpoint() != "" {
@@ -1183,7 +1302,7 @@ func reloadNebula(inst *meshInstance) {
 	log.Printf("[renew %s] Nebula restarted with new certificate (mode: %s)", inst.name(), tunMode)
 
 	// Notify the HTTP server to recreate its mesh listener.
-	if inst.onRestart != nil {
+	if inst.onRestart != nil && !inst.isClosed() {
 		inst.onRestart(newSvc)
 	}
 }
@@ -1215,10 +1334,12 @@ var waitForUDPPortFreeFn = waitForUDPPortFree
 // Timeout is best-effort: on miss we return silently and let the
 // subsequent bind attempt surface its own error to the caller, which
 // triggers the retry-with-backoff path.
+//
+// "udp4": see udpPortAvailable.
 func waitForUDPPortFree(port int, deadline time.Duration) {
 	end := time.Now().Add(deadline)
 	for time.Now().Before(end) {
-		conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: port})
+		conn, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: port})
 		if err == nil {
 			conn.Close()
 			return
@@ -1303,99 +1424,101 @@ func retryReloadBackoffSchedule() []time.Duration {
 }
 
 // scheduleRetryReload spawns a detached goroutine that retries the
-// reload-Nebula path with exponential backoff after a failed start.
-// Cancellable via the instance's parentCtx so agent shutdown / hot
-// reload supersedes any in-progress retry cleanly.
+// reload-Nebula path with exponential backoff after a failed start. Ends
+// with the instance: closing it (disconnect, watchdog restart, agent
+// shutdown) cancels any in-progress retry.
 //
 // Idempotency: if a fresh reload succeeds OR the cert is renewed
 // again, the in-flight retry's next attempt will simply find
-// inst.svc != nil + valid and exit early. If the user manually
-// restarts the agent, parentCtx cancels and the goroutine exits.
+// inst.svc != nil + valid and exit early.
 func scheduleRetryReload(inst *meshInstance, configPath, tunMode string) {
 	if inst == nil {
 		return
 	}
-	parentCtx := inst.parentCtx
-	if parentCtx == nil {
-		// Defensive: if parentCtx wasn't set (test setup), use background.
-		// The goroutine still exits when the agent process dies.
-		parentCtx = context.Background()
-	}
+	ctx := inst.lifetimeCtx()
 
 	go func() {
 		schedule := retryReloadBackoffSchedule()
 		for attempt, backoff := range schedule {
 			select {
-			case <-parentCtx.Done():
-				log.Printf("[renew %s] retry-reload cancelled (agent shutting down)", inst.name())
+			case <-ctx.Done():
+				log.Printf("[renew %s] retry-reload cancelled (instance closed or agent shutting down)", inst.name())
 				return
 			case <-time.After(addJitter(backoff)):
 			}
-
-			// Skip if reload already succeeded out-of-band: a manual
-			// `launchctl bootstrap`, the next cert-renewal cycle, or
-			// any other path has already installed a fresh svc.
-			//
-			// Precondition (load-bearing): the caller of
-			// scheduleRetryReload — i.e. reloadNebula's hot-restart
-			// path — MUST set inst.svc = nil BEFORE scheduling. Pre-
-			// v0.10.33 it didn't, so this check fired as a false
-			// positive on the very state it was supposed to recover
-			// from (stale old svc lingering after a failed bind),
-			// silently masking the cert-reload-port-bind bug. The
-			// fix in reloadNebula (set inst.svc = nil pre-schedule)
-			// makes this check correctly distinguish "real restore
-			// happened" from "we just failed".
-			inst.svcMu.Lock()
-			haveSvc := inst.svc != nil
-			inst.svcMu.Unlock()
-			if haveSvc {
-				log.Printf("[renew %s] retry-reload skipping attempt %d/%d: svc already restored",
-					inst.name(), attempt+1, len(schedule))
+			if retryReloadOnce(inst, configPath, tunMode, attempt, len(schedule), backoff) {
 				return
 			}
-
-			log.Printf("[renew %s] retry-reload attempt %d/%d after %v backoff",
-				inst.name(), attempt+1, len(schedule), backoff.Round(time.Second))
-
-			newSvc, err := startNebulaByModeFn(configPath, tunMode)
-			if err != nil {
-				log.Printf("[renew %s] retry-reload attempt %d/%d failed: %v",
-					inst.name(), attempt+1, len(schedule), err)
-				continue
-			}
-
-			// Success — perform the swap that the original reloadNebula
-			// would have done. Note: the old svc is already gone (was
-			// closed in the success path of reloadNebula's original
-			// call... but we landed here BEFORE that swap), so we just
-			// install the new svc.
-			inst.svcMu.Lock()
-			inst.stopWatcher()
-			oldSvc := inst.svc
-			inst.svc = nil
-			inst.svcMu.Unlock()
-			if oldSvc != nil {
-				oldSvc.Close()
-			}
-			inst.setSvc(newSvc)
-
-			if ctrl := newSvc.NebulaControl(); ctrl != nil && inst.endpoint() != "" {
-				inst.startWatcher(ctrl)
-			}
-			inst.reinjectPortmapAddr()
-			log.Printf("[renew %s] retry-reload SUCCESS on attempt %d/%d (mode: %s)",
-				inst.name(), attempt+1, len(schedule), tunMode)
-
-			if inst.onRestart != nil {
-				inst.onRestart(newSvc)
-			}
-			return
 		}
 
 		log.Printf("[renew %s] CRITICAL: retry-reload exhausted %d attempts; agent will lose mesh connectivity when current cert expires",
 			inst.name(), len(schedule))
 	}()
+}
+
+// retryReloadOnce makes one scheduleRetryReload attempt. Returns true when
+// there is nothing left to retry.
+func retryReloadOnce(inst *meshInstance, configPath, tunMode string, attempt, total int, backoff time.Duration) bool {
+	inst.startMu.Lock()
+	defer inst.startMu.Unlock()
+
+	// Skip if reload already succeeded out-of-band: a manual
+	// `launchctl bootstrap`, the next cert-renewal cycle, or
+	// any other path has already installed a fresh svc.
+	//
+	// Precondition (load-bearing): the caller of
+	// scheduleRetryReload — i.e. reloadNebula's hot-restart
+	// path — MUST set inst.svc = nil BEFORE scheduling. Pre-
+	// v0.10.33 it didn't, so this check fired as a false
+	// positive on the very state it was supposed to recover
+	// from (stale old svc lingering after a failed bind),
+	// silently masking the cert-reload-port-bind bug. The
+	// fix in reloadNebula (set inst.svc = nil pre-schedule)
+	// makes this check correctly distinguish "real restore
+	// happened" from "we just failed".
+	inst.svcMu.Lock()
+	haveSvc, closed := inst.svc != nil, inst.closed
+	inst.svcMu.Unlock()
+	if closed {
+		log.Printf("[renew %s] retry-reload cancelled (instance closed)", inst.name())
+		return true
+	}
+	if haveSvc {
+		log.Printf("[renew %s] retry-reload skipping attempt %d/%d: svc already restored",
+			inst.name(), attempt+1, total)
+		return true
+	}
+
+	log.Printf("[renew %s] retry-reload attempt %d/%d after %v backoff",
+		inst.name(), attempt+1, total, backoff.Round(time.Second))
+
+	newSvc, err := startNebulaByModeFn(configPath, tunMode)
+	if err != nil {
+		log.Printf("[renew %s] retry-reload attempt %d/%d failed: %v",
+			inst.name(), attempt+1, total, err)
+		return false
+	}
+
+	// Success — perform the swap that the original reloadNebula would have
+	// done. startMu is held, so nothing else can have installed a svc since
+	// the haveSvc check above.
+	if !inst.setSvc(newSvc) {
+		newSvc.Close()
+		log.Printf("[renew %s] instance was closed during retry-reload — stopped Nebula", inst.name())
+		return true
+	}
+
+	if ctrl := newSvc.NebulaControl(); ctrl != nil && inst.endpoint() != "" {
+		inst.startWatcher(ctrl)
+	}
+	inst.reinjectPortmapAddr()
+	log.Printf("[renew %s] retry-reload SUCCESS on attempt %d/%d (mode: %s)",
+		inst.name(), attempt+1, total, tunMode)
+
+	if inst.onRestart != nil && !inst.isClosed() {
+		inst.onRestart(newSvc)
+	}
+	return true
 }
 
 // readEndpointFromDisk reads the control plane endpoint URL from the
@@ -1480,6 +1603,9 @@ func runRenewalWatchdog(ctx context.Context, inst *meshInstance) {
 		}
 		// Cooldown: don't restart-loop on persistent issues.
 		if !lastTripAt.IsZero() && time.Since(lastTripAt) < cooldown {
+			continue
+		}
+		if inst.restartCoolingDown() {
 			continue
 		}
 		lastTripAt = time.Now()

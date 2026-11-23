@@ -34,6 +34,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/pprof"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -94,6 +95,38 @@ func keepaliveTCPDial(target string) error {
 	}
 	conn.Close()
 	return nil
+}
+
+// meshDialer is implemented by mesh services whose peers the OS can't reach
+// (userspace mode).
+type meshDialer interface {
+	DialContext(ctx context.Context, network, address string) (net.Conn, error)
+}
+
+// keepaliveProbe dials one peer over the mesh; nil means the peer answered.
+//
+// It must go through the mesh in both TUN modes: in userspace mode an OS dial
+// never reaches the mesh, so every probe failed, every cycle looked stuck and
+// the watchdog tripped on a healthy mesh every few minutes.
+func keepaliveProbe(inst *meshInstance, target string) error {
+	var err error
+	if d, ok := inst.currentSvc().(meshDialer); ok {
+		ctx, cancel := context.WithTimeout(inst.lifetimeCtx(), keepaliveDialTimeout)
+		defer cancel()
+		var conn net.Conn
+		if conn, err = d.DialContext(ctx, "tcp", target); err == nil {
+			conn.Close()
+		}
+	} else {
+		err = keepaliveDialFn(target)
+	}
+	// "connection refused" is the peer answering: the data plane works,
+	// there is just no agent listener on that port. Matched by text because
+	// the errno differs per OS and netstack wraps its own.
+	if err != nil && strings.Contains(err.Error(), "refused") {
+		return nil
+	}
+	return err
 }
 
 // runMeshKeepalive runs the per-instance keepalive goroutine.
@@ -202,6 +235,20 @@ func watchdogTrip(inst *meshInstance, cycle uint64, stuckCount int) {
 			Data: map[string]any{
 				"name":         inst.name(),
 				"cooldownSecs": int(watchdogRestartCooldown.Seconds()),
+			},
+		})
+		return
+	}
+
+	if inst.restartCoolingDown() {
+		log.Printf("[agent %s] WATCHDOG: skipping auto-restart — an earlier restart of this network did not help, next one allowed at %s",
+			inst.name(), inst.restartNotBefore.Format(time.RFC3339))
+		publishToEventBus(localEvent{
+			Time: time.Now(),
+			Type: "instance.watchdog-cooldown",
+			Data: map[string]any{
+				"name":         inst.name(),
+				"cooldownSecs": int(time.Until(inst.restartNotBefore).Seconds()),
 			},
 		})
 		return
@@ -330,7 +377,7 @@ func keepaliveOneCycle(inst *meshInstance) (probed, succeeded, skipped, peers in
 			}
 		}
 		target := fmt.Sprintf("%s:%d", vpn, agentAPIPort)
-		if err := keepaliveDialFn(target); err == nil {
+		if err := keepaliveProbe(inst, target); err == nil {
 			succeeded++
 		}
 		probed++

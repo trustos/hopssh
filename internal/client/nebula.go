@@ -97,6 +97,12 @@ func (u *userspaceMeshService) Listen(network, address string) (net.Listener, er
 // mesh traffic.
 func (u *userspaceMeshService) NebulaControl() *nebula.Control { return u.ctrl }
 
+// DialContext dials a mesh peer through the userspace network stack. In this
+// mode the OS has no route to mesh addresses, so a plain net.Dial can't.
+func (u *userspaceMeshService) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	return u.svc.DialContext(ctx, network, address)
+}
+
 // DevName returns empty — userspace mode has no OS interface.
 func (u *userspaceMeshService) DevName() string { return "" }
 
@@ -295,8 +301,8 @@ func watchNetworkChanges(ctx context.Context, inst *meshInstance, ctrl *nebula.C
 			//   (c) we're now on cellular with no portmap at all.
 			// In all three cases holding the stale mapping produces a
 			// lighthouse advertise_addr that peers can't reach.
-			if inst.portmap != nil {
-				inst.portmap.ReProbe()
+			if pm := inst.portmap.Load(); pm != nil {
+				pm.ReProbe()
 			}
 			// Poke the heartbeat goroutine so the dashboard learns the
 			// node's real state within seconds instead of waiting up to
@@ -580,8 +586,8 @@ func upgradeTunMode(inst *meshInstance) {
 		return
 	}
 
-	var cfg map[string]interface{}
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	cfg, err := parseNebulaYAML(data)
+	if err != nil {
 		return
 	}
 

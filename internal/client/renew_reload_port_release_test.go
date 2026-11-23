@@ -1,9 +1,14 @@
 package client
 
 import (
+	"io"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
+
+	"github.com/sirupsen/logrus"
+	"github.com/slackhq/nebula/udp"
 )
 
 // Tests for the cert-reload port-bind fix (v0.10.33).
@@ -21,12 +26,31 @@ import (
 // UDP port, then start the new svc. These tests exercise the
 // `waitForUDPPortFree` primitive that the fix relies on.
 
+// nebulaSocket holds a UDP port with the socket Nebula opens. A port held any
+// other way proves nothing about the probes: until 2026-11-23 these tests held
+// a dual-stack socket, and the probes saw that one but never a real Nebula's.
+func nebulaSocket(t *testing.T) (udp.Conn, int) {
+	t.Helper()
+	l := logrus.New()
+	l.SetOutput(io.Discard)
+	c, err := udp.NewListener(l, netip.IPv4Unspecified(), 0, false, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	addr, err := c.LocalAddr()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, int(addr.Port())
+}
+
 // TestWaitForUDPPortFree_BoundFast verifies the fast path: a port that
 // is already free returns from waitForUDPPortFree immediately (well
 // under the deadline).
 func TestWaitForUDPPortFree_BoundFast(t *testing.T) {
 	// Bind+release to pick a port we know is currently free.
-	sock, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	sock, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}
@@ -47,12 +71,7 @@ func TestWaitForUDPPortFree_BoundFast(t *testing.T) {
 // when the port stays held for the full deadline, waitForUDPPortFree
 // returns at the deadline (NOT forever-loops).
 func TestWaitForUDPPortFree_RespectsDeadline(t *testing.T) {
-	held, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
-	if err != nil {
-		t.Fatalf("bind: %v", err)
-	}
-	defer held.Close()
-	port := held.LocalAddr().(*net.UDPAddr).Port
+	_, port := nebulaSocket(t)
 
 	deadline := 150 * time.Millisecond
 	start := time.Now()
@@ -73,11 +92,7 @@ func TestWaitForUDPPortFree_RespectsDeadline(t *testing.T) {
 // in, then released mid-wait, and waitForUDPPortFree must detect the
 // release and return promptly so the new bind can proceed.
 func TestWaitForUDPPortFree_DetectsRelease(t *testing.T) {
-	held, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
-	if err != nil {
-		t.Fatalf("bind: %v", err)
-	}
-	port := held.LocalAddr().(*net.UDPAddr).Port
+	held, port := nebulaSocket(t)
 
 	releaseAfter := 80 * time.Millisecond
 	go func() {
@@ -100,7 +115,7 @@ func TestWaitForUDPPortFree_DetectsRelease(t *testing.T) {
 	}
 
 	// Sanity: now that the port is free, a fresh bind should succeed.
-	verify, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: port})
+	verify, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: port})
 	if err != nil {
 		t.Fatalf("post-release bind: %v", err)
 	}
@@ -117,7 +132,7 @@ func TestWaitForUDPPortFreeFn_Indirected(t *testing.T) {
 	}
 	// Smoke: invoking via the indirection on a known-free port should
 	// be a fast no-op.
-	sock, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	sock, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
 	if err != nil {
 		t.Fatalf("bind: %v", err)
 	}

@@ -466,7 +466,32 @@ func (s *localAPIServer) enrollmentStatus(e *Enrollment) EnrollmentStatus {
 		}
 	}
 
+	// Phase HH: an enrollment that failed to come up retries in
+	// the background. Say so, so the user knows it is self-healing and
+	// why the last attempt failed (e.g. renewal rate-limited, offline).
+	if rec, ok := s.client.recoveryInfo(e.Name); ok {
+		es.LastError = recoveryMessage(es.LastError, rec)
+	}
+
 	return es
+}
+
+// recoveryMessage builds the per-enrollment banner text while a background
+// reconnect loop is running. Keeps the "certificate expired" prefix when
+// that is the cause so existing consumers matching on it keep working.
+func recoveryMessage(prev string, rec recoveryStatus) string {
+	msg := "not connected — retrying automatically"
+	if strings.HasPrefix(prev, "certificate expired") {
+		msg = "certificate expired — renewing automatically"
+	}
+	if strings.Contains(rec.LastErr, errNodeRevoked.Error()) {
+		what, _, _ := strings.Cut(msg, " — ")
+		return what + " — the server says this device was removed from the network. Leave the network, then join it again"
+	}
+	if last := strings.TrimPrefix(rec.LastErr, "certificate expired and "); last != "" {
+		msg += " (last attempt: " + last + ")"
+	}
+	return msg
 }
 
 func (s *localAPIServer) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -948,7 +973,7 @@ func (s *localAPIServer) handleEnrollDeviceFlowPoll(w http.ResponseWriter, r *ht
 	connected := false
 	connectErrMsg := ""
 	{
-		if err := s.client.connect(name); err != nil {
+		if err := s.client.connectAndSupervise(name, true); err != nil {
 			connectErrMsg = err.Error()
 			log.Printf("[local-api] auto-connect after enroll %q failed: %v (enrollment persisted; retry via POST /local/connect)", name, err)
 		} else {
@@ -1074,7 +1099,7 @@ func (s *localAPIServer) handleEnrollToken(w http.ResponseWriter, r *http.Reques
 	// Auto-connect — same rationale as the device-flow path.
 	autoConnected := false
 	{
-		if err := s.client.connect(name); err != nil {
+		if err := s.client.connectAndSupervise(name, true); err != nil {
 			log.Printf("[local-api] auto-connect after token-enroll %q failed: %v", name, err)
 		} else {
 			autoConnected = true
@@ -1191,7 +1216,9 @@ func (s *localAPIServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"status": "already-connected", "enrollment": name})
 		return
 	}
-	if err := s.client.connect(name); err != nil {
+	// connectAndSupervise: on failure the enrollment keeps retrying in the
+	// background (Phase HH) — the error still goes back to the UI.
+	if err := s.client.connectAndSupervise(name, true); err != nil {
 		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -1209,7 +1236,14 @@ func (s *localAPIServer) handleDisconnect(w http.ResponseWriter, r *http.Request
 		writeJSONError(w, http.StatusBadRequest, "enrollment query param required")
 		return
 	}
+	// Always call disconnect, even with no live instance: it also stops a
+	// background reconnect loop (Phase HH) and records the user's intent
+	// so no loop or watchdog brings the enrollment back.
 	if inst := s.instances().get(name); inst == nil {
+		if err := s.client.disconnect(name); err != nil {
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
 		writeJSON(w, http.StatusOK, map[string]any{"status": "already-disconnected", "enrollment": name})
 		return
 	}
@@ -1251,10 +1285,10 @@ func (s *localAPIServer) handleLeave(w http.ResponseWriter, r *http.Request) {
 	// listener BEFORE we delete cert files from disk. Without this
 	// ordering, the instance's renewal loop could attempt to read the
 	// just-deleted cert files mid-operation and log spurious errors.
-	if s.instances().get(target.Name) != nil {
-		if err := s.client.disconnect(target.Name); err != nil {
-			log.Printf("[local-api] leave: disconnect %q failed: %v (continuing with file cleanup)", target.Name, err)
-		}
+	// Unconditional: disconnect also stops a background reconnect loop
+	// (Phase HH) that would otherwise race the file cleanup below.
+	if err := s.client.disconnect(target.Name); err != nil {
+		log.Printf("[local-api] leave: disconnect %q failed: %v (continuing with file cleanup)", target.Name, err)
 	}
 
 	// Best-effort DNS cleanup (no-op on macOS/Linux/Windows if not

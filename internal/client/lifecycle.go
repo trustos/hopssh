@@ -106,26 +106,16 @@ func warmPeersFromHeartbeat(inst *meshInstance, endpoint string) {
 	log.Printf("[agent] warm-up: %d peers ready in %s", len(body.Peers), time.Since(start).Truncate(time.Millisecond))
 }
 
-// startMesh starts Nebula in the requested TUN mode with graceful fallback.
-// Tries kernel TUN first (if requested), falls back to userspace, returns nil
-// if all fail. Backward-compat shim around startMeshWithError that discards
-// the last error — keep using this from boot paths where we already log the
-// underlying error and just need a yes/no.
-func startMesh(configPath, tunMode string) meshService {
-	svc, _ := startMeshWithError(configPath, tunMode)
-	return svc
-}
-
-// startMeshWithError starts Nebula like startMesh but ALSO returns the
-// last underlying error when both kernel-TUN and userspace fail. Callers
-// that surface failure to the user (the connect retry loop) need this to
-// distinguish port-bind failures ("address already in use") from cert /
-// config / network failures, since the user-actionable message depends on
-// which class of failure occurred. Pre-fix the connect retry loop reported
-// "another hop-agent is using the network port" whenever startMesh returned
-// nil regardless of the actual cause — most painfully on cert-clock-skew
-// failures where the right action is "fix the clock", not "remove a
-// conflicting install".
+// startMeshWithError starts Nebula in the requested TUN mode with graceful
+// fallback: kernel TUN first (if requested), then userspace. When both fail
+// it returns the last underlying error. Callers that surface the failure to
+// the user (the connect retry loop) need it to distinguish port-bind
+// failures ("address already in use") from cert / config / network failures,
+// since the user-actionable message depends on which class of failure
+// occurred. Pre-fix the connect retry loop reported "another hop-agent is
+// using the network port" whatever the cause — most painfully on
+// cert-clock-skew failures, where the right action is "fix the clock", not
+// "remove a conflicting install".
 func startMeshWithError(configPath, tunMode string) (meshService, error) {
 	if tunMode == "kernel" {
 		if err := ensureWinTun(); err != nil {
@@ -147,3 +137,7 @@ func startMeshWithError(configPath, tunMode string) (meshService, error) {
 	}
 	return svc, nil
 }
+
+// startMeshFn is how startInstance and reloadNebula's cold start bring
+// Nebula up. A var so tests can substitute a fake service.
+var startMeshFn = startMeshWithError

@@ -47,14 +47,15 @@ func selfEndpointLifetimes(inst *meshInstance, addrs []string) []int {
 		return nil
 	}
 	out := make([]int, len(addrs))
-	if inst.portmap == nil {
+	pm := inst.portmap.Load()
+	if pm == nil {
 		return out
 	}
-	pubLifetime := inst.portmap.LifetimeSeconds()
+	pubLifetime := pm.LifetimeSeconds()
 	if pubLifetime <= 0 {
 		return out
 	}
-	publicAddr := inst.portmap.Current()
+	publicAddr := pm.Current()
 	if !publicAddr.IsValid() {
 		return out
 	}
@@ -93,8 +94,8 @@ func selfEndpoints(inst *meshInstance) []string {
 
 	// Public mapping (NAT-PMP / UPnP / PCP). Highest priority — this
 	// is the endpoint that actually works from the public Internet.
-	if inst.portmap != nil {
-		if pub := inst.portmap.Current(); pub.IsValid() {
+	if pm := inst.portmap.Load(); pm != nil {
+		if pub := pm.Current(); pub.IsValid() {
 			s := pub.String()
 			if _, dup := seen[s]; !dup {
 				seen[s] = struct{}{}

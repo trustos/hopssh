@@ -138,14 +138,6 @@ func TestRunMirrorChownSelfHeal_Has30sCadence(t *testing.T) {
 	}
 }
 
-// TestRunServe_SpawnsMirrorChownSelfHeal asserted main.go::runServe spawns
-// runMirrorChownSelfHeal as a goroutine. Phase NN moves the goroutine
-// spawn into cmd/agent's runServe (after legacyMigrate but before
-// client.Start); the cmd/agent test file owns this tripwire from M3 on.
-func TestRunServe_SpawnsMirrorChownSelfHeal(t *testing.T) {
-	t.Skip("Phase NN: runMirrorChownSelfHeal spawn moved to cmd/agent/main.go runServe; tripwire reimplemented in cmd/agent/main_test.go in M3")
-}
-
 // Behavioral test for the dir-owner fallback path: writing a sentinel
 // file inside a tempdir, calling chownMirrorFiles as non-root, and
 // asserting it returns an error (because we're not root, the

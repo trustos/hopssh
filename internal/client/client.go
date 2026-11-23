@@ -13,12 +13,34 @@ import (
 	"github.com/trustos/hopssh/internal/nebulacfg"
 )
 
-// connect is the lifted body of v0.10.34's runServe-local connectFn closure.
-// It brings up a single named enrollment with retry+backoff, wiring
-// inst.restartFn for v0.10.36 watchdog auto-recovery.
+// connect brings up a single named enrollment. Serialized per enrollment
+// with disconnect (connectLock) so a background recovery attempt can't
+// interleave with a user's Connect/Disconnect. Does not schedule background
+// recovery itself — callers that want self-healing use connectAndSupervise
+// (recovery.go).
 //
 // Idempotent: if the instance is already up, return nil.
 func (c *Client) connect(name string) error {
+	mu := c.connectLock(name)
+	mu.Lock()
+	defer mu.Unlock()
+	return c.connectLocked(name)
+}
+
+// newInstance is a mesh instance for e under this client's config dir.
+func (c *Client) newInstance(e *Enrollment) *meshInstance {
+	inst := newMeshInstance(e)
+	if c.cfg.ConfigDir != "" {
+		inst.customDir = enrollmentDir(c.cfg.ConfigDir, e.Name)
+	}
+	return inst
+}
+
+// connectLocked is the lifted body of v0.10.34's runServe-local connectFn
+// closure. It brings up a single named enrollment with retry+backoff, wiring
+// inst.restartFn for v0.10.36 watchdog auto-recovery. Caller holds
+// connectLock(name).
+func (c *Client) connectLocked(name string) error {
 	if c.connectOverride != nil {
 		return c.connectOverride(name)
 	}
@@ -38,6 +60,12 @@ func (c *Client) connect(name string) error {
 	if existing := c.instances.get(name); existing != nil && existing.control() != nil {
 		return nil // already up
 	}
+	// Phase HH: Nebula refuses to start on an expired cert, and a failed
+	// start tears the instance (and its renewal goroutine) down below — so
+	// renew FIRST. Without this an expired enrollment could never recover.
+	if err := c.ensureUsableCert(e); err != nil {
+		return err
+	}
 	// Drop any stale instance entry (e.g. previous start failed and left
 	// a half-initialized inst in the registry) so the new startInstance
 	// gets a clean slate.
@@ -56,12 +84,17 @@ func (c *Client) connect(name string) error {
 		waitForUDPPortFreeFn(listenPort, 3*time.Second)
 		waitForTUNDeviceFreeFn(devName, 3*time.Second)
 
-		inst := newMeshInstance(e)
+		inst := c.newInstance(e)
 		// v0.10.36: re-wire restartFn on every fresh instance so the
 		// watchdog can recover this one too. Recursion is fine — each
 		// restart constructs a new closure bound to the new inst.
+		// Phase HH: restartInstance force-cycles THIS inst (pre-HH the
+		// closure called connect, whose "already up" short-circuit made
+		// every watchdog restart a silent no-op) and keeps retrying in
+		// the background if the instance can't come back.
 		instName := name
-		inst.restartFn = func() error { return c.connect(instName) }
+		inst.restartFn = func() error { return c.restartInstance(instName, inst) }
+		inst.restartNotBefore = c.watchdogRestartNotBefore(name)
 		c.instances.add(inst)
 		if err := c.startInstance(c.runCtx, inst); err != nil {
 			c.instances.remove(name)
@@ -135,17 +168,28 @@ func (c *Client) connect(name string) error {
 // disconnect is the lifted body of v0.10.34's disconnectFn closure.
 // stopwatcher → close → release UDP port + utun + DNS, all inside
 // meshInstance.close(). The per-instance HTTP listener is also dropped.
+//
+// Records the user's intent first (no background loop or watchdog restart
+// may bring this enrollment back until it is explicitly connected again),
+// stops any recovery loop, then waits for an in-flight connect via
+// connectLock before tearing down — so a concurrent recovery attempt can't
+// resurrect the instance after the user disconnected it.
 func (c *Client) disconnect(name string) error {
+	c.setUserDisconnected(name, true)
+	c.cancelRecovery(name)
 	if c.disconnectOverride != nil {
 		return c.disconnectOverride(name)
 	}
+	mu := c.connectLock(name)
+	mu.Lock()
+	defer mu.Unlock()
 	inst := c.instances.remove(name)
 	if inst == nil {
 		return nil // already gone
 	}
-	inst.close()
+	err := closeInstance(inst)
 	c.servers.shutdownInstance(name)
-	return nil
+	return err
 }
 
 // startInstance brings up Nebula + heartbeat + renewal + DNS for one
@@ -163,7 +207,20 @@ func (c *Client) startInstance(ctx context.Context, inst *meshInstance) error {
 	// Per-instance ctx so disconnect/leave can stop heartbeat + renewal +
 	// path-quality goroutines without taking down the whole agent. v0.10.34
 	// invariant.
+	inst.svcMu.Lock()
 	inst.runCtx, inst.runCancel = context.WithCancel(ctx)
+	inst.svcMu.Unlock()
+
+	// Held until this start is complete so the renewal goroutine spawned
+	// below can't reload (i.e. start a second) Nebula underneath it.
+	inst.startMu.Lock()
+	defer inst.startMu.Unlock()
+
+	// Stop() cancels ctx and then closes every registered instance; one
+	// registered after that must not come up.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	authToken, err := readInstanceToken(inst)
 	if err != nil {
@@ -173,6 +230,17 @@ func (c *Client) startInstance(ctx context.Context, inst *meshInstance) error {
 	var handler http.Handler
 	if c.httpHook != nil {
 		handler = c.httpHook.BuildHandler(inst.name(), authToken)
+	}
+
+	if handler != nil {
+		// onRestart: cert-reload's reloadNebula drops the old svc + spawns
+		// a new one; the per-instance HTTP listener must rebind onto the
+		// new Nebula listener. Set before the renewal goroutine starts.
+		inst.onRestart = func(newSvc meshService) {
+			if err := c.servers.rebindMesh(inst, handler, newSvc); err != nil {
+				log.Printf("[agent %s] CRITICAL: cannot listen on new Nebula instance: %v", inst.name(), err)
+			}
+		}
 	}
 
 	pruneOldStuckStateDumps(inst.dir())
@@ -203,18 +271,7 @@ func (c *Client) startInstance(ctx context.Context, inst *meshInstance) error {
 	tunMode := readTunMode(inst)
 	ensureP2PConfig(inst)
 
-	if handler != nil {
-		// onRestart: cert-reload's reloadNebula drops the old svc + spawns
-		// a new one; the per-instance HTTP listener must rebind onto the
-		// new Nebula listener.
-		inst.onRestart = func(newSvc meshService) {
-			if err := c.servers.rebindMesh(inst, handler, newSvc); err != nil {
-				log.Printf("[agent %s] CRITICAL: cannot listen on new Nebula instance: %v", inst.name(), err)
-			}
-		}
-	}
-
-	meshSvc, meshErr := startMeshWithError(cfgPath, tunMode)
+	meshSvc, meshErr := startMeshFn(cfgPath, tunMode)
 	if meshSvc == nil {
 		// Stash the underlying error so connect()'s retry-loop
 		// fallthrough can surface a user-actionable message that
@@ -230,13 +287,15 @@ func (c *Client) startInstance(ctx context.Context, inst *meshInstance) error {
 		return nil
 	}
 	inst.lastMeshErr = nil
-	inst.setSvc(meshSvc)
+	if !inst.setSvc(meshSvc) {
+		meshSvc.Close()
+		return errInstanceClosed
+	}
 	log.Printf("[agent %s] Nebula mesh connected (mode: %s)", inst.name(), tunMode)
 
 	// Configure split-DNS for this mesh's domain in kernel TUN mode.
 	if tunMode == "kernel" {
-		inst.dnsConfig = readDNSConfig(inst)
-		configureDNS(inst, inst.dnsConfig)
+		inst.configureSplitDNS()
 	}
 
 	// Inject the on-disk peer-endpoint cache into Nebula's hostmap BEFORE

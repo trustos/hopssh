@@ -180,13 +180,3 @@ func TestWatchdog_SourceScan(t *testing.T) {
 		}
 	}
 }
-
-// TestWatchdog_RunServeWiringSourceScan asserted in cmd/agent/main.go's
-// runServe that inst.restartFn was wired for BOTH the boot-time path AND
-// the runtime connectFn path. Phase NN extracted that lifecycle into
-// internal/client/api.go::Client.Connect — both paths now flow through
-// one method, and the M3 tripwire will live in api.go alongside the
-// extracted Client.connect() helper. Skipped here until M3 lands.
-func TestWatchdog_RunServeWiringSourceScan(t *testing.T) {
-	t.Skip("Phase NN: wiring moved to internal/client/api.go::Client.connect; tripwire is reimplemented in M3")
-}

@@ -148,8 +148,8 @@ func rewriteNebulaUnsafeRoutes(inst *meshInstance, routes []string) error {
 	if err != nil {
 		return err
 	}
-	var cfg map[string]any
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+	cfg, err := parseNebulaYAML(raw)
+	if err != nil {
 		return err
 	}
 	tunBlock, _ := cfg["tun"].(map[string]any)

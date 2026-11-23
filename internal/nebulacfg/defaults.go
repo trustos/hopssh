@@ -23,7 +23,8 @@ const UseRelays = true
 // on cellular with no port-mapping). Disable only if the router
 // misbehaves (sends bad UPnP responses, blacklists our mapping, etc.);
 // can be overridden per-enrollment via nebula.yaml's `portmap.enabled`.
-const PortmapEnabled = true
+// Var so tests don't ask the developer's router for a mapping.
+var PortmapEnabled = true
 
 // PunchBack enables responsive hole punching: when a peer tries to punch
 // through to us, we punch back. Improves NAT traversal success rate.

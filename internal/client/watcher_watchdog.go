@@ -98,6 +98,9 @@ func runWatcherWatchdog(ctx context.Context, inst *meshInstance) {
 		if !lastTripAt.IsZero() && time.Since(lastTripAt) < cooldown {
 			continue
 		}
+		if inst.restartCoolingDown() {
+			continue
+		}
 		lastTripAt = time.Now()
 
 		log.Printf("[watcher-watchdog %s] CRITICAL: network-change watcher silent for %s (threshold %s) — capturing forensic dump and triggering auto-restart",

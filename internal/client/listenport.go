@@ -52,8 +52,8 @@ func healListenPortYAML(e *Enrollment) error {
 	if err != nil {
 		return err
 	}
-	var cfg map[string]any
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	cfg, err := parseNebulaYAML(data)
+	if err != nil {
 		return err
 	}
 	listen, _ := cfg["listen"].(map[string]any)

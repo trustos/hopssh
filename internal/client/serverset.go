@@ -123,6 +123,9 @@ func (s *serverSet) rebindMesh(inst *meshInstance, handler http.Handler, svc mes
 	entry.mu.Lock()
 	oldSrv := entry.srv
 	entry.mu.Unlock()
+	if oldSrv == nil {
+		return fmt.Errorf("network %q is shutting down", inst.name()) // lost the race with shutdownInstance
+	}
 
 	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	_ = oldSrv.Shutdown(shutCtx)
