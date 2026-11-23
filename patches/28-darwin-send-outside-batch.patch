@@ -1,0 +1,378 @@
+diff --color -ruN a/github.com/slackhq/nebula/interface.go b/github.com/slackhq/nebula/interface.go
+--- a/github.com/slackhq/nebula/interface.go
++++ b/github.com/slackhq/nebula/interface.go
+@@ -303,6 +303,13 @@
+ 	ReadBatch(out [][]byte) (int, error)
+ }
+ 
++// batchWriter is implemented by UDP connections that only queue WriteTo
++// inside a BeginBatch/EndBatch scope (Darwin). hopssh patch 28.
++type batchWriter interface {
++	BeginBatch()
++	EndBatch() error
++}
++
+ const listenInBatchSize = 32
+ 
+ func (f *Interface) listenIn(reader io.ReadWriteCloser, i int) {
+@@ -346,11 +353,17 @@
+ 				f.l.WithError(err).Error("Error while reading outbound packet batch")
+ 				os.Exit(2)
+ 			}
++			bw, _ := f.writers[i].(batchWriter)
++			endBatch := f.writers[i].Flush
++			if bw != nil {
++				bw.BeginBatch()
++				endBatch = bw.EndBatch
++			}
+ 			for j := 0; j < n; j++ {
+ 				f.consumeInsidePacket(packets[j], fwPacket, nb, out, i, conntrackCache.Get(f.l))
+ 			}
+ 			// Flush queued UDP sends from this batch in one sendmsg_x syscall.
+-			if err := f.writers[i].Flush(); err != nil {
++			if err := endBatch(); err != nil {
+ 				// hopssh patch 24 (Bug B, v0.10.29): elevated from Debug to Warn.
+ 				// Flush errors mean queued packets (including handshakes) were
+ 				// dropped without the upstream caller knowing. Production
+diff --color -ruN a/github.com/slackhq/nebula/udp/udp_darwin.go b/github.com/slackhq/nebula/udp/udp_darwin.go
+--- a/github.com/slackhq/nebula/udp/udp_darwin.go
++++ b/github.com/slackhq/nebula/udp/udp_darwin.go
+@@ -4,6 +4,7 @@
+ package udp
+ 
+ import (
++	"bytes"
+ 	"encoding/binary"
+ 	"fmt"
+ 	"net"
+@@ -71,6 +72,16 @@
+ 	laneData    []sendEntry // all data packets (type == Message), order preserved
+ 	sendMsgs    []msghdrX   // pre-allocated, sized for total queue cap
+ 	sendIovs    []iovec     // pre-allocated, one per slot
++
++	// hopssh patch 28: open BeginBatch/EndBatch scopes. WriteTo only leaves a
++	// packet queued while there is one; every other sender (punches,
++	// lighthouse updates, tunnel tests, the userspace TUN) has nobody to flush
++	// for it.
++	batches int
++
++	// hopssh patch 28: set by Close. A late sender (a delayed punch, a worker
++	// that has not seen ctx end) must not write to a reused fd.
++	closed bool
+ }
+ 
+ type sendEntry struct {
+@@ -280,6 +291,7 @@
+ 				u.l.WithError(err).Debug("udp socket is closed, exiting read loop")
+ 				return
+ 			}
++			u.BeginBatch()
+ 			for i := 0; i < n; i++ {
+ 				if u.isV4 {
+ 					ip, _ = netip.AddrFromSlice(names[i][4:8])
+@@ -288,7 +300,7 @@
+ 				}
+ 				r(netip.AddrPortFrom(ip.Unmap(), binary.BigEndian.Uint16(names[i][2:4])), buffers[i][:msgs[i].Datalen])
+ 			}
+-			if err := u.Flush(); err != nil {
++			if err := u.EndBatch(); err != nil {
+ 				// hopssh patch 24 (Bug B, v0.10.29): elevated from Debug to Warn.
+ 				// See interface.go Flush callsite for full rationale.
+ 				u.l.WithError(err).Warn("flush after listenOut batch failed — queued packets dropped")
+@@ -372,6 +384,7 @@
+ 
+ 	var ip netip.Addr
+ 	for slot := range inflight {
++		u.BeginBatch()
+ 		for i := 0; i < slot.n; i++ {
+ 			if u.isV4 {
+ 				ip, _ = netip.AddrFromSlice(slot.names[i][4:8])
+@@ -384,7 +397,7 @@
+ 		// (handshake replies, relay forwards). Without this, replies
+ 		// sit in the send queue indefinitely if no TUN-side traffic
+ 		// flows — handshakes time out.
+-		if err := u.Flush(); err != nil {
++		if err := u.EndBatch(); err != nil {
+ 			u.l.WithError(err).Debug("flush after listenOut batch failed")
+ 		}
+ 		free <- slot
+@@ -441,10 +454,30 @@
+ 		entry.nameLen = unix.SizeofSockaddrInet6
+ 	}
+ 
++	var err error
++	if u.batches == 0 {
++		err = u.flushLocked()
++	}
+ 	u.sendMu.Unlock()
+-	return nil
++	return err
+ }
+ 
++// BeginBatch makes WriteTo leave packets queued until EndBatch, so a batch of
++// packets costs one syscall. Scopes may overlap between goroutines.
++func (u *StdConn) BeginBatch() {
++	u.sendMu.Lock()
++	u.batches++
++	u.sendMu.Unlock()
++}
++
++// EndBatch closes a BeginBatch scope and sends whatever is queued.
++func (u *StdConn) EndBatch() error {
++	u.sendMu.Lock()
++	defer u.sendMu.Unlock()
++	u.batches--
++	return u.flushLocked()
++}
++
+ // laneFor returns a pointer to the lane slice for the given priority index.
+ // Caller must hold u.sendMu.
+ func (u *StdConn) laneFor(idx int) *[]sendEntry {
+@@ -480,13 +513,47 @@
+ 	if n == 0 {
+ 		return nil
+ 	}
++	if u.closed {
++		return net.ErrClosed
++	}
+ 
++	// hopssh patch 28: one call per run of packets to the same address. At the
++	// first packet the kernel refuses (say, a LAN neighbour that is gone)
++	// sendmsg_x gives up, without telling how many it sent, so a mixed batch
++	// would lose every packet behind it.
++	var firstErr error
++	for start, end := 0, 0; start < n; start = end {
++		for end = start + 1; end < n && sameDest(&u.sendMsgs[start], &u.sendMsgs[end]); end++ {
++		}
++		err := u.sendRun(start, end)
++		if err == net.ErrClosed || err == errSendBufFull {
++			return err
++		}
++		if err != nil && firstErr == nil {
++			firstErr = err
++		}
++	}
++	return firstErr
++}
++
++// errSendBufFull: the socket send buffer is full; drop. Same behavior as
++// writeToSingle.
++var errSendBufFull error = &net.OpError{Op: "sendmsg_x", Err: unix.EWOULDBLOCK}
++
++// sameDest reports whether two queued packets go to the same address.
++func sameDest(a, b *msghdrX) bool {
++	return bytes.Equal(unsafe.Slice(a.Name, a.Namelen), unsafe.Slice(b.Name, b.Namelen))
++}
++
++// sendRun sends u.sendMsgs[start:end] in one sendmsg_x call.
++// Caller must hold u.sendMu.
++func (u *StdConn) sendRun(start, end int) error {
+ 	for {
+ 		sent, _, err := unix.Syscall6(
+ 			unix.SYS_SENDMSG_X,
+ 			uintptr(u.sysFd),
+-			uintptr(unsafe.Pointer(&u.sendMsgs[0])),
+-			uintptr(n),
++			uintptr(unsafe.Pointer(&u.sendMsgs[start])),
++			uintptr(end-start),
+ 			0,
+ 			0,
+ 			0,
+@@ -495,8 +562,7 @@
+ 			continue
+ 		}
+ 		if err == syscall.EAGAIN {
+-			// Socket send buffer full; drop. Same behavior as writeToSingle.
+-			return &net.OpError{Op: "sendmsg_x", Err: unix.EWOULDBLOCK}
++			return errSendBufFull
+ 		}
+ 		if err == syscall.EBADF {
+ 			return net.ErrClosed
+@@ -504,8 +570,8 @@
+ 		if err != 0 {
+ 			return &net.OpError{Op: "sendmsg_x", Err: err}
+ 		}
+-		if int(sent) < n {
+-			u.l.WithField("sent", sent).WithField("total", n).Warn("sendmsg_x partial send")
++		if int(sent) < end-start {
++			u.l.WithField("sent", sent).WithField("total", end-start).Warn("sendmsg_x partial send")
+ 		}
+ 		return nil
+ 	}
+@@ -622,6 +688,9 @@
+ }
+ 
+ func (u *StdConn) Close() error {
++	u.sendMu.Lock()
++	defer u.sendMu.Unlock()
++	u.closed = true
+ 	return unix.Close(u.sysFd)
+ }
+ 
+diff --color -ruN a/github.com/slackhq/nebula/udp/udp_darwin_batch_test.go b/github.com/slackhq/nebula/udp/udp_darwin_batch_test.go
+--- a/github.com/slackhq/nebula/udp/udp_darwin_batch_test.go
++++ b/github.com/slackhq/nebula/udp/udp_darwin_batch_test.go
+@@ -267,6 +267,7 @@
+ 
+ 	// Queue 5 small packets — all go to interactive lane (len < 200).
+ 	// Use Message type (0x01) so we exercise the size-based classification path.
++	c.BeginBatch()
+ 	for i := 0; i < 5; i++ {
+ 		if err := c.WriteTo([]byte{0x01, byte(i)}, dest); err != nil {
+ 			t.Fatalf("WriteTo #%d failed: %v", i, err)
+@@ -395,6 +396,7 @@
+ 	data2[1] = 0xD2
+ 	controlPkt := []byte{0x10, 0xC0}
+ 
++	c.BeginBatch()
+ 	if err := c.WriteTo(data1, dest); err != nil {
+ 		t.Fatal(err)
+ 	}
+@@ -460,6 +462,7 @@
+ 	dest := netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), recvPort)
+ 
+ 	// Fill data lane to capacity
++	c.BeginBatch()
+ 	dataPkt := make1byteN(0x11, 1300)
+ 	for i := 0; i < laneCapData; i++ {
+ 		if err := c.WriteTo(dataPkt, dest); err != nil {
+@@ -482,5 +485,139 @@
+ 	// Drain any pending packets
+ 	if err := c.Flush(); err != nil {
+ 		t.Fatal(err)
++	}
++}
++
++// udpPair returns a bound sender StdConn, a bound receiver with a read
++// timeout, and the receiver's address.
++func udpPair(t *testing.T) (*StdConn, int, netip.AddrPort) {
++	t.Helper()
++	var fds [2]int
++	var port uint16
++	for i := range fds {
++		fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_UDP)
++		if err != nil {
++			t.Fatal(err)
++		}
++		t.Cleanup(func() { unix.Close(fd) })
++		sa := &unix.SockaddrInet4{}
++		if i == 1 {
++			sa.Addr = [4]byte{127, 0, 0, 1}
++		}
++		if err := unix.Bind(fd, sa); err != nil {
++			t.Fatal(err)
++		}
++		got, err := unix.Getsockname(fd)
++		if err != nil {
++			t.Fatal(err)
++		}
++		port = uint16(got.(*unix.SockaddrInet4).Port)
++		fds[i] = fd
++	}
++	if err := unix.SetNonblock(fds[0], true); err != nil {
++		t.Fatal(err)
++	}
++	if err := unix.SetsockoptTimeval(fds[1], unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Usec: 200000}); err != nil {
++		t.Fatal(err)
++	}
++	return newTestStdConn(fds[0]), fds[1], netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), port)
++}
++
++// received returns the last byte of every packet waiting at fd.
++func received(fd int) string {
++	var got []byte
++	buf := make([]byte, 64)
++	for {
++		n, _, err := unix.Recvfrom(fd, buf, 0)
++		if err != nil || n < 1 {
++			return string(got)
++		}
++		got = append(got, buf[n-1])
++	}
++}
++
++// TestWriteToOutsideBatchSendsNow: punches, lighthouse updates, tunnel tests
++// and the userspace TUN's packets are written outside any batch, and nobody
++// flushes for them.
++func TestWriteToOutsideBatchSendsNow(t *testing.T) {
++	c, recv, dest := udpPair(t)
++	if err := c.WriteTo([]byte("a"), dest); err != nil {
++		t.Fatal(err)
++	}
++	if got := received(recv); got != "a" {
++		t.Errorf("received %q without a Flush, want %q", got, "a")
++	}
++
++	// Overlapping scopes: the queue goes out when either ends.
++	c.BeginBatch()
++	c.BeginBatch()
++	c.WriteTo([]byte("b"), dest)
++	if got := received(recv); got != "" {
++		t.Errorf("received %q inside a batch, want nothing yet", got)
++	}
++	c.EndBatch()
++	if got := received(recv); got != "b" {
++		t.Errorf("received %q after the first EndBatch, want %q", got, "b")
++	}
++	c.WriteTo([]byte("c"), dest)
++	if got := received(recv); got != "" {
++		t.Errorf("received %q with one batch still open, want nothing yet", got)
++	}
++	c.EndBatch()
++	c.WriteTo([]byte("d"), dest)
++	if got := received(recv); got != "cd" {
++		t.Errorf("received %q, want %q", got, "cd")
++	}
++}
++
++// TestRefusedDestinationDoesNotDropOthers: a packet the kernel refuses must
++// neither take the rest of its batch with it nor make it send twice.
++func TestRefusedDestinationDoesNotDropOthers(t *testing.T) {
++	bad := netip.MustParseAddrPort("255.255.255.255:9") // not a broadcast socket
++	for _, order := range []string{"xabc", "axbc", "abcx", "xaxbxc", "abxxc"} {
++		c, recv, dest := udpPair(t)
++		c.BeginBatch()
++		for _, b := range []byte(order) {
++			to := dest
++			if b == 'x' {
++				to = bad
++			}
++			if err := c.WriteTo([]byte{0x01, b}, to); err != nil { // 0x01: all in one lane
++				t.Fatal(err)
++			}
++		}
++		if err := c.EndBatch(); err == nil {
++			t.Errorf("%s: EndBatch reported no error", order)
++		}
++		if got := received(recv); got != "abc" {
++			t.Errorf("%s: received %q, want %q", order, got, "abc")
++		}
++	}
++}
++
++// TestWriteToAfterClose: the fd number may already belong to somebody else.
++func TestWriteToAfterClose(t *testing.T) {
++	_, recv, dest := udpPair(t)
++	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_UDP)
++	if err != nil {
++		t.Fatal(err)
++	}
++	c := newTestStdConn(fd)
++	if err := c.Close(); err != nil {
++		t.Fatal(err)
++	}
++	reused, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_UDP)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer unix.Close(reused)
++	if reused != fd {
++		t.Skipf("fd %d was not reused (got %d)", fd, reused)
++	}
++	if err := c.WriteTo([]byte("x"), dest); err != net.ErrClosed {
++		t.Errorf("WriteTo after Close = %v, want net.ErrClosed", err)
++	}
++	if got := received(recv); got != "" {
++		t.Errorf("received %q through somebody else's socket", got)
+ 	}
+ }

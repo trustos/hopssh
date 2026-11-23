@@ -81,6 +81,10 @@ func (c *Control) Context() context.Context {
 
 // Stop signals nebula to shutdown and close all tunnels, returns after the shutdown is complete
 func (c *Control) Stop() {
+	// hopssh patch 27: cancelling ctx closes the userspace TUN's pipes, and
+	// listenIn treats EOF as fatal (os.Exit) unless closed is already set.
+	c.f.closed.Store(true)
+
 	// Stop the handshakeManager (and other services), to prevent new tunnels from
 	// being created while we're shutting them all down.
 	c.cancel()

@@ -1,0 +1,12 @@
+--- a/github.com/slackhq/nebula/service/service.go
++++ b/github.com/slackhq/nebula/service/service.go
+@@ -233,6 +233,9 @@
+ 
+ func (s *Service) Close() error {
+ 	s.control.Stop()
++	// hopssh patch 29: without this every closed Service leaks its netstack: a
++	// goroutine per CPU, over 1 MB, and whoever is blocked on its connections.
++	s.ipstack.Close()
+ 	return nil
+ }
+ 

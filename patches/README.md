@@ -1,13 +1,18 @@
 # Nebula vendor patches
 
-Applied on top of `slackhq/nebula` via `make patch-vendor` (see Makefile).
-Each patch is numbered for ordering; they apply cleanly in sequence.
+Applied on top of `slackhq/nebula` v1.10.3 via `make patch-vendor` (see Makefile), in number order.
+
+> **Patch 12 does not apply, and `make patch-vendor` hides it** (`|| true`, then `*.rej` deleted). All others apply cleanly to a fresh `go mod vendor` (checked 2026-11-23). Release and Docker builds use the same steps, so patch 12's code is in none of them, and its test (13) keeps `github.com/slackhq/nebula`'s tests from compiling. See [[open-questions]] in the wiki. The vendored UDP tests do run:
+>
+> ```bash
+> go test -mod=vendor -race github.com/slackhq/nebula/udp
+> ```
 
 ## Inventory
 
 | # | File | What | Category |
 |---|---|---|---|
-| 01 | `graceful-shutdown.patch` | Adds `io.ErrClosedPipe` check to `interface.go` so userspace-mode shutdown doesn't `os.Exit(2)` the whole control plane. Upstream issue [#1031](https://github.com/slackhq/nebula/issues/1031), fix PR [#1375](https://github.com/slackhq/nebula/pull/1375) (not yet merged). | Bug fix |
+| 01 | `graceful-shutdown.patch` | Adds `io.ErrClosedPipe` check to `interface.go` so userspace-mode shutdown doesn't `os.Exit(2)` the whole control plane. Upstream issue [#1031](https://github.com/slackhq/nebula/issues/1031), closed PR [#1375](https://github.com/slackhq/nebula/pull/1375); fixed upstream by #1661 in v1.11.0. **Not sufficient alone: see 27.** | Bug fix |
 | 02 | `testreply-panic-fix.patch` | Fixes a nil-pointer panic in the handshake test-reply path. | Bug fix |
 | 03 | `tun-darwin-read-buffer.patch` | Caches the TUN read buffer (`make([]byte, len+4)` → pre-allocated), eliminating ~9KB/packet allocation churn on macOS. | Perf (alloc) |
 | 04 | `batch-udp-darwin.patch` | `sendmsg_x` / `recvmsg_x` batch syscalls for UDP on macOS. Pure Go, no CGO. Tunnel efficiency went from 17% → 35–53% of raw WiFi throughput. | Perf (Darwin) |
@@ -18,7 +23,7 @@ Each patch is numbered for ordering; they apply cleanly in sequence.
 | 09 | `priority-queue-darwin.patch` | 2-lane control/data priority queue in the `sendmsg_x` send path. Control packets (handshakes, lighthouse, test, close) jump ahead of data packets; data lane preserves within-flow FIFO ordering. | Perf (Darwin) |
 | 10 | `priority-queue-tests.patch` | Tests for patch 09. | Test |
 | 11 | `portmap-advertise-addr.patch` | Lets `internal/portmap/` inject the public `IP:port` from NAT-PMP/UPnP/PCP into the lighthouse's advertise_addrs set at runtime. Enables direct P2P across asymmetric carrier NAT (home router + cellular peer). | Feature (NAT) |
-| 12 | `pipeline-listenin-darwin.patch` | Splits `listenIn` into a reader goroutine (`recvmsg_x` on the TUN fd) and a worker-flusher goroutine (`consumeInsidePacket` + `sendmsg_x`), linked by a 2-slot channel pipeline. Overlaps the two blocking syscalls — profile showed 71% of CPU was in `Syscall6`. 2.7× WiFi LAN downlink improvement (137 → 343 Mb/s), now at Tailscale parity. Architecture doc: [`docs/macos-pipelined-listenin.md`](../docs/macos-pipelined-listenin.md). | Perf (Darwin) |
+| 12 | `pipeline-listenin-darwin.patch` | **DOES NOT APPLY, in no clean build.** Splits `listenIn` into a reader goroutine (`recvmsg_x` on the TUN fd) and a worker-flusher goroutine (`consumeInsidePacket` + `sendmsg_x`), linked by a 2-slot channel pipeline. Overlaps the two blocking syscalls — profile showed 71% of CPU was in `Syscall6`. 2.7× WiFi LAN downlink improvement (137 → 343 Mb/s), now at Tailscale parity. Architecture doc: [`docs/macos-pipelined-listenin.md`](../docs/macos-pipelined-listenin.md). | Perf (Darwin) |
 | 13 | `pipeline-listenin-test.patch` | Tests for patch 12 — channel-discipline invariants: init-doesn't-deadlock (regression-protects the channel-sizing bug we hit on first deploy), FIFO ordering through worker, drain-on-close shutdown, back-pressure blocks reader. Mutation-validated. | Test |
 | 14 | `roam-suppress-window-darwin.patch` | Bumps `RoamingSuppressSeconds` from 2 → 10 in `hostmap.go`. The 2-second window failed to dampen 2-address alternation under hairpin-NAT (peer reachable via both LAN and NAT-PMP-reflected public addresses); the hostmap entry flipped every ~2s, dropping in-flight UDP and producing visibly choppy LAN screen-share. 10s blocks the typical alternation while still recovering quickly from real WiFi→cellular roams. | Bug fix (Darwin perf) |
 | 15 | `roam-prefer-ranges-darwin.patch` | Adds preferred_ranges awareness to `handleHostRoaming` in `outside.go`. If the current remote is in preferred_ranges (LAN) and an inbound packet comes from a non-preferred address (NAT-reflected public), the roam is ignored entirely. Symmetric: a preferred candidate when on a non-preferred current immediately wins. Stops the hairpin-NAT flap at its source rather than relying on the time window from patch 14. | Bug fix (Darwin perf) |
@@ -29,11 +34,22 @@ Each patch is numbered for ordering; they apply cleanly in sequence.
 | 20 | `static-hostmap-inject.patch` | Adds `Control.AddStaticHostMap(vpnAddr, addrs)` — the inbound counterpart to patch 11's `AddAdvertiseAddr`. Lets hop-agent inject peer UDP endpoints into the lighthouse cache at runtime, bypassing the normal UDP `HostQuery` flow. Used when the UDP lighthouse is unreachable upstream (e.g., carrier filters UDP to Oracle Cloud from iPhone Personal Hotspot) — the server pushes peer advertise_addrs via the HTTPS heartbeat response, agent calls `AddStaticHostMap`, direct UDP handshake to the peer's home-router public endpoint succeeds. Marks the entry as static so Nebula doesn't garbage-collect it; de-dupes via atomic CAS on `staticList`. | Feature (NAT) |
 | 21 | `replace-static-hostmap.patch` | Adds `Control.ReplaceStaticHostMap(vpnAddr, addrs)` — replace-not-add cousin of patch 20. Fully replaces the prior `Reported` set instead of additively merging via `LearnRemote` (which only sets the singular `learned` slot). Eliminates stale NAT-PMP-mapped endpoints accumulating in the lighthouse cache after the upstream router rotates port allocations. Empirically dropped mini's invalid-cert rate 144→7/min (95% reduction). | Bug fix (CGNAT staleness) |
 | 22 | `endpoint-probe.patch` | Adds `Control.SetInboundObserver(cb)` (called on every authenticated inbound packet) + `Control.ProbeEndpoint(vpnAddr, remoteAddr)` (sends `header.Test`/`TestRequest` via `Interface.sendTo` to a SPECIFIC remote, bypassing CurrentRemote selection). Infrastructure for per-endpoint active liveness probing in `cmd/agent/endpoint_probe.go`. Reap behavior is intentionally DISABLED in agent code (see Patch 22 details below). | Feature (Layer 4 infra) |
+| 24 | `flush-error-propagation.patch` | Makes a failed macOS flush return its error instead of dropping it, so the handshake manager logs it (v0.10.29). | Bug fix (Darwin) |
+| 25 | `cert-skew-tolerance.patch` | `cert.ClockSkewTolerance` (1h): accepts certs slightly outside their validity window. No upstream equivalent. | Feature |
+| 26 | `relay-manager-warn-on-drop.patch` | Logs relay packets the lighthouse drops (v0.11.25). | Diagnostics |
+| 27 | `stop-marks-closed-first.patch` | `Control.Stop()` marks the interface closed before cancelling its context. Otherwise closing an in-app network can reach `os.Exit(2)` and end the agent. Completes 01; upstream fixed it differently in v1.11.0. Tests: `internal/client/nebula_close_test.go`. | Bug fix |
+| 28 | `darwin-send-outside-batch.patch` | macOS: writes outside `BeginBatch`/`EndBatch` are sent at once, and a batch is sent one destination at a time so a refused address loses only its own packets. The `interface.go` hunk is made against a tree **without** 12. See `docs/wiki/concepts/macos-udp-send.md`. | Bug fix (Darwin) |
+| 29 | `service-close-netstack.patch` | Closing a userspace service closes its gvisor stack. Otherwise each close leaks a goroutine per CPU and ~1.26 MB, and reads on its connections block forever. Upstream v1.10.3 has the bug; newer versions were not checked. | Bug fix (leak) |
+| 30 | `pki-no-redundant-global-write.patch` | Writes the package global `noiseEndianness` only when it changes: two networks starting together raced on it. A `chachapoly` network next to an `aes` one would still break both. | Bug fix (race) |
+| 31 | `linux-close-releases-port-and-device.patch` | Linux: closing a network frees its UDP port and its TUN device at once. Without it both live on until the next packet arrives, and starting the network again fails with "address already in use" / "device or resource busy". Upstream fixed both (#1661 in v1.11.0, #1979 in v1.12.0). Tests: `nebula_close_test.go`, `nebula_close_linux_test.go` (root), `TestE2E_Lifecycle`, `TestE2E_DeleteNetwork`. | Bug fix (Linux) |
+| 32 | `tun-close-on-exec.patch` | Linux and macOS: the TUN descriptor is close-on-exec. Without it a program left running from the web terminal (tmux, nohup) keeps the device after its network is closed, and can read and write the mesh's plain traffic. Checked by a test on Linux; on macOS only compiled. | Bug fix |
+
+23 was never used.
 
 ## Upstreamable patches
 
-01, 02, 03, and 08 are clean, self-contained fixes/extensions that upstream
-`slackhq/nebula` would benefit from. 01 already has an upstream PR (#1375).
+02, 03, 08, 29 and 32 are clean, self-contained fixes/extensions that upstream
+`slackhq/nebula` would benefit from. 01, 27 and (the TUN half of) 31 go away with v1.11.0, the rest of 31 with v1.12.0.
 The others can be filed as individual PRs when bandwidth allows. Reducing
 the vendor-maintained set is a long-term goal.
 

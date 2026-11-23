@@ -123,7 +123,14 @@ func newTun(c *config.C, l *logrus.Logger, vpnNetworks []netip.Prefix, _ bool) (
 		}
 	}
 
+	// hopssh patch 32: without close-on-exec every program started from the web
+	// terminal holds the device, for as long as it runs.
+	syscall.ForkLock.RLock()
 	fd, err := unix.Socket(unix.AF_SYSTEM, unix.SOCK_DGRAM, unix.AF_SYS_CONTROL)
+	if err == nil {
+		unix.CloseOnExec(fd)
+	}
+	syscall.ForkLock.RUnlock()
 	if err != nil {
 		return nil, fmt.Errorf("system socket: %v", err)
 	}
