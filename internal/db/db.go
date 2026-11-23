@@ -35,11 +35,13 @@ func (p *DBPair) Close() error {
 
 // Open creates a dual read/write connection pool for SQLite.
 func Open(path string) (*DBPair, error) {
-	// busy_timeout MUST come before journal_mode=WAL (connection must block
-	// on busy before WAL mode is set, per PocketBase's findings).
-	pragmas := "_busy_timeout=10000&_journal_mode=WAL&_foreign_keys=on" +
-		"&_synchronous=NORMAL&_cache_size=-32000&_temp_store=MEMORY" +
-		"&_journal_size_limit=200000000" // 200MB WAL file cap
+	// The driver only knows _pragma=; it ignores any other _name=value without
+	// a word. It sets busy_timeout first, which has to come before
+	// journal_mode (connection must block on busy before WAL mode is set, per
+	// PocketBase's findings).
+	pragmas := "_pragma=busy_timeout(10000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)" +
+		"&_pragma=synchronous(NORMAL)&_pragma=cache_size(-32000)&_pragma=temp_store(MEMORY)" +
+		"&_pragma=journal_size_limit(200000000)" // 200MB WAL file cap
 	var dsn string
 	switch {
 	case path == ":memory:":

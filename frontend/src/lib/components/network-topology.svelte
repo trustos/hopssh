@@ -38,8 +38,8 @@
 	// dedupNodes collapses zombie rows from re-enrollments. Each
 	// `hop-agent enroll` creates a new UUID node row server-side
 	// (no unique constraint on hostname); when a Mac re-enrolls, the
-	// old row stays in the DB until the auto-prune kicks in (~7d
-	// default). Without dedup the topology graph shows three
+	// old row stays in the DB until someone deletes it (or the server's
+	// optional prune does). Without dedup the topology graph shows three
 	// "yavors-macbook-pro" nodes instead of one.
 	//
 	// Predicate: collapse only when hostname AND nebulaIp match.

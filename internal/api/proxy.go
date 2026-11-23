@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/netip"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -581,17 +582,24 @@ func (h *ProxyHandler) NodeProxy(w http.ResponseWriter, r *http.Request) {
 			req.URL.RawQuery = r.URL.RawQuery
 			req.Host = req.URL.Host
 			req.Header.Set("Authorization", "Bearer "+node.AgentToken)
+			dropSessionCookie(req.Header)
 		},
 		Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return inst.Dial(ctx, nodeIP)
 			},
+			DisableKeepAlives: true, // used for this request only
 		},
 		ModifyResponse: func(resp *http.Response) error {
 			// A response landing here means the agent replied over the
 			// mesh — live enough to refresh last_seen_at. Throttled
 			// per-node via RecordProxyActivity.
 			h.Nodes.RecordProxyActivity(node.ID)
+
+			// A node must not replace the viewer's dashboard session.
+			if cookies := resp.Header["Set-Cookie"]; cookies != nil {
+				resp.Header["Set-Cookie"] = slices.DeleteFunc(cookies, isSessionCookie)
+			}
 
 			// Rewrite Location headers so redirects stay within the proxy prefix.
 			if location := resp.Header.Get("Location"); location != "" {
@@ -1370,6 +1378,28 @@ func agentNodeIP(node *db.Node) string {
 		return node.NebulaIP
 	}
 	return ip.String()
+}
+
+// dropSessionCookie removes the viewer's dashboard session from a request
+// that goes to a node, whose owner could use it to act as the viewer. Cookies
+// of the node's own app stay.
+func dropSessionCookie(h http.Header) {
+	var kept []string
+	for _, c := range strings.Split(strings.Join(h["Cookie"], ";"), ";") {
+		if c = strings.TrimSpace(c); c != "" && !isSessionCookie(c) {
+			kept = append(kept, c)
+		}
+	}
+	h.Del("Cookie")
+	if len(kept) > 0 {
+		h.Set("Cookie", strings.Join(kept, "; "))
+	}
+}
+
+// isSessionCookie reports whether c ("name=value…") is the dashboard's session.
+func isSessionCookie(c string) bool {
+	name, _, _ := strings.Cut(c, "=")
+	return strings.TrimSpace(name) == "session"
 }
 
 // agentRequest makes an HTTP request to the agent through the mesh.

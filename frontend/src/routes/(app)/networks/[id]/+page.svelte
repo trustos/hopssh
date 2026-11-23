@@ -246,9 +246,10 @@
 	const hasPendingNodes = $derived(network?.nodes.some(n => n.status === 'pending') ?? false);
 
 	// Offline node count for the "Clean up offline" admin button.
-	// The dashboard's auto-prune sweeper handles the >7d case in the
-	// background; this button is for users who want to wipe zombie
-	// rows immediately (e.g. after dev-test re-enrollments).
+	// Nothing deletes them by itself unless the server sets
+	// HOPSSH_NODE_PRUNE_AGE_HOURS: a deleted machine must be enrolled
+	// again. This button is for zombie rows (e.g. after dev-test
+	// re-enrollments).
 	const offlineCount = $derived(
 		visibleNodes.filter(n => n.status === 'offline').length
 	);
@@ -256,7 +257,7 @@
 	let pruneError = $state('');
 	async function pruneOfflineNodes() {
 		if (!isAdmin || offlineCount === 0) return;
-		if (!confirm(`Remove ${offlineCount} offline node(s)? This is permanent.`)) return;
+		if (!confirm(`Remove ${offlineCount} offline node(s)? This is permanent: a removed machine has to be enrolled again.`)) return;
 		pruning = true;
 		pruneError = '';
 		try {
@@ -267,7 +268,7 @@
 				body: JSON.stringify({ olderThanSeconds: 0 })
 			});
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
-			await refresh();
+			await loadNetwork();
 		} catch (e) {
 			pruneError = e instanceof Error ? e.message : 'Prune failed';
 		} finally {
@@ -793,11 +794,8 @@
 			{/if}
 
 			{#if isAdmin && offlineCount > 0}
-				<!-- Admin-only "Clean up offline nodes" affordance. The
-				     server-side hourly sweeper auto-prunes nodes offline
-				     >7d; this button is for clearing the rest immediately
-				     (e.g., after dev re-enrollments leave many ghost rows
-				     within the protected 7-day window). -->
+				<!-- Admin-only "Clean up offline nodes" affordance, e.g. after
+				     dev re-enrollments leave many ghost rows. -->
 				<div class="mb-3 flex items-center justify-between rounded-lg border border-dashed p-3 text-xs">
 					<div class="text-muted-foreground">
 						{offlineCount} offline node{offlineCount === 1 ? '' : 's'} cluttering the topology.

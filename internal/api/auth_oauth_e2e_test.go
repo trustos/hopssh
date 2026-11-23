@@ -100,9 +100,7 @@ func TestOAuth_FullRoundTrip(t *testing.T) {
 	}()
 
 	// 3. Set up the real OAuthHandler against an in-memory DB.
-	store, cleanup := newTestUserStore(t)
-	defer cleanup()
-	sessions := newTestSessionStore(t, store)
+	store, sessions := newTestStores(t)
 	auditPath := filepath.Join(t.TempDir(), "audit.db")
 	_ = auditPath // not asserting on audit; just constructing handlers
 
@@ -275,50 +273,20 @@ func TestOAuth_FullRoundTrip(t *testing.T) {
 // patching http.DefaultTransport, which doesn't reach the OAuth
 // handler's per-request httpClient anyway.)
 
-// newTestUserStore + newTestSessionStore set up SQLite stores wired to
-// a tempdir DB. Mirrors what cmd/server/main.go does in production but
-// without the encryption layer (not needed for OAuth flow tests).
-func newTestUserStore(t *testing.T) (*db.UserStore, func()) {
+// newTestStores sets up SQLite stores wired to one tempdir DB. Mirrors what
+// cmd/server/main.go does in production but without the encryption layer (not
+// needed for OAuth flow tests).
+func newTestStores(t *testing.T) (*db.UserStore, *db.SessionStore) {
 	t.Helper()
-	dir := t.TempDir()
-	dbPath := filepath.Join(dir, "test.db")
-	pair, err := db.Open(dbPath)
+	pair, err := db.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Migrate(pair.WriteDB); err != nil {
-		t.Fatal(err)
-	}
-	cleanup := func() {
-		pair.Close()
-	}
-	return db.NewUserStore(pair), cleanup
-}
-
-func newTestSessionStore(t *testing.T, users *db.UserStore) *db.SessionStore {
-	t.Helper()
-	// SessionStore needs the same DBPair the UserStore uses.
-	// Reach into UserStore is overkill — open a sibling pair against
-	// the same path. In production both stores share one pair.
-	// Fast path: open the pair via reflection-on-sibling? Simpler: skip
-	// — we just need a pair with the schema applied. The user store
-	// already initialised the schema; opening a fresh pair against
-	// the same path is fine for read+write.
-	dir := filepath.Dir(t.TempDir())
-	_ = dir
-	// Use the same DBPair pattern; the UserStore exposes nothing.
-	// For the test we just need `Sessions.Create(token, userID, ttl)`
-	// to succeed. Construct a no-op fake that matches the production
-	// SessionStore interface. Easiest: open a fresh in-memory DB.
-	pair, err := db.Open(":memory:")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Migrate(pair.WriteDB); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { pair.Close() })
-	return db.NewSessionStore(pair)
+	if err := db.Migrate(pair.WriteDB); err != nil {
+		t.Fatal(err)
+	}
+	return db.NewUserStore(pair), db.NewSessionStore(pair)
 }
 
 // Suppress unused-import warnings if rand / hex / sql become dead.

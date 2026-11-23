@@ -122,12 +122,17 @@ func (s *NetworkEventStore) writeBatch(batch []dbsqlc.InsertNetworkEventParams) 
 		return
 	}
 	q := dbsqlc.New(WrapTx(tx))
+	var dropped int
+	var lastErr error
 	for _, entry := range batch {
+		// Skip a row that can't be written (its network was deleted in the
+		// meantime); it must not take the others with it.
 		if err := q.InsertNetworkEvent(context.Background(), entry); err != nil {
-			log.Printf("[events] insert: %v", err)
-			tx.Rollback()
-			return
+			dropped, lastErr = dropped+1, err
 		}
+	}
+	if dropped > 0 {
+		log.Printf("[events] insert: %v (dropping %d of %d entries)", lastErr, dropped, len(batch))
 	}
 	if err := tx.Commit(); err != nil {
 		log.Printf("[events] commit: %v (dropping %d entries)", err, len(batch))

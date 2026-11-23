@@ -32,11 +32,16 @@ func (q *Queries) DeleteExpiredInvites(ctx context.Context) error {
 }
 
 const deleteInvite = `-- name: DeleteInvite :exec
-DELETE FROM network_invites WHERE id = ?
+DELETE FROM network_invites WHERE network_id = ? AND id = ?
 `
 
-func (q *Queries) DeleteInvite(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, deleteInvite, id)
+type DeleteInviteParams struct {
+	NetworkID string
+	ID        string
+}
+
+func (q *Queries) DeleteInvite(ctx context.Context, arg DeleteInviteParams) error {
+	_, err := q.db.ExecContext(ctx, deleteInvite, arg.NetworkID, arg.ID)
 	return err
 }
 

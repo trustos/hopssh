@@ -18,17 +18,8 @@ import (
 const statusSweepInterval = 30 * time.Second
 
 // pruneSweepInterval is how often the sweeper hard-deletes offline
-// nodes older than pruneAge. Hourly is conservative — most users
-// re-enroll within minutes, so the in-DB ghost is short-lived; this
-// is for the long-tail cleanup so the topology doesn't accumulate
-// rows from machines that won't come back.
+// nodes older than pruneAge.
 const pruneSweepInterval = 1 * time.Hour
-
-// pruneAge is the default age threshold for offline-node pruning.
-// 7 days is conservative — well past "I'm on vacation" but well
-// under "this machine is gone forever". Operators can override via
-// HOPSSH_NODE_PRUNE_AGE_HOURS env var. 0 disables pruning entirely.
-const pruneAgeDefaultHours = 24 * 7
 
 // StatusEventEmitter is the narrow interface the sweeper needs — set
 // on start-up so the sweeper can record offline transitions into the
@@ -64,17 +55,14 @@ func (s *NodeStore) StartStatusTransitionSweeper(ctx context.Context, emitter St
 		}
 	}()
 
-	// Offline-node prune sweeper (hourly). Hard-deletes nodes that
-	// have been offline longer than pruneAge so the topology graph
-	// doesn't accumulate gray ghosts from re-enrolled-and-never-
-	// returning machines. Independent goroutine; tick rate decoupled
-	// from the status sweeper so prune runs are visible in logs as
-	// distinct events.
+	// Offline-node prune sweeper (hourly, only if configured). Independent
+	// goroutine; tick rate decoupled from the status sweeper so prune runs
+	// are visible in logs as distinct events.
 	pruneAge := pruneAgeDuration()
 	if pruneAge <= 0 {
-		log.Printf("[sweep] auto-prune disabled (HOPSSH_NODE_PRUNE_AGE_HOURS=0)")
 		return
 	}
+	log.Printf("[sweep] deleting nodes that have been offline for %v", pruneAge)
 	go func() {
 		ticker := time.NewTicker(pruneSweepInterval)
 		defer ticker.Stop()
@@ -103,15 +91,17 @@ func (s *NodeStore) runPruneSweep(age time.Duration) {
 	}
 }
 
-// pruneAgeDuration returns the configured prune age, defaulting to 7
-// days. Override via HOPSSH_NODE_PRUNE_AGE_HOURS=N (0 = disable).
+// pruneAgeDuration returns HOPSSH_NODE_PRUNE_AGE_HOURS, or 0: keep every
+// node until someone deletes it. A pruned node can never renew its cert
+// again; the only way back is to enroll it anew. From v0.10.51 to v0.11.26
+// the default was 7 days, which locked out every machine that was off for a
+// week (incident 2026-11-18).
 func pruneAgeDuration() time.Duration {
-	if v := os.Getenv("HOPSSH_NODE_PRUNE_AGE_HOURS"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return time.Duration(n) * time.Hour
-		}
+	n, err := strconv.Atoi(os.Getenv("HOPSSH_NODE_PRUNE_AGE_HOURS"))
+	if err != nil {
+		return 0
 	}
-	return time.Duration(pruneAgeDefaultHours) * time.Hour
+	return time.Duration(n) * time.Hour
 }
 
 func (s *NodeStore) runStatusSweep(emitter StatusEventEmitter, stale time.Duration) {

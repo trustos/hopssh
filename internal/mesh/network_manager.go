@@ -59,6 +59,7 @@ func (ni *NetworkInstance) HTTPClient(nebulaIP string) *http.Client {
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return ni.Dial(ctx, nebulaIP)
 			},
+			DisableKeepAlives: true, // callers use a client for one request
 		},
 	}
 }
@@ -425,9 +426,9 @@ func (nm *NetworkManager) reapIdleInstances(threshold time.Duration) {
 // Called after enrollment, node deletion, or DNS record changes.
 func (nm *NetworkManager) RefreshDNS(networkID string) {
 	nm.mu.RLock()
-	inst, ok := nm.instances[networkID]
+	inst := nm.instances[networkID]
 	nm.mu.RUnlock()
-	if !ok || inst.dns == nil {
+	if inst == nil || inst.dns == nil { // nil while the network is starting
 		return
 	}
 

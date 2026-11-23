@@ -18,7 +18,7 @@ ORDER BY nm.created_at;
 SELECT network_id FROM network_members WHERE user_id = ?;
 
 -- name: DeleteNetworkMember :exec
-DELETE FROM network_members WHERE id = ?;
+DELETE FROM network_members WHERE network_id = ? AND id = ?;
 
 -- name: DeleteNetworkMemberByNetworkAndUser :exec
 DELETE FROM network_members WHERE network_id = ? AND user_id = ?;

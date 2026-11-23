@@ -84,7 +84,7 @@ func (h *MemberHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Members.Remove(memberID); err != nil {
+	if err := h.Members.Remove(networkID, memberID); err != nil {
 		if err == sql.ErrNoRows {
 			http.Error(w, "member not found", http.StatusNotFound)
 			return

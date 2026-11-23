@@ -52,6 +52,24 @@ func TestClipboardCache_TTLEvicts(t *testing.T) {
 	}
 }
 
+func TestClipboardCache_LatestForNetwork(t *testing.T) {
+	c := &clipboardCache{entries: make(map[string]clipboardEntry)}
+	now := time.Now()
+	for i, e := range []clipboardEntry{
+		{NetworkID: "net-a", NodeID: "peer", ClipID: "expired", CreatedAt: now.Add(-121 * time.Second)},
+		{NetworkID: "net-a", NodeID: "peer", ClipID: "older", CreatedAt: now.Add(-60 * time.Second)},
+		{NetworkID: "net-a", NodeID: "peer", ClipID: "newest", CreatedAt: now.Add(-30 * time.Second)},
+		{NetworkID: "net-a", NodeID: "me", ClipID: "my own", CreatedAt: now.Add(-20 * time.Second)},
+		{NetworkID: "net-b", NodeID: "stranger", ClipID: "of another network", CreatedAt: now.Add(-10 * time.Second)},
+	} {
+		c.put(e)
+		want := map[int]string{1: "older", 2: "newest", 3: "newest", 4: "newest"}[i]
+		if got, ok := c.latestForNetwork("net-a", "me", now); got.ClipID != want || ok != (want != "") {
+			t.Errorf("after %q: got %q, %v, want %q", e.ClipID, got.ClipID, ok, want)
+		}
+	}
+}
+
 func TestClipboardCache_CrossNetworkIsolation(t *testing.T) {
 	// Tripwire (security-critical): a node in net-b MUST NOT be able
 	// to pull a clip originated in net-a, even if it knows/guesses

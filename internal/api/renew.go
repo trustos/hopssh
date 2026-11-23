@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"net/netip"
 	"strings"
@@ -102,7 +103,13 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 
 	// Load node and verify token.
 	node, err := h.Nodes.Get(body.NodeID)
-	if err != nil || node == nil {
+	if err != nil {
+		// Not 401, which tells the agent that its node was deleted.
+		log.Printf("[renew] node %s: %v", body.NodeID, err)
+		http.Error(w, "failed to load node", http.StatusInternalServerError)
+		return
+	}
+	if node == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -233,7 +240,13 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	node, err := h.Nodes.Get(body.NodeID)
-	if err != nil || node == nil {
+	if err != nil {
+		// Not 401, which tells the agent that its node was deleted.
+		log.Printf("[heartbeat] node %s: %v", body.NodeID, err)
+		http.Error(w, "failed to load node", http.StatusInternalServerError)
+		return
+	}
+	if node == nil {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}

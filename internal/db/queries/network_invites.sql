@@ -20,7 +20,7 @@ SELECT id, network_id, created_by, code, role, max_uses, use_count, expires_at, 
 FROM network_invites WHERE network_id = ? ORDER BY created_at DESC;
 
 -- name: DeleteInvite :exec
-DELETE FROM network_invites WHERE id = ?;
+DELETE FROM network_invites WHERE network_id = ? AND id = ?;
 
 -- name: DeleteExpiredInvites :exec
 DELETE FROM network_invites

@@ -157,7 +157,7 @@ func (h *InviteHandler) DeleteInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Invites.Delete(inviteID); err != nil {
+	if err := h.Invites.Delete(networkID, inviteID); err != nil {
 		http.Error(w, "failed to delete invite", http.StatusInternalServerError)
 		return
 	}

@@ -144,8 +144,18 @@ func NewRouter(
 	r.With(devicePollRL.Limit, wt).Post("/api/device/poll", deviceH.Poll)
 
 	// Cert renewal + heartbeat (public — agent authenticates via bearer token).
-	r.With(publicRL.Limit, wt).Post("/api/renew", renewH.Renew)
-	r.With(publicRL.Limit, wt).Post("/api/heartbeat", renewH.Heartbeat)
+	//
+	// Phase HH: these MUST NOT share publicRL. Every enrollment on every
+	// agent behind one NAT is in the same 10/min per-IP bucket, and a 429 on
+	// /api/renew costs the network its certificate (incident 2026-11-18).
+	// Both endpoints are bearer-token authenticated with a constant-time
+	// compare, so a strict anonymous limit buys no anti-abuse value — this
+	// limiter only caps runaway clients. 600/min ≈ 300 enrollments at the
+	// 60s heartbeat cadence plus renewals. Tripwire:
+	// TestRouter_AgentEndpointsNotOnPublicLimiter.
+	agentRL := auth.NewRateLimiter(600, 1200, time.Minute, TrustedProxy)
+	r.With(agentRL.Limit, wt).Post("/api/renew", renewH.Renew)
+	r.With(agentRL.Limit, wt).Post("/api/heartbeat", renewH.Heartbeat)
 
 	// Clipboard relay (public — agent authenticates via bearer token).
 	// announce is rate-limited to a burst of 60/min per IP — clipboard

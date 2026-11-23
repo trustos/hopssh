@@ -10,11 +10,16 @@ import (
 )
 
 const deleteNetworkMember = `-- name: DeleteNetworkMember :exec
-DELETE FROM network_members WHERE id = ?
+DELETE FROM network_members WHERE network_id = ? AND id = ?
 `
 
-func (q *Queries) DeleteNetworkMember(ctx context.Context, id string) error {
-	_, err := q.db.ExecContext(ctx, deleteNetworkMember, id)
+type DeleteNetworkMemberParams struct {
+	NetworkID string
+	ID        string
+}
+
+func (q *Queries) DeleteNetworkMember(ctx context.Context, arg DeleteNetworkMemberParams) error {
+	_, err := q.db.ExecContext(ctx, deleteNetworkMember, arg.NetworkID, arg.ID)
 	return err
 }
 
