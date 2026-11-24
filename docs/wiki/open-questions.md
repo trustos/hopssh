@@ -81,6 +81,8 @@ Proven in [[concepts/netlab]] (`TestUDPBetweenDevices`, pinned): `writeNebulaCon
 
 Patches 33 to 36 and `path_watch.go` are on the branch `lab/network`, not released. The whole lab passes (37 tests), and 39 of 47 planted bugs were noticed; the 8 others are listed in [[concepts/netlab]] with the reason, and so are 25 more, all noticed. **Not done:** real devices (macOS and Windows agents, a real phone carrier). The rebind after a network change is the one of the 8 that matters: on macOS only a real laptop can show whether it still works. An agent of v0.11.27 or older on the other end does not answer patch 35's question, so a path that works in one direction only can still be interrupted until both ends are updated.
 
+`ownNets` (`path_watch.go`) counts the networks of every interface, also of another VPN (all three reviews of the pull request say so). **Harm not shown:** only an address that the peer itself reports is tried, the peer's `local_allow_list` and `selfEndpoints` hold back those of its other interfaces, and Nebula prefers every private address anyway since `preferred_ranges` works. What is left is a peer that can't tell its physical interface and then reports all of them. Two machines that are in one ZeroTier network would show it; the lab has none.
+
 ## 2026-11-24 — data races inside Nebula v1.10.3
 
 `go test -race ./internal/client` fails in `TestE2E_QuestionMovesNobody` (8 of 8 runs) and sometimes in `TestE2E_NewTunnelStays` (2 of 8); in the one run of everything the rest was clean, and so is `-race` on the vendored `udp` package. Four pairs, all between lines that are the same in upstream v1.10.3, none in our patches or in `internal/client`:

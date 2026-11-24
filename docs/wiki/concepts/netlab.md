@@ -79,6 +79,7 @@ Two lines of a new test: `a, b, ra, rb := l.twoHomes(Home, Carrier)` and `s := o
 9. **A path that takes less than 1480 bytes** and does not say so loses big packets. Pinned, see below.
 10. **Machines that met at their router's own LAN address** stay there: that address is in the range of the LAN, so Nebula thinks it is on the LAN already. Fixed by `path_watch.go` (`lan`).
 11. **After a repair Nebula went back to the broken tunnel** for up to 10 s, because it remembered packets from before the repair. Fixed by patch 36 (`TestE2E_NewTunnelStays`: red 3 of 3 without it). What is left of `TestOneDirectionBreaks` is detection: the deaf side notices only when it has sent something itself, at worst 8 s after the break, and then TCP's next retry decides between 7.5 and 15.4 s.
+12. **The first answer took the old path now and then** (in patch 35 itself, found by one run too many: `TestOneWayLAN` failed once in about 20 tries, with 1.13 s instead of 0.3 s). Nebula handed the first packet to the network card and only then looked where it came from. The kernel answers within microseconds, and if it was quicker, its answer went into the path that does not work, and TCP tried again after 1 s. Patch 35 moves before it hands over the packet now. Proof, `TestE2E_StartsWhereBothHear` in the VM: as it was 40 of 40 pass with 43 to 77 ms; with 3 ms planted before the move 19 of 20 fail with 1.02 s; with the fix and the same 3 ms 10 of 10 pass with 43 to 70 ms. `TestE2E_MovesBeforeItAnswers` sees it without luck: red 10 of 10 without the fix on the Mac and in the VM (one of the 20 for another reason, a port in use), green 10 of 10 with it on both.
 
 Nebula's own end-to-end tests (v1.10.3, `e2e/`, 25 tests, on the Mac) with all our patches: 24 pass. `TestUncleanShutdownRaceLoser` waits for a dead tunnel to go away that is gone before it starts to wait (patch 35 sends one more packet, whose answer gets a RecvError); not a fault. They are not part of any script.
 
@@ -131,6 +132,8 @@ Not noticed by anything, and why:
 So these lines could go without a test noticing. They are kept because they act at once where the loop needs a second or more; do not take them for proven.
 
 25 more were planted in what the first review of the pull request led to: the watchdog, the time limit and the panics of the path loop (17), the moved `preferred_ranges` (4), the lighthouse as a peer (1), whole ticks (2), and a needless new tunnel every 30 s, which all seven tests that use `closeSteady` or count tunnels notice (1). All were noticed, two only after their tests were sharpened: a time limit of an hour, and a watchdog that does not forget its first look.
+
+After the second review, 4 in the log lines of the path loop: three noticed, the fourth delays a line by a second and changes nothing else.
 
 Four of the 47 were done again: one had been planted so that it changed nothing (the next line still protected), and three had run beside one that filled the VM's memory. Three tests were sharpened because a fault got through: `TestPathWatch_SilentPeerOnTheRelay` is new, `TestE2E_MeetOnTheLAN` and `TestE2E_StartsWhereBothHear` no longer depend on which copy of a handshake arrives first, and `TestOneWayLAN` / `TestOneWayDirect` want the first answer within 0.8 s and no silence over 1 s.
 

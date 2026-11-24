@@ -2,7 +2,7 @@
 type: concept
 title: macOS UDP send path (batches, and what must never wait for one)
 status: current
-last_compiled: 2026-11-23
+last_compiled: 2026-11-24
 sources:
   - patches/04-batch-udp-darwin.patch
   - patches/09-priority-queue-darwin.patch
@@ -52,4 +52,4 @@ Earlier symptoms would fit: tunnels dying when idle, Phase G ("cellular peer goe
 
 ## Backlinks
 
-- [[../incidents/2026-11-18-mbp-all-certs-expired]], [[../open-questions]]
+- [[../incidents/2026-11-18-mbp-all-certs-expired]], [[netlab]] (does not run this code), [[../open-questions]]
