@@ -62,7 +62,7 @@ Clipboard, seen while writing `TestE2E_Clipboard`, not pinned: `since` has secon
 
 ## 2026-11-23 — kernel TUN: what is still unproven
 
-`TestKernelTunClose_ReleasesDeviceAndPort` (root, Linux) covers V, W and X. CI runs it in its own network namespace (`.github/workflows/ci.yml`); that step has not run in CI yet, only the same commands in a local VM. **Not run:** the macOS half of patch 32 (needs root), and throughput of a Linux system-wide network with the device opened non-blocking (patch 31; the same thing wireguard-go does). **Action:** `iperf3` through a Linux system-wide network before and after, at the next dev deploy.
+`TestKernelTunClose_ReleasesDeviceAndPort` (root, Linux) covers V, W and X. CI runs it in its own network namespace (`.github/workflows/ci.yml`); that step ran in CI for the first time on 2026-11-24 and passed; before that only the same commands in a local VM. **Not run:** the macOS half of patch 32 (needs root), and throughput of a Linux system-wide network with the device opened non-blocking (patch 31; the same thing wireguard-go does). **Action:** `iperf3` through a Linux system-wide network before and after, at the next dev deploy.
 
 ## 2026-11-23 — creating a network answers 201 although its lighthouse did not start
 
@@ -130,6 +130,8 @@ Source / context: `internal/client/local_api.go::handleForceRenew`
 **2026-11-23: its code is in no clean build.** `listenInWorker` and `inBatch` exist only in the test patch 13 adds, so `go vet github.com/slackhq/nebula` fails, and release and Docker builds use the same steps. Published macOS binaries very likely never had the pipelined `listenIn` (not checked on a binary), and the 2.7× downlink numbers in `docs/performance.md` and `docs/macos-pipelined-listenin.md` describe dev builds. **Decide:** re-measure with and without it on the current tree, then port it properly or drop 12 + 13. Patch 28's `interface.go` hunk is made against a tree without 12.
 
 Patch 12 fails on a blank-line context mismatch and `make patch-vendor` carries on: the Makefile runs each `patch` with `|| true` and then deletes `*.rej`, so **any** failed patch is silently ignored, in CI too. Either refresh patch 12 against vendored Nebula v1.10.3 or fold it into the Nebula upgrade below. Make `patch-vendor` **fail** on any patch that doesn't apply, and do that *before* the upgrade.
+
+**2026-11-24: the Mac and the release build get different trees.** GNU patch also refuses hunk 3 of patch 19, which adds `applyOSThreadHints()` to the function patch 12 would have added. Apple's `patch` accepts it in the wrong place, `listenIn`, which then makes the same call twice. Nothing else differs and the call does nothing off macOS, so v0.11.27 is what was tested. But a test on a Mac does not prove that a patch applies on Linux, and "it applied" does not prove it went to the right place: check with `patch` of both kinds, with `--fuzz=0` where possible (2, 19 and 26 apply only with fuzz).
 
 Source / context: `patches/`, `Makefile` `patch-vendor` target. `scripts/check-nebula-patch.sh` does not exist despite older docs.
 

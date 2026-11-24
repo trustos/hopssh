@@ -120,7 +120,7 @@ A process that is killed writes no coverage. The numbers above are from a run in
 
 - Windows (never run; the client's tests don't compile there, `renew_sleep_test.go` uses `syscall.SIGSTOP`).
 - Kernel TUN on macOS, and on Linux everything except closing it: no E2E test runs the agent as root.
-- Linux ran in a local arm64 VM (2026-11-24: 604 tests in 10 packages, plus the kernel-TUN test as root 3 times, all passed), not in CI yet.
+- Linux ran in a local arm64 VM (2026-11-24: 604 tests in 10 packages, plus the kernel-TUN test as root 3 times, all passed) and in CI on amd64 (2026-11-24, 10 packages and the kernel-TUN test, passed). CI does not use `-race`.
 - NAT traversal, relays between real networks, cellular, sleep and wake. These need devices.
 - The desktop app and the dashboard.
 - Old and new versions together, in CI: `TestE2E_Upgrade` needs `HOP_E2E_OLD`, so somebody has to run it before a release. On 2026-11-24 it passed against v0.11.26 in both directions, on the tree of v0.11.27. On macOS it checks only HTTP for the old agent, because v0.11.26 cannot be reached over the mesh there (I); with patch 28 added to that release the mesh part passes too.

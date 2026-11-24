@@ -2,7 +2,7 @@
 
 Applied on top of `slackhq/nebula` v1.10.3 via `make patch-vendor` (see Makefile), in number order.
 
-> **Patch 12 does not apply, and `make patch-vendor` hides it** (`|| true`, then `*.rej` deleted). All others apply cleanly to a fresh `go mod vendor` (checked 2026-11-23). Release and Docker builds use the same steps, so patch 12's code is in none of them, and its test (13) keeps `github.com/slackhq/nebula`'s tests from compiling. See [[open-questions]] in the wiki. The vendored UDP tests do run:
+> **Patch 12 does not apply, and `make patch-vendor` hides it** (`|| true`, then `*.rej` deleted). On Linux (GNU patch, where releases are built) the third hunk of **patch 19** is refused too, because it belongs to 12's function; the Mac's `patch` puts it in `listenIn` instead, where it repeats one harmless call. All other hunks apply with both, and the two trees are otherwise the same (checked 2026-11-24). Release and Docker builds use the same steps, so patch 12's code is in none of them, and its test (13) keeps `github.com/slackhq/nebula`'s tests from compiling. See [[open-questions]] in the wiki. The vendored UDP tests do run:
 >
 > ```bash
 > go test -mod=vendor -race github.com/slackhq/nebula/udp

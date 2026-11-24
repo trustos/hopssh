@@ -1,7 +1,7 @@
 ---
 type: runbook
 title: Release v0.11.27 (server, then every device)
-status: ready, not started
+status: steps 1 and 2 done on 2026-11-24
 last_compiled: 2026-11-24
 sources:
   - Makefile
@@ -29,7 +29,7 @@ What is in it: [CHANGELOG](../../../CHANGELOG.md). Why: [[../incidents/2026-11-1
 
 ## Steps
 
-1. **Push `main`.**
+1. **Push `main`.** Done 2026-11-24, `ad9bf66`.
 
    ```bash
    git switch main && git merge --ff-only release/v0.11.27 && git push origin refs/heads/main
@@ -37,7 +37,7 @@ What is in it: [CHANGELOG](../../../CHANGELOG.md). Why: [[../incidents/2026-11-1
 
    The full name is needed: the repository also has a **tag** called `main` (a desktop build of 2026-05-09), and `git push origin main` stops with "matches more than one".
 
-2. **Wait for CI to be green.** First run with Go 1.26, with the E2E tests and with the kernel-TUN step. If one of them fails on the runner, stop here.
+2. **Wait for CI to be green.** Done: run 45336974587, 9 minutes, Go 1.26.11. First run with Go 1.26, with the E2E tests and with the kernel-TUN step. If one of them fails on the runner, stop here.
 
 3. **Copy the database on the server** (SQLite online backup, then `PRAGMA integrity_check`). Never copy the file alone while the server runs. Keep the copy on the server: it holds keys. How, without SSH: the branch `ops/hopssh-prerelease` of the private deploy repository. Commit `f136e16` copies; it refuses to overwrite the copy of 2026-11-24, so give it a new file name. Its tip (`4f696d0`) reads the log for step 6.
 
