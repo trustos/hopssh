@@ -532,6 +532,8 @@ Verified end-to-end with `hop-agent migration` against a deployed QUIC echo serv
     2. What comes over the relay says nothing about the direct path, and what comes from an address says nothing about the way back to it.
     3. Ask first, move after the answer (patch 35). Everything that moved at once made paths flap (v0.10.28) or go dead.
     4. Read the numbers, not only PASS. Two values for one test (15 s and 31 s) are two mechanisms until shown otherwise.
+    5. A ticker is not exact: the next tick comes a second later, give or take microseconds, so `elapsed >= time.Second` is a coin flip. Count whole ticks (`pathWatch.tick`). Tests that advance a clock by exactly one second never see it.
+    6. The path loop asks Nebula, which answers on the lighthouse too; the rule of v0.10.85 (leave the lighthouse out) is for probes of the *agent*. `TestE2E_LighthouseAnswers`.
 
 ---
 

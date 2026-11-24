@@ -79,7 +79,7 @@ Proven in [[concepts/netlab]] (`TestUDPBetweenDevices`, pinned): `writeNebulaCon
 
 ## 2026-11-24 — path fixes: what is still unproven
 
-Patches 33 to 36 and `path_watch.go` are on the branch `lab/network`, not released. On the final code the whole lab passed three times (37 tests), and 39 of 47 planted bugs were noticed; the 8 others are listed in [[concepts/netlab]] with the reason. **Not done:** real devices (macOS and Windows agents, a real phone carrier). The rebind after a network change is the one of the 8 that matters: on macOS only a real laptop can show whether it still works. An agent of v0.11.27 or older on the other end does not answer patch 35's question, so a path that works in one direction only can still be interrupted until both ends are updated.
+Patches 33 to 36 and `path_watch.go` are on the branch `lab/network`, not released. The whole lab passes (37 tests), and 39 of 47 planted bugs were noticed; the 8 others are listed in [[concepts/netlab]] with the reason, and so are 25 more, all noticed. **Not done:** real devices (macOS and Windows agents, a real phone carrier). The rebind after a network change is the one of the 8 that matters: on macOS only a real laptop can show whether it still works. An agent of v0.11.27 or older on the other end does not answer patch 35's question, so a path that works in one direction only can still be interrupted until both ends are updated.
 
 ## 2026-11-24 — data races inside Nebula v1.10.3
 

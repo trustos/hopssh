@@ -1,7 +1,7 @@
 ---
 type: concept
 title: The network lab (real server and root agents behind simulated routers)
-status: in use since 2026-11-24, not in CI
+status: current
 last_compiled: 2026-11-24
 sources:
   - internal/netlab
@@ -15,7 +15,7 @@ sources:
 
 # The network lab
 
-**TL;DR.** `make netlab` runs the real `hop-server` and real `hop-agent`s, as root with a kernel TUN device, on simulated networks: home routers, carrier NAT, relays, port mapping, packet loss, sleep, outages. One command, one machine, about 9 minutes, nothing left behind. Run it before and after touching paths, relays, roaming, the Nebula patches or `nebulacfg`.
+**TL;DR.** `make netlab` runs the real `hop-server` and real `hop-agent`s, as root with a kernel TUN device, on simulated networks: home routers, carrier NAT, relays, port mapping, packet loss, sleep, outages. One command, one machine, about 9 minutes, nothing left behind; not part of CI. Run it before and after touching paths, relays, roaming, the Nebula patches or `nebulacfg`.
 
 ## How to run it
 
@@ -42,9 +42,9 @@ Everything lives in one private tree of Linux namespaces (network, mounts, proce
 | `Agent` | a machine that enrolled with a token and runs `hop-agent serve` as root |
 | `Router` | NAT with netfilter: `Home` (keeps the port, every Linux-based home router) or `Carrier` (a new random port per destination: mobile networks, hotels). Optional: NAT-PMP, hairpin, firewall rules, short NAT memory, a new address, behind another router |
 | `Cable` | a line with delay, jitter, loss and a rate, which can be cut |
-| `Session` | a connection in use: a short message every 100 ms and back; measures the longest silence |
+| `Session` | a connection in use: a short message every 100 ms and back; measures the longest silence, and counts the new tunnels |
 
-Two lines of a new test: `a, b, ra, rb := l.twoHomes(Home, Carrier)` and `s := openDirect(a, b)`. `want(a, b, "direct", d)` waits for a path, `bulk` sends megabytes, `s.close("what happened", limit)` checks the silence.
+Two lines of a new test: `a, b, ra, rb := l.twoHomes(Home, Carrier)` and `s := openDirect(a, b)`. `want(a, b, "direct", d)` waits for a path, `bulk` sends megabytes, `s.close("what happened", limit)` checks the silence; `s.closeSteady`, where nothing changes, also that nobody made a new tunnel.
 
 ## What it found
 
@@ -52,25 +52,25 @@ Two lines of a new test: `a, b, ra, rb := l.twoHomes(Home, Carrier)` and `s := o
 
 | Test | Before (v0.11.27) | Now |
 |---|---|---|
-| `TestTwoHomes` | stays on the relay in about 1 run of 3 | direct at once, 20 MB at 70 Mbit/s |
-| `TestServerRestart`, relayed connection | silent 72 to 84 s | 10 s after the server is back |
-| `TestNewPublicAddress` | silent 60.7 s | 7.5 s |
-| `TestRoamingSameAddress` | silent 60.6 s | 7.5 s |
+| `TestTwoHomes` | stays on the relay in about 1 run of 3 | direct at once, 20 MB at 44 to 70 Mbit/s |
+| `TestServerRestart`, relayed connection | silent 72 to 84 s | silent 20.3 to 20.9 s: 10 s after the server is back |
+| `TestNewPublicAddress` | silent 60.7 s | 7.6 s |
+| `TestRoamingSameAddress` | silent 60.6 s | 7.6 s |
 | `TestRelayBecomesDirect` | still on the relay after 2 min | direct after 2 s |
 | `TestLeaveTheLAN` | does not get back to the LAN | back on the LAN, silent 6.6 s |
 | `TestTwoPhones` | 800 ms silent, 6 needless new tunnels in 2 min | 250 ms, none |
 | `TestOneWayLAN` | first answer after 42 s | 0.3 s |
-| `TestOneWayDirect` | silent 2 min 18 s, transfers fail | 0.16 s, 39 to 47 Mbit/s |
-| `TestOneDirectionBreaks` | not measured | 7.5 to 15.4 s (see 11) |
+| `TestOneWayDirect` | silent 2 min 18 s, transfers fail | 0.16 s, 24 to 68 Mbit/s |
+| `TestOneDirectionBreaks` | not measured | 7.5 to 15.7 s (see 11) |
 | `TestRoaming`, `TestRouterReboot`, `TestRelayedPeerMoves`, `TestRenewalDuringSession`, `TestBadLine`, `TestHairpin`, `TestPortMappingStrict`, `TestSleep`, `TestSameProvider` | as good as now | |
 
-`TestRoaming`, home to mobile, was 3.8, 4.2 and 7.6 s in three whole runs: 2 s of them are without any network, and then TCP's next retry decides, as in 11.
+`TestRoaming`, home to mobile, is either about 3.8 to 4.4 s or about 7.6 to 7.8 s (13 runs, also with an older state of the path loop). 2 s of them are without any network. `watchNetworkChanges` looks every 5 s: when that look came 3 s after the cable was out, the session was silent for 3.75 s, when it came after 4 s, for 7.6 s. *Likely:* TCP doubles its waits, so its retry at 3.75 s just finds the new path or just misses it. A message from the kernel instead of a look every 5 s would end that (not built).
 
 ### Causes
 
 1. **The relay sticks.** When two devices meet, the handshake over the relay often overtakes the direct one, and Nebula looks for a direct path again only after 1000 packets. Fixed by `path_watch.go` (`relayed`).
 2. **A restart of the server** silenced every relayed connection until Nebula's dead-tunnel timer (about 40 s, and once more for the relay). Fixed by `path_watch.go` (`silence`).
-3. **`preferred_ranges` was never in effect** since v0.9.1: our config put it under `lighthouse`. Fixed in `nebulacfg` / `renew.go`; patch 15 works for the first time.
+3. **`preferred_ranges` was never in effect** since v0.9.1: our config put it under `lighthouse`. Fixed in `nebulacfg` / `renew.go`: an old config's own list is moved to the top level when the agent starts, and one that has none gets ours. Patch 15 works for the first time.
 4. **A new public address** was 60 s of silence: same timer, same fix.
 5. **One stray packet closed a relayed tunnel** (an unauthenticated RecvError). Fixed by patch 33.
 6. **Roaming to a network that gives out the same address** is not seen by `watchNetworkChanges`. Covered by `silence`.
@@ -110,7 +110,7 @@ Known to be wrong, checked by a test that will say when it is no longer so (`Kno
 
 ## Planted bugs
 
-47 faults were planted in this change, one at a time (2026-11-24). **39 were noticed**, and for each of them the message of the failing test was read and names the fault:
+47 faults were planted in the first version of this change, one at a time (2026-11-24). **39 were noticed**, and for each of them the message of the failing test was read and names the fault:
 
 - 29 by the fast tests (`path_watch_test.go`, `path_question_test.go`, `ensurep2p_test.go`, `recovery_e2e_test.go` in `internal/client`; those in `path_question_test.go` need a second loopback address, so some are skipped on a Mac).
 - 10 by the lab only: a server that does not relay, no port mapping, no cache of endpoints, no endpoints in the heartbeat, patch 33 left out, direct or relayed packets not counted, Nebula's own search for a better path that moves before the answer, and the two about a tunnel that starts on a relay.
@@ -129,6 +129,8 @@ Not noticed by anything, and why:
 | no hello after a handshake | the first real packet does the same |
 
 So these lines could go without a test noticing. They are kept because they act at once where the loop needs a second or more; do not take them for proven.
+
+25 more were planted in what the first review of the pull request led to: the watchdog, the time limit and the panics of the path loop (17), the moved `preferred_ranges` (4), the lighthouse as a peer (1), whole ticks (2), and a needless new tunnel every 30 s, which all seven tests that use `closeSteady` or count tunnels notice (1). All were noticed, two only after their tests were sharpened: a time limit of an hour, and a watchdog that does not forget its first look.
 
 Four of the 47 were done again: one had been planted so that it changed nothing (the next line still protected), and three had run beside one that filled the VM's memory. Three tests were sharpened because a fault got through: `TestPathWatch_SilentPeerOnTheRelay` is new, `TestE2E_MeetOnTheLAN` and `TestE2E_StartsWhereBothHear` no longer depend on which copy of a handshake arrives first, and `TestOneWayLAN` / `TestOneWayDirect` want the first answer within 0.8 s and no silence over 1 s.
 

@@ -1,7 +1,7 @@
 ---
 type: concept
 title: macOS UDP send path (batches, and what must never wait for one)
-status: fixed in v0.11.27 (2026-11-24), not yet run on a real Mac fleet
+status: current
 last_compiled: 2026-11-23
 sources:
   - patches/04-batch-udp-darwin.patch
@@ -14,7 +14,7 @@ sources:
 
 # macOS UDP send path
 
-**TL;DR.** Our macOS patches queue outgoing packets and send many with one `sendmsg_x`. From patch 04 (v0.7.x) to v0.11.26, *every* write was queued and only some callers flushed. Anything else waited for an unrelated packet. One refused destination also dropped every packet queued behind it. Patch 28 fixes both. Linux and Windows never had this path.
+**TL;DR.** Our macOS patches queue outgoing packets and send many with one `sendmsg_x`. From patch 04 (v0.7.x) to v0.11.26, *every* write was queued and only some callers flushed. Anything else waited for an unrelated packet. One refused destination also dropped every packet queued behind it. Patch 28 fixes both (v0.11.27, 2026-11-24); it has not run on a real Mac fleet yet. Linux and Windows never had this path.
 
 ## What went wrong
 
