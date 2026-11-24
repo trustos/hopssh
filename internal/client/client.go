@@ -344,6 +344,9 @@ func (c *Client) startInstance(ctx context.Context, inst *meshInstance) error {
 	// rationale on the 90 s cadence.
 	go runMeshKeepalive(inst.runCtx, inst)
 
+	// Off the relay and off dead paths.
+	go runPathWatch(inst.runCtx, inst)
+
 	// Phase L slice 2: clipboard sync. Per-(device, network) opt-in.
 	if inst.enrollment != nil && inst.enrollment.ClipboardSync {
 		dir := inst.dir()

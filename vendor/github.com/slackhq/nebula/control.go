@@ -44,6 +44,8 @@ type ControlHostInfo struct {
 	RemoteAddrs            []netip.AddrPort `json:"remoteAddrs"`
 	Cert                   cert.Certificate `json:"cert"`
 	MessageCounter         uint64           `json:"messageCounter"`
+	ReceivedDirect         uint64           `json:"receivedDirect"`  // hopssh patch 34
+	ReceivedRelayed        uint64           `json:"receivedRelayed"` // hopssh patch 34
 	CurrentRemote          netip.AddrPort   `json:"currentRemote"`
 	CurrentRelaysToMe      []netip.Addr     `json:"currentRelaysToMe"`
 	CurrentRelaysThroughMe []netip.Addr     `json:"currentRelaysThroughMe"`
@@ -287,6 +289,8 @@ func copyHostInfo(h *HostInfo, preferredRanges []netip.Prefix) ControlHostInfo {
 		CurrentRelaysToMe:      h.relayState.CopyRelayIps(),
 		CurrentRelaysThroughMe: h.relayState.CopyRelayForIps(),
 		CurrentRemote:          h.remote,
+		ReceivedDirect:         h.inDirect.Load(),
+		ReceivedRelayed:        h.inRelayed.Load(),
 	}
 
 	for i, a := range h.vpnAddrs {
@@ -415,14 +419,19 @@ func (c *Control) SetInboundObserver(cb func(vpnAddr netip.Addr, remote netip.Ad
 // receive handler responds with a TestReply via the inbound observer,
 // confirming endpoint liveness.
 //
-// Added by hopssh patch 22.
+// Added by hopssh patch 22. Patch 34: the zero remoteAddr means the way that
+// packets to vpnAddr take now, which may be a relay.
 func (c *Control) ProbeEndpoint(vpnAddr netip.Addr, remoteAddr netip.AddrPort) bool {
-	if c == nil || c.f == nil || !vpnAddr.IsValid() || !remoteAddr.IsValid() {
+	if c == nil || c.f == nil || !vpnAddr.IsValid() {
 		return false
 	}
 	hostInfo := c.f.hostMap.QueryVpnAddr(vpnAddr)
 	if hostInfo == nil || hostInfo.ConnectionState == nil {
 		return false
+	}
+	if remoteAddr.IsValid() {
+		c.f.ask(hostInfo, remoteAddr) // hopssh patch 35
+		return true
 	}
 	p := []byte{0}
 	nb := make([]byte, 12)
