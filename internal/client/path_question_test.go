@@ -12,7 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sirupsen/logrus"
 	"github.com/slackhq/nebula"
+	"github.com/slackhq/nebula/config"
+	"github.com/slackhq/nebula/header"
+	"github.com/slackhq/nebula/overlay"
 )
 
 // way is a path between two machines a and b, like the one through a router: each
@@ -26,6 +30,7 @@ type oneWay struct {
 	cut   atomic.Bool
 	tried atomic.Int64 // packets, also those that were cut
 	slow  atomic.Bool  // by 20 ms
+	noAsk atomic.Bool  // cut for Nebula's test packets
 }
 
 // newWay makes a path between the two ports, with its own address on host.
@@ -55,7 +60,7 @@ func newWay(t *testing.T, host string, portA, portB int) *way {
 			if d.slow.Load() {
 				time.Sleep(20 * time.Millisecond)
 			}
-			if !d.cut.Load() {
+			if !d.cut.Load() && !(d.noAsk.Load() && header.MessageType(buf[0]&0x0f) == header.Test) {
 				out.WriteTo(buf[:n], &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: to})
 			}
 		}
@@ -78,7 +83,8 @@ type twoWays struct {
 
 func newTwoWays(t *testing.T, badHost string) *twoWays {
 	m := newE2EMesh(t)
-	w := &twoWays{t: t, m: m, ipA: e2eSubnet + "6", ipB: e2eSubnet + "7", portA: freeUDPPort(t), portB: freeUDPPort(t)}
+	port := freeUDPPorts(t)
+	w := &twoWays{t: t, m: m, ipA: e2eSubnet + "6", ipB: e2eSubnet + "7", portA: port, portB: port + 1}
 	w.good = newWay(t, "127.0.0.1", w.portA, w.portB)
 	w.bad = newWay(t, badHost, w.portA, w.portB)
 	w.bad.ba.cut.Store(true)
@@ -86,6 +92,14 @@ func newTwoWays(t *testing.T, badHost string) *twoWays {
 }
 
 func (w *twoWays) start(known ...*way) {
+	w.t.Helper()
+	w.configure(known...)
+	if err := w.m.c.Start(context.Background()); err != nil {
+		w.t.Fatal(err)
+	}
+}
+
+func (w *twoWays) configure(known ...*way) {
 	w.t.Helper()
 	var addrs []string
 	for _, k := range known {
@@ -106,9 +120,6 @@ func (w *twoWays) start(known ...*way) {
 		if err != nil {
 			w.t.Fatal(err)
 		}
-	}
-	if err := w.m.c.Start(context.Background()); err != nil {
-		w.t.Fatal(err)
 	}
 }
 
@@ -182,6 +193,71 @@ func TestE2E_StartsWhereBothHear(t *testing.T) {
 		t.Fatal("the handshake did not come on the path that doesn't go back")
 	}
 	w.wantOn("both on the path that works", w.good)
+}
+
+// tap is a network card that notes where Nebula would send an answer to peer, each
+// time it hands over a packet. A kernel answers at once.
+type tap struct {
+	overlay.Device
+	ctrl  *nebula.Control
+	peer  netip.Addr
+	wayTo chan netip.AddrPort
+}
+
+func (d *tap) Write(p []byte) (int, error) {
+	if h := d.ctrl.GetHostInfoByVpnAddr(d.peer, false); h != nil {
+		select {
+		case d.wayTo <- h.CurrentRemote:
+		default:
+		}
+	}
+	return len(p), nil
+}
+
+// TestE2E_MovesBeforeItAnswers: the packet that shows where the other side hears us
+// is handed to the machine, which answers it, only after we go by it. The other way
+// round it was a matter of microseconds whether the first answer got lost (seen
+// once, in the lab's TestOneWayLAN).
+func TestE2E_MovesBeforeItAnswers(t *testing.T) {
+	w := newTwoWays(t, "127.0.0.1")
+	w.good.ab.slow.Store(true)
+	w.good.ab.noAsk.Store(true) // on a Mac one of these overtakes the packet
+	w.configure(w.good, w.bad)
+
+	if err := w.m.c.enrolls.Remove("b"); err != nil { // it has a network card of its own
+		t.Fatal(err)
+	}
+	b := &tap{peer: netip.MustParseAddr(w.ipA), wayTo: make(chan netip.AddrPort, 1)}
+	var cfg config.C
+	err := cfg.Load(filepath.Join(w.m.dir, "b", "nebula.yaml"))
+	if err == nil {
+		b.ctrl, err = nebula.Main(&cfg, false, "test", logrus.New(), func(_ *config.C, _ *logrus.Logger, nets []netip.Prefix, _ int) (overlay.Device, error) {
+			var err error
+			b.Device, err = overlay.NewUserDevice(nets)
+			return b, err
+		})
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	b.ctrl.Start()
+	t.Cleanup(b.ctrl.Stop)
+
+	if err := w.m.c.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	go w.talk()
+	select {
+	case got := <-b.wayTo:
+		if got != w.good.atB {
+			t.Errorf("b would answer to %s, want %s", got, w.good.atB)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("b got nothing")
+	}
+	if w.bad.ba.tried.Load() == 0 {
+		t.Fatal("the handshake did not come on the path that doesn't go back")
+	}
 }
 
 // TestE2E_MeetOnTheLAN: the copy of a handshake that comes on our LAN is a reason

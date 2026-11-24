@@ -89,6 +89,15 @@
  // buildNetworks fills in the networks field of HostInfo. It accepts a cert.Certificate so you never ever mix the network types up.
 --- a/github.com/slackhq/nebula/outside.go
 +++ b/github.com/slackhq/nebula/outside.go
+@@ -60,7 +60,7 @@
+ 
+ 		switch h.Subtype {
+ 		case header.MessageNone:
+-			if !f.decryptToTun(hostinfo, h.MessageCounter, out, packet, fwPacket, nb, q, localCache) {
++			if !f.decryptToTun(hostinfo, via, h.MessageCounter, out, packet, fwPacket, nb, q, localCache) {
+ 				return
+ 			}
+ 		case header.MessageRelay:
 @@ -165,6 +165,11 @@
  		}
  
@@ -109,6 +118,23 @@
  	if !via.IsRelayed && hostinfo.remote != via.UdpAddr {
  		if !f.lightHouse.GetRemoteAllowList().AllowAll(hostinfo.vpnAddrs, via.UdpAddr.Addr()) {
  			hostinfo.logger(f.l).WithField("newAddr", via.UdpAddr).Debug("lighthouse.remote_allow_list denied roaming")
+@@ -547,7 +553,7 @@
+ 	return out, nil
+ }
+ 
+-func (f *Interface) decryptToTun(hostinfo *HostInfo, messageCounter uint64, out []byte, packet []byte, fwPacket *firewall.Packet, nb []byte, q int, localCache firewall.ConntrackCache) bool {
++func (f *Interface) decryptToTun(hostinfo *HostInfo, via ViaSender, messageCounter uint64, out []byte, packet []byte, fwPacket *firewall.Packet, nb []byte, q int, localCache firewall.ConntrackCache) bool {
+ 	var err error
+ 
+ 	out, err = hostinfo.ConnectionState.dKey.DecryptDanger(out, packet[:header.Len], packet[header.Len:], messageCounter, nb)
+@@ -583,6 +589,7 @@
+ 	}
+ 
+ 	f.connectionManager.In(hostinfo)
++	f.startWhereHeard(hostinfo, via) // hopssh patch 35: whoever gets the packet answers at once
+ 	_, err = f.readers[q].Write(out)
+ 	if err != nil {
+ 		f.l.WithError(err).Error("Failed to write to tun")
 --- /dev/null
 +++ b/github.com/slackhq/nebula/path_question.go
 @@ -0,0 +1,53 @@
