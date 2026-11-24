@@ -190,10 +190,18 @@ func TestPreferredRanges_NewConfig(t *testing.T) {
 }
 
 func TestPreferredRanges_OldConfig(t *testing.T) {
-	for _, c := range []struct{ name, yaml string }{
-		{"where it used to be", "lighthouse:\n  hosts: [10.42.1.1]\n  preferred_ranges: [192.168.0.0/16]\n"},
-		{"nowhere", "lighthouse:\n  hosts: [10.42.1.1]\n"},
-		{"no lighthouse", "cipher: aes\n"},
+	own := []string{"172.20.0.0/16"}
+	for _, c := range []struct {
+		name, yaml string
+		want       []string
+	}{
+		{"where it used to be", "lighthouse:\n  hosts: [10.42.1.1]\n  preferred_ranges: [192.168.0.0/16, 172.16.0.0/12, 10.0.0.0/8]\n", wantRanges},
+		{"somebody's own, where it used to be", "lighthouse:\n  hosts: [10.42.1.1]\n  preferred_ranges: [172.20.0.0/16]\n", own},
+		{"nothing, where it used to be", "lighthouse:\n  hosts: [10.42.1.1]\n  preferred_ranges:\n", wantRanges},
+		{"somebody's own", "preferred_ranges: [172.20.0.0/16]\n", own},
+		{"in both places", "preferred_ranges: [172.20.0.0/16]\nlighthouse:\n  preferred_ranges: [192.168.0.0/16]\n", own},
+		{"nowhere", "lighthouse:\n  hosts: [10.42.1.1]\n", wantRanges},
+		{"no lighthouse", "cipher: aes\n", wantRanges},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -203,24 +211,12 @@ func TestPreferredRanges_OldConfig(t *testing.T) {
 			}
 			inst := newMeshInstance(&Enrollment{Name: "home", ListenPort: 4242})
 			inst.customDir = dir
-			ensureP2PConfig(inst)
-			if got := preferredRanges(t, path); !slices.Equal(got, wantRanges) {
-				t.Errorf("preferred ranges %v", got)
+			for _, when := range []string{"first", "second"} {
+				ensureP2PConfig(inst)
+				if got := preferredRanges(t, path); !slices.Equal(got, c.want) {
+					t.Errorf("%s start: preferred ranges %v, want %v", when, got, c.want)
+				}
 			}
 		})
 	}
-
-	t.Run("somebody's own", func(t *testing.T) {
-		dir := t.TempDir()
-		path := filepath.Join(dir, "nebula.yaml")
-		if err := os.WriteFile(path, []byte("preferred_ranges: [172.20.0.0/16]\n"), 0644); err != nil {
-			t.Fatal(err)
-		}
-		inst := newMeshInstance(&Enrollment{Name: "home", ListenPort: 4242})
-		inst.customDir = dir
-		ensureP2PConfig(inst)
-		if got := preferredRanges(t, path); !slices.Equal(got, []string{"172.20.0.0/16"}) {
-			t.Errorf("preferred ranges %v", got)
-		}
-	})
 }

@@ -23,14 +23,17 @@ import (
 	"log"
 	"net"
 	"net/netip"
+	"runtime/debug"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/slackhq/nebula"
 )
 
 const (
-	pathTick = time.Second
+	pathTick      = time.Second
+	pathTickLimit = 5 * time.Second // like the rebind in watchNetworkChanges
 
 	// A peer that was sent something and is silent: ask it, then shake hands
 	// again, next to the tunnel that is there. The side with the direct path goes
@@ -63,6 +66,8 @@ type pathWatch struct {
 	name  string
 	nets  func() []netip.Prefix // our addresses, with the size of the network
 	peers map[netip.Addr]*peerPath
+	start time.Time   // the first tick
+	busy  atomic.Bool // a tick is under way
 }
 
 type peerPath struct {
@@ -91,14 +96,45 @@ func runPathWatch(ctx context.Context, inst *meshInstance) {
 		case <-ctx.Done():
 			return
 		case now := <-t.C:
-			if ctrl := inst.control(); ctrl != nil {
-				w.tick(ctrl, now)
+			var ctrl pathControl
+			if c := inst.control(); c != nil {
+				ctrl = c
 			}
+			w.step(inst, ctrl, now)
 		}
 	}
 }
 
+// step runs one tick and stamps it for the watchdog. After a tick that hangs or
+// panics it does neither, until the tick has come to its end.
+func (w *pathWatch) step(inst *meshInstance, ctrl pathControl, now time.Time) {
+	if w.busy.Load() {
+		return
+	}
+	inst.markPathActivity()
+	if ctrl == nil {
+		return
+	}
+	w.busy.Store(true)
+	runWithTimeout(w.name, "path watch", pathTickLimit, func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[path %s] CRITICAL: panic: %v\n%s", w.name, r, debug.Stack())
+			}
+		}()
+		w.tick(ctrl, now)
+		w.busy.Store(false)
+	})
+}
+
 func (w *pathWatch) tick(ctrl pathControl, now time.Time) {
+	// All waits are whole seconds, and a tick that comes a microsecond early
+	// must not cost another one.
+	if w.start.IsZero() {
+		w.start = now
+	}
+	now = w.start.Add(now.Sub(w.start).Round(pathTick))
+
 	hosts := ctrl.ListHostmapHosts(false)
 	nets := w.nets()
 	peers := make(map[netip.Addr]*peerPath, len(hosts))
@@ -106,6 +142,8 @@ func (w *pathWatch) tick(ctrl pathControl, now time.Time) {
 		if len(h.VpnAddrs) == 0 {
 			continue
 		}
+		// The lighthouse is a peer like any other: unlike keepalive.go, which asks
+		// the agent, this asks Nebula, and that answers there too.
 		addr := h.VpnAddrs[0]
 		p := w.peers[addr]
 		if p == nil {

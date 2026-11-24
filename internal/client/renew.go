@@ -1013,12 +1013,16 @@ func ensureP2PConfig(inst *meshInstance) {
 
 	// Up to v0.11.27 the ranges were under "lighthouse", where Nebula doesn't look.
 	lighthouse := yamlMap(cfg, "lighthouse")
-	if _, ok := lighthouse["preferred_ranges"]; ok {
+	ranges, misplaced := lighthouse["preferred_ranges"]
+	if misplaced {
 		delete(lighthouse, "preferred_ranges")
 		changed = true
 	}
 	if _, ok := cfg["preferred_ranges"]; !ok {
-		cfg["preferred_ranges"] = nebulacfg.PreferredRanges
+		if ranges == nil {
+			ranges = nebulacfg.PreferredRanges
+		}
+		cfg["preferred_ranges"] = ranges
 		changed = true
 	}
 

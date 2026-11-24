@@ -1,9 +1,13 @@
 package client
 
 import (
+	"context"
 	"fmt"
+	"net"
 	"net/netip"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -57,8 +61,9 @@ func (f *fakePaths) CreateTunnel(netip.Addr) { f.calls = append(f.calls, "shake"
 type pathRun struct {
 	t *testing.T
 	fakePaths
-	w   pathWatch
-	now time.Time
+	w      pathWatch
+	now    time.Time
+	jitter []time.Duration // of the ticks, in turn
 }
 
 func newPathRun(t *testing.T, direct bool) *pathRun {
@@ -76,13 +81,17 @@ func newPathRun(t *testing.T, direct bool) *pathRun {
 // ticks runs n ticks and returns what each one did: "-" is nothing.
 func (r *pathRun) ticks(n int, before func()) string {
 	var out []string
-	for range n {
+	for i := range n {
 		if before != nil {
 			before()
 		}
 		r.calls = nil
 		r.now = r.now.Add(pathTick)
-		r.w.tick(r, r.now)
+		at := r.now
+		if len(r.jitter) > 0 {
+			at = at.Add(r.jitter[i%len(r.jitter)])
+		}
+		r.w.tick(r, at)
 		out = append(out, strings.Join(append(r.calls, "-")[:max(len(r.calls), 1)], "+"))
 	}
 	return strings.Join(out, " ")
@@ -117,6 +126,20 @@ func TestPathWatch_SilentPeer(t *testing.T) {
 	}
 	r.want("an answer", r.ticks(3, r.talk), nothing(3))
 	r.want("silent again", r.ticks(5, r.shout), "- ask ask ask ask+shake")
+}
+
+// A timer is a little late each time, and not always by as much: the next tick
+// comes a second later, or almost.
+func TestPathWatch_TimersAreNotExact(t *testing.T) {
+	jitter := []time.Duration{90 * time.Microsecond, 20 * time.Microsecond, 50 * time.Microsecond}
+	r := newPathRun(t, true)
+	r.jitter = jitter
+	r.ticks(6, r.talk)
+	r.want("silent", r.ticks(8, r.shout), "- ask ask ask ask+shake ask ask+shake ask")
+	r = newPathRun(t, false)
+	r.jitter = jitter
+	try := fmt.Sprintf("try %s+try %s", pathLAN, pathWAN)
+	r.want("on the relay", r.ticks(9, r.relays), "query "+try+" query "+try+" query "+try+" - - query")
 }
 
 // The side with the direct path goes first, so the relayed one waits 2 s longer.
@@ -243,8 +266,114 @@ func TestPathWatch_NotOnOurLAN(t *testing.T) {
 	}
 }
 
+// TestPathWatch_Stamps: the watchdog must not take a loop that runs, and has no
+// Nebula to look at, for a dead one.
+func TestPathWatch_Stamps(t *testing.T) {
+	inst := testInstance(t, "home", t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { defer close(done); runPathWatch(ctx, inst) }()
+	eventually(t, "two stamps", func() bool {
+		first := inst.pathActivityAge()
+		time.Sleep(pathTick / 4)
+		return inst.pathActivityAge() < first && first < time.Hour
+	})
+	cancel()
+	waitDone(t, "the end of the loop", done)
+}
+
+// stuckPaths hangs, or panics, when it is asked for the peers.
+type stuckPaths struct {
+	fakePaths
+	asked   atomic.Int64
+	release chan struct{}
+	panics  bool
+}
+
+func (s *stuckPaths) ListHostmapHosts(bool) []nebula.ControlHostInfo {
+	s.asked.Add(1)
+	if s.panics {
+		panic("planted")
+	}
+	<-s.release
+	return nil
+}
+
+// A Nebula that does not answer: the loop goes on, asks no second time while the
+// first question is open, and does not stamp, so the watchdog sees it. When the
+// answer comes, all is well again.
+func TestPathWatch_Hangs(t *testing.T) {
+	orig := runWithTimeout
+	t.Cleanup(func() { runWithTimeout = orig })
+	runWithTimeout = func(name, label string, limit time.Duration, fn func()) {
+		if limit > 10*time.Second {
+			t.Errorf("%s may take %s", label, limit)
+		}
+		orig(name, label, 20*time.Millisecond, fn)
+	}
+	inst := testInstance(t, "home", t.TempDir())
+	stuck := &stuckPaths{release: make(chan struct{})}
+	w := &pathWatch{name: "home", nets: ownNets}
+	stale := func() bool { return inst.pathActivityAge() > 30*time.Minute }
+	age := func() { inst.lastPathActivityAt = time.Now().Add(-time.Hour) }
+
+	age()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		w.step(inst, stuck, time.Now())
+		if stale() {
+			t.Error("did not stamp before it looked")
+		}
+		age()
+		for range 5 {
+			w.step(inst, stuck, time.Now())
+		}
+	}()
+	waitDone(t, "six ticks of a Nebula that hangs", done)
+	if n := stuck.asked.Load(); n != 1 {
+		t.Errorf("asked %d times, want 1", n)
+	}
+	if !stale() {
+		t.Error("stamped while it hangs: the watchdog cannot see it")
+	}
+
+	close(stuck.release)
+	eventually(t, "a stamp after the answer", func() bool { w.step(inst, stuck, time.Now()); return !stale() })
+	if stuck.asked.Load() < 2 {
+		t.Error("did not look again")
+	}
+}
+
+// A panic costs this network's loop, which the watchdog brings back, and not the
+// process with all the other networks.
+func TestPathWatch_Panics(t *testing.T) {
+	inst := testInstance(t, "home", t.TempDir())
+	stuck := &stuckPaths{panics: true}
+	w := &pathWatch{name: "home", nets: ownNets}
+	w.step(inst, stuck, time.Now())
+	inst.lastPathActivityAt = time.Now().Add(-time.Hour)
+	for range 5 {
+		w.step(inst, stuck, time.Now())
+	}
+	if stuck.asked.Load() != 1 || inst.pathActivityAge() < 30*time.Minute {
+		t.Errorf("ran %d times, last stamp %s ago; want 1 and no stamp", stuck.asked.Load(), inst.pathActivityAge())
+	}
+}
+
 func TestOwnNets(t *testing.T) {
-	for _, n := range ownNets() {
+	// What this machine sends from is one of its own addresses. Nothing is sent.
+	c, err := net.Dial("udp4", "192.0.2.1:9")
+	if err != nil {
+		t.Skipf("no network: %v", err)
+	}
+	defer c.Close()
+	from := c.LocalAddr().(*net.UDPAddr).AddrPort().Addr()
+	nets := ownNets()
+	if !slices.ContainsFunc(nets, func(n netip.Prefix) bool { return n.Addr() == from }) {
+		t.Errorf("%s is not in %s", from, nets)
+	}
+	for _, n := range nets {
 		if !n.Addr().Is4() || n.Addr().IsLoopback() || n.Bits() == 0 {
 			t.Errorf("%s", n)
 		}

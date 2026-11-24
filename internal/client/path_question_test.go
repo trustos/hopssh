@@ -11,6 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/slackhq/nebula"
 )
 
 // way is a path between two machines a and b, like the one through a router: each
@@ -256,5 +258,45 @@ func TestE2E_NewTunnelStays(t *testing.T) {
 		if tunnel() == old {
 			t.Fatalf("a went back to the old tunnel after %s", time.Since(start).Round(time.Second))
 		}
+	}
+}
+
+// TestE2E_LighthouseAnswers: no agent runs on the server, but its Nebula answers
+// runPathWatch, which must not take it for silent: the keepalive, which asks the
+// agent, once restarted networks for that (v0.10.85).
+func TestE2E_LighthouseAnswers(t *testing.T) {
+	m := newE2EMesh(t)
+	ip, port := e2eSubnet+"1", freeUDPPort(t)
+	m.enroll("a", e2eSubnet+"6", freeUDPPort(t), time.Hour, nil)
+	m.enroll("server", ip, port, time.Hour, nil)
+	for name, change := range map[string][2]string{
+		"a":      {"127.0.0.1:9", localUDP(port)},
+		"server": {`am_lighthouse: false, hosts: ["` + ip + `"]`, "am_lighthouse: true"},
+	} {
+		file := filepath.Join(m.dir, name, "nebula.yaml")
+		yaml, err := os.ReadFile(file)
+		if err != nil || !strings.Contains(string(yaml), change[0]) {
+			t.Fatalf("%s: %v", yaml, err)
+		}
+		if err := os.WriteFile(file, []byte(strings.ReplaceAll(string(yaml), change[0], change[1])), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := m.c.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	ctrl := m.c.instances.get("a").control()
+	host := func() *nebula.ControlHostInfo { return ctrl.GetHostInfoByVpnAddr(netip.MustParseAddr(ip), false) }
+	within(t, 20*time.Second, "a to reach the lighthouse", func() bool { h := host(); return h != nil && h.ReceivedDirect > 0 })
+
+	tunnel := host().LocalIndex
+	for range 3 {
+		time.Sleep(2 * pathTick) // what is sent in the tick of an answer counts as answered
+		before := host().ReceivedDirect
+		ctrl.QueryLighthouse(netip.MustParseAddr(e2eSubnet + "99")) // it doesn't know that one, and says nothing
+		within(t, 3*time.Second, "the lighthouse to be asked, and to answer", func() bool { return host().ReceivedDirect > before })
+	}
+	if got := host().LocalIndex; got != tunnel {
+		t.Error("a new tunnel to a lighthouse that answers")
 	}
 }
