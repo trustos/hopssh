@@ -158,3 +158,9 @@ Pages touched: 1 created (`runbooks/release-v0.11.27.md`), 8 updated (incident p
 `main` pushed and CI green (first run with Go 1.26, the E2E tests and the kernel-TUN step); database copied again; tag; image and binaries checked; server on v0.11.27 since 07:26 UTC. Corrected on the way: the runbook's push command (the repository has a tag `main`), "all other patches apply cleanly" (GNU patch also refuses hunk 3 of 19), and the log line for pruning (v0.11.27 says nothing while it is off). New open items: proof on devices, the mode of the database file, security headers and a dead link.
 
 Pages touched: `runbooks/release-v0.11.27`, incident page, `macos-udp-send`, `e2e-tests`, `cert-renewal`, `phase-ledger`, `hopssh-cloud`, `open-questions`, `index`, this log, `CLAUDE.md`, `patches/README.md`.
+
+## [2026-11-24] ingest | Network lab: real agents behind simulated routers
+
+`internal/netlab` + `scripts/netlab.sh` run the real server and real root agents in Linux namespaces behind simulated routers. Nine faults of v0.11.27 found and fixed by `path_watch.go`, the `preferred_ranges` key and vendor patches 33 to 36; one more came from our own fix of `preferred_ranges` (a one-way LAN went dead) and was fixed by patch 35; three gaps pinned (UDP between devices, no way without UDP, lost big packets). Corrected: the patch 14/15 entries (15 was never in effect). Final code: the whole lab passed three times (37 tests), 39 of 47 planted bugs noticed, the 8 others explained in the page; a clean vendor tree with all patches is identical to the tested one (patch 12 fails as before).
+
+Pages touched: 1 created (concepts/netlab), 6 updated (index, open-questions, concepts/e2e-tests, log, patches/README.md, CLAUDE.md).
