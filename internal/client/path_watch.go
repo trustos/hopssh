@@ -34,6 +34,7 @@ import (
 const (
 	pathTick      = time.Second
 	pathTickLimit = 5 * time.Second // like the rebind in watchNetworkChanges
+	pathAlive     = 10 * time.Minute
 
 	// A peer that was sent something and is silent: ask it, then shake hands
 	// again, next to the tunnel that is there. The side with the direct path goes
@@ -68,6 +69,7 @@ type pathWatch struct {
 	peers map[netip.Addr]*peerPath
 	start time.Time   // the first tick
 	busy  atomic.Bool // a tick is under way
+	alive time.Time   // of the last log line that says so
 }
 
 type peerPath struct {
@@ -91,6 +93,8 @@ func runPathWatch(ctx context.Context, inst *meshInstance) {
 	t := time.NewTicker(pathTick)
 	defer t.Stop()
 	w := pathWatch{name: inst.name(), nets: ownNets}
+	log.Printf("[path %s] started", w.name)
+	defer log.Printf("[path %s] stopped", w.name)
 	for {
 		select {
 		case <-ctx.Done():
@@ -105,13 +109,18 @@ func runPathWatch(ctx context.Context, inst *meshInstance) {
 	}
 }
 
-// step runs one tick and stamps it for the watchdog. After a tick that hangs or
-// panics it does neither, until the tick has come to its end.
+// step runs one tick and stamps it for the watchdog. While a tick hangs it does
+// neither, and after one that panicked never again: then the watchdog restarts the
+// network, as it does for the other loops.
 func (w *pathWatch) step(inst *meshInstance, ctrl pathControl, now time.Time) {
 	if w.busy.Load() {
 		return
 	}
 	inst.markPathActivity()
+	if now.Sub(w.alive) >= pathAlive {
+		w.alive = now
+		log.Printf("[path %s] alive, %d peers", w.name, len(w.peers))
+	}
 	if ctrl == nil {
 		return
 	}

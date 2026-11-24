@@ -1,10 +1,13 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"net"
 	"net/netip"
+	"os"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -358,6 +361,29 @@ func TestPathWatch_Panics(t *testing.T) {
 	}
 	if stuck.asked.Load() != 1 || inst.pathActivityAge() < 30*time.Minute {
 		t.Errorf("ran %d times, last stamp %s ago; want 1 and no stamp", stuck.asked.Load(), inst.pathActivityAge())
+	}
+}
+
+// TestRunPathWatch_Logs: the log says when the loop began and ended, and now and
+// then that it runs.
+func TestRunPathWatch_Logs(t *testing.T) {
+	inst := testInstance(t, "home", t.TempDir())
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	var out bytes.Buffer
+	log.SetOutput(&out)
+	runPathWatch(ctx, inst)
+	w := &pathWatch{name: "home"}
+	begin := time.Now()
+	for _, at := range []time.Duration{0, pathAlive - time.Second, pathAlive, pathAlive + time.Second} {
+		w.step(inst, nil, begin.Add(at))
+	}
+	log.SetOutput(os.Stderr)
+
+	for line, want := range map[string]int{"[path home] started": 1, "[path home] stopped": 1, "[path home] alive, 0 peers": 2} {
+		if got := strings.Count(out.String(), line); got != want {
+			t.Errorf("%q %d times in the log, want %d", line, got, want)
+		}
 	}
 }
 
