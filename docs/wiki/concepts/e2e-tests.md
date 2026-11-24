@@ -1,7 +1,7 @@
 ---
 type: concept
 title: End-to-end tests (real server, real agent)
-status: in the tree, not released
+status: current (v0.11.27)
 last_compiled: 2026-11-24
 sources:
   - internal/e2etest/server.go

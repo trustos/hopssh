@@ -20,9 +20,21 @@ Move closed items to a "Resolved" section at the bottom rather than deleting —
 
 ## Open
 
+## 2026-11-24 — v0.11.27: prove it on devices
+
+The server runs it, no device does. Open until then: a device renews at half its certificate's life and stays online for 24 h (E); an in-app network on a Mac and a system-wide one; a machine that was off for a week comes back (B, L). Steps 7 and 8 of [[runbooks/release-v0.11.27]].
+
+## 2026-11-24 — the database file relies on its directory's mode
+
+`hop-server` creates a missing data directory with 0700, which keeps other local users out. An existing directory (a container volume made by something else) keeps its mode, and `hopssh.db`, `-wal` and `-shm` are created with 0644; only `encryption.key` is 0600. Secrets in the database are encrypted or hashed, the rest (users, networks, audit log) is not. **Action:** create the database with 0600 and tighten existing files at start, so that it doesn't depend on the directory.
+
+## 2026-11-24 — dashboard: no security headers, and a dead link
+
+`hopssh.com` sends no `Strict-Transport-Security`, no `Content-Security-Policy` and no `X-Frame-Options`. `SameSite=Lax` keeps the session out of frames of other sites, which limits clickjacking, but HSTS and `frame-ancestors` are missing. And "Download the DMG" on the login page leads back to the login page when signed out (`routes/+layout.svelte` sends `/download` there). Both older than v0.11.27.
+
 ## 2026-11-24 — releases are not gated by the tests
 
-`release.yml` and `release-desktop.yml` start on any `v*` tag and run no test; `make release` tags whatever is checked out and pushes only the tag, so `main` can stay behind. The Docker image is built for the first time there, and the kernel-TUN step of `ci.yml` has never run in CI. **Action:** a `test` job that the build jobs need. Until then: push `main`, wait for CI, then tag ([[runbooks/release-v0.11.27]]).
+`release.yml` and `release-desktop.yml` start on any `v*` tag and run no test; `make release` tags whatever is checked out and pushes only the tag, so `main` can stay behind. The Docker image is built for the first time there. **Action:** a `test` job that the build jobs need. Until then: push `main`, wait for CI, then tag ([[runbooks/release-v0.11.27]]).
 
 ## 2026-11-24 — a lighthouse that fails to come back is silent
 

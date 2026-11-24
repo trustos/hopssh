@@ -152,3 +152,9 @@ Pages touched: 3 updated (`e2e-tests`, `open-questions`, this log), `CLAUDE.md` 
 Looked at production before the release. No device is left on it: the sweep (L) deleted the last two on 2026-08-07. Automatic deletion is off since today (`HOPSSH_NODE_PRUNE_AGE_HOURS=0`), the database is copied, the volume is a local disk. The log explains the 429s (deleted devices that keep asking) and 8 server crashes in June 2026 (the idle reaper, G), and has networks whose lighthouse did not come back after an idle close (V). New test: `TestReapIdleInstances`; its first version passed without the patch it is meant to guard. Found by running `npm run check`: the dashboard's "Clean up" button called a function that does not exist. All tests on Linux again: pass. The workflows read `go-version-file: go.mod` since 2026-11-18, which means Go 1.26.**0**, without the 34 security fixes of its patch releases; they ask for the newest 1.26 now.
 
 Pages touched: 1 created (`runbooks/release-v0.11.27.md`), 8 updated (incident page, `cert-renewal`, `e2e-tests`, `open-questions`, `phase-ledger`, `hopssh-cloud`, `index`, this log), `CLAUDE.md` (rule 15), `CHANGELOG.md`.
+
+## [2026-11-24] ingest | v0.11.27 released, server deployed
+
+`main` pushed and CI green (first run with Go 1.26, the E2E tests and the kernel-TUN step); database copied again; tag; image and binaries checked; server on v0.11.27 since 07:26 UTC. Corrected on the way: the runbook's push command (the repository has a tag `main`), "all other patches apply cleanly" (GNU patch also refuses hunk 3 of 19), and the log line for pruning (v0.11.27 says nothing while it is off). New open items: proof on devices, the mode of the database file, security headers and a dead link.
+
+Pages touched: `runbooks/release-v0.11.27`, incident page, `macos-udp-send`, `e2e-tests`, `cert-renewal`, `phase-ledger`, `hopssh-cloud`, `open-questions`, `index`, this log, `CLAUDE.md`, `patches/README.md`.

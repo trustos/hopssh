@@ -56,7 +56,7 @@ Forensic post-mortems of specific failure events.
 - [[incidents/2026-05-02-mbp-watchdog-deploy-bounce]] — work-network watchdog tripped during v0.10.84 control-plane rollout; auto-recovered (resolved)
 - [[incidents/2026-05-07-mbp-watcher-wedge]] — watchNetworkChanges deadlocked in vendor Nebula call; third watchdog class added in Phase DD (v0.10.96, resolved)
 - [[incidents/2026-05-09-linux-desktop-stuck-onboarding]] — Linux .deb fresh-install panic: nil c.runCtx in startInstance because Start was skipped on no-enrollments branch; two-layer fix in v0.11.19 (resolved)
-- [[incidents/2026-11-18-mbp-all-certs-expired]] — every network "certificate expired" + "no live instance", never recovers. Main cause: agents since v0.10.82 never renewed *before* expiry. Plus: recovery died with the failed instance, watchdog restarts were no-ops, closing an in-app network could end the agent, macOS held back or dropped packets, **the server deleted every machine that was off for a week**, no SQLite setting was in effect. Fixed in the tree, **not released**. **Read before touching renewal, watchdogs, rate limits or connect/disconnect.**
+- [[incidents/2026-11-18-mbp-all-certs-expired]] — every network "certificate expired" + "no live instance", never recovers. Main cause: agents since v0.10.82 never renewed *before* expiry. Plus: recovery died with the failed instance, watchdog restarts were no-ops, closing an in-app network could end the agent, macOS held back or dropped packets, **the server deleted every machine that was off for a week**, no SQLite setting was in effect. Fixed in v0.11.27; the server has it, the devices don't yet. **Read before touching renewal, watchdogs, rate limits or connect/disconnect.**
 
 ## Evaluations
 

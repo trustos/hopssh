@@ -36,7 +36,9 @@ Single Go binary (`hop-server`) deployed on Oracle Cloud arm64 worker, fronted b
 
 ## Settings worth knowing
 
+- Runs **v0.11.27** since 2026-11-24 07:26 UTC (5 lighthouses, database in WAL mode, no device enrolled yet).
 - `HOPSSH_NODE_PRUNE_AGE_HOURS=0` since 2026-11-24: without it v0.11.26 deletes devices that were silent for 7 days. Keep it for as long as a v0.11.26 image may run.
+- v0.11.27 logs nothing while pruning is off; it logs `[sweep] deleting nodes …` when it is on.
 - The data is on a local ext4 disk of the one worker (checked 2026-11-24), so WAL is safe.
 
 ## Cluster notes

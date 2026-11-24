@@ -50,7 +50,7 @@ sources:
 - **Phase P4 → R (v0.10.80 → v0.10.81)** — added then removed user-visible "Force renew" button. Engineering capability preserved at `POST /local/renew`; just no UI.
 - **Phase Q (v0.10.80)** — FS watcher detects daemon respawn (e.g. `launchctl kickstart`) and re-attaches WebView to new endpoint. Sub-second.
 - **Phase S (v0.10.82)** — 60s wall-clock ticker. Survives Clamshell Sleep cycles, but introduced the deadline that never arrives. See [[../phases/phase-s]].
-- **Phase HH (unreleased, planned v0.11.27)** — renewal at a fixed instant, a dedicated agent rate limiter, pre-start renewal, a per-enrollment recovery loop, a real `restartFn`, and no work on closed instances. Fixes "every network certificate expired, never recovers". See [[../incidents/2026-11-18-mbp-all-certs-expired]].
+- **Phase HH (v0.11.27, 2026-11-24)** — renewal at a fixed instant, a dedicated agent rate limiter, pre-start renewal, a per-enrollment recovery loop, a real `restartFn`, and no work on closed instances. Fixes "every network certificate expired, never recovers". See [[../incidents/2026-11-18-mbp-all-certs-expired]].
 
 ## Backlinks
 

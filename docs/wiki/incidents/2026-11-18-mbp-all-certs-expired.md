@@ -1,7 +1,7 @@
 ---
 type: incident
 title: 2026-11-18 — MBP: every network "certificate expired" + "no live instance", never recovers
-status: fixed in the tree, not released
+status: fixed in v0.11.27; the server runs it since 2026-11-24, no device does yet
 last_compiled: 2026-11-24
 sources:
   - internal/client/renew.go
@@ -23,7 +23,7 @@ sources:
   - patches/27-stop-marks-closed-first.patch
   - patches/28-darwin-send-outside-batch.patch
   - patches/29-service-close-netstack.patch
-shipped_in: nothing yet (planned v0.11.27)
+shipped_in: v0.11.27 (2026-11-24)
 ---
 
 # 2026-11-18 — MBP: every network "certificate expired" + "no live instance", never recovers

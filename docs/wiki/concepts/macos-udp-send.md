@@ -1,7 +1,7 @@
 ---
 type: concept
 title: macOS UDP send path (batches, and what must never wait for one)
-status: fixed in the tree, not released
+status: fixed in v0.11.27 (2026-11-24), not yet run on a real Mac fleet
 last_compiled: 2026-11-23
 sources:
   - patches/04-batch-udp-darwin.patch
