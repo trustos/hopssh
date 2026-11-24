@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -145,6 +146,8 @@ type Session struct {
 	done chan struct{}
 	stop chan struct{}
 
+	tunnels int // before it
+
 	quiet atomic.Bool // nothing is sent
 }
 
@@ -166,6 +169,7 @@ func open(a, b *Agent) *Session {
 		return err == nil
 	})
 	s.last = time.Now()
+	s.tunnels = tunnels(a, b)
 	go func() {
 		for {
 			select {
@@ -228,15 +232,16 @@ func (s *Session) lastAnswer() time.Time {
 
 // close ends the session, reports the longest silence and requires that it was
 // shorter than the limit, that the connection did not break and that it answers
-// now.
-func (s *Session) close(what string, limit time.Duration) {
+// now. It returns how many tunnels the two have made in the meantime.
+func (s *Session) close(what string, limit time.Duration) int {
 	s.a.l.t.Helper()
 	time.Sleep(time.Second)
 	silent := time.Since(s.lastAnswer())
 	close(s.stop)
 	<-s.done
 	gap := max(s.gap, silent)
-	s.a.l.report("session during %s: longest silence %s, %d over 2 s, %d answers, error %v", what, gap.Round(10*time.Millisecond), s.gaps, s.n, s.err)
+	made := tunnels(s.a, s.b) - s.tunnels
+	s.a.l.report("session during %s: longest silence %s, %d over 2 s, %d answers, error %v, %d new tunnels", what, gap.Round(10*time.Millisecond), s.gaps, s.n, s.err, made)
 	switch {
 	case s.err != nil:
 		s.a.l.t.Errorf("the session broke during %s: %v", what, s.err)
@@ -245,11 +250,28 @@ func (s *Session) close(what string, limit time.Duration) {
 	case gap > limit:
 		s.a.l.t.Errorf("the session was silent for %s during %s, want at most %s", gap.Round(100*time.Millisecond), what, limit)
 	}
+	return made
 }
 
-// tunnels is how many tunnels the agent has made so far.
-func (a *Agent) tunnels() int {
-	return strings.Count(a.log.String(), `msg="Handshake message received"`)
+// closeSteady is close, of a session on a path that works: nobody makes a new
+// tunnel for it.
+func (s *Session) closeSteady(what string, limit time.Duration) {
+	s.a.l.t.Helper()
+	if n := s.close(what, limit); n != 0 {
+		s.a.l.t.Errorf("%d new tunnels during %s", n, what)
+	}
+}
+
+var handshake = regexp.MustCompile(`msg="Handshake message received".* initiatorIndex=(\d+)`)
+
+// tunnels is how many tunnels the two have made so far. Both log a handshake
+// between them, and once more for each copy that came another way.
+func tunnels(a, b *Agent) int {
+	seen := map[string]bool{}
+	for _, m := range handshake.FindAllStringSubmatch(a.log.String()+b.log.String(), -1) {
+		seen[m[1]] = true
+	}
+	return len(seen)
 }
 
 // roams is how often the agent has changed the path to a peer.
@@ -287,12 +309,16 @@ func TestTwoHomes(t *testing.T) {
 	bulk(a, b, 20<<20, time.Minute)
 }
 
+// The home router lets in only whom its machine wrote to, and the phone comes
+// from a port that nobody can know. Nothing but the relay is left.
 func TestHomeAndPhone(t *testing.T) {
 	l := newLab(t)
 	a, b, _, _ := l.twoHomes(Home, Carrier)
 	tcp(b, a, 60*time.Second)
 	tcp(a, b, 60*time.Second)
-	want(a, b, "", 2*time.Minute)
+	time.Sleep(20 * time.Second)
+	want(a, b, "relay", time.Second)
+	want(b, a, "relay", time.Second)
 }
 
 // The home router opens a port on request, so the phone reaches it directly.
@@ -323,7 +349,7 @@ func TestPortMappingStrict(t *testing.T) {
 	s := open(a, b)
 	time.Sleep(2 * time.Minute)
 	l.report("a -> b %s, b -> a %s", a.path(b), b.path(a))
-	s.close("2 min, strict router with a mapping", 10*time.Second)
+	s.closeSteady("2 min, strict router with a mapping", 10*time.Second)
 }
 
 // Two machines of one home whose router also lets them meet at its outside
@@ -345,7 +371,7 @@ func TestHairpin(t *testing.T) {
 	n := a.roams() + b.roams()
 	s := open(a, b)
 	time.Sleep(time.Minute)
-	s.close("a minute in one home", 2*time.Second)
+	s.closeSteady("a minute in one home", 2*time.Second)
 	if n = a.roams() + b.roams() - n; n > 2 {
 		t.Errorf("the path changed %d times in a minute", n)
 	}
@@ -377,7 +403,7 @@ func TestOneWayLAN(t *testing.T) {
 			// them looks for the LAN again.
 			time.Sleep(5 * time.Minute)
 			l.report("a -> b %s, b -> a %s", a.path(b), b.path(a))
-			s.close("5 min on a one-way LAN", time.Second)
+			s.closeSteady("5 min on a one-way LAN", time.Second)
 			bulk(a, b, 5<<20, 30*time.Second)
 			bulk(b, a, 5<<20, 30*time.Second)
 		})
@@ -397,7 +423,7 @@ func TestOneWayDirect(t *testing.T) {
 	s := open(a, b)
 	time.Sleep(5 * time.Minute)
 	l.report("a -> b %s, b -> a %s", a.path(b), b.path(a))
-	s.close("5 min with a direct path in one direction only", time.Second)
+	s.closeSteady("5 min with a direct path in one direction only", time.Second)
 	bulk(a, b, 5<<20, 30*time.Second)
 	bulk(b, a, 5<<20, 30*time.Second)
 }
@@ -434,7 +460,7 @@ func TestSameProvider(t *testing.T) {
 	want(a, b, "relay", time.Minute)
 	s := open(a, b)
 	time.Sleep(time.Minute)
-	s.close("a minute in one provider's network", 2*time.Second)
+	s.closeSteady("a minute in one provider's network", 2*time.Second)
 	time.Sleep(2 * time.Minute)
 	if took := tcp(b, a, time.Minute); took > 5*time.Second {
 		t.Errorf("the first answer after 2 quiet minutes took %s", took)
@@ -529,12 +555,12 @@ func TestTwoPhones(t *testing.T) {
 
 	// Both LANs use the same address, so whoever looks for a direct path finds
 	// itself there and is told that it doesn't know that tunnel.
-	n := a.tunnels() + b.tunnels()
+	n := tunnels(a, b)
 	s := open(a, b)
 	time.Sleep(2 * time.Minute)
 	s.close("2 min on the relay", 2*time.Second)
 	bulk(a, b, 5<<20, time.Minute)
-	if n = a.tunnels() + b.tunnels() - n; n != 0 {
+	if n = tunnels(a, b) - n; n != 0 {
 		t.Errorf("%d new tunnels on a relay that works", n)
 	}
 }

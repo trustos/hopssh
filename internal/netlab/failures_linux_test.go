@@ -227,7 +227,7 @@ func TestBadLine(t *testing.T) {
 	s := openDirect(a, b)
 	time.Sleep(2 * time.Minute)
 	l.report("path %s", a.path(b))
-	s.close("2 min with 5 % loss each way", 5*time.Second)
+	s.closeSteady("2 min with 5 % loss each way", 5*time.Second)
 }
 
 // A direct path becomes possible only later, as when a laptop leaves a strict

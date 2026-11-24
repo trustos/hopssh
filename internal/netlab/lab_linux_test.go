@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -401,7 +402,10 @@ func (r *Router) hairpin(seen string) {
 func (r *Router) natPMP() {
 	r.l.t.Helper()
 	pc := r.ListenUDP(r.lan.gw + ":5351")
+	done := make(chan struct{})
+	r.l.t.Cleanup(func() { pc.Close(); <-done })
 	go func() {
+		defer close(done)
 		buf := make([]byte, 64)
 		taken := map[int]string{} // by whom
 		for {
@@ -431,13 +435,17 @@ func (r *Router) natPMP() {
 				if r.loop {
 					rule = strings.Replace(rule, "iifname wan", "ip daddr "+r.wan, 1)
 				}
-				r.cmd("nft", rule).Run()
+				if msg, err := r.cmd("nft", rule).CombinedOutput(); err != nil {
+					r.l.t.Errorf("%s: nft %s: %v %s", r.Name, rule, err, msg)
+				}
 				resp = append(resp, buf[4], buf[5], byte(out>>8), byte(out))
 				resp = append(resp, buf[8:12]...)
 			default:
 				continue
 			}
-			pc.WriteTo(resp, from)
+			if _, err := pc.WriteTo(resp, from); err != nil && !errors.Is(err, net.ErrClosed) {
+				r.l.t.Errorf("%s: NAT-PMP answer to %s: %v", r.Name, from, err)
+			}
 		}
 	}()
 }
