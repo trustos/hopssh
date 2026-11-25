@@ -158,3 +158,21 @@ Pages touched: 1 created (`runbooks/release-v0.11.27.md`), 8 updated (incident p
 `main` pushed and CI green (first run with Go 1.26, the E2E tests and the kernel-TUN step); database copied again; tag; image and binaries checked; server on v0.11.27 since 07:26 UTC. Corrected on the way: the runbook's push command (the repository has a tag `main`), "all other patches apply cleanly" (GNU patch also refuses hunk 3 of 19), and the log line for pruning (v0.11.27 says nothing while it is off). New open items: proof on devices, the mode of the database file, security headers and a dead link.
 
 Pages touched: `runbooks/release-v0.11.27`, incident page, `macos-udp-send`, `e2e-tests`, `cert-renewal`, `phase-ledger`, `hopssh-cloud`, `open-questions`, `index`, this log, `CLAUDE.md`, `patches/README.md`.
+
+## [2026-11-24] ingest | Network lab: real agents behind simulated routers
+
+`internal/netlab` + `scripts/netlab.sh` run the real server and real root agents in Linux namespaces behind simulated routers. Nine faults of v0.11.27 found and fixed by `path_watch.go`, the `preferred_ranges` key and vendor patches 33 to 36; one more came from our own fix of `preferred_ranges` (a one-way LAN went dead) and was fixed by patch 35; three gaps pinned (UDP between devices, no way without UDP, lost big packets). Corrected: the patch 14/15 entries (15 was never in effect). Final code: the whole lab passed three times (37 tests), 39 of 47 planted bugs noticed, the 8 others explained in the page; a clean vendor tree with all patches is identical to the tested one (patch 12 fails as before).
+
+Pages touched: 1 created (concepts/netlab), 6 updated (index, open-questions, concepts/e2e-tests, log, patches/README.md, CLAUDE.md).
+
+## [2026-11-24] ingest | Path fixes: what the first review of the pull request led to
+
+The path loop stamps, has a time limit and survives a panic, and `runWatcherWatchdog` watches it (it looks twice now, so that a machine that wakes up is not restarted). An old `preferred_ranges` list is moved as it is instead of being replaced by ours. Found on the way: a ticker is microseconds early or late, so every limit of the loop took a second longer in about half the cases; it counts whole ticks now. Tests sharpened: `TestOwnNets`, `TestHomeAndPhone`, NAT-PMP errors in the lab; new: `TestE2E_LighthouseAnswers`, and no new tunnel during a session on a path that works. Corrected: `TestServerRestart`'s number (it was the time after the server is back, not the silence), and the two values of `TestRoaming` explained. 25 more planted bugs, all noticed, two only after their tests were sharpened.
+
+Pages touched: 5 updated (concepts/netlab, concepts/e2e-tests and concepts/macos-udp-send (status), open-questions, this log), patches/README.md, CLAUDE.md.
+
+## [2026-11-24] ingest | Path fixes: a second, independent review, and a race found by one run too many
+
+A race in patch 35, found when `TestOneWayLAN` failed once in an extra run, explained and fixed: the first packet was handed to the machine before the path was changed, so a quick kernel answered into the dead path (`concepts/netlab`, cause 12). New: `TestE2E_MovesBeforeItAnswers`. From the second review (two agents on Opus, independent of the first): the path loop logs its start, its end and that it runs, as every long-lived goroutine must (v0.10.26); its comment says what happens after a panic; the rule of v0.10.28 is marked as superseded where patch 35 replaced it. Everything else they found was known, or checked against the code and not a fault; what is left of it is in `open-questions`.
+
+Pages touched: 3 updated (concepts/netlab, concepts/macos-udp-send (date, backlink), open-questions), this log, patches/README.md, CLAUDE.md.

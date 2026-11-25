@@ -1011,15 +1011,18 @@ func ensureP2PConfig(inst *meshInstance) {
 		changed = true
 	}
 
-	// Prefer local/private IPs for same-NAT peer discovery.
+	// Up to v0.11.27 the ranges were under "lighthouse", where Nebula doesn't look.
 	lighthouse := yamlMap(cfg, "lighthouse")
-	if _, ok := lighthouse["preferred_ranges"]; !ok {
-		lighthouse["preferred_ranges"] = []string{
-			"192.168.0.0/16",
-			"172.16.0.0/12",
-			"10.0.0.0/8",
+	ranges, misplaced := lighthouse["preferred_ranges"]
+	if misplaced {
+		delete(lighthouse, "preferred_ranges")
+		changed = true
+	}
+	if _, ok := cfg["preferred_ranges"]; !ok {
+		if ranges == nil {
+			ranges = nebulacfg.PreferredRanges
 		}
-		cfg["lighthouse"] = lighthouse
+		cfg["preferred_ranges"] = ranges
 		changed = true
 	}
 

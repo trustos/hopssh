@@ -151,7 +151,8 @@ type meshInstance struct {
 	// RebindUDPServer / CloseAllTunnels — the third class of silent
 	// goroutine failure (renewal + data-plane already covered).
 	lastWatcherActivityAt time.Time
-	activityMu            sync.Mutex // guards all three fields above
+	lastPathActivityAt    time.Time  // the same for runPathWatch, see pathWatch.step
+	activityMu            sync.Mutex // guards all four fields above
 
 	// restartFn is invoked by the v0.10.36 keepalive watchdog when it
 	// detects stuck-data-plane state (consecutive all-failed keepalive
@@ -308,6 +309,22 @@ func (i *meshInstance) watcherActivityAge() time.Duration {
 		return 1<<62 - 1
 	}
 	return time.Since(i.lastWatcherActivityAt)
+}
+
+// markPathActivity and pathActivityAge are the same for runPathWatch.
+func (i *meshInstance) markPathActivity() {
+	i.activityMu.Lock()
+	i.lastPathActivityAt = time.Now()
+	i.activityMu.Unlock()
+}
+
+func (i *meshInstance) pathActivityAge() time.Duration {
+	i.activityMu.Lock()
+	defer i.activityMu.Unlock()
+	if i.lastPathActivityAt.IsZero() {
+		return 1<<62 - 1
+	}
+	return time.Since(i.lastPathActivityAt)
 }
 
 // dir returns the on-disk subdirectory containing this instance's

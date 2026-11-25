@@ -98,6 +98,89 @@ func TestWatcherWatchdog_FiresAfterSilenceThreshold(t *testing.T) {
 	}
 }
 
+// The other loop it looks after.
+func TestWatcherWatchdog_PathWatch(t *testing.T) {
+	for _, c := range []struct {
+		name          string
+		watcher, path time.Duration // how long ago they stamped
+		want          string        // in the dump
+	}{
+		{"path watch silent", 0, time.Hour, "path watch"},
+		{"both silent", time.Hour, time.Hour, "network-change watcher"},
+		{"path watch not started", 0, -1, ""},
+		{"nothing started", -1, -1, ""},
+		{"both run", 0, 0, ""},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			inst := testInstance(t, "home", t.TempDir())
+			now := time.Now()
+			if c.watcher >= 0 {
+				inst.lastWatcherActivityAt = now.Add(-c.watcher)
+			}
+			if c.path >= 0 {
+				inst.lastPathActivityAt = now.Add(-c.path)
+			}
+			restarts := make(chan struct{}, 8)
+			inst.restartFn = func() error { restarts <- struct{}{}; return nil }
+
+			_, _, restore := withShortWatcherThresholds(t)
+			defer restore()
+			watcherSilenceThreshold = 10 * time.Minute
+			ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+			defer cancel()
+			runWatcherWatchdog(ctx, inst)
+
+			if n := len(restarts); (n == 1) != (c.want != "") {
+				t.Fatalf("%d restarts", n)
+			}
+			dumps, _ := filepath.Glob(filepath.Join(inst.dir(), "watcher-stuck-*.txt"))
+			if c.want == "" {
+				if len(dumps) != 0 {
+					t.Errorf("dumps %v", dumps)
+				}
+				return
+			}
+			dump, err := os.ReadFile(dumps[0])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(dump), "loop: "+c.want+"\n") {
+				t.Errorf("the dump does not say that it is the %s:\n%.300s", c.want, dump)
+			}
+		})
+	}
+}
+
+// After a sleep, or a SIGSTOP, all timers are due at once, and the watchdog may
+// look before the loops could stamp. It sleeps twice here.
+func TestWatcherWatchdog_LooksTwice(t *testing.T) {
+	inst := testInstance(t, "home", t.TempDir())
+	sleep := func() {
+		inst.activityMu.Lock()
+		defer inst.activityMu.Unlock()
+		inst.lastWatcherActivityAt = time.Now().Add(-time.Hour)
+		inst.lastPathActivityAt = time.Now().Add(-time.Hour)
+	}
+	wake := func() { inst.markWatcherActivity(); inst.markPathActivity() }
+	var restarts atomic.Int32
+	inst.restartFn = func() error { restarts.Add(1); return nil }
+
+	_, _, restore := withShortWatcherThresholds(t)
+	defer restore()
+	const look = 200 * time.Millisecond
+	watcherSilenceThreshold, watcherWatchdogInterval = 10*time.Minute, look
+	ctx, cancel := context.WithTimeout(context.Background(), 5*look)
+	defer cancel()
+	sleep()
+	time.AfterFunc(look*3/2, wake)
+	time.AfterFunc(look*5/2, sleep)
+	time.AfterFunc(look*7/2, wake)
+	runWatcherWatchdog(ctx, inst)
+	if n := restarts.Load(); n != 0 {
+		t.Errorf("%d restarts of a network that woke up", n)
+	}
+}
+
 // TestWatcherWatchdog_QuietWhenWatcherIsTicking — fresh activity
 // stamps must NOT trip the watchdog. False positives during a healthy
 // watcher cycle would restart-loop the agent.
@@ -120,7 +203,7 @@ func TestWatcherWatchdog_DumpFileWritten(t *testing.T) {
 	inst := testInstance(t, "home", tmp)
 	inst.lastWatcherActivityAt = time.Now().Add(-7 * time.Minute)
 
-	path := writeWatcherStuckDump(inst, 7*time.Minute)
+	path := writeWatcherStuckDump(inst, "network-change watcher", 7*time.Minute)
 	if path == "" {
 		t.Fatal("writeWatcherStuckDump returned empty path")
 	}

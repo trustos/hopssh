@@ -3,8 +3,11 @@ package client
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
+	"github.com/sirupsen/logrus"
+	"github.com/slackhq/nebula/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -145,5 +148,75 @@ func TestEnsureP2PConfig_ScrubsBufferKeys(t *testing.T) {
 	}
 	if _, ok := listen["write_buffer"]; ok {
 		t.Errorf("write_buffer still present after ensureP2PConfig")
+	}
+}
+
+// preferredRanges is what Nebula gets out of a config file.
+func preferredRanges(t *testing.T, path string) []string {
+	t.Helper()
+	c := config.NewC(logrus.New())
+	if err := c.Load(path); err != nil {
+		t.Fatal(err)
+	}
+	if c.IsSet("lighthouse.preferred_ranges") {
+		t.Error("preferred_ranges is still under lighthouse, where Nebula does not look")
+	}
+	return c.GetStringSlice("preferred_ranges", nil)
+}
+
+var wantRanges = []string{"192.168.0.0/16", "172.16.0.0/12", "10.0.0.0/8"}
+
+// From v0.9.1 to v0.11.27 the ranges were written where Nebula doesn't read them,
+// so two machines of one LAN could stay on the way around through the router.
+func TestPreferredRanges_NewConfig(t *testing.T) {
+	dir := t.TempDir()
+	writeNebulaConfig(dir, "10.42.1.1", "127.0.0.1", 42001, "kernel", 4242)
+	path := filepath.Join(dir, "nebula.yaml")
+	if got := preferredRanges(t, path); !slices.Equal(got, wantRanges) {
+		t.Errorf("enrollment wrote preferred ranges %v", got)
+	}
+	var cfg map[string]any
+	data, _ := os.ReadFile(path)
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	lighthouse, _ := cfg["lighthouse"].(map[string]any)
+	if hosts, _ := lighthouse["hosts"].([]any); len(hosts) != 1 {
+		t.Errorf("lighthouse hosts: %v", lighthouse["hosts"])
+	}
+	if relay, _ := cfg["relay"].(map[string]any); relay["use_relays"] != true {
+		t.Errorf("relay: %v", cfg["relay"])
+	}
+}
+
+func TestPreferredRanges_OldConfig(t *testing.T) {
+	own := []string{"172.20.0.0/16"}
+	for _, c := range []struct {
+		name, yaml string
+		want       []string
+	}{
+		{"where it used to be", "lighthouse:\n  hosts: [10.42.1.1]\n  preferred_ranges: [192.168.0.0/16, 172.16.0.0/12, 10.0.0.0/8]\n", wantRanges},
+		{"somebody's own, where it used to be", "lighthouse:\n  hosts: [10.42.1.1]\n  preferred_ranges: [172.20.0.0/16]\n", own},
+		{"nothing, where it used to be", "lighthouse:\n  hosts: [10.42.1.1]\n  preferred_ranges:\n", wantRanges},
+		{"somebody's own", "preferred_ranges: [172.20.0.0/16]\n", own},
+		{"in both places", "preferred_ranges: [172.20.0.0/16]\nlighthouse:\n  preferred_ranges: [192.168.0.0/16]\n", own},
+		{"nowhere", "lighthouse:\n  hosts: [10.42.1.1]\n", wantRanges},
+		{"no lighthouse", "cipher: aes\n", wantRanges},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "nebula.yaml")
+			if err := os.WriteFile(path, []byte(c.yaml), 0644); err != nil {
+				t.Fatal(err)
+			}
+			inst := newMeshInstance(&Enrollment{Name: "home", ListenPort: 4242})
+			inst.customDir = dir
+			for _, when := range []string{"first", "second"} {
+				ensureP2PConfig(inst)
+				if got := preferredRanges(t, path); !slices.Equal(got, c.want) {
+					t.Errorf("%s start: preferred ranges %v, want %v", when, got, c.want)
+				}
+			}
+		})
 	}
 }

@@ -68,9 +68,33 @@ Seen while writing the tests, not pinned: any member can start port forwards (th
 
 Clipboard, seen while writing `TestE2E_Clipboard`, not pinned: `since` has seconds, so the second of two clips in one second is skipped for a device that polled in between; the limit is 60 requests a minute per address and every device polls 30 times a minute, so three devices behind one router run into it after about four minutes; a database error answers 401 (as renew and heartbeat did, a).
 
-## 2026-11-23 — peer-to-peer UDP is probably blocked by our own firewall (P)
+## 2026-11-24 — UDP between devices is blocked by our own firewall: allow it? (P)
 
-`writeNebulaConfig` allows inbound TCP and ICMP between nodes, nothing else. If that is what runs, mosh, QUIC and Screen Sharing's media cannot work between peers. Read in the config only. **Action:** send one UDP packet between two nodes and see.
+Proven in [[concepts/netlab]] (`TestUDPBetweenDevices`, pinned): `writeNebulaConfig` allows inbound TCP and ICMP between nodes, nothing else. mosh, QUIC, WireGuard and Screen Sharing's media cannot work between peers. **Decide:** allow UDP for all, per network, or with the firewall rules of the roadmap. The change itself is one line; existing agents need their `nebula.yaml` rewritten.
+
+## 2026-11-24 — what Tailscale has and the lab shows that we don't
+
+1. **A way out of a network without UDP** (`TestNoUDP`, pinned): a relay on TCP 443. Hotels, offices, some mobile networks.
+2. **The right packet size per path** (`TestSmallPackets/told_false`, pinned): on a line that takes less than 1480 bytes and does not say so, big packets vanish. A login works, a listing hangs. It needs DPLPMTUD (never built) or MSS clamping.
+
+## 2026-11-24 — path fixes: what is still unproven
+
+Patches 33 to 36 and `path_watch.go` are on the branch `lab/network`, not released. The whole lab passes (37 tests), and 39 of 47 planted bugs were noticed; the 8 others are listed in [[concepts/netlab]] with the reason, and so are 25 more, all noticed. **Not done:** real devices (macOS and Windows agents, a real phone carrier). The rebind after a network change is the one of the 8 that matters: on macOS only a real laptop can show whether it still works. An agent of v0.11.27 or older on the other end does not answer patch 35's question, so a path that works in one direction only can still be interrupted until both ends are updated.
+
+`ownNets` (`path_watch.go`) counts the networks of every interface, also of another VPN (all three reviews of the pull request say so). **Harm not shown:** only an address that the peer itself reports is tried, the peer's `local_allow_list` and `selfEndpoints` hold back those of its other interfaces, and Nebula prefers every private address anyway since `preferred_ranges` works. What is left is a peer that can't tell its physical interface and then reports all of them. Two machines that are in one ZeroTier network would show it; the lab has none.
+
+## 2026-11-24 — data races inside Nebula v1.10.3
+
+`go test -race ./internal/client` fails in `TestE2E_QuestionMovesNobody` (8 of 8 runs) and sometimes in `TestE2E_NewTunnelStays` (2 of 8); in the one run of everything the rest was clean, and so is `-race` on the vendored `udp` package. Four pairs, all between lines that are the same in upstream v1.10.3, none in our patches or in `internal/client`:
+
+1. `HostInfo.remote`: written by `SetRemote` (UDP thread), read by `sendNoMetrics` (TUN thread, two places) and by `copyHostInfo` (`ListHostmapHosts`, `GetHostInfoByVpnAddr`) without a lock. A torn read can mix an old address with a new port, so one packet goes astray or the dashboard shows a wrong address for one second. Our `path_watch.go` reads it once a second and at worst asks one question too many.
+2. `RemoteList.relays`: sorted in place under its lock, its length read without it by `handleOutbound`. For a moment it looks empty, then one handshake attempt doesn't try the relays; the next one, a second later, does.
+
+**Action:** look at these two when Nebula is upgraded (v1.11 says it fixes races in hostmap and roaming). CI doesn't use `-race`.
+
+## 2026-11-24 — the network lab is not in CI
+
+It takes about 9 minutes on an arm64 VM with 8 cores and needs root, `nft` and `/dev/net/tun`. GitHub's ubuntu runners have all three (the kernel-TUN test already uses `sudo unshare`). Not tried there; a busy runner may break the time limits. Start with `workflow_dispatch` and look at ten runs before it can block anything.
 
 ## 2026-11-23 — kernel TUN: what is still unproven
 
@@ -177,6 +201,8 @@ After `npm audit fix`, the dashboard frontend's **production** dependencies are 
 ## 2026-05-14 — Nebula relay path silently fails for same-CGNAT peers across different private subnets
 
 Mini + MBP on home network both behind same Yettel BG CGNAT (`46.10.240.91`), but on DIFFERENT private LANs (mini `192.168.23.x`, MBP `172.17.132.x`). Direct P2P fails due to hairpin NAT (well-documented in CLAUDE.md Discovery Log `preferred_ranges`). Relay fallback through the lighthouse (`use_relays: true, relays: [10.42.1.1]`) SHOULD bridge them — but in this incident relay also timed out: MBP's log shows continuous `Attempt to relay through hosts relays=[10.42.1.1]` + `CreateRelayRequest` followed by `Handshake timed out` for vpnAddr 10.42.1.7. Manual `launchctl kickstart` on BOTH agents was the only recovery — kickstarting one alone wasn't enough. **Three hypotheses to test next session**: (1) Lighthouse's UDP source-addr cache for the mini was stale because the Nebula-UDP flow timed out on CGNAT while the HTTPS heartbeat channel stayed warm. Trace lighthouse logs on hopssh.com around 09:39 (2026-05-14) to see what destination addr it used when forwarding relay packets. (2) Yettel CGNAT hairpin restriction applies to UDP-from-lighthouse-public-IP-back-to-Yettel-internal-host too (single-NAT-but-three-hop relay). Compare with a peer on a different ISP. (3) Nebula's relay implementation has a stale-endpoint retry bug — read `vendor/github.com/slackhq/nebula/relay.go` flow. **Action**: when this recurs, capture the lighthouse-side log first (server-side `journalctl -u hopssh` filtered for `relayFrom=10.42.1.6 relayTo=10.42.1.7` or vice versa). The agent-side artifacts (kickstart logs + nebula.yaml + lighthouse: replaced static host map entry lines) are preserved in this session's transcript for reference.
+
+**2026-11-24:** the same layout works in [[concepts/netlab]] (`TestSameProvider`: one provider that has both homes behind one address, forgets after 30 s and does not let them meet there; the relay answers within 0.4 s, also after two quiet minutes). So the layout is not the cause. *Likely*, not proven: what was found there since — after the server restarts, a relayed connection was dead for 72 to 84 s and both sides went on sending; and one packet from a stranger could close a relayed tunnel (patch 33). Both are fixed on the branch that has the lab. Look again if it happens with a release that has them.
 
 Source / context: plan-of-record (`~/.claude/plans/we-re-starting-phase-valiant-wave.md` from this session); Discovery Log `preferred_ranges` note; v0.10.22 Phase G (HTTPS-distributed self-endpoints); v0.10.27.1 Layer 4 endpoint-probe disabled.
 

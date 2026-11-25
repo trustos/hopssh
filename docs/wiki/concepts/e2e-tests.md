@@ -1,7 +1,7 @@
 ---
 type: concept
 title: End-to-end tests (real server, real agent)
-status: current (v0.11.27)
+status: current
 last_compiled: 2026-11-24
 sources:
   - internal/e2etest/server.go
@@ -119,14 +119,14 @@ A process that is killed writes no coverage. The numbers above are from a run in
 ## Not covered
 
 - Windows (never run; the client's tests don't compile there, `renew_sleep_test.go` uses `syscall.SIGSTOP`).
-- Kernel TUN on macOS, and on Linux everything except closing it: no E2E test runs the agent as root.
+- Kernel TUN on macOS. On Linux the agent runs as root with one in [[netlab]], which is not in CI; `make test` covers only closing it.
 - Linux ran in a local arm64 VM (2026-11-24: 604 tests in 10 packages, plus the kernel-TUN test as root 3 times, all passed) and in CI on amd64 (2026-11-24, 10 packages and the kernel-TUN test, passed). CI does not use `-race`.
-- NAT traversal, relays between real networks, cellular, sleep and wake. These need devices.
+- Real carriers, real sleep. NAT traversal, relays, roaming, outages and a frozen agent are in [[netlab]], against simulated routers.
 - The desktop app and the dashboard.
 - Old and new versions together, in CI: `TestE2E_Upgrade` needs `HOP_E2E_OLD`, so somebody has to run it before a release. On 2026-11-24 it passed against v0.11.26 in both directions, on the tree of v0.11.27. On macOS it checks only HTTP for the old agent, because v0.11.26 cannot be reached over the mesh there (I); with patch 28 added to that release the mesh part passes too.
 - A release on a real fleet.
 - Replacing the program on disk and restarting its service (`selfupdate.Apply`, `restartService`); asking GitHub for a newer version.
-- Port mapping against a real router (NAT-PMP, PCP, UPnP); only its own unit tests.
+- Port mapping against a real router (NAT-PMP, PCP, UPnP). [[netlab]] has a simulated one that does NAT-PMP.
 - The agent's `/upload` (no server route leads there), the QUIC probe (`hop-agent migration`), GitHub sign-in beyond what `auth_oauth_e2e_test.go` fakes.
 - The clipboard on a real pasteboard: `TestE2E_Clipboard` checks the server's relay.
 

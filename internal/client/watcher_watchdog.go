@@ -20,6 +20,8 @@ package client
 //   - F2: hard timeouts on the vendor Nebula calls (runWithTimeout)
 //     so the watcher self-recovers in <5s in the common case without
 //     needing this watchdog to fire.
+//
+// It watches runPathWatch (path_watch.go) as well.
 
 import (
 	"context"
@@ -71,6 +73,7 @@ func runWatcherWatchdog(ctx context.Context, inst *meshInstance) {
 	// can't clear via inst.close(). See watchdog_escalation.go for the
 	// full rationale.
 	var consecutiveFailures int
+	var looks int // in a row that found a silent loop
 
 	t := time.NewTicker(watcherWatchdogInterval)
 	defer t.Stop()
@@ -83,15 +86,14 @@ func runWatcherWatchdog(ctx context.Context, inst *meshInstance) {
 		case <-t.C:
 		}
 
-		age := inst.watcherActivityAge()
-		if age < watcherSilenceThreshold {
+		loop, age := silentLoop(inst)
+		if loop == "" {
+			looks = 0
 			continue
 		}
-		// Cold-start grace: if lastWatcherActivityAt was never stamped
-		// (i.e. age == math.MaxInt64-equivalent), don't fire — the
-		// goroutine may simply not have started yet on bundled-mode
-		// boot or a slow Nebula bring-up.
-		if age > 100*365*24*time.Hour {
+		// After a sleep or a SIGSTOP all timers are due at once, and this one
+		// may be ahead of the loops': look twice.
+		if looks++; looks < 2 {
 			continue
 		}
 		// Cooldown: don't restart-loop on persistent issues.
@@ -103,10 +105,10 @@ func runWatcherWatchdog(ctx context.Context, inst *meshInstance) {
 		}
 		lastTripAt = time.Now()
 
-		log.Printf("[watcher-watchdog %s] CRITICAL: network-change watcher silent for %s (threshold %s) — capturing forensic dump and triggering auto-restart",
-			inst.name(), age.Truncate(time.Second), watcherSilenceThreshold)
+		log.Printf("[watcher-watchdog %s] CRITICAL: %s silent for %s (threshold %s) — capturing forensic dump and triggering auto-restart",
+			inst.name(), loop, age.Truncate(time.Second), watcherSilenceThreshold)
 
-		writeWatcherStuckDump(inst, age)
+		writeWatcherStuckDump(inst, loop, age)
 
 		if inst.restartFn != nil {
 			if err := inst.restartFn(); err != nil {
@@ -129,11 +131,29 @@ func runWatcherWatchdog(ctx context.Context, inst *meshInstance) {
 	}
 }
 
+// silentLoop is the first of the loops that has stamped nothing for longer than
+// the threshold. One that never stamped may simply not have started: bundled mode
+// before it attaches, OS-stack fallback, a slow Nebula bring-up.
+func silentLoop(inst *meshInstance) (string, time.Duration) {
+	for _, l := range []struct {
+		name string
+		age  time.Duration
+	}{
+		{"network-change watcher", inst.watcherActivityAge()},
+		{"path watch", inst.pathActivityAge()},
+	} {
+		if l.age >= watcherSilenceThreshold && l.age <= 100*365*24*time.Hour {
+			return l.name, l.age
+		}
+	}
+	return "", 0
+}
+
 // writeWatcherStuckDump writes a goroutine pprof + diagnostic snapshot
 // to <configDir>/<name>/watcher-stuck-<ts>.txt. Mirrors the v0.10.36
 // stuck-data-plane dump pattern. Returns the path written, or empty
 // string on failure (with the failure logged).
-func writeWatcherStuckDump(inst *meshInstance, silenceAge time.Duration) string {
+func writeWatcherStuckDump(inst *meshInstance, loop string, silenceAge time.Duration) string {
 	ts := time.Now().UTC().Format("20060102T150405Z")
 	path := filepath.Join(inst.dir(), fmt.Sprintf("watcher-stuck-%s.txt", ts))
 
@@ -146,6 +166,7 @@ func writeWatcherStuckDump(inst *meshInstance, silenceAge time.Duration) string 
 
 	fmt.Fprintf(f, "watcher-stuck dump — %s\n", time.Now().UTC().Format(time.RFC3339))
 	fmt.Fprintf(f, "instance: %s\n", inst.name())
+	fmt.Fprintf(f, "loop: %s\n", loop)
 	fmt.Fprintf(f, "silence: %s (threshold %s)\n", silenceAge, watcherSilenceThreshold)
 	fmt.Fprintf(f, "endpoint: %s\n", inst.endpoint())
 	fmt.Fprintf(f, "node-id: %s\n", inst.nodeID())

@@ -2,7 +2,7 @@
 -include .env
 export
 
-.PHONY: all setup vendor patch-vendor build build-all build-linux vet test \
+.PHONY: all setup vendor patch-vendor build build-all build-linux vet test netlab \
        generate clean clean-vendor clean-stuck-dumps frontend frontend-embed \
        run dev release wifi-snapshot \
        desktop-build desktop-app desktop-dev desktop-smoke desktop-clean
@@ -92,6 +92,11 @@ generate:
 # Run tests.
 test:
 	go test -mod=vendor -timeout 30m ./...
+
+# Run the network lab: the real server and agents behind simulated routers.
+# Needs root on Linux, or the podman VM on a Mac. ARGS go to the test binary.
+netlab:
+	scripts/netlab.sh $(ARGS)
 
 # Build everything and run the server (frontend embedded in binary).
 run: build-all

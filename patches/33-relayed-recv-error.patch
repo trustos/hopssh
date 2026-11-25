@@ -1,0 +1,18 @@
+--- a/github.com/slackhq/nebula/outside.go
++++ b/github.com/slackhq/nebula/outside.go
+@@ -626,7 +626,14 @@
+ 		return
+ 	}
+ 
+-	if hostinfo.remote.IsValid() && hostinfo.remote != addr {
++	// hopssh patch 33: a relayed peer has no remote, and one unauthenticated packet
++	// from anywhere closed its tunnel. Nobody answers a relayed packet with a
++	// recv_error, so this one answers a packet that looked for a direct path and
++	// came to another agent (the same LAN address, a port that changed hands).
++	if !hostinfo.remote.IsValid() {
++		return
++	}
++	if hostinfo.remote != addr {
+ 		f.l.Infoln("Someone spoofing recv_errors? ", addr, hostinfo.remote)
+ 		return
+ 	}

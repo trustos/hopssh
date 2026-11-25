@@ -34,6 +34,7 @@ Architectural ideas the code embodies but doesn't explain.
 - [[concepts/cert-renewal]] — 24h cert lifecycle, fixed renewal instant, Phase HH pre-start renewal + recovery loop
 - [[concepts/watchdog]] — Phase P2 stuck-data-plane watchdog, restartFn, forensic dumps
 - [[concepts/e2e-tests]] — the real server and the real agent under test: how to run it, what is covered, what is not, pinned gaps. **Read before changing a route, a permission, renewal or the database.**
+- [[concepts/netlab]] — the real server and root agents behind simulated routers, carriers, relays and bad lines: one command, what it found, what it can't show. **Read before touching paths, relays, roaming or the Nebula patches.**
 - [[concepts/macos-udp-send]] — batched sends on macOS; why packets waited or were dropped until patch 28. **Read before touching the Darwin UDP patches.**
 - [[concepts/macos-system-mode]] — bundled gvisor vs LaunchDaemon kernel-utun, mirror-token + mirror-port handoff
 - [[concepts/desktop-client]] — Tauri 2 + Svelte 5 macOS app: shipped capabilities (Phase V→DD), 22 commands, forward gaps
