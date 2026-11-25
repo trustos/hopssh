@@ -176,3 +176,9 @@ Pages touched: 5 updated (concepts/netlab, concepts/e2e-tests and concepts/macos
 A race in patch 35, found when `TestOneWayLAN` failed once in an extra run, explained and fixed: the first packet was handed to the machine before the path was changed, so a quick kernel answered into the dead path (`concepts/netlab`, cause 12). New: `TestE2E_MovesBeforeItAnswers`. From the second review (two agents on Opus, independent of the first): the path loop logs its start, its end and that it runs, as every long-lived goroutine must (v0.10.26); its comment says what happens after a panic; the rule of v0.10.28 is marked as superseded where patch 35 replaced it. Everything else they found was known, or checked against the code and not a fault; what is left of it is in `open-questions`.
 
 Pages touched: 3 updated (concepts/netlab, concepts/macos-udp-send (date, backlink), open-questions), this log, patches/README.md, CLAUDE.md.
+
+## [2026-11-25] ingest | Two data races fixed, a renewal test for a long outage, field tools
+
+`go test -race` showed two races in Nebula's own code between sending, receiving and status: the address a peer is sent to (patch 37) and a peer's relay list (patch 38); each has a red/green test in the vendored package. New: `TestE2E_RenewalFailsPastExpiry`, a running agent whose renewals are refused until its certificate is no longer accepted. It showed that the agent then waited up to 30 minutes between tries; `renewNow` now keeps the first wait (1 minute) for as long as there is no valid certificate (a 401 keeps the long wait). An audit of the certificate and path tests lists what has no test yet. `cmd/hop-field` (pull request 3) records real machines; its first 4 hours are in `open-questions`.
+
+Pages touched: 2 updated (open-questions, this log), patches/README.md, CLAUDE.md.
