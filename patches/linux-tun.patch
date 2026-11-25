@@ -1,0 +1,126 @@
+diff --git a/github.com/slackhq/nebula/overlay/tun_linux.go b/github.com/slackhq/nebula/overlay/tun_linux.go
+index ba7a457..5f0b83b 100644
+--- a/github.com/slackhq/nebula/overlay/tun_linux.go
++++ b/github.com/slackhq/nebula/overlay/tun_linux.go
+@@ -35,6 +35,44 @@ type tunFile struct {
+ 	readPoll   [2]unix.PollFd
+ 	writePoll  [2]unix.PollFd
+ 	closed     bool
++	waiters    *tunWaiters // hopssh: shared like shutdownFd, see tun.Close
++}
++
++// tunWaiters counts the goroutines that wait in poll on a tun descriptor
++// (hopssh). The kernel keeps the device until the last of them has left, so
++// Close waits for them: whoever closes a network and opens it again at once,
++// as a certificate renewal does, would otherwise find the device busy.
++type tunWaiters struct {
++	mu      sync.Mutex
++	closing bool
++	wg      sync.WaitGroup
++}
++
++func (w *tunWaiters) enter() bool {
++	w.mu.Lock()
++	defer w.mu.Unlock()
++	if w.closing {
++		return false
++	}
++	w.wg.Add(1)
++	return true
++}
++
++// close lets nobody in any more, wakes those inside and waits for them.
++func (w *tunWaiters) close(wake func() error) {
++	w.mu.Lock()
++	w.closing = true
++	w.mu.Unlock()
++	_ = wake()
++	done := make(chan struct{})
++	go func() {
++		w.wg.Wait()
++		close(done)
++	}()
++	select {
++	case <-done:
++	case <-time.After(time.Second):
++	}
+ }
+ 
+ // newFriend makes a tunFile for a MultiQueueReader that copies the shutdown eventfd from the parent tun
+@@ -45,6 +83,7 @@ func (r *tunFile) newFriend(fd int) (*tunFile, error) {
+ 	return &tunFile{
+ 		fd:         fd,
+ 		shutdownFd: r.shutdownFd,
++		waiters:    r.waiters,
+ 		readPoll: [2]unix.PollFd{
+ 			{Fd: int32(fd), Events: unix.POLLIN},
+ 			{Fd: int32(r.shutdownFd), Events: unix.POLLIN},
+@@ -70,6 +109,7 @@ func newTunFd(fd int) (*tunFile, error) {
+ 		fd:         fd,
+ 		shutdownFd: shutdownFd,
+ 		lastOne:    true,
++		waiters:    &tunWaiters{},
+ 		readPoll: [2]unix.PollFd{
+ 			{Fd: int32(fd), Events: unix.POLLIN},
+ 			{Fd: int32(shutdownFd), Events: unix.POLLIN},
+@@ -85,6 +125,10 @@ func newTunFd(fd int) (*tunFile, error) {
+ 
+ func (r *tunFile) blockOnRead() error {
+ 	const problemFlags = unix.POLLHUP | unix.POLLNVAL | unix.POLLERR
++	if !r.waiters.enter() {
++		return os.ErrClosed
++	}
++	defer r.waiters.wg.Done()
+ 	var err error
+ 	for {
+ 		_, err = unix.Poll(r.readPoll[:], -1)
+@@ -111,6 +155,10 @@ func (r *tunFile) blockOnRead() error {
+ 
+ func (r *tunFile) blockOnWrite() error {
+ 	const problemFlags = unix.POLLHUP | unix.POLLNVAL | unix.POLLERR
++	if !r.waiters.enter() {
++		return os.ErrClosed
++	}
++	defer r.waiters.wg.Done()
+ 	var err error
+ 	for {
+ 		_, err = unix.Poll(r.writePoll[:], -1)
+@@ -251,7 +299,7 @@ func newTunFromFd(c *config.C, l *slog.Logger, deviceFd int, vpnNetworks []netip
+ }
+ 
+ func newTun(c *config.C, l *slog.Logger, vpnNetworks []netip.Prefix, multiqueue bool) (*tun, error) {
+-	fd, err := unix.Open("/dev/net/tun", os.O_RDWR, 0)
++	fd, err := unix.Open("/dev/net/tun", os.O_RDWR|unix.O_CLOEXEC, 0) // hopssh patch 32: not inherited by programs the web terminal starts
+ 	if err != nil {
+ 		// If /dev/net/tun doesn't exist, try to create it (will happen in docker)
+ 		if os.IsNotExist(err) {
+@@ -264,7 +312,7 @@ func newTun(c *config.C, l *slog.Logger, vpnNetworks []netip.Prefix, multiqueue
+ 				return nil, fmt.Errorf("failed to create /dev/net/tun: %w", err)
+ 			}
+ 
+-			fd, err = unix.Open("/dev/net/tun", os.O_RDWR, 0)
++			fd, err = unix.Open("/dev/net/tun", os.O_RDWR|unix.O_CLOEXEC, 0) // hopssh patch 32: not inherited by programs the web terminal starts
+ 			if err != nil {
+ 				return nil, fmt.Errorf("created /dev/net/tun, but still failed: %w", err)
+ 			}
+@@ -415,7 +463,7 @@ func (t *tun) NewMultiQueueReader() (io.ReadWriteCloser, error) {
+ 	t.closeLock.Lock()
+ 	defer t.closeLock.Unlock()
+ 
+-	fd, err := unix.Open("/dev/net/tun", os.O_RDWR, 0)
++	fd, err := unix.Open("/dev/net/tun", os.O_RDWR|unix.O_CLOEXEC, 0) // hopssh patch 32: not inherited by programs the web terminal starts
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -888,8 +936,9 @@ func (t *tun) Close() error {
+ 		t.routeChan = nil
+ 	}
+ 
+-	// Signal all readers blocked in poll to wake up and exit
+-	_ = t.tunFile.wakeForShutdown()
++	// Signal all readers blocked in poll to wake up and exit, and (hopssh)
++	// wait until they have: see tunWaiters.
++	t.tunFile.waiters.close(t.tunFile.wakeForShutdown)
+ 
+ 	if t.ioctlFd > 0 {
+ 		_ = unix.Close(int(t.ioctlFd))
