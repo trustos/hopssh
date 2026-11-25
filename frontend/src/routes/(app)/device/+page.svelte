@@ -61,6 +61,9 @@
 	// member, so we expose every network the API returns to us.
 	const enrollableNetworks = $derived(networkList);
 	const fullCode = $derived('HOP-' + code.toUpperCase());
+	const selectedName = $derived(
+		enrollableNetworks.find((n) => n.id === selectedNetwork)?.name ?? ''
+	);
 
 	// Stage drives the 3-step progress ladder. Mirrors the desktop's
 	// onboarding ladder so the user sees a consistent narrative
@@ -77,7 +80,10 @@
 	onMount(async () => {
 		try {
 			networkList = await networksApi.list();
-			if (enrollableNetworks.length > 0) {
+			// With more than one network nothing is preselected: the code
+			// field submits by itself on the fourth character, so a default
+			// here put devices into whichever network happened to be first.
+			if (enrollableNetworks.length === 1) {
 				selectedNetwork = enrollableNetworks[0].id;
 			}
 		} catch (e) {
@@ -168,7 +174,7 @@
 				{#if arrivedWithCode && code.length === 4}
 					Approve the device that asked to join.
 				{:else}
-					Enter the code shown on the device that's joining.
+					Choose the network, then enter the code shown on the device that's joining.
 				{/if}
 			</p>
 		</div>
@@ -201,7 +207,9 @@
 			<Card.Root class="border-primary/50 bg-primary/10">
 				<Card.Content class="py-6 text-center">
 					<CheckCircle class="mx-auto mb-2 size-8 text-primary" />
-					<p class="font-medium text-primary">Device authorized</p>
+					<p class="font-medium text-primary">
+						Device added{selectedName ? ` to ${selectedName}` : ''}
+					</p>
 					<p class="mt-1 text-sm text-muted-foreground">
 						Return to hopssh on your device — the mesh will come up automatically.
 					</p>
@@ -302,33 +310,6 @@
 							</Alert.Root>
 						{/if}
 
-						<div class="space-y-3">
-							<Label>Device Code</Label>
-							<div class="flex items-center justify-center gap-2">
-								<span class="font-mono text-lg font-semibold text-muted-foreground">HOP</span>
-								<Minus class="size-4 text-muted-foreground" />
-								<InputOTP.Root
-									bind:value={code}
-									maxlength={4}
-									class="justify-center"
-									pasteTransformer={stripCode}
-									onComplete={() => {
-										if (selectedNetwork && code.length === 4) {
-											handleSubmit(new Event('submit'));
-										}
-									}}
-								>
-									{#snippet children({ cells })}
-										<InputOTP.Group>
-											{#each cells as cell}
-												<InputOTP.Slot {cell} />
-											{/each}
-										</InputOTP.Group>
-									{/snippet}
-								</InputOTP.Root>
-							</div>
-						</div>
-
 						<!-- When there's only one enrollable network we lock the picker
 						     to that single option. Multi-network users still get
 						     the full Select with their full list. -->
@@ -344,8 +325,9 @@
 								<Label>Network</Label>
 								<Select.Root type="single" bind:value={selectedNetwork}>
 									<Select.Trigger class="w-full">
-										{@const selected = enrollableNetworks.find(n => n.id === selectedNetwork)}
-										<span>{selected?.name || 'Select a network'}</span>
+										<span class={selectedName ? '' : 'text-muted-foreground'}>
+											{selectedName || 'Choose a network'}
+										</span>
 									</Select.Trigger>
 									<Select.Content>
 										{#each enrollableNetworks as network}
@@ -356,12 +338,47 @@
 							</div>
 						{/if}
 
+						<div class="space-y-3">
+							<Label>Device Code</Label>
+							<div class="flex items-center justify-center gap-2">
+								<span class="font-mono text-lg font-semibold text-muted-foreground">HOP</span>
+								<Minus class="size-4 text-muted-foreground" />
+								<InputOTP.Root
+									bind:value={code}
+									maxlength={4}
+									class="justify-center"
+									pasteTransformer={stripCode}
+									onComplete={() => {
+										// Only where there is nothing to choose. With several
+										// networks the button, which names the network, is
+										// the one way to send: this also fired when the
+										// network was picked after the code.
+										if (enrollableNetworks.length === 1 && code.length === 4) {
+											handleSubmit(new Event('submit'));
+										}
+									}}
+								>
+									{#snippet children({ cells })}
+										<InputOTP.Group>
+											{#each cells as cell}
+												<InputOTP.Slot {cell} />
+											{/each}
+										</InputOTP.Group>
+									{/snippet}
+								</InputOTP.Root>
+							</div>
+						</div>
+
 						<Button
 							type="submit"
 							class="w-full"
 							disabled={submitting || code.length < 4 || !selectedNetwork}
 						>
-							{submitting ? 'Authorizing…' : 'Authorize'}
+							{submitting
+								? 'Authorizing…'
+								: selectedName
+									? `Add device to ${selectedName}`
+									: 'Choose a network first'}
 						</Button>
 					</form>
 				</Card.Content>
