@@ -171,7 +171,9 @@
 		<div class="text-center">
 			<h1 class="text-2xl font-bold">Authorize Device</h1>
 			<p class="mt-1 text-sm text-muted-foreground">
-				{#if arrivedWithCode && code.length === 4}
+				{#if arrivedWithCode && code.length === 4 && enrollableNetworks.length > 1}
+					Choose the network for the device that asked to join.
+				{:else if arrivedWithCode && code.length === 4}
 					Approve the device that asked to join.
 				{:else}
 					Choose the network, then enter the code shown on the device that's joining.
