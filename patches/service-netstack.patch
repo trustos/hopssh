@@ -1,6 +1,8 @@
+diff --git a/github.com/slackhq/nebula/service/service.go b/github.com/slackhq/nebula/service/service.go
+index 6610800..a3a0b98 100644
 --- a/github.com/slackhq/nebula/service/service.go
 +++ b/github.com/slackhq/nebula/service/service.go
-@@ -233,6 +233,9 @@
+@@ -250,6 +250,9 @@ func (s *Service) Wait() error {
  
  func (s *Service) Close() error {
  	s.control.Stop()

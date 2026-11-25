@@ -1,0 +1,121 @@
+diff --git a/github.com/slackhq/nebula/overlay/tun_darwin.go b/github.com/slackhq/nebula/overlay/tun_darwin.go
+index d30148b..7538c1f 100644
+--- a/github.com/slackhq/nebula/overlay/tun_darwin.go
++++ b/github.com/slackhq/nebula/overlay/tun_darwin.go
+@@ -31,6 +31,29 @@ type tun struct {
+ 	routeTree   atomic.Pointer[bart.Table[routing.Gateways]]
+ 	linkAddr    *netroute.LinkAddr
+ 	l           *slog.Logger
++
++	// hopssh: state of ReadBatch, made on first use
++	batchMsgs []tunMsghdrX
++	batchIovs []tunIovec // 2 per message: [0]=4-byte AF header, [1]=payload
++	batchHdrs [][4]byte
++}
++
++// For recvmsg_x on the utun fd. The layout is XNU's struct msghdr_x (see udp/udp_darwin.go).
++
++type tunIovec struct {
++	Base *byte
++	Len  uint64
++}
++
++type tunMsghdrX struct {
++	Name       *byte
++	Namelen    uint32
++	Iov        *tunIovec
++	Iovlen     int32
++	Control    *byte
++	Controllen uint32
++	Flags      int32
++	Datalen    uint64
+ }
+ 
+ type ifReq struct {
+@@ -89,7 +112,14 @@ func newTun(c *config.C, l *slog.Logger, vpnNetworks []netip.Prefix, _ bool) (*t
+ 		}
+ 	}
+ 
++	// hopssh patch 32: without close-on-exec every program started from the web
++	// terminal holds the device, for as long as it runs.
++	syscall.ForkLock.RLock()
+ 	fd, err := unix.Socket(unix.AF_SYSTEM, unix.SOCK_DGRAM, unix.AF_SYS_CONTROL)
++	if err == nil {
++		unix.CloseOnExec(fd)
++	}
++	syscall.ForkLock.RUnlock()
+ 	if err != nil {
+ 		return nil, fmt.Errorf("system socket: %v", err)
+ 	}
+@@ -550,6 +580,71 @@ func (t *tun) Read(to []byte) (int, error) {
+ 	return n - 4, nil
+ }
+ 
++// ReadBatch reads up to len(out) packets (hopssh). It waits for the first one as
++// Read does, then takes what the kernel has queued already with one recvmsg_x,
++// without waiting. Under load that is many packets per syscall; when idle it is one
++// packet and one extra syscall.
++func (t *tun) ReadBatch(out [][]byte) (int, error) {
++	if len(out) == 0 {
++		return 0, nil
++	}
++
++	got, err := t.Read(out[0])
++	if err != nil {
++		return 0, err
++	}
++	out[0] = out[0][:got]
++
++	return 1 + t.drainBatch(out[1:]), nil
++}
++
++// drainBatch returns how many packets it read. Any error, EAGAIN among them, is 0:
++// the caller has its first packet.
++func (t *tun) drainBatch(out [][]byte) int {
++	n := len(out)
++	if n == 0 {
++		return 0
++	}
++
++	if len(t.batchMsgs) < n {
++		t.batchMsgs = make([]tunMsghdrX, n)
++		t.batchIovs = make([]tunIovec, 2*n)
++		t.batchHdrs = make([][4]byte, n)
++	}
++
++	for i := 0; i < n; i++ {
++		t.batchIovs[2*i] = tunIovec{Base: &t.batchHdrs[i][0], Len: 4}
++		t.batchIovs[2*i+1] = tunIovec{Base: &out[i][0], Len: uint64(cap(out[i]))}
++		t.batchMsgs[i] = tunMsghdrX{Iov: &t.batchIovs[2*i], Iovlen: 2}
++	}
++
++	rc, err := t.f.SyscallConn()
++	if err != nil {
++		return 0
++	}
++
++	var got uintptr
++	var errno syscall.Errno
++	// Inside rc.Read the fd cannot be closed under us. Returning true: never wait.
++	err = rc.Read(func(fd uintptr) bool {
++		got, _, errno = unix.Syscall6(unix.SYS_RECVMSG_X, fd, uintptr(unsafe.Pointer(&t.batchMsgs[0])), uintptr(n), 0, 0, 0)
++		return true
++	})
++	if err != nil || errno != 0 {
++		return 0
++	}
++
++	for i := 0; i < int(got); i++ {
++		dlen := int(t.batchMsgs[i].Datalen)
++		if dlen < 4 {
++			out[i] = out[i][:0]
++			continue
++		}
++		out[i] = out[i][:dlen-4]
++	}
++	return int(got)
++}
++
+ // Write pushes one IP packet onto the utun device.
+ func (t *tun) Write(from []byte) (int, error) {
+ 	if len(from) == 0 {

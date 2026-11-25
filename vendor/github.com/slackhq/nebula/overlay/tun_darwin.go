@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/netip"
 	"os"
 	"sync/atomic"
@@ -14,7 +15,6 @@ import (
 	"unsafe"
 
 	"github.com/gaissmai/bart"
-	"github.com/sirupsen/logrus"
 	"github.com/slackhq/nebula/config"
 	"github.com/slackhq/nebula/routing"
 	"github.com/slackhq/nebula/util"
@@ -23,33 +23,22 @@ import (
 )
 
 type tun struct {
-	io.ReadWriteCloser
+	f           *os.File
 	Device      string
 	vpnNetworks []netip.Prefix
 	DefaultMTU  int
 	Routes      atomic.Pointer[[]Route]
 	routeTree   atomic.Pointer[bart.Table[routing.Gateways]]
 	linkAddr    *netroute.LinkAddr
-	l           *logrus.Logger
+	l           *slog.Logger
 
-	// cache out buffer since we need to prepend 4 bytes for tun metadata
-	out []byte
-	// cache in buffer since we need to strip 4 bytes of tun metadata on read
-	in []byte
-
-	// sysFd is the raw utun fd used by ReadBatch (recvmsg_x) for batch reads.
-	// ReadWriteCloser wraps this same fd for single-packet Read()/Write().
-	sysFd int
-
-	// Pre-allocated batch read state (nil until ReadBatch is first called).
+	// hopssh: state of ReadBatch, made on first use
 	batchMsgs []tunMsghdrX
 	batchIovs []tunIovec // 2 per message: [0]=4-byte AF header, [1]=payload
 	batchHdrs [][4]byte
-	batchBufs [][]byte
 }
 
-// Batch read types for recvmsg_x on the utun fd.
-// Layout matches XNU's struct msghdr_x (see udp/udp_darwin.go).
+// For recvmsg_x on the utun fd. The layout is XNU's struct msghdr_x (see udp/udp_darwin.go).
 
 type tunIovec struct {
 	Base *byte
@@ -110,7 +99,7 @@ type ifreqAlias6 struct {
 	Lifetime   addrLifetime
 }
 
-func newTun(c *config.C, l *logrus.Logger, vpnNetworks []netip.Prefix, _ bool) (*tun, error) {
+func newTun(c *config.C, l *slog.Logger, vpnNetworks []netip.Prefix, _ bool) (*tun, error) {
 	name := c.GetString("tun.dev", "")
 	ifIndex := -1
 	if name != "" && name != "utun" {
@@ -162,12 +151,11 @@ func newTun(c *config.C, l *logrus.Logger, vpnNetworks []netip.Prefix, _ bool) (
 	}
 
 	t := &tun{
-		ReadWriteCloser: os.NewFile(uintptr(fd), ""),
-		Device:          name,
-		vpnNetworks:     vpnNetworks,
-		DefaultMTU:      c.GetInt("tun.mtu", DefaultMTU),
-		l:               l,
-		sysFd:           fd,
+		f:           os.NewFile(uintptr(fd), ""),
+		Device:      name,
+		vpnNetworks: vpnNetworks,
+		DefaultMTU:  c.GetInt("tun.mtu", DefaultMTU),
+		l:           l,
 	}
 
 	err = t.reload(c, true)
@@ -192,13 +180,13 @@ func (t *tun) deviceBytes() (o [16]byte) {
 	return
 }
 
-func newTunFromFd(_ *config.C, _ *logrus.Logger, _ int, _ []netip.Prefix) (*tun, error) {
+func newTunFromFd(_ *config.C, _ *slog.Logger, _ int, _ []netip.Prefix) (*tun, error) {
 	return nil, fmt.Errorf("newTunFromFd not supported in Darwin")
 }
 
 func (t *tun) Close() error {
-	if t.ReadWriteCloser != nil {
-		return t.ReadWriteCloser.Close()
+	if t.f != nil {
+		return t.f.Close()
 	}
 	return nil
 }
@@ -428,8 +416,7 @@ func (t *tun) addRoutes(logErrors bool) error {
 		err := addRoute(r.Cidr, t.linkAddr)
 		if err != nil {
 			if errors.Is(err, unix.EEXIST) {
-				t.l.WithField("route", r.Cidr).
-					Warnf("unable to add unsafe_route, identical route already exists")
+				t.l.Warn("unable to add unsafe_route, identical route already exists", "route", r.Cidr)
 			} else {
 				retErr := util.NewContextualError("Failed to add route", map[string]any{"route": r}, err)
 				if logErrors {
@@ -439,7 +426,7 @@ func (t *tun) addRoutes(logErrors bool) error {
 				}
 			}
 		} else {
-			t.l.WithField("route", r).Info("Added route")
+			t.l.Info("Added route", "route", r)
 		}
 	}
 
@@ -454,9 +441,9 @@ func (t *tun) removeRoutes(routes []Route) error {
 
 		err := delRoute(r.Cidr, t.linkAddr)
 		if err != nil {
-			t.l.WithError(err).WithField("route", r).Error("Failed to remove route")
+			t.l.Error("Failed to remove route", "error", err, "route", r)
 		} else {
-			t.l.WithField("route", r).Info("Removed route")
+			t.l.Info("Removed route", "route", r)
 		}
 	}
 	return nil
@@ -542,99 +529,108 @@ func delRoute(prefix netip.Prefix, gateway netroute.Addr) error {
 	return nil
 }
 
+// tunWritev and tunReadv are linkname'd to x/sys/unix's libc-routed writev/readv stubs so the
+// calls go through libSystem's pinned trampoline. A raw syscall.Syscall(SYS_WRITEV/SYS_READV, ...)
+// on darwin/arm64 emits an SVC #0x80 trap (see $GOROOT/src/syscall/asm_darwin_arm64.s), the path
+// Apple keeps warning they will eventually disallow. We pull the low-level stubs instead of calling
+// unix.Writev/unix.Readv because those take [][]byte and rebuild the []Iovec every call, which
+// heap-allocates the header; linkname'ing the stubs lets us hand them our own stack-allocated
+// iovecs. See golang/go#78049.
+
+//go:linkname tunWritev golang.org/x/sys/unix.writev
+//go:noescape
+func tunWritev(fd int, iovecs []unix.Iovec) (n int, err error)
+
+//go:linkname tunReadv golang.org/x/sys/unix.readv
+//go:noescape
+func tunReadv(fd int, iovecs []unix.Iovec) (n int, err error)
+
+// Read pulls one IP packet off the utun device, scattering the 4 byte protocol header away from
+// the packet so the payload lands directly in to.
 func (t *tun) Read(to []byte) (int, error) {
-	buf := t.in
-	if cap(buf) < len(to)+4 {
-		buf = make([]byte, len(to)+4)
-		t.in = buf
+	var head [4]byte
+
+	rc, err := t.f.SyscallConn()
+	if err != nil {
+		return 0, err
 	}
-	buf = buf[:len(to)+4]
 
-	n, err := t.ReadWriteCloser.Read(buf)
-
-	copy(to, buf[4:])
-	return n - 4, err
+	var n int
+	var callErr error
+	err = rc.Read(func(fd uintptr) bool {
+		iovecs := []unix.Iovec{
+			{Base: &head[0], Len: 4},
+			{Base: &to[0], Len: uint64(len(to))},
+		}
+		n, callErr = tunReadv(int(fd), iovecs)
+		if errno, ok := callErr.(syscall.Errno); ok && errno.Temporary() {
+			return false
+		}
+		return true
+	})
+	if err != nil {
+		return 0, err
+	}
+	if callErr != nil {
+		return 0, callErr
+	}
+	if n < 4 {
+		return 0, nil
+	}
+	return n - 4, nil
 }
 
-// ReadBatch reads up to len(out) packets from the utun device.
-//
-// First slot: blocking read via os.File (Go netpoller) to wait for at least
-// one packet. Subsequent slots: non-blocking drain via recvmsg_x — picks up
-// any packets already queued in the kernel, returns on EAGAIN.
-//
-// This gives "opportunistic batching": under load, many packets accumulate
-// between listenIn iterations and are drained in one syscall. When idle,
-// we return 1 packet after the blocking wait — no wasted syscalls.
+// ReadBatch reads up to len(out) packets (hopssh). It waits for the first one as
+// Read does, then takes what the kernel has queued already with one recvmsg_x,
+// without waiting. Under load that is many packets per syscall; when idle it is one
+// packet and one extra syscall.
 func (t *tun) ReadBatch(out [][]byte) (int, error) {
-	n := len(out)
-	if n == 0 {
+	if len(out) == 0 {
 		return 0, nil
 	}
 
-	// First packet: blocking read via Go's netpoller-aware os.File.
-	// This waits until at least one packet is available.
 	got, err := t.Read(out[0])
 	if err != nil {
 		return 0, err
 	}
 	out[0] = out[0][:got]
 
-	if n == 1 {
-		return 1, nil
-	}
-
-	// Drain additional packets non-blocking via recvmsg_x.
-	drained := t.drainBatch(out[1:])
-	return 1 + drained, nil
+	return 1 + t.drainBatch(out[1:]), nil
 }
 
-// drainBatch calls recvmsg_x non-blocking to pick up any packets already
-// queued in the kernel. Returns the count successfully read; on EAGAIN or
-// any other error, returns what it got and the caller continues with that.
+// drainBatch returns how many packets it read. Any error, EAGAIN among them, is 0:
+// the caller has its first packet.
 func (t *tun) drainBatch(out [][]byte) int {
 	n := len(out)
 	if n == 0 {
 		return 0
 	}
 
-	// Lazy-init per-tun batch buffers. Sized to the largest request seen.
 	if len(t.batchMsgs) < n {
 		t.batchMsgs = make([]tunMsghdrX, n)
 		t.batchIovs = make([]tunIovec, 2*n)
 		t.batchHdrs = make([][4]byte, n)
-		t.batchBufs = make([][]byte, n)
 	}
 
-	// Wire each msg's iovec: [0]=4-byte AF header, [1]=caller's payload buffer.
 	for i := 0; i < n; i++ {
-		t.batchBufs[i] = out[i]
-		t.batchIovs[2*i] = tunIovec{
-			Base: &t.batchHdrs[i][0],
-			Len:  4,
-		}
-		t.batchIovs[2*i+1] = tunIovec{
-			Base: &out[i][0],
-			Len:  uint64(cap(out[i])),
-		}
-		t.batchMsgs[i] = tunMsghdrX{
-			Iov:    &t.batchIovs[2*i],
-			Iovlen: 2,
-		}
+		t.batchIovs[2*i] = tunIovec{Base: &t.batchHdrs[i][0], Len: 4}
+		t.batchIovs[2*i+1] = tunIovec{Base: &out[i][0], Len: uint64(cap(out[i]))}
+		t.batchMsgs[i] = tunMsghdrX{Iov: &t.batchIovs[2*i], Iovlen: 2}
 	}
 
-	got, _, errno := unix.Syscall6(
-		unix.SYS_RECVMSG_X,
-		uintptr(t.sysFd),
-		uintptr(unsafe.Pointer(&t.batchMsgs[0])),
-		uintptr(n),
-		0,
-		0,
-		0,
-	)
-	if errno != 0 {
-		// EAGAIN is expected when no more packets ready. Any other errno we
-		// swallow too — the first packet is already in out[0], so the caller
-		// still makes progress.
+	rc, err := t.f.SyscallConn()
+	if err != nil {
+		return 0
+	}
+
+	var got uintptr
+	var errno syscall.Errno
+	// Inside rc.Read the fd cannot be closed under us. Returning true: never wait.
+	err = rc.Read(func(fd uintptr) bool {
+		got, _, errno = unix.Syscall6(unix.SYS_RECVMSG_X, fd, uintptr(unsafe.Pointer(&t.batchMsgs[0])), uintptr(n), 0, 0, 0)
+		return true
+	})
+	if err != nil || errno != 0 {
 		return 0
 	}
 
@@ -649,33 +645,52 @@ func (t *tun) drainBatch(out [][]byte) int {
 	return int(got)
 }
 
-// Write is only valid for single threaded use
+// Write pushes one IP packet onto the utun device.
 func (t *tun) Write(from []byte) (int, error) {
-	buf := t.out
-	if cap(buf) < len(from)+4 {
-		buf = make([]byte, len(from)+4)
-		t.out = buf
-	}
-	buf = buf[:len(from)+4]
-
 	if len(from) == 0 {
 		return 0, syscall.EIO
 	}
 
-	// Determine the IP Family for the NULL L2 Header
 	ipVer := from[0] >> 4
-	if ipVer == 4 {
-		buf[3] = syscall.AF_INET
-	} else if ipVer == 6 {
-		buf[3] = syscall.AF_INET6
-	} else {
+	var head [4]byte
+	switch ipVer {
+	case 4:
+		head[3] = syscall.AF_INET
+	case 6:
+		head[3] = syscall.AF_INET6
+	default:
 		return 0, fmt.Errorf("unable to determine IP version from packet")
 	}
 
-	copy(buf[4:], from)
+	// Grab rc as a local so the compiler can devirtualize the call and keep the closure on the stack.
+	rc, err := t.f.SyscallConn()
+	if err != nil {
+		return 0, err
+	}
 
-	n, err := t.ReadWriteCloser.Write(buf)
-	return n - 4, err
+	var n int
+	var callErr error
+	err = rc.Write(func(fd uintptr) bool {
+		iovecs := []unix.Iovec{
+			{Base: &head[0], Len: 4},
+			{Base: &from[0], Len: uint64(len(from))},
+		}
+		n, callErr = tunWritev(int(fd), iovecs)
+		// Type-assert to syscall.Errno so the EAGAIN/EWOULDBLOCK/EINTR check doesn't box the errno
+		// constants into error interfaces on every call.
+		if errno, ok := callErr.(syscall.Errno); ok && errno.Temporary() {
+			return false
+		}
+		return true
+	})
+	if err != nil {
+		return 0, err
+	}
+	if callErr != nil {
+		return 0, callErr
+	}
+
+	return n - 4, nil
 }
 
 func (t *tun) Networks() []netip.Prefix {

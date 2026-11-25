@@ -3,13 +3,13 @@ package e2etest
 import (
 	"context"
 	"fmt"
+	"github.com/trustos/hopssh/internal/nebulacfg"
 	"net"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 
-	"github.com/sirupsen/logrus"
 	"github.com/slackhq/nebula"
 	"github.com/slackhq/nebula/config"
 	"github.com/slackhq/nebula/overlay"
@@ -44,8 +44,10 @@ firewall:
 `, dir, e.ServerIP, e.LighthousePort)); err != nil {
 		t.Fatal(err)
 	}
-	l := logrus.New()
-	l.SetLevel(logrus.ErrorLevel)
+	l, err := nebulacfg.Logger(&cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctrl, err := nebula.Main(&cfg, false, "e2e", l, overlay.NewUserDeviceFromConfig)
 	if err != nil {
 		t.Fatalf("start the peer's Nebula: %v", err)

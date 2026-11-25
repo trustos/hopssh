@@ -1,0 +1,212 @@
+diff --git a/github.com/slackhq/nebula/interface.go b/github.com/slackhq/nebula/interface.go
+index c44f38b..20e7f05 100644
+--- a/github.com/slackhq/nebula/interface.go
++++ b/github.com/slackhq/nebula/interface.go
+@@ -7,9 +7,11 @@ import (
+ 	"io"
+ 	"log/slog"
+ 	"net/netip"
++	"runtime"
+ 	"slices"
+ 	"sync"
+ 	"sync/atomic"
++	"syscall"
+ 	"time"
+ 
+ 	"github.com/gaissmai/bart"
+@@ -89,6 +91,11 @@ type Interface struct {
+ 	conntrackCacheTimeout time.Duration
+ 
+ 	ctx     context.Context
++
++	// hopssh patch 22: called for every authenticated inbound packet with the
++	// peer's vpnAddr and the UDP address it came from. nil = off.
++	// Set via Control.SetInboundObserver.
++	inboundObserver atomic.Pointer[func(vpnAddr netip.Addr, remote netip.AddrPort)]
+ 	writers []udp.Conn
+ 	readers []io.ReadWriteCloser
+ 	wg      sync.WaitGroup
+@@ -307,6 +314,9 @@ func (f *Interface) onFatal(err error) {
+ }
+ 
+ func (f *Interface) listenOut(i int) {
++	// hopssh: the QoS hint (macOS) is per OS thread
++	runtime.LockOSThread()
++	applyOSThreadHints()
+ 	var li udp.Conn
+ 	if i > 0 {
+ 		li = f.writers[i]
+@@ -336,7 +346,27 @@ func (f *Interface) listenOut(i int) {
+ 	f.l.Debug("underlay reader is done", "reader", i)
+ }
+ 
++// batchReader is implemented by TUN devices that support reading multiple
++// packets per syscall (currently: Darwin via recvmsg_x on the utun fd).
++// When the reader implements this, listenIn drains a batch and flushes the
++// UDP writer once per batch, amortizing send syscalls under load.
++type batchReader interface {
++	ReadBatch(out [][]byte) (int, error)
++}
++
++// batchWriter is implemented by UDP connections that only queue WriteTo
++// inside a BeginBatch/EndBatch scope (Darwin). hopssh patch 28.
++type batchWriter interface {
++	BeginBatch()
++	EndBatch() error
++}
++
++const listenInBatchSize = 32
++
+ func (f *Interface) listenIn(reader io.ReadWriteCloser, i int) {
++	// hopssh: the QoS hint (macOS) is per OS thread
++	runtime.LockOSThread()
++	applyOSThreadHints()
+ 	packet := make([]byte, mtu)
+ 	out := make([]byte, mtu)
+ 	fwPacket := &firewall.Packet{}
+@@ -344,7 +374,53 @@ func (f *Interface) listenIn(reader io.ReadWriteCloser, i int) {
+ 
+ 	conntrackCache := firewall.NewConntrackCacheTicker(f.ctx, f.l, f.conntrackCacheTimeout)
+ 
++	br, useBatch := reader.(batchReader)
++	var packets [][]byte
++	if useBatch {
++		packets = make([][]byte, listenInBatchSize)
++		for j := range packets {
++			packets[j] = make([]byte, mtu)
++		}
++	}
++
+ 	for {
++		if useBatch {
++			// Reset slices to full capacity so ReadBatch can resize them.
++			for j := range packets {
++				packets[j] = packets[j][:cap(packets[j])]
++			}
++
++			n, err := br.ReadBatch(packets)
++			if err != nil {
++				// EAGAIN from raw recvmsg_x (shouldn't happen since first read is
++				// blocking via os.File, but guard anyway): just retry.
++				if errors.Is(err, syscall.EAGAIN) {
++					continue
++				}
++				// Same shutdown noise handling as listenOut
++				if !f.closed.Load() && f.ctx.Err() == nil {
++					f.l.Error("Error while reading outbound packet batch, closing", "error", err, "reader", i)
++					f.onFatal(err)
++				}
++				break
++			}
++			bw, _ := f.writers[i].(batchWriter)
++			endBatch := func() error { return udp.Flush(f.writers[i]) }
++			if bw != nil {
++				bw.BeginBatch()
++				endBatch = bw.EndBatch
++			}
++			for j := 0; j < n; j++ {
++				f.consumeInsidePacket(packets[j], fwPacket, nb, out, i, conntrackCache.Get())
++			}
++			// Flush queued UDP sends from this batch in one sendmsg_x syscall.
++			if err := endBatch(); err != nil {
++				// hopssh patch 24: Warn, not Debug. What was queued is lost, handshakes too.
++				f.l.Warn("Flush failed — queued packets dropped (network may need rebind)", "error", err)
++			}
++			continue
++		}
++
+ 		n, err := reader.Read(packet)
+ 		if err != nil {
+ 			// Same shutdown noise handling as listenOut
+diff --git a/github.com/slackhq/nebula/qos_hint_darwin.go b/github.com/slackhq/nebula/qos_hint_darwin.go
+new file mode 100644
+index 0000000..48487e5
+--- /dev/null
++++ b/github.com/slackhq/nebula/qos_hint_darwin.go
+@@ -0,0 +1,63 @@
++//go:build darwin && cgo && !e2e_testing
++// +build darwin,cgo,!e2e_testing
++
++package nebula
++
++/*
++#include <pthread.h>
++#include <sys/qos.h>
++*/
++import "C"
++
++import "os"
++
++// applyOSThreadHints applies a macOS QoS class to the CURRENT OS
++// thread. Called from each packet-hot-path goroutine immediately
++// after runtime.LockOSThread().
++//
++// Why this exists (hopssh patch 19, 2026-04-22):
++//   The pprof profile during sustained low-pps ICMP showed 67 % of
++//   CPU in runtime.schedule / findRunnable / park_m and 26 % in
++//   pthread_cond_wait/signal — almost all of it scheduler-coordination
++//   overhead, with channel ops at 0 %. The architectural ceiling is
++//   the kernel→userspace ping-pong via kqueue (we can't fix that
++//   without NEPacketTunnelProvider), but the per-wakeup latency CAN
++//   be biased by the macOS scheduler's QoS class. USER_INTERACTIVE
++//   nominally gives the thread the same priority class as the audio
++//   subsystem.
++//
++// Empirical A/B/A test (200 pings × 3 phases on Mac mini Ethernet ↔
++// MBP WiFi, same window, same binary, only env var changed):
++//
++//   Phase A (no QoS):   mean 30.1 ms, stddev 41.7 ms
++//   Phase B (interactive):  mean 24.6 ms, stddev 34.5 ms  ← −18 % mean, −17 % stddev
++//   Phase C (no QoS, control):  mean 29.3 ms, stddev 38.1 ms
++//
++// A and C agree → the gain isn't WiFi drift; it's the QoS class.
++// Default-on for macOS as a result; HOPSSH_QOS=off escape hatch
++// preserved for users who observe audio glitches or other
++// side-effects from the elevated priority.
++//
++// Build-tag note (added v0.10.15): the constraint requires `cgo` so
++// that CI cross-compiles with CGO_ENABLED=0 silently fall through to
++// the no-op stub in qos_hint_other.go instead of failing with
++// "undefined: applyOSThreadHints". To put the QoS gain into the
++// CI-released darwin binary, the release.yml workflow runs darwin
++// builds on macos-latest with CGO_ENABLED=1.
++//
++// Recognised env values:
++//   HOPSSH_QOS=off          → no QoS hint (revert to default)
++//   HOPSSH_QOS=initiated    → QOS_CLASS_USER_INITIATED (slightly less aggressive)
++//   HOPSSH_QOS=interactive  → QOS_CLASS_USER_INTERACTIVE (default on darwin)
++//   HOPSSH_QOS=<unset>      → QOS_CLASS_USER_INTERACTIVE (default on darwin)
++func applyOSThreadHints() {
++	switch os.Getenv("HOPSSH_QOS") {
++	case "off":
++		return
++	case "initiated":
++		C.pthread_set_qos_class_self_np(C.QOS_CLASS_USER_INITIATED, 0)
++	default:
++		// "interactive", "", or any unrecognised value → interactive.
++		C.pthread_set_qos_class_self_np(C.QOS_CLASS_USER_INTERACTIVE, 0)
++	}
++}
+diff --git a/github.com/slackhq/nebula/qos_hint_other.go b/github.com/slackhq/nebula/qos_hint_other.go
+new file mode 100644
+index 0000000..3fa469e
+--- /dev/null
++++ b/github.com/slackhq/nebula/qos_hint_other.go
+@@ -0,0 +1,17 @@
++//go:build !darwin || !cgo || e2e_testing
++// +build !darwin !cgo e2e_testing
++
++package nebula
++
++// applyOSThreadHints — no-op stub used when CGO is unavailable
++// (non-darwin platforms, darwin builds with CGO_ENABLED=0 such as a
++// CI cross-compile from Linux, or e2e_testing). The real CGO
++// implementation lives in qos_hint_darwin.go and only compiles when
++// darwin && cgo && !e2e_testing.
++//
++// CI implication: a CI cross-compile with CGO_ENABLED=0 builds the
++// darwin binary with this stub and the binary will NOT carry the
++// −17 % RTT QoS gain. To put the gain into the released binary, CI
++// must build darwin on a macos-latest runner with CGO_ENABLED=1 —
++// see .github/workflows/release.yml.
++func applyOSThreadHints() {}

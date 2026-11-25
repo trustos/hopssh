@@ -1,0 +1,498 @@
+diff --git a/github.com/slackhq/nebula/connection_manager.go b/github.com/slackhq/nebula/connection_manager.go
+index cd711c8..afad926 100644
+--- a/github.com/slackhq/nebula/connection_manager.go
++++ b/github.com/slackhq/nebula/connection_manager.go
+@@ -351,7 +351,9 @@ func (cm *connectionManager) makeTrafficDecision(localIndex uint32, now time.Tim
+ 		if mainHostInfo {
+ 			decision = tryRehandshake
+ 		} else {
+-			if cm.shouldSwapPrimary(hostinfo) {
++			// hopssh patch 36: not while the peer uses the primary. What we heard on
++			// this tunnel may be from before the primary was there.
++			if cm.shouldSwapPrimary(hostinfo) && !primary.in.Load() {
+ 				decision = swapPrimary
+ 			} else {
+ 				// migrate the relays to the primary, if in use.
+diff --git a/github.com/slackhq/nebula/handshake_manager.go b/github.com/slackhq/nebula/handshake_manager.go
+index f3e801d..37c80b3 100644
+--- a/github.com/slackhq/nebula/handshake_manager.go
++++ b/github.com/slackhq/nebula/handshake_manager.go
+@@ -313,9 +313,19 @@ func (hm *HandshakeManager) handleOutbound(vpnIp netip.Addr, lighthouseTriggered
+ 		}
+ 	})
+ 
+-	// Don't be too noisy or confusing if we fail to send a handshake - if we don't get through we'll eventually log a timeout,
+-	// so only log when the list of remotes has changed
+-	if remotesHaveChanged {
++	// hopssh: on macOS WriteTo only queues (batched send). Send now, so that the
++	// line below does not claim a handshake that never left, as after a sleep in
++	// April 2026.
++	if flushErr := udp.Flush(hm.outside); flushErr != nil {
++		hostinfo.logger(hm.l).Error("Handshake flush failed — packets were queued but the syscall returned error; peer will not receive this handshake",
++			"udpAddrs", sentTo,
++			"initiatorIndex", hostinfo.localIndexId,
++			"handshake", hsFields,
++			"error", flushErr,
++		)
++	} else if remotesHaveChanged {
++		// Don't be too noisy or confusing if we fail to send a handshake - if we don't get through we'll eventually log a timeout,
++		// so only log when the list of remotes has changed
+ 		hostinfo.logger(hm.l).Info("Handshake message sent",
+ 			"udpAddrs", sentTo,
+ 			"initiatorIndex", hostinfo.localIndexId,
+@@ -992,6 +1002,9 @@ func (hm *HandshakeManager) continueHandshake(via ViaSender, hh *HandshakeHostIn
+ 		f.cachedPacketMetrics.sent.Inc(int64(len(hh.packetStore)))
+ 	}
+ 
++	// hopssh patch 35: show the other side where we hear it
++	f.send(header.Test, header.TestRequest, hostinfo.ConnectionState, hostinfo, []byte(""), make([]byte, 12), make([]byte, mtu))
++
+ 	hostinfo.remotes.RefreshFromHandshake(vpnAddrs)
+ 	f.metricHandshakes.Update(duration)
+ 
+@@ -1114,15 +1127,17 @@ func (hm *HandshakeManager) handleCheckAndCompleteError(err error, existing, hos
+ 
+ 	switch err {
+ 	case ErrAlreadySeen:
+-		if existing.SetRemoteIfPreferred(f.hostMap, via) {
+-			f.SendMessageToVpnAddr(header.Test, header.TestRequest, hostinfo.vpnAddrs[0], []byte(""), make([]byte, 12, 12), make([]byte, mtu))
+-		}
+ 		// Resend the original response. The peer is committed to that response's
+ 		// ephemeral keys; a freshly-built one would have different keys and break
+ 		// the tunnel even though both sides "completed" the handshake.
+ 		if msg := existing.HandshakePacket[handshakePacketStage2]; msg != nil {
+ 			hm.sendHandshakeResponse(via, msg, existing, true)
+ 		}
++		// hopssh patch 35: a better remote is asked, and used after it answered.
++		// Upstream moved there at once (SetRemoteIfPreferred).
++		if existing.isBetterRemote(f.hostMap, via) {
++			f.ask(existing, via.UdpAddr)
++		}
+ 
+ 	case ErrExistingHostInfo:
+ 		f.l.Info("Handshake too old",
+diff --git a/github.com/slackhq/nebula/hostinfo_remote_race_test.go b/github.com/slackhq/nebula/hostinfo_remote_race_test.go
+new file mode 100644
+index 0000000..5e136e4
+--- /dev/null
++++ b/github.com/slackhq/nebula/hostinfo_remote_race_test.go
+@@ -0,0 +1,37 @@
++package nebula
++
++import (
++	"net/netip"
++	"sync"
++	"testing"
++)
++
++// hopssh patch 37: the address we send to is changed by the goroutine that receives,
++// and read by the one that sends and by Control (status, the path loop). It was a
++// plain field. Run with -race: without the patch this test fails every time.
++func TestHostInfoRemoteIsSafeToRead(t *testing.T) {
++	vpn := netip.MustParseAddr("10.0.0.2")
++	a := netip.MustParseAddrPort("192.0.2.1:4242")
++	b := netip.MustParseAddrPort("[2001:db8::1]:4243")
++	h := &HostInfo{vpnAddrs: []netip.Addr{vpn}, remotes: NewRemoteList([]netip.Addr{vpn}, nil)}
++	h.SetRemote(a)
++
++	var wg sync.WaitGroup
++	wg.Add(1)
++	go func() {
++		defer wg.Done()
++		for i := range 20000 {
++			if i%2 == 0 {
++				h.SetRemote(b)
++			} else {
++				h.SetRemote(a)
++			}
++		}
++	}()
++	for range 20000 {
++		if got := copyHostInfo(h, nil).CurrentRemote; got != a && got != b {
++			t.Fatalf("read %s, which was never set", got)
++		}
++	}
++	wg.Wait()
++}
+diff --git a/github.com/slackhq/nebula/hostmap.go b/github.com/slackhq/nebula/hostmap.go
+index 373c5cc..9c5fb4a 100644
+--- a/github.com/slackhq/nebula/hostmap.go
++++ b/github.com/slackhq/nebula/hostmap.go
+@@ -29,8 +29,17 @@ const MaxRemotes = 10
+ const MaxHostInfosPerVpnIp = 5
+ 
+ // How long we should prevent roaming back to the previous IP.
+-// This helps prevent flapping due to packets already in flight
+-const RoamingSuppressSeconds = 2
++// This helps prevent flapping due to packets already in flight.
++//
++// hopssh patch 14 (2026-04-22): bumped 2 → 10. Under hairpin-NAT a
++// peer is reachable via both its LAN address and its NAT-PMP-reflected
++// public address simultaneously. With the 2-second window, alternating
++// inbound packets caused the hostmap entry to flip every ~2s,
++// dropping in-flight UDP each time and producing visibly choppy
++// screen-share. 10s is short enough that a real WiFi→cellular roam
++// still recovers quickly, long enough to block the typical alternation
++// window.
++const RoamingSuppressSeconds = 10
+ 
+ const (
+ 	Requested = iota
+@@ -276,6 +285,10 @@ type HostInfo struct {
+ 	//TODO: in, out, and others might benefit from being an atomic.Int32. We could collapse connectionManager pendingDeletion, relayUsed, and in/out into this 1 thing
+ 	in, out, pendingDeletion atomic.Bool
+ 
++	// hopssh patch 34: authenticated packets from this host, from the address we
++	// send to and over relays.
++	inDirect, inRelayed atomic.Uint64
++
+ 	// lastUsed tracks the last time ConnectionManager checked the tunnel and it was in use.
+ 	// This value will be behind against actual tunnel utilization in the hot path.
+ 	// This should only be used by the ConnectionManagers ticker routine.
+@@ -741,7 +754,7 @@ func (i *HostInfo) TryPromoteBest(preferredRanges []netip.Prefix, ifce *Interfac
+ 
+ 			// Try to send a test packet to that host, this should
+ 			// cause it to detect a roaming event and switch remotes
+-			ifce.sendTo(header.Test, header.TestRequest, i.ConnectionState, i, addr, []byte(""), make([]byte, 12, 12), make([]byte, mtu))
++			ifce.ask(i, addr) // hopssh patch 35
+ 		})
+ 	}
+ 
+@@ -764,6 +777,15 @@ func (i *HostInfo) GetCert() *cert.CachedCertificate {
+ 	return nil
+ }
+ 
++// countIn counts a packet (hopssh patch 34). Call it after handleHostRoaming.
++func (i *HostInfo) countIn(via ViaSender) {
++	if via.IsRelayed {
++		i.inRelayed.Add(1)
++	} else if via.UdpAddr == i.GetRemote() {
++		i.inDirect.Add(1)
++	}
++}
++
+ func (i *HostInfo) GetRemote() netip.AddrPort {
+ 	if p := i.remote.Load(); p != nil {
+ 		return *p
+@@ -780,16 +802,14 @@ func (i *HostInfo) SetRemote(remote netip.AddrPort) {
+ 	}
+ }
+ 
+-// SetRemoteIfPreferred returns true if the remote was changed. The lastRoam
+-// time on the HostInfo will also be updated.
+-func (i *HostInfo) SetRemoteIfPreferred(hm *HostMap, via ViaSender) bool {
++// isBetterRemote was SetRemoteIfPreferred, which also moved there (hopssh patch 35).
++func (i *HostInfo) isBetterRemote(hm *HostMap, via ViaSender) bool {
+ 	if via.IsRelayed {
+ 		return false
+ 	}
+ 
+ 	currentRemote := i.GetRemote()
+ 	if !currentRemote.IsValid() {
+-		i.SetRemote(via.UdpAddr)
+ 		return true
+ 	}
+ 
+@@ -807,17 +827,7 @@ func (i *HostInfo) SetRemoteIfPreferred(hm *HostMap, via ViaSender) bool {
+ 		}
+ 	}
+ 
+-	if newIsPreferred {
+-		// Consider this a roaming event
+-		i.lastRoam = time.Now()
+-		i.lastRoamRemote = currentRemote
+-
+-		i.SetRemote(via.UdpAddr)
+-
+-		return true
+-	}
+-
+-	return false
++	return newIsPreferred
+ }
+ 
+ // buildNetworks fills in the networks field of HostInfo. It accepts a cert.Certificate so you never ever mix the network types up.
+diff --git a/github.com/slackhq/nebula/hostmap_roam_test.go b/github.com/slackhq/nebula/hostmap_roam_test.go
+new file mode 100644
+index 0000000..e495400
+--- /dev/null
++++ b/github.com/slackhq/nebula/hostmap_roam_test.go
+@@ -0,0 +1,99 @@
++//go:build darwin && !e2e_testing
++// +build darwin,!e2e_testing
++
++package nebula
++
++import (
++	"net/netip"
++	"testing"
++)
++
++// These tests cover the v0.10.12 roam-stability fixes (hopssh
++// patches 14 + 15 — see docs/macos-host-roam-stability.md).
++//
++// We don't construct a full *Interface here — handleHostRoaming
++// depends on lightHouse, hostMap, logger, etc., which would all need
++// stubbing. Instead we test the two surgical pieces that are
++// purely-functional and form the load-bearing parts of the fix:
++//
++//   1. RoamingSuppressSeconds constant must be ≥ 5 (the original 2 was
++//      too narrow to dampen 2-address alternation; 10 is the new value).
++//   2. isAddrInRanges(addr, prefixes) must classify addresses
++//      correctly — this is the helper handleHostRoaming consults to
++//      decide "is the current/candidate remote in preferred_ranges?"
++//
++// The end-to-end behavior (no roam-flap on hairpin-NAT setups) is
++// verified by deploying to real Macs and watching log output for
++// "Host roamed" entries during a sustained iperf3 + screen-share
++// session — see plan file Verification section.
++
++// TestRoamingSuppressSeconds_AtLeast5 — regression guard for v0.10.12.
++// If a future Nebula upstream merge reverts the constant to 2 (or any
++// value < 5), this test fails loudly so we know to re-apply patch 14.
++// The 5s floor is the minimum that defeats the typical 2-address
++// alternation period observed in production.
++func TestRoamingSuppressSeconds_AtLeast5(t *testing.T) {
++	if RoamingSuppressSeconds < 5 {
++		t.Fatalf("RoamingSuppressSeconds = %d; must be ≥ 5 to defeat 2-address hairpin-NAT alternation (hopssh patch 14)",
++			RoamingSuppressSeconds)
++	}
++}
++
++// TestIsAddrInRanges covers the helper that handleHostRoaming uses to
++// decide whether the current and candidate remotes are in
++// preferred_ranges. Wrong classification here would either suppress
++// legitimate roams (false positive) or flap on hairpin NAT
++// (false negative — the bug we're fixing).
++func TestIsAddrInRanges(t *testing.T) {
++	// hopssh's standard preferred_ranges (from
++	// internal/nebulacfg/defaults.go:PreferredRangesYAML).
++	preferred := []netip.Prefix{
++		netip.MustParsePrefix("192.168.0.0/16"),
++		netip.MustParsePrefix("172.16.0.0/12"),
++		netip.MustParsePrefix("10.0.0.0/8"),
++	}
++
++	cases := []struct {
++		name string
++		addr netip.Addr
++		want bool
++	}{
++		{"home LAN address — preferred", netip.MustParseAddr("192.168.23.18"), true},
++		{"home LAN broadcast — preferred", netip.MustParseAddr("192.168.255.255"), true},
++		{"docker bridge — preferred", netip.MustParseAddr("172.17.0.1"), true},
++		{"office LAN — preferred", netip.MustParseAddr("10.42.1.7"), true},
++		{"public NAT-reflected addr — NOT preferred", netip.MustParseAddr("46.10.240.91"), false},
++		{"google DNS — NOT preferred", netip.MustParseAddr("8.8.8.8"), false},
++		{"172.32.0.1 — outside the /12, NOT preferred", netip.MustParseAddr("172.32.0.1"), false},
++		{"link-local — NOT in our preferred set", netip.MustParseAddr("169.254.1.1"), false},
++		{"invalid addr — false", netip.Addr{}, false},
++	}
++	for _, tc := range cases {
++		t.Run(tc.name, func(t *testing.T) {
++			got := isAddrInRanges(tc.addr, preferred)
++			if got != tc.want {
++				t.Fatalf("isAddrInRanges(%s) = %v, want %v", tc.addr, got, tc.want)
++			}
++		})
++	}
++}
++
++// TestIsAddrInRanges_EmptyRanges — when no preferred_ranges are
++// configured, the function returns false for any address. This is the
++// "feature off" path: handleHostRoaming falls back to the original
++// time-window suppression behaviour.
++func TestIsAddrInRanges_EmptyRanges(t *testing.T) {
++	cases := []netip.Addr{
++		netip.MustParseAddr("192.168.1.1"),
++		netip.MustParseAddr("8.8.8.8"),
++		netip.MustParseAddr("10.0.0.1"),
++	}
++	for _, addr := range cases {
++		if isAddrInRanges(addr, nil) {
++			t.Fatalf("isAddrInRanges(%s, nil) = true, want false", addr)
++		}
++		if isAddrInRanges(addr, []netip.Prefix{}) {
++			t.Fatalf("isAddrInRanges(%s, []) = true, want false", addr)
++		}
++	}
++}
+diff --git a/github.com/slackhq/nebula/outside.go b/github.com/slackhq/nebula/outside.go
+index e7b6b9b..c686b00 100644
+--- a/github.com/slackhq/nebula/outside.go
++++ b/github.com/slackhq/nebula/outside.go
+@@ -132,9 +132,25 @@ func (f *Interface) readOutsidePackets(via ViaSender, out []byte, packet []byte,
+ 		return
+ 	}
+ 
++	// hopssh patch 35: a question about another path is answered where it was
++	// asked, and moves nobody. The answer moves whoever asked.
++	if h.Type == header.Test && h.Subtype == header.TestRequest && !via.IsRelayed && string(out) == pathQuestion {
++		f.answer(hostinfo, via, nb, out)
++		return
++	}
++
+ 	// Roam before we respond
+ 	f.handleHostRoaming(hostinfo, via)
+ 	f.connectionManager.In(hostinfo)
++	hostinfo.countIn(via) // hopssh patch 34
++
++	// hopssh patch 22: tell the agent where this peer was heard. Not for relayed
++	// packets: via.UdpAddr is the relay then.
++	if !via.IsRelayed && len(hostinfo.vpnAddrs) > 0 {
++		if cbPtr := f.inboundObserver.Load(); cbPtr != nil && *cbPtr != nil {
++			(*cbPtr)(hostinfo.vpnAddrs[0], via.UdpAddr)
++		}
++	}
+ 
+ 	switch h.Type {
+ 	case header.Message:
+@@ -181,6 +197,7 @@ func (f *Interface) handleOutsideRelayPacket(hostinfo *HostInfo, via ViaSender,
+ 	f.handleHostRoaming(hostinfo, via)
+ 	// Track usage of both the HostInfo and the Relay for the received & authenticated packet
+ 	f.connectionManager.In(hostinfo)
++	hostinfo.countIn(via) // hopssh patch 34
+ 	f.connectionManager.RelayUsed(h.RemoteIndex)
+ 
+ 	relay, ok := hostinfo.relayState.QueryRelayForByIdx(h.RemoteIndex)
+@@ -263,6 +280,7 @@ func (f *Interface) sendCloseTunnel(h *HostInfo) {
+ }
+ 
+ func (f *Interface) handleHostRoaming(hostinfo *HostInfo, via ViaSender) {
++	f.startWhereHeard(hostinfo, via) // hopssh patch 35
+ 	curRemote := hostinfo.GetRemote()
+ 	if !via.IsRelayed && curRemote != via.UdpAddr {
+ 		if !f.lightHouse.GetRemoteAllowList().AllowAll(hostinfo.vpnAddrs, via.UdpAddr.Addr()) {
+@@ -272,6 +290,36 @@ func (f *Interface) handleHostRoaming(hostinfo *HostInfo, via ViaSender) {
+ 			return
+ 		}
+ 
++		// hopssh patch 15: with two working paths to a peer (LAN, and the public
++		// address through the router) the path flipped with every packet; the
++		// suppression below only stops a flip back to the path before.
++		//   on a preferred range, candidate is not  -> stay
++		//   not on a preferred range, candidate is -> move now
++		//   otherwise                               -> the suppression below
++		if preferredRanges := f.hostMap.GetPreferredRanges(); len(preferredRanges) > 0 {
++			currentPreferred := isAddrInRanges(curRemote.Addr(), preferredRanges)
++			candidatePreferred := isAddrInRanges(via.UdpAddr.Addr(), preferredRanges)
++			if currentPreferred && !candidatePreferred {
++				if f.l.Enabled(context.Background(), slog.LevelDebug) {
++					hostinfo.logger(f.l).Debug("Ignoring roam to non-preferred remote (current remote is in preferred_ranges)",
++						"udpAddr", curRemote,
++						"newAddr", via.UdpAddr,
++					)
++				}
++				return
++			}
++			if !currentPreferred && candidatePreferred {
++				hostinfo.logger(f.l).Info("Host roamed to preferred-range remote (bypassing suppression window).",
++					"udpAddr", curRemote,
++					"newAddr", via.UdpAddr,
++				)
++				hostinfo.lastRoam = time.Now()
++				hostinfo.lastRoamRemote = curRemote
++				hostinfo.SetRemote(via.UdpAddr)
++				return
++			}
++		}
++
+ 		if !hostinfo.lastRoam.IsZero() && via.UdpAddr == hostinfo.lastRoamRemote && time.Since(hostinfo.lastRoam) < RoamingSuppressSeconds*time.Second {
+ 			if f.l.Enabled(context.Background(), slog.LevelDebug) {
+ 				hostinfo.logger(f.l).Debug("Suppressing roam back to previous remote",
+@@ -294,6 +342,19 @@ func (f *Interface) handleHostRoaming(hostinfo *HostInfo, via ViaSender) {
+ 
+ }
+ 
++// isAddrInRanges is for handleHostRoaming (hopssh patch 15).
++func isAddrInRanges(addr netip.Addr, ranges []netip.Prefix) bool {
++	if !addr.IsValid() {
++		return false
++	}
++	for _, r := range ranges {
++		if r.Contains(addr) {
++			return true
++		}
++	}
++	return false
++}
++
+ var (
+ 	ErrPacketTooShort          = errors.New("packet is too short")
+ 	ErrUnknownIPVersion        = errors.New("packet is an unknown ip version")
+@@ -518,8 +579,15 @@ func (f *Interface) handleRecvError(addr netip.AddrPort, h *header.H) {
+ 		return
+ 	}
+ 
++	// hopssh patch 33: a relayed peer has no remote, and one unauthenticated packet
++	// from anywhere closed its tunnel. Nobody answers a relayed packet with a
++	// recv_error, so this one answers a packet that looked for a direct path and
++	// came to another agent (the same LAN address, a port that changed hands).
+ 	hr := hostinfo.GetRemote()
+-	if hr.IsValid() && hr != addr {
++	if !hr.IsValid() {
++		return
++	}
++	if hr != addr {
+ 		f.l.Info("Someone spoofing recv_errors?",
+ 			"addr", addr,
+ 			"hostinfoRemote", hr,
+diff --git a/github.com/slackhq/nebula/path_question.go b/github.com/slackhq/nebula/path_question.go
+new file mode 100644
+index 0000000..71cdac5
+--- /dev/null
++++ b/github.com/slackhq/nebula/path_question.go
+@@ -0,0 +1,53 @@
++package nebula
++
++import (
++	"net/netip"
++
++	"github.com/slackhq/nebula/header"
++)
++
++// hopssh patch 35: a packet that comes from an address says nothing about the way
++// back. Nebula sent to that address all the same: whoever was asked there by
++// TryPromoteBest moved before it answered, and the first copy of a handshake set
++// the path. A path that works in one direction only, as behind a firewall or a
++// strict router, cut the connection each time.
++//
++// So a question is answered where it was asked, and moves nobody. The answer moves
++// whoever asked, and what that one sends then moves the other, by the usual rules.
++
++// pathQuestion is what a TestRequest about another path carries. An agent without
++// this patch takes it for an ordinary one.
++const pathQuestion = "path"
++
++func (f *Interface) ask(h *HostInfo, remote netip.AddrPort) {
++	f.sendTo(header.Test, header.TestRequest, h.ConnectionState, h, remote, []byte(pathQuestion), make([]byte, 12), make([]byte, mtu))
++}
++
++func (f *Interface) answer(h *HostInfo, via ViaSender, nb, out []byte) {
++	if f.lightHouse.GetRemoteAllowList().AllowAll(h.vpnAddrs, via.UdpAddr.Addr()) {
++		f.sendTo(header.Test, header.TestReply, h.ConnectionState, h, via.UdpAddr, []byte(pathQuestion), nb, out)
++	}
++}
++
++// startWhereHeard is for the first packet on a tunnel that the other side has asked
++// for. That one sends where it got the answer to its handshake from, so it hears us
++// there.
++func (f *Interface) startWhereHeard(h *HostInfo, via ViaSender) {
++	if h.ConnectionState.initiator || h.inDirect.Load()+h.inRelayed.Load() > 0 {
++		return
++	}
++	was := h.GetRemote()
++	switch {
++	case !was.IsValid():
++		return
++	case via.IsRelayed:
++		h.relayState.InsertRelayTo(via.relayHI.vpnAddrs[0])
++		h.remote.Store(nil)
++	case via.UdpAddr != was && f.lightHouse.GetRemoteAllowList().AllowAll(h.vpnAddrs, via.UdpAddr.Addr()):
++		h.SetRemote(via.UdpAddr)
++	default:
++		return
++	}
++	h.logger(f.l).Info("Host hears us elsewhere", "udpAddr", was, "from", via)
++	f.ask(h, was)
++}

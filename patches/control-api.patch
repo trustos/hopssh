@@ -1,0 +1,331 @@
+diff --git a/github.com/slackhq/nebula/control.go b/github.com/slackhq/nebula/control.go
+index 7df5a09..3f4cead 100644
+--- a/github.com/slackhq/nebula/control.go
++++ b/github.com/slackhq/nebula/control.go
+@@ -64,6 +64,8 @@ type ControlHostInfo struct {
+ 	RemoteAddrs            []netip.AddrPort `json:"remoteAddrs"`
+ 	Cert                   cert.Certificate `json:"cert"`
+ 	MessageCounter         uint64           `json:"messageCounter"`
++	ReceivedDirect         uint64           `json:"receivedDirect"`  // hopssh patch 34
++	ReceivedRelayed        uint64           `json:"receivedRelayed"` // hopssh patch 34
+ 	CurrentRemote          netip.AddrPort   `json:"currentRemote"`
+ 	CurrentRelaysToMe      []netip.Addr     `json:"currentRelaysToMe"`
+ 	CurrentRelaysThroughMe []netip.Addr     `json:"currentRelaysThroughMe"`
+@@ -385,6 +387,8 @@ func copyHostInfo(h *HostInfo, preferredRanges []netip.Prefix) ControlHostInfo {
+ 		CurrentRelaysToMe:      h.relayState.CopyRelayIps(),
+ 		CurrentRelaysThroughMe: h.relayState.CopyRelayForIps(),
+ 		CurrentRemote:          h.GetRemote(),
++		ReceivedDirect:         h.inDirect.Load(),
++		ReceivedRelayed:        h.inRelayed.Load(),
+ 	}
+ 
+ 	for i, a := range h.vpnAddrs {
+@@ -419,3 +423,117 @@ func listHostMapIndexes(hl controlHostLister) []ControlHostInfo {
+ 	})
+ 	return hosts
+ }
++
++// AddAdvertiseAddr publishes a dynamically-discovered public endpoint
++// (e.g. UPnP/NAT-PMP) via the lighthouse. Used by the hopssh portmap
++// subsystem. Safe for concurrent use; de-dupes.
++//
++// Added by hopssh patch 11.
++func (c *Control) AddAdvertiseAddr(addr netip.AddrPort) {
++	if c == nil || c.f == nil || c.f.lightHouse == nil {
++		return
++	}
++	c.f.lightHouse.AddAdvertiseAddr(addr)
++}
++
++// RemoveAdvertiseAddr is the inverse of AddAdvertiseAddr.
++//
++// Added by hopssh patch 11.
++func (c *Control) RemoveAdvertiseAddr(addr netip.AddrPort) {
++	if c == nil || c.f == nil || c.f.lightHouse == nil {
++		return
++	}
++	c.f.lightHouse.RemoveAdvertiseAddr(addr)
++}
++
++// AddStaticHostMap injects endpoints for a peer vpnAddr into the
++// lighthouse cache, making them immediately available for outbound
++// handshakes. Used by hopssh when peer endpoints are learned via the
++// HTTPS control-plane heartbeat response (fallback path when UDP
++// lighthouse is unreachable). Safe for concurrent use.
++//
++// Added by hopssh patch 20.
++func (c *Control) AddStaticHostMap(vpnAddr netip.Addr, addrs []netip.AddrPort) {
++	if c == nil || c.f == nil || c.f.lightHouse == nil {
++		return
++	}
++	c.f.lightHouse.AddStaticHostMap(vpnAddr, addrs)
++}
++
++// ReplaceStaticHostMap fully replaces the lighthouse's cached endpoint set
++// for vpnAddr with the provided addrs. Unlike AddStaticHostMap (which is
++// additive via LearnRemote — see patch 20), this prunes stale Reported
++// entries from prior calls. Used by hopssh's Phase G heartbeat handler
++// to keep the agent's hostmap in lockstep with the server's authoritative
++// current set, eliminating the stale-NAT-PMP-endpoint accumulation that
++// causes cross-host packet rejection under CGNAT port reuse.
++//
++// Added by hopssh patch 21.
++func (c *Control) ReplaceStaticHostMap(vpnAddr netip.Addr, addrs []netip.AddrPort) {
++	if c == nil || c.f == nil || c.f.lightHouse == nil {
++		return
++	}
++	c.f.lightHouse.ReplaceStaticHostMap(vpnAddr, addrs)
++}
++
++// SetInboundObserver registers a callback invoked on every authenticated
++// inbound non-relayed packet from a peer. Arguments are the peer's vpnAddr
++// and the source UDP remote address (post-CGNAT, as observed on the wire).
++//
++// Used by hopssh's Layer 4 active-probe scheduler (cmd/agent/endpoint_probe.go)
++// to track per-endpoint liveness — endpoints that haven't sent us a packet
++// within the staleness window get pruned from the hostmap via
++// ReplaceStaticHostMap. This catches the failure mode that connection_manager
++// can't: stale endpoints that Nebula's own dead-mark logic doesn't reap
++// because they're not the CurrentRemote.
++//
++// Pass nil to disable observation. Hot-path overhead when nil: one atomic
++// pointer load and a nil check (~2 ns).
++//
++// Added by hopssh patch 22.
++func (c *Control) SetInboundObserver(cb func(vpnAddr netip.Addr, remote netip.AddrPort)) {
++	if c == nil || c.f == nil {
++		return
++	}
++	if cb == nil {
++		c.f.inboundObserver.Store(nil)
++		return
++	}
++	c.f.inboundObserver.Store(&cb)
++}
++
++// ProbeEndpoint sends a Nebula TestRequest to the specified remote address
++// for the given vpnAddr, bypassing the HostInfo's CurrentRemote. Used by
++// the Layer 4 active probe scheduler to test liveness of EVERY candidate
++// endpoint (not just the one Nebula's connection_manager currently uses).
++//
++// Returns false if no HostInfo exists for vpnAddr (no tunnel established
++// yet — caller should warm via lighthouse query first) or if the
++// connection state isn't ready.
++//
++// Mechanism: leverages Interface.sendTo (already in vendor at inside.go:265),
++// which routes a single packet to a SPECIFIC remote address overriding
++// the HostInfo's normal destination. Nebula's outside.go test-packet
++// receive handler responds with a TestReply via the inbound observer,
++// confirming endpoint liveness.
++//
++// Added by hopssh patch 22. Patch 34: the zero remoteAddr means the way that
++// packets to vpnAddr take now, which may be a relay.
++func (c *Control) ProbeEndpoint(vpnAddr netip.Addr, remoteAddr netip.AddrPort) bool {
++	if c == nil || c.f == nil || !vpnAddr.IsValid() {
++		return false
++	}
++	hostInfo := c.f.hostMap.QueryVpnAddr(vpnAddr)
++	if hostInfo == nil || hostInfo.ConnectionState == nil {
++		return false
++	}
++	if remoteAddr.IsValid() {
++		c.f.ask(hostInfo, remoteAddr) // hopssh patch 35
++		return true
++	}
++	p := []byte{0}
++	nb := make([]byte, 12)
++	out := make([]byte, mtu)
++	c.f.sendTo(header.Test, header.TestRequest, hostInfo.ConnectionState, hostInfo, remoteAddr, p, nb, out)
++	return true
++}
+diff --git a/github.com/slackhq/nebula/lighthouse.go b/github.com/slackhq/nebula/lighthouse.go
+index bbd5ad4..1398b0f 100644
+--- a/github.com/slackhq/nebula/lighthouse.go
++++ b/github.com/slackhq/nebula/lighthouse.go
+@@ -171,6 +171,186 @@ func (lh *LightHouse) GetAdvertiseAddrs() []netip.AddrPort {
+ 	return *lh.advertiseAddrs.Load()
+ }
+ 
++// AddAdvertiseAddr adds a dynamically-discovered public endpoint (e.g. a
++// UPnP/NAT-PMP port mapping on the home router) to the set of addresses
++// we advertise to the lighthouse. Safe for concurrent use. De-dupes.
++// The next SendUpdate tick (default 10 s) propagates to peers.
++//
++// Added by hopssh patch 11.
++func (lh *LightHouse) AddAdvertiseAddr(addr netip.AddrPort) {
++	if !addr.IsValid() {
++		return
++	}
++	for {
++		cur := lh.advertiseAddrs.Load()
++		for _, a := range *cur {
++			if a == addr {
++				return
++			}
++		}
++		next := make([]netip.AddrPort, 0, len(*cur)+1)
++		next = append(next, *cur...)
++		next = append(next, addr)
++		if lh.advertiseAddrs.CompareAndSwap(cur, &next) {
++			lh.l.Info("lighthouse: added dynamic advertise_addr", "addr", addr)
++			return
++		}
++	}
++}
++
++// RemoveAdvertiseAddr is the inverse of AddAdvertiseAddr. No-op if the
++// address isn't present.
++//
++// Added by hopssh patch 11.
++func (lh *LightHouse) RemoveAdvertiseAddr(addr netip.AddrPort) {
++	for {
++		cur := lh.advertiseAddrs.Load()
++		next := make([]netip.AddrPort, 0, len(*cur))
++		changed := false
++		for _, a := range *cur {
++			if a == addr {
++				changed = true
++				continue
++			}
++			next = append(next, a)
++		}
++		if !changed {
++			return
++		}
++		if lh.advertiseAddrs.CompareAndSwap(cur, &next) {
++			lh.l.Info("lighthouse: removed dynamic advertise_addr", "addr", addr)
++			return
++		}
++	}
++}
++
++// AddStaticHostMap adds runtime-discovered endpoints for a peer's vpnAddr
++// into the lighthouse's cache, making them immediately available for the
++// handshake manager to try. Used by hopssh to inject peer endpoints learned
++// via the HTTPS control-plane heartbeat response when the UDP lighthouse
++// path is unreachable (carrier-filtered cellular to Oracle Cloud, etc).
++// Marks the entry as static so it's not evicted by idle GC. De-dupes.
++//
++// Added by hopssh patch 20.
++func (lh *LightHouse) AddStaticHostMap(vpnAddr netip.Addr, addrs []netip.AddrPort) {
++	if !vpnAddr.IsValid() || len(addrs) == 0 {
++		return
++	}
++	rl := lh.QueryCache([]netip.Addr{vpnAddr})
++	if rl == nil {
++		return
++	}
++	for _, a := range addrs {
++		if !a.IsValid() {
++			continue
++		}
++		rl.LearnRemote(vpnAddr, a)
++	}
++	// Mark as static to prevent GC of this entry (static_host_map semantics).
++	for {
++		cur := lh.staticList.Load()
++		if cur == nil {
++			newMap := make(map[netip.Addr]struct{})
++			newMap[vpnAddr] = struct{}{}
++			if lh.staticList.CompareAndSwap(cur, &newMap) {
++				break
++			}
++			continue
++		}
++		if _, ok := (*cur)[vpnAddr]; ok {
++			break
++		}
++		next := make(map[netip.Addr]struct{}, len(*cur)+1)
++		for k := range *cur {
++			next[k] = struct{}{}
++		}
++		next[vpnAddr] = struct{}{}
++		if lh.staticList.CompareAndSwap(cur, &next) {
++			break
++		}
++	}
++	lh.l.Info("lighthouse: added static host map entry", "vpnAddr", vpnAddr, "addrs", addrs)
++}
++
++// ReplaceStaticHostMap is the replace-not-add cousin of AddStaticHostMap.
++// Both populate the same lighthouse cache for vpnAddr, but ReplaceStaticHostMap
++// FULLY REPLACES the prior reported address set instead of adding to it.
++// Stale entries from previous heartbeats are pruned atomically.
++//
++// Why this exists: Phase G server-pushed peerEndpoints reflect the LATEST
++// known set as of the requesting heartbeat. AddStaticHostMap (which routes
++// through LearnRemote — a singular learned slot per peer) cannot evict an
++// older Reported entry that's no longer in the current set. Over time,
++// stale NAT-PMP-mapped addresses accumulate in the lighthouse's RemoteList
++// reported slice, and Nebula's handshake manager probes all of them.
++// When the upstream router reuses external port numbers across hosts
++// (standard CGNAT behavior), packets sent to a stale address arrive at
++// the WRONG host, generating "Invalid certificate from host" log spam
++// and dead-tunnel cycles.
++//
++// Replace semantics fix this: each heartbeat's peerEndpoints is the
++// authoritative current set; older entries vanish.
++//
++// Added by hopssh patch 21.
++func (lh *LightHouse) ReplaceStaticHostMap(vpnAddr netip.Addr, addrs []netip.AddrPort) {
++	if !vpnAddr.IsValid() || len(addrs) == 0 {
++		return
++	}
++	rl := lh.QueryCache([]netip.Addr{vpnAddr})
++	if rl == nil {
++		return
++	}
++	v4 := make([]*V4AddrPort, 0, len(addrs))
++	v6 := make([]*V6AddrPort, 0, len(addrs))
++	for _, a := range addrs {
++		if !a.IsValid() {
++			continue
++		}
++		if a.Addr().Is4() {
++			v4 = append(v4, netAddrToProtoV4AddrPort(a.Addr(), a.Port()))
++		} else {
++			v6 = append(v6, netAddrToProtoV6AddrPort(a.Addr(), a.Port()))
++		}
++	}
++	rl.Lock()
++	if len(v4) > 0 {
++		rl.unlockedSetV4(vpnAddr, vpnAddr, v4, lh.unlockedShouldAddV4)
++	} else if c := rl.unlockedGetOrMakeV4(vpnAddr); c != nil {
++		c.reported = c.reported[:0]
++		rl.shouldRebuild = true
++	}
++	if len(v6) > 0 {
++		rl.unlockedSetV6(vpnAddr, vpnAddr, v6, lh.unlockedShouldAddV6)
++	} else if c := rl.unlockedGetOrMakeV6(vpnAddr); c != nil {
++		c.reported = c.reported[:0]
++		rl.shouldRebuild = true
++	}
++	rl.Unlock()
++	for {
++		cur := lh.staticList.Load()
++		if cur == nil {
++			newMap := make(map[netip.Addr]struct{})
++			newMap[vpnAddr] = struct{}{}
++			if lh.staticList.CompareAndSwap(cur, &newMap) {
++				break
++			}
++			continue
++		}
++		if _, ok := (*cur)[vpnAddr]; ok {
++			break
++		}
++		next := make(map[netip.Addr]struct{}, len(*cur)+1)
++		for k := range *cur {
++			next[k] = struct{}{}
++		}
++		next[vpnAddr] = struct{}{}
++		if lh.staticList.CompareAndSwap(cur, &next) {
++			break
++		}
++	}
++	lh.l.Info("lighthouse: replaced static host map entry", "vpnAddr", vpnAddr, "addrs", addrs)
++}
++
+ func (lh *LightHouse) GetRelaysForMe() []netip.Addr {
+ 	return *lh.relaysForMe.Load()
+ }
