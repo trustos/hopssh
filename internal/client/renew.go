@@ -483,6 +483,10 @@ func warmPeers(peers []string) {
 // Var so tests can shorten it.
 var renewalPollInterval = 60 * time.Second
 
+// renewRetryFirstWait is the wait before the first retry of a failed renewal;
+// it doubles up to 30 minutes. Var so tests can shorten it.
+var renewRetryFirstWait = time.Minute
+
 // minRenewalInterval is the least time between two successful renewals by
 // one loop. Only reached when the local clock is far ahead of the server's.
 const minRenewalInterval = time.Hour
@@ -531,7 +535,7 @@ func runCertRenewal(ctx context.Context, inst *meshInstance) {
 		} else {
 			log.Printf("[renew %s] renewal failed: %v (entering retry-with-backoff)", inst.name(), err)
 			inst.markRenewalActivity()
-			backoff := time.Minute
+			backoff := renewRetryFirstWait
 			for attempt := 0; attempt < 12; attempt++ {
 				if !waitWallClock(ctx, backoff) {
 					log.Printf("[renew %s] retry loop exiting (ctx cancelled)", inst.name())
@@ -544,6 +548,11 @@ func runCertRenewal(ctx context.Context, inst *meshInstance) {
 					backoff *= 2
 					if backoff > 30*time.Minute {
 						backoff = 30 * time.Minute
+					}
+					// Without a valid certificate the network is down until this works, so
+					// the wait does not grow. A 401 is usually final and keeps the long wait.
+					if problem, _ := certStartProblem(inst.dir(), time.Now()); problem != "" && !errors.Is(err, errNodeRevoked) {
+						backoff = renewRetryFirstWait
 					}
 					continue
 				}
