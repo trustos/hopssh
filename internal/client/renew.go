@@ -551,6 +551,7 @@ func runCertRenewal(ctx context.Context, inst *meshInstance) {
 					}
 					// Without a valid certificate the network is down until this works, so
 					// the wait does not grow. A 401 is usually final and keeps the long wait.
+					// A minute is also what a 429 asks for (rateLimitedMinRetry).
 					if problem, _ := certStartProblem(inst.dir(), time.Now()); problem != "" && !errors.Is(err, errNodeRevoked) {
 						backoff = renewRetryFirstWait
 					}

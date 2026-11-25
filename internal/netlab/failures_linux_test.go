@@ -257,7 +257,7 @@ func TestRenewalDuringSession(t *testing.T) {
 }
 
 // A certificate is renewed while the two talk over the relay: first one of
-// them, then both in the same moment. The agent starts Nebula anew for it, so
+// them, then both at the same time. The agent starts Nebula anew for it, so
 // the tunnel to the relay and the one through it have to come back.
 func TestRenewalOnTheRelay(t *testing.T) {
 	l := newLab(t)
@@ -283,6 +283,6 @@ func TestRenewalOnTheRelay(t *testing.T) {
 	l.must(<-errs)
 	l.must(<-errs)
 	time.Sleep(30 * time.Second)
-	l.report("after: %s", a.path(b))
+	want(a, b, "relay", 10*time.Second)
 	s.close("renewal of both on the relay", 2*time.Second)
 }
