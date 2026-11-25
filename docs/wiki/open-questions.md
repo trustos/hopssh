@@ -107,6 +107,11 @@ From an audit of the tests against the ways a certificate or a path can fail. Co
 
 `hop-field` (pull request 3) ran 4 hours between the two Macs: always connected, always direct, 599 of 600 probe answers per minute. Twice the probe was silent on `home` and `work` in the same instant (1.0 s at 17:38:30, 3.4 s at 18:04:11), no session lost, nothing in either agent's log. *Likely* the line under the mesh; not proven. A probe that runs beside it outside the mesh would tell.
 
+## 2026-11-25 — a router that comes back is sometimes noticed late (`TestRouterReboot`, 1 of 12)
+
+**Why open:** In the full lab run before v0.11.28, `TestRouterReboot` failed once: the session was silent for 60.9 s where the router was away for 30 s (limit 45 s). The other 11 runs of that day gave 30.6 to 31.0 s, among them 4 with this branch and 4 with main, alternating, right after. From the log of the slow run: the tunnel was declared dead 20 s into the outage, and Nebula then asks for a new one at growing gaps (`try_interval` times the number of the try: 1, 4, 8, 12 s). The router was back at :32, the next try came at :34, TCP's own retry had fallen at 30.5 s after the cut, just before, and its next one is at 61 s. Not shown: why only this run declared the tunnel dead early enough to matter (it was the only one inside a full run, so load is a candidate), and whether main does it too (0 of 4, too few to say).
+**What would close it:** asking again at once when a packet from the peer's network arrives or the path loop sees the way out return, instead of waiting for the next growing gap; and a test that puts the router's return right after a try. The limit of the test stays at 45 s.
+
 ## 2026-11-24 — the network lab is not in CI
 
 It takes about 9 minutes on an arm64 VM with 8 cores and needs root, `nft` and `/dev/net/tun`. GitHub's ubuntu runners have all three (the kernel-TUN test already uses `sudo unshare`). Not tried there; a busy runner may break the time limits. Start with `workflow_dispatch` and look at ten runs before it can block anything.
