@@ -243,7 +243,7 @@ func (c *Control) CloseAllTunnels(excludeLighthouses bool) (closed int) {
 		c.f.send(header.CloseTunnel, 0, h.ConnectionState, h, []byte{}, make([]byte, 12, 12), make([]byte, mtu))
 		c.f.closeTunnel(h)
 
-		c.l.WithField("vpnAddrs", h.vpnAddrs).WithField("udpAddr", h.remote).
+		c.l.WithField("vpnAddrs", h.vpnAddrs).WithField("udpAddr", h.remoteAddr()).
 			Debug("Sending close tunnel message")
 		closed++
 	}
@@ -288,7 +288,7 @@ func copyHostInfo(h *HostInfo, preferredRanges []netip.Prefix) ControlHostInfo {
 		RemoteAddrs:            h.remotes.CopyAddrs(preferredRanges),
 		CurrentRelaysToMe:      h.relayState.CopyRelayIps(),
 		CurrentRelaysThroughMe: h.relayState.CopyRelayForIps(),
-		CurrentRemote:          h.remote,
+		CurrentRemote:          h.remoteAddr(),
 		ReceivedDirect:         h.inDirect.Load(),
 		ReceivedRelayed:        h.inRelayed.Load(),
 	}

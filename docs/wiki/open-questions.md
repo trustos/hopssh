@@ -90,7 +90,27 @@ Patches 33 to 36 and `path_watch.go` are on the branch `lab/network`, not releas
 1. `HostInfo.remote`: written by `SetRemote` (UDP thread), read by `sendNoMetrics` (TUN thread, two places) and by `copyHostInfo` (`ListHostmapHosts`, `GetHostInfoByVpnAddr`) without a lock. A torn read can mix an old address with a new port, so one packet goes astray or the dashboard shows a wrong address for one second. Our `path_watch.go` reads it once a second and at worst asks one question too many.
 2. `RemoteList.relays`: sorted in place under its lock, its length read without it by `handleOutbound`. For a moment it looks empty, then one handshake attempt doesn't try the relays; the next one, a second later, does.
 
-**Action:** look at these two when Nebula is upgraded (v1.11 says it fixes races in hostmap and roaming). CI doesn't use `-race`.
+**Fixed 2026-11-25** (branch `fix/peer-address-race`): patch 37 makes the address an atomic value, patch 38 gives the handshake code a copy of the relay list taken under the lock. Each has a test in the vendored package for `-race`: the one of 37 is red without the patch, the one of 38 is red when the lock is taken out of `copyRelays` (without the patch it does not compile). Upstream v1.11.2 has the same fix as patch 37 (seen in its source), so 37 goes on an upgrade; the code of patch 38 was moved there (`relayManager.StartRelays`) and has to be looked at. **Still open:** CI doesn't use `-race`; both races were invisible to `go test ./...`.
+
+## 2026-11-25 — certificates and paths: cases no test covers yet
+
+From an audit of the tests against the ways a certificate or a path can fail. Covered: a fixed renewal instant, a start with an expired certificate, a deleted node (401), a renewal goroutine that dies, a lost path (lab), and since today a running agent whose renewals fail until after expiry (`TestE2E_RenewalFailsPastExpiry`: the peer drops it, and it is back 0.1 to 0.2 s after the server answers again). **Not covered:**
+
+1. *(done 2026-11-25)* The peer's view of a machine whose certificate ran out, and that the peer gets through again by itself once it renewed: now part of `TestE2E_RenewalFailsPastExpiry`. In the lab it can't be shown; the server gives out 24-hour certificates only.
+2. *(done 2026-11-25)* A renewal on the relay, of one and of both in the same moment: lab `TestRenewalOnTheRelay`, silent 0.7 to 0.85 s in 3 runs.
+3. A new CA, or changed groups or address, arriving with a renewal.
+4. A disk that is full or read-only when the new certificate is written.
+5. A sleep longer than the life of the certificate, as one test from sleep to answer.
+6. An open TCP session across a reload: pinned as a known gap, it is cut.
+
+## 2026-11-25 — two short silences on both networks at once (field recorder)
+
+`hop-field` (pull request 3) ran 4 hours between the two Macs: always connected, always direct, 599 of 600 probe answers per minute. Twice the probe was silent on `home` and `work` in the same instant (1.0 s at 17:38:30, 3.4 s at 18:04:11), no session lost, nothing in either agent's log. *Likely* the line under the mesh; not proven. A probe that runs beside it outside the mesh would tell.
+
+## 2026-11-25 — a router that comes back is sometimes noticed late (`TestRouterReboot`, 1 of 12)
+
+**Why open:** In the full lab run before v0.11.28, `TestRouterReboot` failed once: the session was silent for 60.9 s where the router was away for 30 s (limit 45 s). The other 11 runs of that day gave 30.6 to 31.0 s, among them 4 with this branch and 4 with main, alternating, right after. From the log of the slow run: the tunnel was declared dead 20 s into the outage, and Nebula then asks for a new one at growing gaps (`try_interval` times the number of the try: 1, 4, 8, 12 s). The router was back at :32, the next try came at :34, TCP's own retry had fallen at 30.5 s after the cut, just before, and its next one is at 61 s. Not shown: why only this run declared the tunnel dead early enough to matter (it was the only one inside a full run, so load is a candidate), and whether main does it too (0 of 4, too few to say).
+**What would close it:** asking again at once when a packet from the peer's network arrives or the path loop sees the way out return, instead of waiting for the next growing gap; and a test that puts the router's return right after a try. The limit of the test stays at 45 s.
 
 ## 2026-11-24 — the network lab is not in CI
 

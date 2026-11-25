@@ -146,7 +146,7 @@ Packages NOT carried over (Pulumi/OCI-specific):
 
 ## Vendor Patch: Nebula
 
-We vendor dependencies and pin `slackhq/nebula` **v1.10.3** with **35 patches** in `patches/` (01–36, no 23; inventory in `patches/README.md`). They cover:
+We vendor dependencies and pin `slackhq/nebula` **v1.10.3** with **37 patches** in `patches/` (01–38, no 23; inventory in `patches/README.md`). They cover:
 
 - graceful shutdown (01, completed by 27);
 - a test-reply panic (02);
@@ -158,13 +158,14 @@ We vendor dependencies and pin `slackhq/nebula` **v1.10.3** with **35 patches** 
 - relay-manager drop warnings (26);
 - closing the netstack of a userspace service (29), and a shared-global race (30);
 - Linux: closing a network releases its UDP port and TUN device (31); the TUN descriptor is close-on-exec (32);
-- paths between peers: one stray packet no longer closes a relayed tunnel (33), counters of what was received (34), nobody moves to another path before an answer has come back on it (35), a new tunnel stays the one in use (36).
+- paths between peers: one stray packet no longer closes a relayed tunnel (33), counters of what was received (34), nobody moves to another path before an answer has come back on it (35), a new tunnel stays the one in use (36);
+- two data races between sending, receiving and status: the address a peer is sent to (37), a peer's relay list (38). Only `go test -race` shows them, and CI does not run it.
 
 - **Apply**: `make patch-vendor`, or `make vendor` (vendor + patch). Always do this after `go mod vendor`.
 - **⚠ `make patch-vendor` swallows failures** (`|| true`, then deletes `*.rej`). **Patch 12 (and, on Linux, hunk 3 of 19) does not apply on a clean tree**, so its pipelined macOS `listenIn` is in no release or Docker build, the "2.7× downlink" numbers credited to it do not describe what we ship, and `go vet github.com/slackhq/nebula` fails on its test. After patching, check by hand that every patch applied (e.g. `patch --dry-run -R` per file) until the Makefile fails loudly.
 - **Build**: `go build -mod=vendor ./...` (or `make build`).
 - **There is no `scripts/check-nebula-patch.sh`** (older docs referenced one). Vendored tests are not part of `./...`; run `go test -mod=vendor -race github.com/slackhq/nebula/udp` after touching the UDP patches. They are macOS-only and CI is ubuntu-only.
-- **Patch 01 history:** upstream issue #1031 (`svc.Close()` → `os.Exit(2)`). PR #1375 was closed unmerged; the real fix is **PR #1661, released in v1.11.0**. On upgrade, delete 01, 27 and the TUN half of 31 (its UDP half went into v1.12.0). `vendor/` is gitignored, but `nebula/control.go` and `nebula/overlay/tun_darwin.go` are tracked.
+- **Patch 01 history:** upstream issue #1031 (`svc.Close()` → `os.Exit(2)`). PR #1375 was closed unmerged; the real fix is **PR #1661, released in v1.11.0**. On upgrade, delete 01, 27, 37 (upstream has the same change) and the TUN half of 31 (its UDP half went into v1.12.0). `vendor/` is gitignored, but `nebula/control.go` and `nebula/overlay/tun_darwin.go` are tracked.
 - **Upgrade status (surveyed 2026-11-18):**
   - Upstream is at v1.12.0 (requires Go 1.27.3). The recommended target is **v1.11.2** (needs Go 1.26, which we're on now).
   - What it brings: two firewall classifier bypass fixes, a relay re-establishment fix matching our 2026-05-14 relay stall, and hostmap/roam race fixes.
