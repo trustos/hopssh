@@ -315,3 +315,7 @@ Pages touched: incidents/2026-11-26-mbp-send-stuck-in-kernel, open-questions, in
 - The split-DNS setup ran before the watcher, the path loop, the mesh listener and the local API. On Windows it starts PowerShell twice; in the VM they came 98 s after "mesh connected" on two starts, 5 s with the setup beside the rest. No test: the tests run in userspace mode, where there is no DNS setup.
 
 Pages touched: open-questions.
+
+00:15 to 00:25, the Ubuntu 26.10 VM joined as second device (no root there: userspace mode, started by hand). Windows to Linux: direct handshake from the Windows VM's own address, ping 4 of 4, lookup by name. Through the server: health and exec on both, a terminal on both (ConPTY on Windows: prompt, a command and its output came back). Forced renewal: Linux at once, Windows 9 s, both reachable after. The Linux agent's log has no token line (the fix).
+
+Pages touched: open-questions.
