@@ -16,7 +16,8 @@ type Wire struct {
 	Delay  time.Duration
 	Jitter time.Duration // added at random, without reordering
 	Loss   float64       // 0 to 1
-	Rate   int           // bit/s, 0 for unlimited; what exceeds it waits up to 200 ms
+	Rate   int           // bit/s, 0 for unlimited; what exceeds it waits in a queue
+	Queue  time.Duration // how much of the line the queue holds, 200 ms if 0; what does not fit is lost
 }
 
 var (
@@ -32,6 +33,7 @@ var (
 type Cable struct {
 	wire atomic.Pointer[Wire]
 	cut  atomic.Bool
+	full atomic.Int64 // frames lost because the queue was full
 }
 
 func (c *Cable) set(w Wire) { c.wire.Store(&w) }
@@ -99,7 +101,12 @@ func (c *Cable) run(from, to *os.File) {
 			if sent.Before(now) {
 				sent = now
 			}
-			if sent.Sub(now) > 200*time.Millisecond {
+			queue := w.Queue
+			if queue == 0 {
+				queue = 200 * time.Millisecond
+			}
+			if sent.Sub(now) > queue {
+				c.full.Add(1)
 				continue
 			}
 			sent = sent.Add(time.Duration(n) * 8 * time.Second / time.Duration(w.Rate))
