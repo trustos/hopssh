@@ -13,6 +13,10 @@ Per-incident open items live on the incident page itself (`## Open` section). Th
 - **`TestUncleanShutdownRaceLoser`** of upstream's e2e does not end with `paths.patch` (explained in `patches/README.md`); upstream's e2e are still in no script.
 - **Windows** was only compiled and vetted, not run.
 - **Nebula now watches the network itself on macOS** (`listen.rebind_on_network_change`, on by default): a message on the routing socket, one second to settle, then the same rebind our `watchNetworkChanges` does every 5 s, without closing tunnels. On the Macs it fired once at start (another network's utun appeared) and did no harm. Not looked at: whether our 5 s look is still needed on macOS, and what the two do together when the Wi-Fi changes.
+- **From the review of the pull request (2026-11-26), all three older than the upgrade:**
+  - *macOS: closing the UDP socket does not wake its reader* (`udp_darwin.go`, `Close`). The reader sits in `recvmsg_x`, so the port may stay taken until the next packet arrives: the macOS twin of what `linux-udp-close.patch` fixes. Read from the code, not measured. Renewals on the Macs reload on the same port and were clean, and `waitForUDPPortFree` waits; a test like the Linux close tests would settle it.
+  - *`ProbeEndpoint` without an address* (the path loop's question to a silent tunnel) sends an ordinary test packet, so the receiver may move to us before an answer came. "Ask before moving" does not cover it.
+  - *`Control.Wait`* (new in v1.11) could replace our own close-then-wait-for-the-port in `reloadNebula`. Not tried.
 
 Source / context: `patches/README.md`, `docs/wiki/raw/nebula-upgrade/`
 

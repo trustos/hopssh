@@ -3,7 +3,6 @@ package e2etest
 import (
 	"context"
 	"fmt"
-	"github.com/trustos/hopssh/internal/nebulacfg"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,6 +13,8 @@ import (
 	"github.com/slackhq/nebula/config"
 	"github.com/slackhq/nebula/overlay"
 	"github.com/slackhq/nebula/service"
+
+	"github.com/trustos/hopssh/internal/nebulacfg"
 )
 
 // Peer is another device of the network, in the test process: real Nebula with
