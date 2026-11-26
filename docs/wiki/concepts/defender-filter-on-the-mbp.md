@@ -1,14 +1,19 @@
 ---
 type: concept
-title: A content filter that inspects our packets (Microsoft Defender on the MBP caps hop's download)
-status: current
+title: hop's download to the MBP is slow on one office Wi-Fi (cause not established; Defender's filter is the suspect)
+status: open
 last_compiled: 2026-11-26
 sources: []
 ---
 
-# A content filter that inspects our packets
+# hop's download to the MBP is slow on one office Wi-Fi
 
-On the MBP a download through hop reached 34 to 68 Mbit/s on 2026-11-26 from 14:02 on, while Tailscale did 157 and ZeroTier 137 to 189 in the same minutes and hop's upload stayed at 180. The cause is on the MBP and is not ours: **Microsoft Defender's network extension (`netext`, `com.microsoft.wdav.netext`) looks at every packet of the agent's UDP socket and at none of ZeroTier's.**
+On the MBP a download through hop reached 25 to 68 Mbit/s on 2026-11-26 from 14:02 on, while Tailscale did 157 and ZeroTier 137 to 189 in the same minutes and hop's upload stayed at 180. Between 11:36 and 12:16 the same day it was 146 to 185.
+
+**The cause is not established.** Two things are known:
+
+1. The MBP rejoined Wi-Fi at 13:54 after a test on the phone's hotspot (agent log: "network change detected"), and the downloads are slow since then. The office has more than one Wi-Fi; it may be on another one than at noon (the user, 2026-11-26). Now: gateway 172.17.132.1, 802.11ax, channel 48, 40 MHz, -53 dBm.
+2. Microsoft Defender's network extension (`netext`, `com.microsoft.wdav.netext`) uses half a core during hop's downloads. In two of three comparisons it was not among the busiest processes during ZeroTier's; in the third it was at 69 % and ZeroTier still did 142 Mbit/s. So it is a suspect, not the cause.
 
 **Read this before looking for a slow receive path in the agent on a managed Mac.**
 
@@ -21,9 +26,10 @@ CPU on the MBP (`top`, 5 s) during 8 s downloads from the mini:
 | idle | | 11 % | 5 % |
 | hop | 43 and 57 Mbit/s | 56 % | 21 to 29 % |
 | ZeroTier | 189 and 184 Mbit/s | not among the first seven | (`zerotier-one` 60 %) |
+| hop, an hour later | 59 Mbit/s | 55 % | 38 % |
+| ZeroTier, an hour later | 142 Mbit/s | 69 % | (`zerotier-one` 27 %) |
 | hop, upload | 178 Mbit/s | 96 % | 47 % |
 
-About 4500 packets a second arriving cost the filter half a core; it has one. Sending costs it a third of that per packet, so the upload still fits.
 
 ## What it is not
 
@@ -33,13 +39,13 @@ About 4500 packets a second arriving cost the filter half a core; it has one. Se
 - Not Tailscale on the mini: the same with it on and off.
 - Not the mini: nothing in its log, the agent is not among its busiest processes, and it sends 180 Mbit/s to the MBP over ZeroTier.
 
-## What is not known
+## What is not known, and the test that decides
 
-- Why hop's downloads were 146 to 185 Mbit/s between 11:36 and 12:16 the same day. `netext` had been running since about 11:19. The MBP changed Wi-Fi in between (gateway 172.17.132.1 since 14:02 at the latest); a filter policy that depends on the network would fit, and is a guess.
-- Why ZeroTier and Tailscale are not inspected. Tailscale is a network extension of its own; ZeroTier is a plain daemon like ours.
-- Whether a signed agent, or the planned network extension, is treated differently.
+- Whether it is this Wi-Fi (something on it that slows unknown UDP towards the MBP: Tailscale's and ZeroTier's ports are well known, ours are not) or the filters on the MBP (their rules may depend on the network).
+- **The test:** the MBP on the other office Wi-Fi, or at home: one hop download, one ZeroTier download, `top` beside both. Fast there with `netext` as busy: it is the network. Fast with `netext` quiet: it is the filter's rules.
+- The MBP's TCP counters (`netstat -s -p tcp`) stay at 0 on macOS 26, so loss cannot be told from reordering there.
 
-The filter is the Mac owner's company's; nothing was changed on it.
+The filters are the Mac owner's company's; nothing was changed on them.
 
 ## How to see it
 

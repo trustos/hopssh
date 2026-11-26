@@ -4,9 +4,9 @@ Cross-cutting unresolved items. Acts as a handoff state machine across sessions:
 
 Per-incident open items live on the incident page itself (`## Open` section). This file is for items that span multiple pages or that don't have a natural home yet.
 
-## 2026-11-26 — a content filter caps hop's download on the MBP
+## 2026-11-26 — hop's download to the MBP is slow on one office Wi-Fi
 
-Microsoft Defender's network extension inspects every packet of the agent's socket (56 % of a core at 45 Mbit/s in, 96 % at 178 out) and none of ZeroTier's or Tailscale's, which do 137 to 189 Mbit/s where hop does 34 to 68. Not known: why hop was at 146 to 185 at noon on another Wi-Fi, and whether a signed agent or a network extension of ours is let through. To do when the MBP is on the noon network again: one download and `top`. [[concepts/defender-filter-on-the-mbp]]
+25 to 68 Mbit/s since the MBP rejoined Wi-Fi at 13:54, where Tailscale and ZeroTier do 137 to 189 and hop did 146 to 185 at noon; upload is 180 throughout. Ruled out: path, packet size, the line's speed, the mini. Suspects: this Wi-Fi treating our UDP ports differently, or Defender's network filter on the MBP (half a core during our downloads, but once as busy during ZeroTier's). Decided by one download each on another Wi-Fi with `top` beside it. [[concepts/defender-filter-on-the-mbp]]
 
 ## 2026-11-26 — from the cellular and reboot test on v0.11.29
 
