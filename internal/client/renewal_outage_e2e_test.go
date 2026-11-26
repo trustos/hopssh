@@ -77,10 +77,12 @@ func TestE2E_RenewalFailsPastExpiry(t *testing.T) {
 
 	// The network is down until a renewal works, so the wait between tries must
 	// not grow: 300 ms here, a minute in production (it grew to 30 minutes).
+	// 50 tries in 15 s; a wait that doubles from 300 ms gets to 5. CI's Mac with
+	// the race detector did 4 in 5 s, so the window is long and the bar low.
 	before := refused.Load()
-	time.Sleep(5 * time.Second)
-	if n := refused.Load() - before; n < 5 {
-		t.Errorf("a asked %d times in 5 s without a valid certificate, want one try every 300 ms", n)
+	time.Sleep(15 * time.Second)
+	if n := refused.Load() - before; n < 8 {
+		t.Errorf("a asked %d times in 15 s without a valid certificate, want one try every 300 ms", n)
 	}
 
 	serverUp.Store(true)

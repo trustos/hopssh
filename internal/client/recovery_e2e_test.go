@@ -373,7 +373,7 @@ func TestE2E_BackgroundWork(t *testing.T) {
 	m := newE2EMesh(t)
 	m.enroll("home", e2eSubnet+"6", freeUDPPort(t), time.Hour, nil)
 	loops := []string{"runCertRenewal", "runRenewalWatchdog", "runHeartbeat",
-		"watchNetworkChanges", "runWatcherWatchdog", "runPathQuality", "runMeshKeepalive", "runPathWatch"}
+		"watchNetworkChanges", "runWatcherWatchdog", "runPathQuality", "runMeshKeepalive", "runPathWatch", "runSendWatch"}
 	expect := func(n int, when string) {
 		t.Helper()
 		var wrong []string

@@ -299,3 +299,7 @@ Correction the same evening: a repeat showed Defender's filter as busy during a 
 Pages touched: concepts/defender-filter-on-the-mbp (rewritten), incidents/2026-11-26-mbp-send-stuck-in-kernel, open-questions, index.
 
 21:37 to 21:45: the slow state came back for five minutes. Side by side in it: `home` (9 kB send buffer) 36 to 43 Mbit/s down and 170 up, `work` (1 MB) 9 to 10 down and 55 to 87 up, ZeroTier 129 to 191. The big buffer is ruled out. Six provoked rebinds did not bring the state on; screen sharing does not line up. The MBP is back on v0.11.29-followups (2e88874), the watcher has ended.
+
+22:00 to 23:00: the recorder read (12:19 to 20:32). One minute of silence on `home` at 20:09:54, every send into the 1 s limit while receiving went on; the agent now replaces a socket that takes nothing for 5 s (`send_watch.go`, `SendStuckFor` in two patches). The 20 s on hotspot to Wi-Fi is the change itself (ZeroTier: 47 s). The short silences stay unexplained. The 1 in 30 failure of `TestPeerCache_SaveSkipsWhenUnchanged` fixed (both saves in one second of the clock). Recorder stopped. PR 6 opened; Actions minutes are not billed for this repo, it is public.
+
+Pages touched: incidents/2026-11-26-mbp-send-stuck-in-kernel, open-questions, index.

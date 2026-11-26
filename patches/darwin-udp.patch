@@ -83,7 +83,7 @@ diff --git a/github.com/slackhq/nebula/udp/udp_darwin.go b/github.com/slackhq/ne
 index 574e449..4ecc601 100644
 --- a/github.com/slackhq/nebula/udp/udp_darwin.go
 +++ b/github.com/slackhq/nebula/udp/udp_darwin.go
-@@ -4,13 +4,14 @@
+@@ -4,61 +4,186 @@
  package udp
  
  import (
@@ -97,10 +97,12 @@ index 574e449..4ecc601 100644
  	"net/netip"
 +	"runtime"
 +	"sync"
++	"sync/atomic"
  	"syscall"
++	"time"
  	"unsafe"
  
-@@ -18,47 +19,164 @@ import (
+ 	"github.com/slackhq/nebula/config"
  	"golang.org/x/sys/unix"
  )
  
@@ -169,6 +171,11 @@ index 574e449..4ecc601 100644
 +	// hopssh patch 28: set by Close. A late sender (a delayed punch, a worker
 +	// that has not seen ctx end) must not write to a reused fd.
 +	closed bool
++
++	// Since when, and how often in a row, the kernel took no packet within the
++	// send limit. Zero after any send it answered.
++	stuckSince atomic.Int64
++	stuckSends atomic.Int32
 +}
 +
 +type sendEntry struct {
@@ -268,28 +275,28 @@ index 574e449..4ecc601 100644
 +	if batch <= 0 {
 +		batch = 1
 +	}
-+
+ 
+-		return c, nil
 +	c := &StdConn{
 +		sysFd: fd,
 +		isV4:  ip.Is4(),
 +		l:     l,
 +		batch: batch,
-+	}
+ 	}
  
--		return c, nil
+-	return nil, fmt.Errorf("unexpected PacketConn: %T %#v", pc, pc)
 +	if batch > 1 {
 +		c.laneControl = make([]sendEntry, 0, laneCapControl)
 +		c.laneData = make([]sendEntry, 0, laneCapData)
 +		c.sendMsgs = make([]msghdrX, laneCapTotal)
 +		c.sendIovs = make([]iovec, laneCapTotal)
- 	}
- 
--	return nil, fmt.Errorf("unexpected PacketConn: %T %#v", pc, pc)
++	}
++
 +	return c, nil
  }
  
  func NewListenConfig(multi bool) net.ListenConfig {
-@@ -79,112 +197,508 @@ func NewListenConfig(multi bool) net.ListenConfig {
+@@ -79,112 +204,532 @@ func NewListenConfig(multi bool) net.ListenConfig {
  					return controlErr
  				}
  			}
@@ -692,6 +699,7 @@ index 574e449..4ecc601 100644
 +		for end = start + 1; end < n && sameDest(&u.sendMsgs[start], &u.sendMsgs[end]); end++ {
 +		}
 +		err := u.sendRun(start, end)
++		u.noteSend(err, time.Now())
 +		if err == net.ErrClosed || err == errSendBufFull {
 +			return err
 +		}
@@ -708,22 +716,54 @@ index 574e449..4ecc601 100644
  
 -func (u *StdConn) ReloadConfig(c *config.C) {
 -	// TODO
-+// errSendBufFull: the socket send buffer is full; drop. Same behavior as
-+// writeToSingle.
-+var errSendBufFull error = &net.OpError{Op: "sendmsg_x", Err: unix.EWOULDBLOCK}
-+
-+// sameDest reports whether two queued packets go to the same address.
-+func sameDest(a, b *msghdrX) bool {
-+	return bytes.Equal(unsafe.Slice(a.Name, a.Namelen), unsafe.Slice(b.Name, b.Namelen))
++func (u *StdConn) noteSend(err error, now time.Time) {
++	if err != errSendBufFull {
++		u.stuckSince.Store(0)
++		u.stuckSends.Store(0)
++		return
++	}
++	u.stuckSince.CompareAndSwap(0, now.UnixNano())
++	u.stuckSends.Add(1)
  }
  
 -func NewUDPStatsEmitter(udpConns []Conn) func() {
 -	// No UDP stats for non-linux
 -	return func() {}
++// SendStuckFor is how long the kernel has taken no packet at all from this
++// socket: every send since then ran into the send limit. 0 while sends pass,
++// and before the third refusal in a row. On a Mac with a content filter this
++// lasted a minute (2026-11-26, 20:09); a new socket is not held up by what
++// the old one has waiting, so the agent makes one.
++func (u *StdConn) SendStuckFor() time.Duration {
++	since := u.stuckSince.Load()
++	if since == 0 || u.stuckSends.Load() < 3 {
++		return 0
++	}
++	return time.Since(time.Unix(0, since))
+ }
+ 
+-func (u *StdConn) ListenOut(r EncReader) error {
+-	buffer := make([]byte, MTU)
++// errSendBufFull: the socket send buffer is full; drop. Same behavior as
++// writeToSingle.
++var errSendBufFull error = &net.OpError{Op: "sendmsg_x", Err: unix.EWOULDBLOCK}
+ 
++// sameDest reports whether two queued packets go to the same address.
++func sameDest(a, b *msghdrX) bool {
++	return bytes.Equal(unsafe.Slice(a.Name, a.Namelen), unsafe.Slice(b.Name, b.Namelen))
++}
++
 +// sendRun sends u.sendMsgs[start:end] in one sendmsg_x call.
 +// Caller must hold u.sendMu.
 +func (u *StdConn) sendRun(start, end int) error {
-+	for {
+ 	for {
+-		// Just read one packet at a time
+-		n, rua, err := u.ReadFromUDPAddrPort(buffer)
+-		if err != nil {
+-			if errors.Is(err, net.ErrClosed) {
+-				return err
+-			}
+-			u.l.Error("unexpected udp socket receive error", "error", err)
 +		sent, _, err := unix.Syscall6(
 +			unix.SYS_SENDMSG_X,
 +			uintptr(u.sysFd),
@@ -734,8 +774,8 @@ index 574e449..4ecc601 100644
 +			0,
 +		)
 +		if err == syscall.EINTR {
-+			continue
-+		}
+ 			continue
+ 		}
 +		if err == syscall.EAGAIN {
 +			return errSendBufFull
 +		}
@@ -750,10 +790,9 @@ index 574e449..4ecc601 100644
 +		}
 +		return nil
 +	}
- }
++}
  
--func (u *StdConn) ListenOut(r EncReader) error {
--	buffer := make([]byte, MTU)
+-		r(netip.AddrPortFrom(rua.Addr().Unmap(), rua.Port()), buffer[:n])
 +// appendLane copies queued entries from a lane into u.sendMsgs/u.sendIovs
 +// starting at index `start`, then resets the lane. Returns the new write index.
 +// Caller must hold u.sendMu.
@@ -775,11 +814,13 @@ index 574e449..4ecc601 100644
 +		msg.Controllen = 0
 +		msg.Flags = 0
 +		msg.Datalen = 0
-+	}
+ 	}
 +	*lane = (*lane)[:0]
 +	return start + n
-+}
-+
+ }
+ 
+-func (u *StdConn) SupportsMultipleReaders() bool {
+-	return false
 +func (u *StdConn) writeToSingle(b []byte, ap netip.AddrPort) error {
 +	var rsa unsafe.Pointer
 +	var addrLen uintptr
@@ -804,15 +845,8 @@ index 574e449..4ecc601 100644
 +		rsa = unsafe.Pointer(&sa)
 +		addrLen = unix.SizeofSockaddrInet6
 +	}
- 
- 	for {
--		// Just read one packet at a time
--		n, rua, err := u.ReadFromUDPAddrPort(buffer)
--		if err != nil {
--			if errors.Is(err, net.ErrClosed) {
--				return err
--			}
--			u.l.Error("unexpected udp socket receive error", "error", err)
++
++	for {
 +		_, _, err := unix.Syscall6(
 +			unix.SYS_SENDTO,
 +			uintptr(u.sysFd),
@@ -827,10 +861,8 @@ index 574e449..4ecc601 100644
 +			return nil
 +		}
 +		if err == syscall.EINTR {
- 			continue
- 		}
--
--		r(netip.AddrPortFrom(rua.Addr().Unmap(), rua.Port()), buffer[:n])
++			continue
++		}
 +		if err == syscall.EAGAIN {
 +			return &net.OpError{Op: "sendto", Err: unix.EWOULDBLOCK}
 +		}
@@ -838,11 +870,9 @@ index 574e449..4ecc601 100644
 +			return net.ErrClosed
 +		}
 +		return &net.OpError{Op: "sendto", Err: err}
- 	}
- }
- 
--func (u *StdConn) SupportsMultipleReaders() bool {
--	return false
++	}
++}
++
 +// --- Utility ---
 +
 +func (u *StdConn) LocalAddr() (netip.AddrPort, error) {
@@ -862,7 +892,7 @@ index 574e449..4ecc601 100644
  }
  
  // Rebind clears the interface the kernel scoped this socket to, so that sends are routed against the current
-@@ -193,10 +707,27 @@ func (u *StdConn) SupportsMultipleReaders() bool {
+@@ -193,10 +738,27 @@ func (u *StdConn) SupportsMultipleReaders() bool {
  func (u *StdConn) Rebind() error {
  	var err error
  	if u.isV4 {
@@ -898,7 +928,7 @@ new file mode 100644
 index 0000000..01c9026
 --- /dev/null
 +++ b/github.com/slackhq/nebula/udp/udp_darwin_batch_test.go
-@@ -0,0 +1,649 @@
+@@ -0,0 +1,677 @@
 +//go:build darwin && !e2e_testing
 +// +build darwin,!e2e_testing
 +
@@ -1546,6 +1576,34 @@ index 0000000..01c9026
 +			t.Errorf("batch %d: a send may wait %v in the kernel, want a limit of at most 5s", batch, limit)
 +		}
 +		c.Close()
++	}
++}
++
++// On 2026-11-26 the kernel took no packet from one socket for a minute: every
++// send ran into the limit of a second. The agent asks SendStuckFor and makes a
++// new socket.
++func TestSendStuckFor(t *testing.T) {
++	u := &StdConn{}
++	start := time.Now().Add(-10 * time.Second)
++	u.noteSend(errSendBufFull, start)
++	u.noteSend(errSendBufFull, start.Add(time.Second))
++	if got := u.SendStuckFor(); got != 0 {
++		t.Errorf("after two refused sends: stuck for %v, want 0", got)
++	}
++	u.noteSend(errSendBufFull, start.Add(2*time.Second))
++	if got := u.SendStuckFor(); got < 9*time.Second || got > 20*time.Second {
++		t.Errorf("after three refused sends from 10 s ago: stuck for %v, want about 10s", got)
++	}
++	u.noteSend(nil, time.Now())
++	if got := u.SendStuckFor(); got != 0 {
++		t.Errorf("after a send that passed: stuck for %v, want 0", got)
++	}
++	for i := 0; i < 3; i++ {
++		u.noteSend(errSendBufFull, start)
++	}
++	u.noteSend(&net.OpError{Op: "sendmsg_x", Err: unix.ENETUNREACH}, time.Now())
++	if got := u.SendStuckFor(); got != 0 {
++		t.Errorf("after a send the kernel answered with an error: stuck for %v, want 0", got)
 +	}
 +}
 diff --git a/github.com/slackhq/nebula/udp/udp_darwin_listenout_pipeline_test.go b/github.com/slackhq/nebula/udp/udp_darwin_listenout_pipeline_test.go

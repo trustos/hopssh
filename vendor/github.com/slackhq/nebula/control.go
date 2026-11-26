@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/slackhq/nebula/cert"
 	"github.com/slackhq/nebula/header"
@@ -215,6 +216,15 @@ func (c *Control) RebindUDPServer() {
 
 	// Let the main interface know that we rebound so that underlying tunnels know to trigger punches from their remotes
 	c.f.rebindCount++
+}
+
+// SendStuckFor is how long the kernel has taken no packet from the UDP socket.
+// 0 while sends pass, and on systems where a send cannot wait.
+func (c *Control) SendStuckFor() time.Duration {
+	if s, ok := c.f.outside.(interface{ SendStuckFor() time.Duration }); ok {
+		return s.SendStuckFor()
+	}
+	return 0
 }
 
 // ListHostmapHosts returns details about the actual or pending (handshaking) hostmap by vpn ip

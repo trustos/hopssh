@@ -347,6 +347,9 @@ func (c *Client) startInstance(ctx context.Context, inst *meshInstance) error {
 	// Off the relay and off dead paths.
 	go runPathWatch(inst.runCtx, inst)
 
+	// A new socket when the kernel takes nothing from this one.
+	go runSendWatch(inst.runCtx, inst)
+
 	// Phase L slice 2: clipboard sync. Per-(device, network) opt-in.
 	if inst.enrollment != nil && inst.enrollment.ClipboardSync {
 		dir := inst.dir()

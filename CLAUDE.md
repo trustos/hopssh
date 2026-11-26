@@ -521,6 +521,7 @@ Verified end-to-end with `hop-agent migration` against a deployed QUIC echo serv
     2. When a teardown did not finish and its port is still taken, end the process; waiting frees nothing.
     3. Before a release: `make preflight`. `make release` runs it. The macOS code is tested only on a Mac (CI job `race`).
     4. On a Mac with a content filter the kernel's "full socket buffers" counter is not a loss counter.
+    5. The limit alone left a network silent for a minute the same evening: every send ran into it. A socket that takes nothing for 5 s is replaced (`internal/client/send_watch.go`). Do not raise the send buffer there: 1 MB was three to four times slower (`docs/wiki/concepts/defender-filter-on-the-mbp.md`).
 
 - **Paths between devices, measured in real networks (2026-11-24, not released yet).** `scripts/netlab.sh` runs the real server and real root agents behind simulated routers in the Linux VM (9 min). It found nine faults of v0.11.27 and before that are fixed, among them: a relay that sticks, 60 to 84 s of silence after a restart of the server or a new public address, `preferred_ranges` never in effect, a path that works one way only kept for minutes. It also found one that the fix of `preferred_ranges` brought in (a one-way LAN went dead) and one that is only pinned (big packets lost). Fixes: `internal/client/path_watch.go` and patches 33 to 36. Table, causes and what is still pinned: `docs/wiki/concepts/netlab.md`.
   - **Rules:**
