@@ -2,15 +2,13 @@
 type: concept
 title: The network lab (real server and root agents behind simulated routers)
 status: current
-last_compiled: 2026-11-24
+last_compiled: 2026-11-26
 sources:
   - internal/netlab
   - scripts/netlab.sh
   - internal/client/path_watch.go
-  - patches/33-relayed-recv-error.patch
-  - patches/34-received-counters.patch
-  - patches/35-ask-before-moving.patch
-  - patches/36-new-tunnel-stays.patch
+  - patches/paths.patch
+  - patches/control-api.patch
 ---
 
 # The network lab
@@ -67,6 +65,8 @@ Two lines of a new test: `a, b, ra, rb := l.twoHomes(Home, Carrier)` and `s := o
 
 `TestRoaming`, home to mobile, is either about 3.8 to 4.4 s or about 7.6 to 7.8 s (13 runs, also with an older state of the path loop). 2 s of them are without any network. `watchNetworkChanges` looks every 5 s: when that look came 3 s after the cable was out, the session was silent for 3.75 s, when it came after 4 s, for 7.6 s. *Likely:* TCP doubles its waits, so its retry at 3.75 s just finds the new path or just misses it. A message from the kernel instead of a look every 5 s would end that (not built).
 
+**On Nebula v1.11.2** (2026-11-26, branch `upgrade/nebula-1.11.2`, one full run): 30 of 30 pass, and every silence is in the range of the table: `TestServerRestart` relayed 20.8 s, `TestNewPublicAddress` 7.5 s, `TestRoamingSameAddress` 7.5 s, `TestLeaveTheLAN` 6.6 s, `TestTwoPhones` 240 ms and no new tunnel, `TestOneWayLAN` 110 ms, `TestOneWayDirect` 160 ms, `TestOneDirectionBreaks` 7.5 and 15.3 s, `TestRenewalOnTheRelay` 0.83 and 0.70 s, `TestRoaming` 3.7 and 3.0 s, `TestRouterReboot` 30.5 s. The patch numbers below are those against v1.10.3; `patches/README.md` says in which file each is now.
+
 ### Causes
 
 1. **The relay sticks.** When two devices meet, the handshake over the relay often overtakes the direct one, and Nebula looks for a direct path again only after 1000 packets. Fixed by `path_watch.go` (`relayed`).
@@ -82,7 +82,7 @@ Two lines of a new test: `a, b, ra, rb := l.twoHomes(Home, Carrier)` and `s := o
 11. **After a repair Nebula went back to the broken tunnel** for up to 10 s, because it remembered packets from before the repair. Fixed by patch 36 (`TestE2E_NewTunnelStays`: red 3 of 3 without it). What is left of `TestOneDirectionBreaks` is detection: the deaf side notices only when it has sent something itself, at worst 8 s after the break, and then TCP's next retry decides between 7.5 and 15.4 s.
 12. **The first answer took the old path now and then** (in patch 35 itself, found by one run too many: `TestOneWayLAN` failed once in about 20 tries, with 1.13 s instead of 0.3 s). Nebula handed the first packet to the network card and only then looked where it came from. The kernel answers within microseconds, and if it was quicker, its answer went into the path that does not work, and TCP tried again after 1 s. Patch 35 moves before it hands over the packet now. Proof, `TestE2E_StartsWhereBothHear` in the VM: as it was 40 of 40 pass with 43 to 77 ms; with 3 ms planted before the move 19 of 20 fail with 1.02 s; with the fix and the same 3 ms 10 of 10 pass with 43 to 70 ms. `TestE2E_MovesBeforeItAnswers` sees it without luck: red 10 of 10 without the fix on the Mac and in the VM (one of the 20 for another reason, a port in use), green 10 of 10 with it on both.
 
-Nebula's own end-to-end tests (v1.10.3, `e2e/`, 25 tests, on the Mac) with all our patches: 24 pass. `TestUncleanShutdownRaceLoser` waits for a dead tunnel to go away that is gone before it starts to wait (patch 35 sends one more packet, whose answer gets a RecvError); not a fault. They are not part of any script.
+Nebula's own end-to-end tests (`e2e/`, on the Mac, v1.10.3 and v1.11.2) with all our patches: all pass but one. `TestUncleanShutdownRaceLoser` waits for a dead tunnel to go away that is gone before it starts to wait (patch 35 sends one more packet, whose answer gets a RecvError); not a fault. They are not part of any script.
 
 ## Pinned gaps
 

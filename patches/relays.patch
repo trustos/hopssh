@@ -1,0 +1,109 @@
+diff --git a/github.com/slackhq/nebula/relay_manager.go b/github.com/slackhq/nebula/relay_manager.go
+index 1ae382a..68bf734 100644
+--- a/github.com/slackhq/nebula/relay_manager.go
++++ b/github.com/slackhq/nebula/relay_manager.go
+@@ -60,12 +60,13 @@ func (rm *relayManager) GetUseRelays() bool {
+ // stage 0 handshake packet for vpnIp through it.
+ func (rm *relayManager) StartRelays(f *Interface, vpnIp netip.Addr, hh *HandshakeHostInfo, stage0 []byte) {
+ 	hostinfo := hh.hostinfo
+-	if !rm.GetUseRelays() || len(hostinfo.remotes.relays) == 0 {
++	// hopssh patch 38: a copy taken under the lock; Control sorts this list in place.
++	relays := hostinfo.remotes.copyRelays()
++	if !rm.GetUseRelays() || len(relays) == 0 {
+ 		hh.lastRelays = nil
+ 		return
+ 	}
+ 
+-	relays := hostinfo.remotes.relays
+ 	listLevel := slog.LevelDebug
+ 	prior := hh.lastRelays
+ 	if !slices.Equal(relays, prior) {
+@@ -525,17 +526,24 @@ func (rm *relayManager) handleCreateRelayRequest(v cert.Version, h *HostInfo, f
+ 	} else {
+ 		// the target is not me. Create a relay to the target, from me.
+ 		if !rm.GetAmRelay() {
++			// hopssh patch 26 (Phase FF, 2026-05-14): elevate silent
++			// drops from `return` to `return after Warn` so operators
++			// can diagnose relay-stall incidents without flipping the
++			// lighthouse log level globally to Info. See the
++			// 2026-05-14 mini↔MBP relay-stall incident.
++			logMsg.Warn("hopssh: dropping relay forward — this lighthouse is not configured as a relay (am_relay=false)")
+ 			return
+ 		}
+ 		peer := rm.hostmap.QueryVpnAddr(target)
+ 		if peer == nil {
+-			// Try to establish a connection to this host. If we get a future relay request,
+-			// we'll be ready!
++			logMsg.Warn("hopssh: dropping relay forward — no HostInfo for target peer (initiating handshake); requester must retry")
+ 			f.Handshake(target)
+ 			return
+ 		}
+ 		if !peer.GetRemote().IsValid() {
+-			// Only create relays to peers for whom I have a direct connection
++			// Only create relays to peers for whom I have a direct connection.
++			// hopssh patch 26: say so, a silent drop here looks like a dead relay.
++			logMsg.Warn("hopssh: dropping relay forward — target peer has no valid remote address; lighthouse view is stale", "targetRemote", peer.GetRemote().String())
+ 			return
+ 		}
+ 		var index uint32
+diff --git a/github.com/slackhq/nebula/remote_list.go b/github.com/slackhq/nebula/remote_list.go
+index 9d1b387..0594b7c 100644
+--- a/github.com/slackhq/nebula/remote_list.go
++++ b/github.com/slackhq/nebula/remote_list.go
+@@ -638,6 +638,14 @@ func (r *RemoteList) unlockedCollect() {
+ 
+ }
+ 
++// copyRelays is the relay list as it is now (hopssh patch 38). Rebuild sorts
++// r.relays in place, so it must not be read without the lock.
++func (r *RemoteList) copyRelays() []netip.Addr {
++	r.RLock()
++	defer r.RUnlock()
++	return slices.Clone(r.relays)
++}
++
+ // unlockedSort assumes you have the write lock and performs the deduping and sorting of the address list
+ func (r *RemoteList) unlockedSort(preferredRanges []netip.Prefix) {
+ 	// Use a map to deduplicate any relay addresses
+diff --git a/github.com/slackhq/nebula/remote_list_relays_race_test.go b/github.com/slackhq/nebula/remote_list_relays_race_test.go
+new file mode 100644
+index 0000000..b435c50
+--- /dev/null
++++ b/github.com/slackhq/nebula/remote_list_relays_race_test.go
+@@ -0,0 +1,36 @@
++package nebula
++
++import (
++	"net/netip"
++	"sync"
++	"testing"
++)
++
++// hopssh patch 38: the handshake goroutine read a peer's relay list while Control
++// (status, the path loop) sorted it in place. Run with -race.
++func TestRelayListIsSafeToRead(t *testing.T) {
++	vpn := netip.MustParseAddr("10.0.0.2")
++	relay := netip.MustParseAddr("10.0.0.1")
++	r := NewRemoteList([]netip.Addr{vpn}, nil)
++	r.Lock()
++	r.unlockedSetRelay(vpn, []netip.Addr{relay})
++	r.Unlock()
++
++	var wg sync.WaitGroup
++	wg.Add(1)
++	go func() {
++		defer wg.Done()
++		for range 20000 {
++			r.Lock()
++			r.shouldRebuild = true
++			r.Unlock()
++			r.CopyAddrs(nil)
++		}
++	}()
++	for range 20000 {
++		if got := r.copyRelays(); len(got) > 1 || (len(got) == 1 && got[0] != relay) {
++			t.Fatalf("read %v, want nothing or %s", got, relay)
++		}
++	}
++	wg.Wait()
++}

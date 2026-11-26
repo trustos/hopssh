@@ -188,3 +188,15 @@ Pages touched: 2 updated (open-questions, this log), patches/README.md, CLAUDE.m
 All packages pass, `TestE2E_Upgrade` from v0.11.27 passes, the lab passes except `TestRouterReboot` once (60.9 s of silence, limit 45 s). Run alone it passed 8 of 8 afterwards, 4 with the branch and 4 with main. The mechanism is in `open-questions`; the limit was not changed.
 
 Pages touched: 1 updated (open-questions), this log.
+
+## [2026-11-26] ingest | Nebula v1.10.3 to v1.11.2 (branch `upgrade/nebula-1.11.2`, not merged, not released)
+
+The 34 patches are 10 files now, one theme each, no file in two of them; 01, 02, 03, 12, 13, 27, 30 and 37 are gone because upstream does the same or they were in no build. `make patch-vendor` stops at a patch that does not apply. Nebula logs with `log/slog`; `nebulacfg.Logger` sets the level, which Nebula itself no longer does.
+
+Tested: all packages (one old flake, `TestPeerCache_SaveSkipsWhenUnchanged`); `-race` on the Nebula packages, `internal/client` and `internal/mesh`; upstream's own e2e on the patched tree; `TestE2E_Upgrade` from v0.11.28 (150 s, pass); the lab, 30 of 30 with the same silences as before (`concepts/netlab`); on Linux the close tests and the kernel-TUN test.
+
+**Found on Linux only:** upstream's new close looked like our patch 31, so 31 was dropped, and on the Mac everything was green. In the VM `TestKernelTunClose_ReleasesDeviceAndPort` failed 4 of 5 and `TestUserspaceClose_DoesNotExit` every time: upstream wakes the reader and returns, and the kernel keeps the port and the device until the reader has left. Waiting restored (`linux-udp-close.patch`, `linux-tun.patch`): 10 of 10.
+
+**Speed, mini and MBP, 15 s iperf3 each way, three rounds, the same half hour** (`results/perf-20261126-nebula-1.11.2/`): v0.11.28 162 to 181 Mbit/s with 6666 to 10220 retransmits; v1.11.2 165 to 185 Mbit/s with 3631 to 9203; ZeroTier beside both 173 to 188 with 99 to 1569. No difference to be seen; the line is the limit. The Macs run v0.11.28 again.
+
+Pages touched: 2 updated (concepts/netlab, open-questions), this log, patches/README.md, CLAUDE.md, docs/architecture.md.

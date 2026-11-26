@@ -1,13 +1,12 @@
 package client
 
 import (
-	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"testing"
 	"time"
 
-	"github.com/sirupsen/logrus"
 	"github.com/slackhq/nebula/udp"
 )
 
@@ -31,8 +30,7 @@ import (
 // a dual-stack socket, and the probes saw that one but never a real Nebula's.
 func nebulaSocket(t *testing.T) (udp.Conn, int) {
 	t.Helper()
-	l := logrus.New()
-	l.SetOutput(io.Discard)
+	l := slog.New(slog.DiscardHandler)
 	c, err := udp.NewListener(l, netip.IPv4Unspecified(), 0, false, 64)
 	if err != nil {
 		t.Fatal(err)

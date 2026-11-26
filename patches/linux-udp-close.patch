@@ -1,0 +1,81 @@
+diff --git a/github.com/slackhq/nebula/udp/udp_linux.go b/github.com/slackhq/nebula/udp/udp_linux.go
+index 3920342..09543c3 100644
+--- a/github.com/slackhq/nebula/udp/udp_linux.go
++++ b/github.com/slackhq/nebula/udp/udp_linux.go
+@@ -10,8 +10,10 @@ import (
+ 	"log/slog"
+ 	"net"
+ 	"net/netip"
++	"sync"
+ 	"sync/atomic"
+ 	"syscall"
++	"time"
+ 	"unsafe"
+ 
+ 	"github.com/rcrowley/go-metrics"
+@@ -22,9 +24,13 @@ import (
+ type StdConn struct {
+ 	sysFd  int
+ 	closed atomic.Bool
+-	isV4   bool
+-	l      *slog.Logger
+-	batch  int
++
++	// hopssh: see Close.
++	readerMu sync.Mutex // no reader is added once closed is set
++	readers  sync.WaitGroup
++	isV4     bool
++	l        *slog.Logger
++	batch    int
+ }
+ 
+ func NewListener(l *slog.Logger, ip netip.Addr, port int, multi bool, batch int) (Conn, error) {
+@@ -163,6 +169,15 @@ func (u *StdConn) recvmsg(msgs []rawMessage) (int, error) {
+ }
+ 
+ func (u *StdConn) ListenOut(r EncReader) error {
++	u.readerMu.Lock()
++	if u.closed.Load() {
++		u.readerMu.Unlock()
++		return net.ErrClosed
++	}
++	u.readers.Add(1)
++	u.readerMu.Unlock()
++	defer u.readers.Done()
++
+ 	var ip netip.Addr
+ 	msgs, buffers, names := u.PrepareRawMessages(u.batch)
+ 	read := u.recvmmsg
+@@ -302,11 +317,31 @@ func (u *StdConn) getMemInfo(meminfo *[unix.SK_MEMINFO_VARS]uint32) error {
+ }
+ 
+ func (u *StdConn) Close() error {
+-	u.closed.Store(true)
++	u.readerMu.Lock()
++	closed := u.closed.Swap(true)
++	u.readerMu.Unlock()
++	if closed {
++		return nil
++	}
+ 	// Wake the reader parked in recvmmsg/recvmsg. shutdown(2) on an unconnected socket
+ 	// returns ENOTCONN but still wakes it, so ignore the error.
+ 	// The reader then sees closed and stops touching the fd, making the Close below safe.
+ 	_ = unix.Shutdown(u.sysFd, unix.SHUT_RDWR)
++
++	// hopssh: the kernel keeps the socket, with its port, until the woken
++	// reader has left its system call. Returning before that lets the caller
++	// fail to listen on the same port again, which every certificate renewal
++	// does. Upstream waits from v1.12.0.
++	done := make(chan struct{})
++	go func() {
++		u.readers.Wait()
++		close(done)
++	}()
++	select {
++	case <-done:
++	case <-time.After(time.Second):
++		u.l.Warn("udp reader did not exit, closing its socket anyway")
++	}
+ 	return unix.Close(u.sysFd)
+ }
+ 

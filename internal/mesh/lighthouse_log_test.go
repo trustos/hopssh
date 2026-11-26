@@ -24,13 +24,13 @@ func TestLighthouseLogLevelDefaultsToInfo(t *testing.T) {
 		t.Fatalf("read network_manager.go: %v", err)
 	}
 	s := string(src)
-	if !strings.Contains(s, "loggerLevel := logrus.InfoLevel") {
-		t.Error("per-network lighthouse must default loggerLevel = logrus.InfoLevel — pre-Phase-FF WarnLevel suppressed the entire relay flow")
+	if !strings.Contains(s, "loggerLevel := slog.LevelInfo") {
+		t.Error("per-network lighthouse must default loggerLevel = slog.LevelInfo — pre-Phase-FF WarnLevel suppressed the entire relay flow")
 	}
 	if !strings.Contains(s, "HOPSSH_LIGHTHOUSE_LOG_LEVEL") {
 		t.Error("HOPSSH_LIGHTHOUSE_LOG_LEVEL env-var override missing — operators need a way to dial back log volume without re-releasing")
 	}
-	if strings.Contains(s, "logger.SetLevel(logrus.WarnLevel)") {
+	if strings.Contains(s, "SetLevel(slog.LevelWarn)") {
 		t.Error("regression: legacy WarnLevel default is back; this silences relay flow logs")
 	}
 }
@@ -82,7 +82,7 @@ func TestLighthouseLogLevelEnvVarHonored(t *testing.T) {
 		t.Fatalf("read network_manager.go: %v", err)
 	}
 	s := string(src)
-	if !strings.Contains(s, "logrus.ParseLevel") {
-		t.Error("env-var-controlled logger level must use logrus.ParseLevel — accepts: panic|fatal|error|warn|info|debug|trace")
+	if !strings.Contains(s, "logging.ParseLevel") {
+		t.Error("env-var-controlled logger level must use logging.ParseLevel — accepts: error|warn|info|debug|trace")
 	}
 }

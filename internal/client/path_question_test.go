@@ -3,6 +3,7 @@ package client
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/netip"
 	"os"
@@ -12,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sirupsen/logrus"
 	"github.com/slackhq/nebula"
 	"github.com/slackhq/nebula/config"
 	"github.com/slackhq/nebula/header"
@@ -231,7 +231,7 @@ func TestE2E_MovesBeforeItAnswers(t *testing.T) {
 	var cfg config.C
 	err := cfg.Load(filepath.Join(w.m.dir, "b", "nebula.yaml"))
 	if err == nil {
-		b.ctrl, err = nebula.Main(&cfg, false, "test", logrus.New(), func(_ *config.C, _ *logrus.Logger, nets []netip.Prefix, _ int) (overlay.Device, error) {
+		b.ctrl, err = nebula.Main(&cfg, false, "test", slog.New(slog.NewTextHandler(os.Stderr, nil)), func(_ *config.C, _ *slog.Logger, nets []netip.Prefix, _ int) (overlay.Device, error) {
 			var err error
 			b.Device, err = overlay.NewUserDevice(nets)
 			return b, err

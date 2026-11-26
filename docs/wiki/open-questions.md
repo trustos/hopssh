@@ -4,6 +4,22 @@ Cross-cutting unresolved items. Acts as a handoff state machine across sessions:
 
 Per-incident open items live on the incident page itself (`## Open` section). This file is for items that span multiple pages or that don't have a natural home yet.
 
+## 2026-11-26 — after the Nebula upgrade: what is left
+
+- **v1.12.0** needs Go 1.27.3 and a much newer gvisor. There `linux-udp-close.patch` can go (upstream waits for the reader); `linux-tun.patch` has to be shown unnecessary with the kernel-TUN test first.
+- **Log level.** Nebula v1.11 no longer sets the level of the logger it is given. Before, `nebula.Main` did, so the agent's "warn" and `HOPSSH_LIGHTHOUSE_LOG_LEVEL` never had an effect. Now `nebulacfg.Logger` applies the config's `logging.level` and the server variable works for the first time (default info). Anything that reads the logs by pattern has to expect `level=INFO msg="…" key=value`.
+- **`TestPeerCache_SaveSkipsWhenUnchanged` is flaky** (1 of about 30): it compares modification times, and two saves that straddle a tick of the clock look like a rewrite. Older than the upgrade.
+- **CI job `check-patches`** calls `make check-patches`, which does not exist; `continue-on-error` hides it. Remove the job or write the target.
+- **`TestUncleanShutdownRaceLoser`** of upstream's e2e does not end with `paths.patch` (explained in `patches/README.md`); upstream's e2e are still in no script.
+- **Windows** was only compiled and vetted, not run.
+- **Nebula now watches the network itself on macOS** (`listen.rebind_on_network_change`, on by default): a message on the routing socket, one second to settle, then the same rebind our `watchNetworkChanges` does every 5 s, without closing tunnels. On the Macs it fired once at start (another network's utun appeared) and did no harm. Not looked at: whether our 5 s look is still needed on macOS, and what the two do together when the Wi-Fi changes.
+- **From the review of the pull request (2026-11-26), all three older than the upgrade:**
+  - *macOS: closing the UDP socket does not wake its reader* (`udp_darwin.go`, `Close`). The reader sits in `recvmsg_x`, so the port may stay taken until the next packet arrives: the macOS twin of what `linux-udp-close.patch` fixes. Read from the code, not measured. Renewals on the Macs reload on the same port and were clean, and `waitForUDPPortFree` waits; a test like the Linux close tests would settle it.
+  - *`ProbeEndpoint` without an address* (the path loop's question to a silent tunnel) sends an ordinary test packet, so the receiver may move to us before an answer came. "Ask before moving" does not cover it.
+  - *`Control.Wait`* (new in v1.11) could replace our own close-then-wait-for-the-port in `reloadNebula`. Not tried.
+
+Source / context: `patches/README.md`, `docs/wiki/raw/nebula-upgrade/`
+
 Format:
 
 ```
@@ -181,39 +197,6 @@ Source / context: `internal/client/renew.go::renewNow`; [[concepts/watchdog]]
 
 Source / context: `internal/client/local_api.go::handleForceRenew`
 
-## 2026-11-18 — vendor patch 12 never applies (silently, even in CI)
-
-**2026-11-23: its code is in no clean build.** `listenInWorker` and `inBatch` exist only in the test patch 13 adds, so `go vet github.com/slackhq/nebula` fails, and release and Docker builds use the same steps. Published macOS binaries very likely never had the pipelined `listenIn` (not checked on a binary), and the 2.7× downlink numbers in `docs/performance.md` and `docs/macos-pipelined-listenin.md` describe dev builds. **Decide:** re-measure with and without it on the current tree, then port it properly or drop 12 + 13. Patch 28's `interface.go` hunk is made against a tree without 12.
-
-Patch 12 fails on a blank-line context mismatch and `make patch-vendor` carries on: the Makefile runs each `patch` with `|| true` and then deletes `*.rej`, so **any** failed patch is silently ignored, in CI too. Either refresh patch 12 against vendored Nebula v1.10.3 or fold it into the Nebula upgrade below. Make `patch-vendor` **fail** on any patch that doesn't apply, and do that *before* the upgrade.
-
-**2026-11-24: the Mac and the release build get different trees.** GNU patch also refuses hunk 3 of patch 19, which adds `applyOSThreadHints()` to the function patch 12 would have added. Apple's `patch` accepts it in the wrong place, `listenIn`, which then makes the same call twice. Nothing else differs and the call does nothing off macOS, so v0.11.27 is what was tested. But a test on a Mac does not prove that a patch applies on Linux, and "it applied" does not prove it went to the right place: check with `patch` of both kinds, with `--fuzz=0` where possible (2, 19 and 26 apply only with fuzz).
-
-Source / context: `patches/`, `Makefile` `patch-vendor` target. `scripts/check-nebula-patch.sh` does not exist despite older docs.
-
-## 2026-11-18 — upgrade vendored Nebula v1.10.3 → v1.11.2
-
-Upstream releases since our pin are v1.11.0, v1.11.1, v1.11.2 and v1.12.0 (v1.12.0 needs Go 1.27.3 and a gvisor jump of about 2.5 years, so it is a separate project). v1.11.2 brings:
-
-- two firewall bypass fixes with no GHSA (IPv6 extension-header parsing #1789; SCTP/GRE classified as TCP/UDP #1840), plus nonce-reuse and relay replay-window hardening;
-- a relay re-establishment fix (#1805), the same symptom class as the 2026-05-14 relay stall above;
-- hostmap/roam race fixes (#1752, #1755, #1773, #1788, #1790);
-- `Control.Wait` (#1794).
-
-Patch impact:
-
-- **Drop:** 01 (fixed upstream by PR #1661) and 03.
-- **Probably drop:** 02, pending a test.
-- **Rewrite:** 08 against upstream's `ListenOut` flush callback.
-- **Real rework:** the macOS perf stack (04, 06, 07, 09, 12, 17, 19, 24), the control API (11, 20–22, which have no upstream equivalent), 15 and 26.
-- **Keep as-is:** 14 and 25 (upstream `Expired()` still has no clock-skew tolerance).
-
-Known advisory GHSA-69x3-g4r3-p962 is already patched in our v1.10.3 (and only affects P256; we use Curve25519).
-
-**Action:** make `patch-vendor` fail loudly → bump → re-port patches one by one → run the full test suite plus the Phase E multi-host smoke test (mini + MBP + Linux + Windows), with cellular and WiFi perf A/B against `results/perf-20260425-003810/`.
-
-Source / context: `docs/wiki/raw/nebula-upgrade/2026-11-18-upstream-survey.md`
-
 ## 2026-11-18 — npm dev-tooling vulnerabilities need major upgrades
 
 After `npm audit fix`, the dashboard frontend's **production** dependencies are clean, but its dev/build tooling still has 13 issues (8 high, 5 low) in @sveltejs/kit, vite, vite-plugin-svelte, svelte-check, picomatch, fdir, tinyglobby, cookie and bits-ui. The desktop client has 7 high (appdmg, image-size, vite, svelte-check, ...). All are build-time only, but they need `npm audit fix --force`-class **major** upgrades (SvelteKit / vite majors), which should be a dedicated, tested change. Cargo: 0 vulnerabilities; unmaintained/unsound warnings only (glib 0.18 via Tauri's gtk-rs, chrono, proc-macro-error, zbus/zvariant), which clear when Tauri moves its gtk stack.
@@ -241,6 +224,43 @@ Source / context: [[incidents/2026-05-07-mbp-watcher-wedge]] § "Open questions"
 ---
 
 ## Resolved
+
+## 2026-11-18 — upgrade vendored Nebula v1.10.3 → v1.11.2 (resolved 2026-11-26, not released)
+
+Upstream releases since our pin are v1.11.0, v1.11.1, v1.11.2 and v1.12.0 (v1.12.0 needs Go 1.27.3 and a gvisor jump of about 2.5 years, so it is a separate project). v1.11.2 brings:
+
+- two firewall bypass fixes with no GHSA (IPv6 extension-header parsing #1789; SCTP/GRE classified as TCP/UDP #1840), plus nonce-reuse and relay replay-window hardening;
+- a relay re-establishment fix (#1805), the same symptom class as the 2026-05-14 relay stall above;
+- hostmap/roam race fixes (#1752, #1755, #1773, #1788, #1790);
+- `Control.Wait` (#1794).
+
+Patch impact:
+
+- **Drop:** 01 (fixed upstream by PR #1661) and 03.
+- **Probably drop:** 02, pending a test.
+- **Rewrite:** 08 against upstream's `ListenOut` flush callback.
+- **Real rework:** the macOS perf stack (04, 06, 07, 09, 12, 17, 19, 24), the control API (11, 20–22, which have no upstream equivalent), 15 and 26.
+- **Keep as-is:** 14 and 25 (upstream `Expired()` still has no clock-skew tolerance).
+
+Known advisory GHSA-69x3-g4r3-p962 is already patched in our v1.10.3 (and only affects P256; we use Curve25519).
+
+**Action:** make `patch-vendor` fail loudly → bump → re-port patches one by one → run the full test suite plus the Phase E multi-host smoke test (mini + MBP + Linux + Windows), with cellular and WiFi perf A/B against `results/perf-20260425-003810/`.
+
+Source / context: `docs/wiki/raw/nebula-upgrade/2026-11-18-upstream-survey.md`
+
+**Resolved 2026-11-26** (branch `upgrade/nebula-1.11.2`, not merged, not released). The 34 patches became 10 files, one theme each (`patches/README.md`). Dropped: 01, 02, 03, 12, 13, 27, 30, 37. **Not** dropped although upstream looked the same: 31. Upstream's close wakes the reader and returns; on the Mac all was green, in the Linux VM the port or the device was still taken (kernel-TUN close test 4 of 5 red, userspace close every time). With waiting restored: 10 of 10. Tested: suite, `-race` on the Nebula packages and `internal/client`, `internal/mesh`, upstream's own e2e, `TestE2E_Upgrade` from v0.11.28, the lab (see `log.md`). Not done: Windows on a device, cellular.
+
+## 2026-11-18 — vendor patch 12 never applies (silently, even in CI) (resolved 2026-11-26)
+
+**2026-11-23: its code is in no clean build.** `listenInWorker` and `inBatch` exist only in the test patch 13 adds, so `go vet github.com/slackhq/nebula` fails, and release and Docker builds use the same steps. Published macOS binaries very likely never had the pipelined `listenIn` (not checked on a binary), and the 2.7× downlink numbers in `docs/performance.md` and `docs/macos-pipelined-listenin.md` describe dev builds. **Decide:** re-measure with and without it on the current tree, then port it properly or drop 12 + 13. Patch 28's `interface.go` hunk is made against a tree without 12.
+
+Patch 12 fails on a blank-line context mismatch and `make patch-vendor` carries on: the Makefile runs each `patch` with `|| true` and then deletes `*.rej`, so **any** failed patch is silently ignored, in CI too. Either refresh patch 12 against vendored Nebula v1.10.3 or fold it into the Nebula upgrade below. Make `patch-vendor` **fail** on any patch that doesn't apply, and do that *before* the upgrade.
+
+**2026-11-24: the Mac and the release build get different trees.** GNU patch also refuses hunk 3 of patch 19, which adds `applyOSThreadHints()` to the function patch 12 would have added. Apple's `patch` accepts it in the wrong place, `listenIn`, which then makes the same call twice. Nothing else differs and the call does nothing off macOS, so v0.11.27 is what was tested. But a test on a Mac does not prove that a patch applies on Linux, and "it applied" does not prove it went to the right place: check with `patch` of both kinds, with `--fuzz=0` where possible (2, 19 and 26 apply only with fuzz).
+
+Source / context: `patches/`, `Makefile` `patch-vendor` target. `scripts/check-nebula-patch.sh` does not exist despite older docs.
+
+**Resolved 2026-11-26** (branch `upgrade/nebula-1.11.2`): `make patch-vendor` stops at a patch that does not apply, and says "already applied" for one that is. Patches 12 and 13 are gone: the pipelined `listenIn` was in no build, so what was measured and shipped is the batch read of patch 07, which is kept (`read-loop.patch`). One thing learned on the way: Apple's `patch -R --dry-run` succeeds on a patch that is *not* applied, so the forward try has to come first.
 
 ## 2026-11-23 — before releasing the server: three checks (resolved 2026-11-24)
 

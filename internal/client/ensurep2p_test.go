@@ -1,12 +1,12 @@
 package client
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 
-	"github.com/sirupsen/logrus"
 	"github.com/slackhq/nebula/config"
 	"gopkg.in/yaml.v3"
 )
@@ -154,7 +154,7 @@ func TestEnsureP2PConfig_ScrubsBufferKeys(t *testing.T) {
 // preferredRanges is what Nebula gets out of a config file.
 func preferredRanges(t *testing.T, path string) []string {
 	t.Helper()
-	c := config.NewC(logrus.New())
+	c := config.NewC(slog.New(slog.DiscardHandler))
 	if err := c.Load(path); err != nil {
 		t.Fatal(err)
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -12,9 +13,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/sirupsen/logrus"
 	"github.com/slackhq/nebula"
 	"github.com/slackhq/nebula/config"
+	"github.com/slackhq/nebula/logging"
 	"github.com/slackhq/nebula/overlay"
 	"github.com/slackhq/nebula/service"
 	"github.com/trustos/hopssh/internal/db"
@@ -560,7 +561,7 @@ firewall:
 		return fmt.Errorf("load nebula config: %w", err)
 	}
 
-	logger := logrus.New()
+	logger := logging.NewLogger(os.Stderr)
 	// Phase FF (v0.11.25): default per-network lighthouse log level is now
 	// InfoLevel (was WarnLevel). The previous WarnLevel suppressed ALL
 	// relay flow logs ("handleCreateRelayRequest", "send CreateRelayResponse",
@@ -569,15 +570,15 @@ firewall:
 	// Volume is bounded — lighthouse queries are 1 line per agent per 10s
 	// per network. Override via env if it becomes a problem:
 	//   HOPSSH_LIGHTHOUSE_LOG_LEVEL=warn   docker run ...
-	loggerLevel := logrus.InfoLevel
+	loggerLevel := slog.LevelInfo
 	if lvl := strings.TrimSpace(os.Getenv("HOPSSH_LIGHTHOUSE_LOG_LEVEL")); lvl != "" {
-		if parsed, err := logrus.ParseLevel(lvl); err == nil {
+		if parsed, err := logging.ParseLevel(strings.ToLower(lvl)); err == nil {
 			loggerLevel = parsed
 		} else {
 			log.Printf("[mesh %s] invalid HOPSSH_LIGHTHOUSE_LOG_LEVEL %q (%v) — defaulting to info", n.Slug, lvl, err)
 		}
 	}
-	logger.SetLevel(loggerLevel)
+	logger.Handler().(*logging.Handler).SetLevel(loggerLevel)
 
 	label := fmt.Sprintf("hopssh-lighthouse-%s", n.Slug)
 	ctrl, err := nebula.Main(&cfg, false, label, logger, overlay.NewUserDeviceFromConfig)

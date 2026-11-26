@@ -33,9 +33,15 @@ vendor:
 patch-vendor:
 	@echo "==> Applying vendor patches..."
 	@for p in patches/*.patch; do \
-		cd vendor && patch -p1 --forward --silent < "../$$p" 2>/dev/null || true; cd ..; \
+		if (cd vendor && patch -p1 --forward --dry-run --silent < "../$$p" >/dev/null 2>&1); then \
+			(cd vendor && patch -p1 --forward --silent < "../$$p") && echo "    applied: $$p" || exit 1; \
+		elif (cd vendor && patch -p1 -R --dry-run --silent < "../$$p" >/dev/null 2>&1); then \
+			echo "    already applied: $$p"; \
+		else \
+			echo "==> FAILED: $$p does not apply to vendor/. Nothing of it was written; the patches before it are in."; \
+			exit 1; \
+		fi; \
 	done
-	@find vendor -name '*.rej' -delete 2>/dev/null || true
 	@echo "==> Done."
 
 # Build Go binaries.

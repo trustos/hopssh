@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sirupsen/logrus"
 	"github.com/slackhq/nebula"
 	"github.com/slackhq/nebula/cert"
 	"github.com/slackhq/nebula/config"
@@ -70,8 +69,10 @@ func startNebula(configPath string) (*userspaceMeshService, error) {
 		return nil, fmt.Errorf("load nebula config %s: %w", configPath, err)
 	}
 
-	logger := logrus.New()
-	logger.SetLevel(logrus.WarnLevel)
+	logger, err := nebulacfg.Logger(&cfg)
+	if err != nil {
+		return nil, fmt.Errorf("nebula logging config: %w", err)
+	}
 
 	ctrl, err := nebula.Main(&cfg, false, "hop-agent", logger, overlay.NewUserDeviceFromConfig)
 	if err != nil {
@@ -130,8 +131,10 @@ func startNebulaKernelTun(configPath string) (*kernelTunMeshService, error) {
 		return nil, fmt.Errorf("load nebula config %s: %w", configPath, err)
 	}
 
-	logger := logrus.New()
-	logger.SetLevel(logrus.WarnLevel)
+	logger, err := nebulacfg.Logger(&cfg)
+	if err != nil {
+		return nil, fmt.Errorf("nebula logging config: %w", err)
+	}
 
 	ctrl, err := nebula.Main(&cfg, false, "hop-agent", logger, overlay.NewDeviceFromConfig)
 	if err != nil {
