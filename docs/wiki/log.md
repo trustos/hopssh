@@ -319,3 +319,7 @@ Pages touched: open-questions.
 00:15 to 00:25, the Ubuntu 26.10 VM joined as second device (no root there: userspace mode, started by hand). Windows to Linux: direct handshake from the Windows VM's own address, ping 4 of 4, lookup by name. Through the server: health and exec on both, a terminal on both (ConPTY on Windows: prompt, a command and its output came back). Forced renewal: Linux at once, Windows 9 s, both reachable after. The Linux agent's log has no token line (the fix).
 
 Pages touched: open-questions.
+
+01:00, the Ubuntu VM again, now as root with the service: kernel TUN `hop-hop`, split-DNS (the resolved drop-in fallback fired, as on 24.04 and 25.10), ping and lookup by name both ways. Restart: the Windows peer answers after 2 s. Forced renewal: at once, no "busy" or "in use". Stopped for 40 s: "sleep/wake detected (tick gap 40s)", peer answers 2 s after. No token line in the journal.
+
+Pages touched: open-questions.
