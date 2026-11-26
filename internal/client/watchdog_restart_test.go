@@ -231,6 +231,48 @@ func TestRecovery_EscalatesAfterWatchdogTeardown(t *testing.T) {
 	}
 }
 
+// TestRestartInstance_WedgedAndBusyExitsAtOnce: on 2026-11-26 a network did
+// not shut down (a send stuck in the kernel held its socket) and every
+// reconnect found the port in use. Waiting cannot free it, and three more
+// failed rounds cost another five minutes of outage.
+func TestRestartInstance_WedgedAndBusyExitsAtOnce(t *testing.T) {
+	orig := instanceCloseTimeout
+	instanceCloseTimeout = 50 * time.Millisecond
+	defer func() { instanceCloseTimeout = orig }()
+
+	for _, tc := range []struct {
+		name      string
+		wedged    bool
+		connect   error
+		wantExits int64
+	}{
+		{"wedged, port busy", true, errPortBusy, 1},
+		{"wedged, port free", true, nil, 0},
+		{"wedged, other failure", true, errors.New("lighthouse unreachable"), 0},
+		{"closed, port busy", false, errPortBusy, 0}, // somebody else's port: the recovery loop counts
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exits := stubExit(t)
+			c, _ := newRecoveryTestClient(t, time.Hour) // the recovery loop does not get a turn
+			addEnrollment(t, c, "home")
+			stale, _ := newStaleInstance(t, c, "home")
+			release := make(chan struct{})
+			defer close(release)
+			if tc.wedged {
+				svc := newFakeMeshService("wedged")
+				svc.releaseHook = func() { <-release }
+				stale.setSvc(svc)
+			}
+			c.connectOverride = func(string) error { return tc.connect }
+
+			c.restartInstance("home", stale)
+			if got := exits.Load(); got != tc.wantExits {
+				t.Errorf("process exits = %d, want %d", got, tc.wantExits)
+			}
+		})
+	}
+}
+
 // TestRecovery_NoEscalationOnPlainConnect: a port held by another program
 // must not take the agent (and its other networks) down.
 func TestRecovery_NoEscalationOnPlainConnect(t *testing.T) {

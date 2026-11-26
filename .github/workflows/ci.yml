@@ -81,17 +81,29 @@ jobs:
             hop-agent-linux-${{ matrix.goarch }}
             hop-server-linux-${{ matrix.goarch }}
 
-  check-patches:
-    runs-on: ubuntu-latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  # Data races show only here: `make test` runs without the detector. On the
+  # Mac it is also the only place the macOS UDP and TUN code (patches
+  # darwin-udp, darwin-tun) is built and tested.
+  race:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
 
-      - name: Check if Nebula patch is still needed
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: make check-patches
-        continue-on-error: true
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26' # its newest patch release: go.mod says 1.26.0
+          check-latest: true
+          cache: true
+
+      - name: Vendor dependencies + apply patches
+        run: make setup
+
+      - name: Test with the race detector
+        run: make test-race
 
   # Phase NN+1 tripwire — verify the gomobile-bind path against
   # internal/client/. Catches FFI-shape regressions in api.go before

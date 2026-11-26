@@ -6,10 +6,9 @@ Per-incident open items live on the incident page itself (`## Open` section). Th
 
 ## 2026-11-26 — from the cellular and reboot test on v0.11.29
 
-- **Retransmits on cellular:** 17526 in one 8 s upload at 24.8 Mbit/s (ZeroTier beside: 733). Speed is higher than ZeroTier's, so it costs nothing visible, but nobody knows where they come from. Same picture on Wi-Fi (about 10 times ZeroTier's).
-- **Networks start one after the other** at boot, about 3 s each; the third of three waits 7 s. Could start together.
-- **Handshakes to the broadcast address** (`10.42.x.255`) after every network change: macOS sends broadcasts into the mesh, Nebula tries a handshake and times out. Noise in the log, three per second for a few seconds.
-- **Three silences of 2.0 s** on both networks at once with nothing in the logs (see log 2026-11-26). Line, ping, or ours: not known.
+- **Retransmits, partly explained (2026-11-26, Wi-Fi, mini and MBP at different sites):** they follow two counters. (1) Drops on the sender's own tunnel interface (`netstat -ibdn`, last column): the tunnel reader waits in the UDP send and the tunnel's queue overflows; 240 to 1150 per 8 s run while the MBP was busy after its reboot, 0 to 140 later. (2) hop's UDP packets lost on the way, 2 to 8 % in some runs, while ZeroTier's packets on the same line lose next to none. Why the line treats them differently is not known; candidates are the bursts (up to 64 packets in one `sendmsg_x`) and the packet size (1480 bytes). The old idea that the macOS sender drops on a full buffer is wrong: no such line in either log. Cellular (17526 in one upload) has not been looked at again; it needs the hotspot.
+- **"Dropped due to full socket buffers" counts nearly every datagram for hop-agent on a Mac with a content filter**, although they arrive. Do not read that counter on such a Mac.
+- **Three silences of 2.0 s** on both networks at once with nothing in the logs (see log 2026-11-26). Not explained. A guess: the MBP's content filter holding sends ([[incidents/2026-11-26-mbp-send-stuck-in-kernel]]); since the send limit of 1 s such a hold would show as a "Flush failed" line, so look for one next time.
 - **FileVault:** after a reboot nothing runs until the disk is unlocked, so "mesh before login" does not exist on such a Mac. Worth a sentence in the user docs.
 - **A Mac that is off for more than 24 h** has not been tried on a device; only `TestE2E_OffForHalfAYear` shows it.
 

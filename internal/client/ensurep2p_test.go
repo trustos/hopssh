@@ -220,3 +220,33 @@ func TestPreferredRanges_OldConfig(t *testing.T) {
 		})
 	}
 }
+
+// TestEnsureP2PConfig_DropsLocalBroadcast: macOS sends broadcasts into the
+// mesh after every network change. Nebula has nobody to deliver them to and
+// tries a handshake with x.x.x.255, three log lines a second until it gives up.
+func TestEnsureP2PConfig_DropsLocalBroadcast(t *testing.T) {
+	for name, tun := range map[string]map[string]any{
+		"kernel":    {"dev": "hop-home", "mtu": 1420},
+		"userspace": {"user": true},
+		"was off":   {"dev": "hop-home", "drop_local_broadcast": false},
+	} {
+		dir := t.TempDir()
+		cfgPath := filepath.Join(dir, "nebula.yaml")
+		data, _ := yaml.Marshal(map[string]any{"pki": map[string]any{}, "tun": tun})
+		if err := os.WriteFile(cfgPath, data, 0644); err != nil {
+			t.Fatal(err)
+		}
+		inst := newMeshInstance(&Enrollment{Name: "home"})
+		inst.customDir = dir
+		ensureP2PConfig(inst)
+
+		c := config.NewC(slog.New(slog.DiscardHandler))
+		if err := c.Load(cfgPath); err != nil {
+			t.Fatal(err)
+		}
+		// The key Nebula reads (main.go).
+		if !c.GetBool("tun.drop_local_broadcast", false) {
+			t.Errorf("%s: tun.drop_local_broadcast is off", name)
+		}
+	}
+}

@@ -1015,6 +1015,14 @@ func ensureP2PConfig(inst *meshInstance) {
 		}
 	}
 
+	// macOS sends broadcasts into the mesh after every network change. Nebula
+	// delivers them to nobody and tries a handshake with x.x.x.255.
+	if tun := yamlMap(cfg, "tun"); tun["drop_local_broadcast"] != true {
+		tun["drop_local_broadcast"] = true
+		cfg["tun"] = tun
+		changed = true
+	}
+
 	// Parallel packet processing routines (effective on Linux with multiqueue TUN).
 	if r, ok := cfg["routines"]; !ok || r != nebulacfg.Routines {
 		cfg["routines"] = nebulacfg.Routines

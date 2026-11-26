@@ -80,7 +80,7 @@ index 0000000..be5f71c
 +// nebula-package equivalent for the full rationale and CI implication.
 +func applyOSThreadHints() {}
 diff --git a/github.com/slackhq/nebula/udp/udp_darwin.go b/github.com/slackhq/nebula/udp/udp_darwin.go
-index 574e449..57b1e42 100644
+index 574e449..4ecc601 100644
 --- a/github.com/slackhq/nebula/udp/udp_darwin.go
 +++ b/github.com/slackhq/nebula/udp/udp_darwin.go
 @@ -4,13 +4,14 @@
@@ -100,7 +100,7 @@ index 574e449..57b1e42 100644
  	"syscall"
  	"unsafe"
  
-@@ -18,47 +19,152 @@ import (
+@@ -18,47 +19,164 @@ import (
  	"golang.org/x/sys/unix"
  )
  
@@ -194,6 +194,10 @@ index 574e449..57b1e42 100644
  
  var _ Conn = &StdConn{}
  
++// sendTimeout is how long a send may wait in the kernel. After it the packets
++// of that flush are dropped, as when the send buffer is full.
++var sendTimeout = unix.Timeval{Sec: 1}
++
  func NewListener(l *slog.Logger, ip netip.Addr, port int, multi bool, batch int) (Conn, error) {
 -	lc := NewListenConfig(multi)
 -	pc, err := lc.ListenPacket(context.TODO(), "udp", net.JoinHostPort(ip.String(), fmt.Sprintf("%v", port)))
@@ -252,32 +256,40 @@ index 574e449..57b1e42 100644
 +		unix.Close(fd)
 +		return nil, fmt.Errorf("unable to bind to socket: %s", err)
 +	}
- 
--		return c, nil
++
++	// hopssh: the socket blocks, and a send can wait in the kernel (a content
++	// filter that holds packets, a full interface queue). One that never comes
++	// back keeps sendMu: the network can then neither send nor be closed.
++	if err = unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_SNDTIMEO, &sendTimeout); err != nil {
++		unix.Close(fd)
++		return nil, fmt.Errorf("unable to set SO_SNDTIMEO: %s", err)
++	}
++
 +	if batch <= 0 {
 +		batch = 1
- 	}
- 
--	return nil, fmt.Errorf("unexpected PacketConn: %T %#v", pc, pc)
++	}
++
 +	c := &StdConn{
 +		sysFd: fd,
 +		isV4:  ip.Is4(),
 +		l:     l,
 +		batch: batch,
 +	}
-+
+ 
+-		return c, nil
 +	if batch > 1 {
 +		c.laneControl = make([]sendEntry, 0, laneCapControl)
 +		c.laneData = make([]sendEntry, 0, laneCapData)
 +		c.sendMsgs = make([]msghdrX, laneCapTotal)
 +		c.sendIovs = make([]iovec, laneCapTotal)
-+	}
-+
+ 	}
+ 
+-	return nil, fmt.Errorf("unexpected PacketConn: %T %#v", pc, pc)
 +	return c, nil
  }
  
  func NewListenConfig(multi bool) net.ListenConfig {
-@@ -79,112 +185,508 @@ func NewListenConfig(multi bool) net.ListenConfig {
+@@ -79,112 +197,508 @@ func NewListenConfig(multi bool) net.ListenConfig {
  					return controlErr
  				}
  			}
@@ -553,13 +565,13 @@ index 574e449..57b1e42 100644
  		}
 +		lane = u.laneFor(laneIdx) // re-fetch after slice header reset
 +	}
- 
--		var rsa unix.RawSockaddrInet4
++
 +	idx := len(*lane)
 +	*lane = (*lane)[:idx+1]
 +	entry := &(*lane)[idx]
 +	entry.dataLen = copy(entry.data[:], b)
-+
+ 
+-		var rsa unix.RawSockaddrInet4
 +	if u.isV4 {
 +		rsa := (*unix.RawSockaddrInet4)(unsafe.Pointer(&entry.name[0]))
 +		rsa.Len = unix.SizeofSockaddrInet4
@@ -850,7 +862,7 @@ index 574e449..57b1e42 100644
  }
  
  // Rebind clears the interface the kernel scoped this socket to, so that sends are routed against the current
-@@ -193,10 +695,27 @@ func (u *StdConn) SupportsMultipleReaders() bool {
+@@ -193,10 +707,27 @@ func (u *StdConn) SupportsMultipleReaders() bool {
  func (u *StdConn) Rebind() error {
  	var err error
  	if u.isV4 {
@@ -883,10 +895,10 @@ index 574e449..57b1e42 100644
 +}
 diff --git a/github.com/slackhq/nebula/udp/udp_darwin_batch_test.go b/github.com/slackhq/nebula/udp/udp_darwin_batch_test.go
 new file mode 100644
-index 0000000..b1ed84b
+index 0000000..01c9026
 --- /dev/null
 +++ b/github.com/slackhq/nebula/udp/udp_darwin_batch_test.go
-@@ -0,0 +1,623 @@
+@@ -0,0 +1,649 @@
 +//go:build darwin && !e2e_testing
 +// +build darwin,!e2e_testing
 +
@@ -894,9 +906,11 @@ index 0000000..b1ed84b
 +
 +import (
 +	"encoding/binary"
++	"log/slog"
 +	"net"
 +	"net/netip"
 +	"testing"
++	"time"
 +	"unsafe"
 +
 +	"golang.org/x/sys/unix"
@@ -1508,6 +1522,30 @@ index 0000000..b1ed84b
 +	}
 +	if got := received(recv); got != "" {
 +		t.Errorf("received %q through somebody else's socket", got)
++	}
++}
++
++// TestListenerSendHasTimeLimit: the socket blocks, and a send can wait in the
++// kernel (a content filter that holds packets, a full interface queue). On
++// 2026-11-26 one sendmsg_x did not come back for four minutes: it held sendMu,
++// so the network could not send, not even a handshake, and could not be closed.
++// A UDP send cannot be made to block in a test, so this checks the limit itself.
++func TestListenerSendHasTimeLimit(t *testing.T) {
++	for _, batch := range []int{1, 64} {
++		conn, err := NewListener(slog.New(slog.DiscardHandler), netip.MustParseAddr("127.0.0.1"), 0, false, batch)
++		if err != nil {
++			t.Fatal(err)
++		}
++		c := conn.(*StdConn)
++		tv, err := unix.GetsockoptTimeval(c.sysFd, unix.SOL_SOCKET, unix.SO_SNDTIMEO)
++		if err != nil {
++			t.Fatal(err)
++		}
++		limit := time.Duration(tv.Sec)*time.Second + time.Duration(tv.Usec)*time.Microsecond
++		if limit <= 0 || limit > 5*time.Second {
++			t.Errorf("batch %d: a send may wait %v in the kernel, want a limit of at most 5s", batch, limit)
++		}
++		c.Close()
 +	}
 +}
 diff --git a/github.com/slackhq/nebula/udp/udp_darwin_listenout_pipeline_test.go b/github.com/slackhq/nebula/udp/udp_darwin_listenout_pipeline_test.go

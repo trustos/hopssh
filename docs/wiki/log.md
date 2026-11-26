@@ -217,3 +217,16 @@ Not explained: three silences of 2.0 s on both networks at once (10:58:16, 10:59
 
 Pages touched: this log, open-questions, raw/others (already in PR 5).
 
+## [2026-11-26] ingest | Follow-ups after v0.11.29 (branch `fix/followups-v0.11.29`, not pushed, not released)
+
+**Found while measuring retransmits:** one UDP send on the MBP did not return for four minutes; the network was dead and could not be closed. [[incidents/2026-11-26-mbp-send-stuck-in-kernel]]. Fixed: a send may wait 1 s (`darwin-udp.patch`), and a network that did not shut down and whose port is still taken ends the agent at once.
+
+**Retransmits:** see open-questions. Numbers of 8 s runs, MBP to mini and back over `home`, test build: up 135 to 178 Mbit/s with 3641 to 6643 retransmits, down 123 to 173 with 1629 to 9085; ZeroTier beside, down, 109 to 167 with 112 to 715.
+
+**Networks start together** at boot (`Client.Start`), not one after the other; one with a busy port no longer holds the others for its 25 s of retries. `TestStart_NetworksStartTogether`.
+
+**Broadcasts are dropped** (`tun.drop_local_broadcast`, set by `ensureP2PConfig` on every start), so no more handshakes with `x.x.x.255`. `TestEnsureP2PConfig_DropsLocalBroadcast`. Not yet seen on a device.
+
+**Gate:** `make test-race`, `make preflight` (vet, tests, race), and `make release` runs it first and refuses a dirty tree. CI: a `race` job on Linux and on a Mac (the vendored macOS tests ran nowhere before); the dead `check-patches` job is gone. The release workflow builds nothing when the tests fail. The workflows have not run yet: the branch is not pushed.
+
+Pages touched: 1 new (incidents/2026-11-26-mbp-send-stuck-in-kernel), index, open-questions, this log, patches/README.md, CLAUDE.md.

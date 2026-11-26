@@ -218,24 +218,35 @@ func (c *Client) connectAndSupervise(name string, userInitiated bool) error {
 // left alone and this is just an idempotent connect.
 //
 // If the teardown doesn't release the UDP port or TUN device (a wedged
-// Nebula), no reconnect can succeed in this process; the recovery loop then
-// escalates to process exit (Phase EE).
+// Nebula), no reconnect can succeed in this process: exit, so the service
+// supervisor starts a new one. When the teardown did finish and the port is
+// busy all the same, the recovery loop counts first (Phase EE).
 func (c *Client) restartInstance(name string, stale *meshInstance) error {
 	if c.isUserDisconnected(name) {
 		return nil
 	}
 	mu := c.connectLock(name)
 	mu.Lock()
+	wedged := false
 	if stale != nil && c.instances.get(name) == stale {
 		c.instances.remove(name)
 		c.noteWatchdogRestart(name)
 		if err := closeInstance(stale); err != nil {
 			log.Printf("[client] %q: %v", name, err)
+			wedged = true
 		}
 		c.servers.shutdownInstance(name)
 	}
 	mu.Unlock()
-	return c.connectAndSupervise(name, false)
+	err := c.connectAndSupervise(name, false)
+	// The old instance never finished closing and still holds the port or the
+	// device. Waiting does not free them (2026-11-26: three more rounds of the
+	// recovery loop would have been five more minutes of outage).
+	if wedged && err != nil && isResourceBusy(err) {
+		log.Printf("[client] %q: did not shut down and still holds its port or device — exiting (%d) so the service supervisor starts a new agent", name, escalationExitCode)
+		osExitFn(escalationExitCode)
+	}
+	return err
 }
 
 // instanceCloseTimeout bounds a teardown. A wedged Nebula can block Stop
