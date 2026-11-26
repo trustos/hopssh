@@ -35,6 +35,7 @@ Architectural ideas the code embodies but doesn't explain.
 - [[concepts/watchdog]] — Phase P2 stuck-data-plane watchdog, restartFn, forensic dumps
 - [[concepts/e2e-tests]] — the real server and the real agent under test: how to run it, what is covered, what is not, pinned gaps. **Read before changing a route, a permission, renewal or the database.**
 - [[concepts/netlab]] — the real server and root agents behind simulated routers, carriers, relays and bad lines: one command, what it found, what it can't show. **Read before touching paths, relays, roaming or the Nebula patches.**
+- [[concepts/loss-on-a-limited-line]] — the retransmits of a short upload are TCP finding the line's speed, the same without the tunnel; an early signal from the delay was tried and removed. **Read before trying to make the tunnel lose fewer packets.**
 - [[concepts/macos-udp-send]] — batched sends on macOS; why packets waited or were dropped until patch 28. **Read before touching the Darwin UDP patches.**
 - [[concepts/macos-system-mode]] — bundled gvisor vs LaunchDaemon kernel-utun, mirror-token + mirror-port handoff
 - [[concepts/desktop-client]] — Tauri 2 + Svelte 5 macOS app: shipped capabilities (Phase V→DD), 22 commands, forward gaps

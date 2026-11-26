@@ -271,3 +271,12 @@ MBP on the hotspot again (about 14:30), nothing else sending (56 UDP datagrams a
 Same as on Wi-Fi: the loss is the line's limit. TCP inside hop pushes the cellular uplink past what it takes and loses 5 to 13 % there; ZeroTier limits itself below that and is 1.5 to 2.5 times slower. No tunnel drops, nothing fragmented. The 17526 retransmits of 2026-11-25 are this. What would lower them is a queue on our side that holds TCP back before the line does (pacing, or dropping early like fq_codel); not built, see open-questions.
 
 Pages touched: this log, open-questions.
+
+## 2026-11-26 (fifth round) — the loss is the start of a connection; an early signal tried and removed
+
+- Per second of the earlier runs: nearly all retransmits in seconds 1 to 3 (the TCP window goes to 2 to 3 MB, then to 0.5 MB), none after. Counted at both interfaces on the hotspot: 22456 packets left the MBP, 21722 reached the mini.
+- Lab: `Wire.Queue` (how deep the line's queue is) and `TestLimitedLine`. A sender that doubles until loss loses 0.1 to 1.5 %, more with a deeper queue, the same through the tunnel and beside it. The test is a gate now (the tunnel may not lose more than twice as much, nor be below 70 % of the speed); a planted 1 % drop fails all five lines.
+- Prototype in the vendored tree (not kept): test requests with the time in them every 32 packets, one TCP packet held back when the answer took 20 ms longer than the shortest. Lab: helps only with a 200 ms queue. Macs on Wi-Fi: retransmits 54, 21, 20 instead of thousands, speed 69, 37, 50 instead of 180 Mbit/s, download 3.9. The Wi-Fi's own pauses of about 100 ms set it off. Removed with `make vendor`; both Macs are back on v0.11.29-followups (control run: 147 Mbit/s, 3939 retransmits).
+- `networkQuality -d` on the hotspot: 31 Mbit/s up. It does not count in `netstat -s -p tcp`.
+
+Pages touched: concepts/loss-on-a-limited-line (new), open-questions, index, concepts/netlab.
