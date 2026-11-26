@@ -200,3 +200,20 @@ Tested: all packages (one old flake, `TestPeerCache_SaveSkipsWhenUnchanged`); `-
 **Speed, mini and MBP, 15 s iperf3 each way, three rounds, the same half hour** (`results/perf-20261126-nebula-1.11.2/`): v0.11.28 162 to 181 Mbit/s with 6666 to 10220 retransmits; v1.11.2 165 to 185 Mbit/s with 3631 to 9203; ZeroTier beside both 173 to 188 with 99 to 1569. No difference to be seen; the line is the limit. The Macs run v0.11.28 again.
 
 Pages touched: 2 updated (concepts/netlab, open-questions), this log, patches/README.md, CLAUDE.md, docs/architecture.md.
+
+## [2026-11-26] ingest | v0.11.29 released and deployed; cellular, restart and reboot measured on the two Macs
+
+Nebula v1.11.2 is merged (PR 5, three reviews: no behaviour of the old patches lost), released as v0.11.29 and on the production server and both Macs since 10:27.
+
+**Restart of the mini's agent, MBP pinging every 0.5 s:** clean restart 120 of 120 answers, SIGKILL 118 of 120.
+
+**MBP from Wi-Fi to a phone hotspot (10:49):** both networks direct to the mini again about 2 s after the change was seen, no relay. Speed in 8 s runs (`results/perf-20261126-cellular-v0.11.29/`, not in git): up 24.8 and 29.2 Mbit/s (ZeroTier beside 18.9 and 4.9), down 97.6 and 62.8 (47.9 and 41.7); idle ping 44 ms against 57 ms, no loss. Retransmits 1813 to 17526 against 244 to 959.
+
+**Back to Wi-Fi (11:02):** silent 2.0 s on both networks.
+
+**Reboot of the MBP (FileVault on):** agent stopped 11:05:07, answers again 11:06:09 (`work`) and 11:06:16 (`home`): 62 and 70 s, of which the mesh itself took about a second per network once the agent ran. The three networks start one after the other, about 3 s each. The agent started before the network was up (two failed handshake sends) and recovered by itself. No CRITICAL, WATCHDOG or panic.
+
+Not explained: three silences of 2.0 s on both networks at once (10:58:16, 10:59:17, 11:06:32) with nothing in either agent's log.
+
+Pages touched: this log, open-questions, raw/others (already in PR 5).
+

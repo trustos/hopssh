@@ -4,6 +4,17 @@ Cross-cutting unresolved items. Acts as a handoff state machine across sessions:
 
 Per-incident open items live on the incident page itself (`## Open` section). This file is for items that span multiple pages or that don't have a natural home yet.
 
+## 2026-11-26 — from the cellular and reboot test on v0.11.29
+
+- **Retransmits on cellular:** 17526 in one 8 s upload at 24.8 Mbit/s (ZeroTier beside: 733). Speed is higher than ZeroTier's, so it costs nothing visible, but nobody knows where they come from. Same picture on Wi-Fi (about 10 times ZeroTier's).
+- **Networks start one after the other** at boot, about 3 s each; the third of three waits 7 s. Could start together.
+- **Handshakes to the broadcast address** (`10.42.x.255`) after every network change: macOS sends broadcasts into the mesh, Nebula tries a handshake and times out. Noise in the log, three per second for a few seconds.
+- **Three silences of 2.0 s** on both networks at once with nothing in the logs (see log 2026-11-26). Line, ping, or ours: not known.
+- **FileVault:** after a reboot nothing runs until the disk is unlocked, so "mesh before login" does not exist on such a Mac. Worth a sentence in the user docs.
+- **A Mac that is off for more than 24 h** has not been tried on a device; only `TestE2E_OffForHalfAYear` shows it.
+
+Source / context: `docs/wiki/log.md` 2026-11-26
+
 ## 2026-11-26 — after the Nebula upgrade: what is left
 
 - **v1.12.0** needs Go 1.27.3 and a much newer gvisor. There `linux-udp-close.patch` can go (upstream waits for the reader); `linux-tun.patch` has to be shown unnecessary with the kernel-TUN test first.
