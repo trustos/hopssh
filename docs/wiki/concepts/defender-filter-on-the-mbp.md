@@ -11,6 +11,8 @@ sources:
 
 On 2026-11-26 a download through hop to the MBP reached 25 to 68 Mbit/s from 14:02 to about 20:20, while Tailscale did 157 and ZeroTier 137 to 189 in the same minutes. Before (11:36 to 12:16) and after (from 20:29) it was 145 to 185, as fast as the other two.
 
+It came back for five minutes at 21:37.
+
 **What is established:** in the slow hours Microsoft Defender's network extension (`netext`, `com.microsoft.wdav.netext`, a socket filter) handled every packet of hop's sockets; in the fast hours it did not. **What is not:** why it began and why it ended. Nothing of ours changed at either moment.
 
 **Read this before looking for a slow receive path in the agent on a managed Mac, and before raising the socket's send buffer.**
@@ -53,11 +55,25 @@ Both changes follow a change of network on the MBP by some minutes. No restart o
 - Not how the socket is used. A test program sending 6000 to 16000 packets of 1400 bytes a second to the MBP over ZeroTier's interface, received on a wildcard socket, a bound one, a connected one, with `recvmsg_x` and `sendmsg_x`, as root: `netext` stayed idle in every variant. (Over hop itself the test cannot run: hop's firewall blocks UDP between devices.)
 - Not the missing signature as such: `iperf3` is signed ad hoc like the agent.
 
-## The send buffer: tried, not shown
+## The send buffer: ruled out
 
-The agent's sockets have the system's send buffer of 9216 bytes, ZeroTier's have 1 MB. With a filter, what waits for its verdict counts against the send buffer, so a small one means the sender stops for the filter every six packets. A test agent with 1 MB did 145 to 172 Mbit/s with `netext` at 3 to 7 % (20:38). **The agent without the change did the same three minutes later** (145 to 175): the slow state had ended by itself at 20:29. So this test says nothing, and the change is not in.
+The agent's sockets have the system's send buffer of 9216 bytes, ZeroTier's have 1 MB. With a filter, what waits for its verdict counts against the send buffer, so a small one could mean that the sender stops for the filter every six packets. A test agent set 1 MB on the network `work` only (`port == 4242` in `NewListener`) and left `home` at 9216. Both did 156 to 176 Mbit/s for 50 minutes; then the slow state came back (21:37) and both were measured in the same minutes:
 
-To decide it when the slow state comes back: a test agent that sets 1 MB on the network `work` only (`port == 4242` in `NewListener`) and leaves `home` at 9216, so both are measured in the same minute. A run that showed `work` fast and `home` slow would be the proof; both slow would rule the buffer out. It does not explain the download in any case: there the MBP sends only ACKs.
+| | `home`, 9216 bytes | `work`, 1 MB | ZeroTier |
+|---|---|---|---|
+| download | 36, 38, 42, 43 Mbit/s | 10, 10, 10, 9 | 129 to 166 |
+| upload | 174, 174, 170 | 60, 87, 55 | 165 to 191 |
+| `netext` | 51 to 112 % | 56 to 80 % | 0 to 9 % |
+
+**The big buffer is worse by a factor of three to four.** With it nothing tells the agent to wait, and its packets queue behind the filter instead. The small buffer is the back-pressure that keeps the slow state at 40 Mbit/s. Do not raise it.
+
+## The second episode (21:37 to 21:42)
+
+Fast at 21:27, slow at 21:37, fast again at 21:42 right after a restart of the agent (135 and 159 Mbit/s, `netext` not among the first eight). Looked at as triggers, and not it:
+
+- **The agent's rebind** ("Local network changed, rebinding the udp listener", logged at 21:35:37): provoked six times with a temporary address on `lo0`; 147 to 170 Mbit/s after each, `netext` idle. There was also one at 21:13 with fast runs after it.
+- **A screen-sharing session to the MBP** ended at 21:35:25. The day's sessions (13:20 to 13:47, 20:14 to 21:35) do not line up with the slow hours.
+- **A restart of the agent** was followed by the fast state once (21:42). In the afternoon the agent was restarted at 15:56, 15:58 and 16:39 and the runs after stayed slow, so it is not a cure.
 
 ## The send limit works
 

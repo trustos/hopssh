@@ -6,7 +6,7 @@ Per-incident open items live on the incident page itself (`## Open` section). Th
 
 ## 2026-11-26 — hop's download to the MBP was slow for six hours
 
-25 to 68 Mbit/s from 14:02 to 20:20, 145 to 185 before and after, where Tailscale and ZeroTier did 137 to 190 throughout. In the slow hours Defender's network filter on the MBP handled every packet of ours (50 to 100 % CPU) and not ZeroTier's; why it began and ended is not known, both followed a change of network on the MBP by some minutes. Ruled out: path, packet size, line, the mini, how the socket is used. A 1 MB send buffer (ZeroTier has one, we have 9 kB) was tried after the slow state had ended, so it is not shown; the test that decides it is on the page. [[concepts/defender-filter-on-the-mbp]]
+25 to 68 Mbit/s from 14:02 to 20:20, 145 to 185 before and after, where Tailscale and ZeroTier did 137 to 190 throughout. In the slow hours Defender's network filter on the MBP handled every packet of ours (50 to 100 % CPU) and not ZeroTier's; why it began and ended is not known, both followed a change of network on the MBP by some minutes. Ruled out: path, packet size, line, the mini, how the socket is used. It came back from 21:37 to 21:42. A 1 MB send buffer (ZeroTier has one, we have 9 kB) is ruled out: measured beside ours in the slow state it was three to four times slower. Not the trigger: the agent's rebind, a screen-sharing session. [[concepts/defender-filter-on-the-mbp]]
 
 ## 2026-11-26 — from the cellular and reboot test on v0.11.29
 
