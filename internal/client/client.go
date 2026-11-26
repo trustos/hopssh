@@ -293,9 +293,11 @@ func (c *Client) startInstance(ctx context.Context, inst *meshInstance) error {
 	}
 	log.Printf("[agent %s] Nebula mesh connected (mode: %s)", inst.name(), tunMode)
 
-	// Configure split-DNS for this mesh's domain in kernel TUN mode.
+	// Configure split-DNS for this mesh's domain in kernel TUN mode. Beside
+	// the rest: on Windows it starts PowerShell twice, which took 98 s in a
+	// VM, and the watcher, the path loop and the mesh listener waited for it.
 	if tunMode == "kernel" {
-		inst.configureSplitDNS()
+		go inst.configureSplitDNS()
 	}
 
 	// Inject the on-disk peer-endpoint cache into Nebula's hostmap BEFORE

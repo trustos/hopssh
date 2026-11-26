@@ -305,3 +305,13 @@ Pages touched: concepts/defender-filter-on-the-mbp (rewritten), incidents/2026-1
 Pages touched: incidents/2026-11-26-mbp-send-stuck-in-kernel, open-questions, index.
 
 22:12 to 22:40, Linux: the whole lab on the tip. All pass but `TestLimitedLine/5ms` (8 of 8 runs, with and without the new loop; passed at 16:00). Filed in open-questions. CI on PR 6 green on `75f5c50`, macOS and Ubuntu.
+
+23:27, fleet: 24 minutes after the start of v0.11.30 both Macs have 0 lines of `send-watch`, `Flush failed`, `CRITICAL`, `WATCHDOG`, panic, rebind and failed heartbeats; pings MBP to mini 20 of 20 on both networks. The orphan node of the mini in `member-test` was deleted in the dashboard.
+
+23:30 to 00:10, Windows 11 ARM64 in UTM, agent v0.11.30 against this tree's server on the host's bridge address (commands through `utmctl exec`, files through `utmctl file`). Works: token enrollment, service, tunnel, name lookup, restart. Found and fixed on `fix/windows-vm-findings`:
+
+- `enrollWithToken` sent `"os":"linux"` on every system (`TestTokenEnrollBody_ReportsThisSystem`).
+- The line `HOPSSH_LOCAL_API:<addr>:<token>` went to stdout, which for the system service is its log: `/var/log/hop-agent.log` is readable by everyone on the Macs, `hop-agent.log` by `Users` on Windows. With the token a local user can enroll the root agent into a network of their own and open a terminal as root. Now only into a pipe, which is what the desktop app gives the agent it starts (`TestAnnounceLocalAPI_*`). The Go tests read it through a pipe already; `clients/desktop/scripts/smoke-test.sh` was changed to.
+- The split-DNS setup ran before the watcher, the path loop, the mesh listener and the local API. On Windows it starts PowerShell twice; in the VM they came 98 s after "mesh connected" on two starts, 5 s with the setup beside the rest. No test: the tests run in userspace mode, where there is no DNS setup.
+
+Pages touched: open-questions.

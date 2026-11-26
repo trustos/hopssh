@@ -21,7 +21,8 @@ CFG_DIR="$(mktemp -d /tmp/hopssh-smoke.XXXXXX)"
 echo "config dir: $CFG_DIR"
 
 LOG="$CFG_DIR/agent.log"
-"$AGENT_BIN" serve --config-dir "$CFG_DIR" >"$LOG" 2>&1 &
+# Through a pipe: the agent prints the line with the token only into one.
+"$AGENT_BIN" serve --config-dir "$CFG_DIR" > >(cat >"$LOG") 2>&1 &
 AGENT_PID=$!
 trap 'kill "$AGENT_PID" 2>/dev/null || true; rm -rf "$CFG_DIR"' EXIT
 

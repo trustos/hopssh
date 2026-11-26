@@ -1232,9 +1232,9 @@ func reloadNebula(inst *meshInstance) {
 
 		log.Printf("[renew %s] Nebula started after cert renewal (mode: %s)", inst.name(), tunMode)
 
-		// Configure DNS (kernel TUN mode only).
+		// Configure DNS (kernel TUN mode only), beside the rest as in connect.
 		if tunMode == "kernel" {
-			inst.configureSplitDNS()
+			go inst.configureSplitDNS()
 		}
 
 		// Warm tunnels so Screen Sharing HP mode works immediately.
