@@ -223,10 +223,12 @@ Pages touched: this log, open-questions, raw/others (already in PR 5).
 
 **Retransmits:** see open-questions. Numbers of 8 s runs, MBP to mini and back over `home`, test build: up 135 to 178 Mbit/s with 3641 to 6643 retransmits, down 123 to 173 with 1629 to 9085; ZeroTier beside, down, 109 to 167 with 112 to 715.
 
-**Networks start together** at boot (`Client.Start`), not one after the other; one with a busy port no longer holds the others for its 25 s of retries. `TestStart_NetworksStartTogether`.
+**Networks start together** at boot (`Client.Start`), not one after the other; one with a busy port no longer holds the others for its 25 s of retries. `TestStart_NetworksStartTogether`. On the MBP the three networks came up in the same second (11:57:57); before, about 3 s apart.
 
-**Broadcasts are dropped** (`tun.drop_local_broadcast`, set by `ensureP2PConfig` on every start), so no more handshakes with `x.x.x.255`. `TestEnsureP2PConfig_DropsLocalBroadcast`. Not yet seen on a device.
+**Broadcasts are dropped** (`tun.drop_local_broadcast`, set by `ensureP2PConfig` on every start), so no more handshakes with `x.x.x.255`. `TestEnsureP2PConfig_DropsLocalBroadcast`. The setting is in every network's config on both Macs; that the handshakes are gone needs a network change to show.
 
 **Gate:** `make test-race`, `make preflight` (vet, tests, race), and `make release` runs it first and refuses a dirty tree. CI: a `race` job on Linux and on a Mac (the vendored macOS tests ran nowhere before); the dead `check-patches` job is gone. The release workflow builds nothing when the tests fail. The workflows have not run yet: the branch is not pushed.
 
 Pages touched: 1 new (incidents/2026-11-26-mbp-send-stuck-in-kernel), index, open-questions, this log, patches/README.md, CLAUDE.md.
+
+Both Macs run this branch as a test build (v0.11.29-followups, 2e88874) since 11:57; pings both ways without loss. The release binary is beside it in `~/hopssh-saved-2026-11-25/`.
