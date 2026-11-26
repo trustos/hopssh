@@ -1,7 +1,7 @@
 ---
 type: incident
 title: 2026-11-26 — MBP: one UDP send did not return for four minutes, the network was dead and could not be closed
-status: fixed on the branch fix/followups-v0.11.29, not released; the send limit is not shown against a real stuck send
+status: fixed on the branch fix/followups-v0.11.29, not released
 last_compiled: 2026-11-26
 sources:
   - patches/darwin-udp.patch
@@ -51,5 +51,5 @@ Test build on both Macs, 8 `iperf3` runs of 8 s over `home`: no freeze, no send 
 
 ## Open
 
-- The limit has not been seen to end a real stuck send: the freeze came once in about 20 runs and not again.
+- Seen working the same evening: 106 "Flush failed … sendmsg_x: resource temporarily unavailable" lines on the MBP between 20:10 and 20:30, after a change of Wi-Fi, each a send the kernel did not take within the second. The tunnels flapped for those minutes and came back by themselves. [[concepts/defender-filter-on-the-mbp]]
 - `Close` still waits for `sendMu`. With the limit that is at most a second per send.

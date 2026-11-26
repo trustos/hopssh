@@ -293,3 +293,7 @@ Pages touched: concepts/loss-on-a-limited-line, concepts/defender-filter-on-the-
 Correction the same evening: a repeat showed Defender's filter as busy during a ZeroTier download that was still fast, so the filter is a suspect only. The downloads are slow since the MBP rejoined Wi-Fi at 13:54, perhaps on another office network. Page and open question reworded.
 
 20:14: the MBP switched to the office's other Wi-Fi name: same gateway and subnet, hop download still 36 to 38 Mbit/s, ZeroTier 180 to 186. The Wi-Fi name is not the cause.
+
+20:29 to 20:45: the slow state ended by itself (hop download 145 to 179 Mbit/s, Defender's filter at 3 to 9 % CPU where it had been at 50 to 100 %). Found before that: capped at 20 and 40 Mbit/s the slow state passes clean; a test program could not make the filter busy by any way of using a socket; our send buffer is 9 kB, ZeroTier's 1 MB. A test agent with 1 MB was fast, and so was the unchanged one three minutes later: not shown, not in. The send limit of 1 s was seen ending 106 stuck sends at 20:1x to 20:2x. A test agent with 1 MB on `work` only is on the MBP and a watcher compares the two networks every 10 minutes.
+
+Pages touched: concepts/defender-filter-on-the-mbp (rewritten), incidents/2026-11-26-mbp-send-stuck-in-kernel, open-questions, index.

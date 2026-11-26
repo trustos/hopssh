@@ -4,9 +4,9 @@ Cross-cutting unresolved items. Acts as a handoff state machine across sessions:
 
 Per-incident open items live on the incident page itself (`## Open` section). This file is for items that span multiple pages or that don't have a natural home yet.
 
-## 2026-11-26 — hop's download to the MBP is slow on one office Wi-Fi
+## 2026-11-26 — hop's download to the MBP was slow for six hours
 
-25 to 68 Mbit/s since the MBP rejoined Wi-Fi at 13:54, where Tailscale and ZeroTier do 137 to 189 and hop did 146 to 185 at noon; upload is 180 throughout. Ruled out: path, packet size, the line's speed, the mini. Suspects: this Wi-Fi treating our UDP ports differently, or Defender's network filter on the MBP (half a core during our downloads, but once as busy during ZeroTier's). Decided by one download each on another Wi-Fi with `top` beside it. [[concepts/defender-filter-on-the-mbp]]
+25 to 68 Mbit/s from 14:02 to 20:20, 145 to 185 before and after, where Tailscale and ZeroTier did 137 to 190 throughout. In the slow hours Defender's network filter on the MBP handled every packet of ours (50 to 100 % CPU) and not ZeroTier's; why it began and ended is not known, both followed a change of network on the MBP by some minutes. Ruled out: path, packet size, line, the mini, how the socket is used. A 1 MB send buffer (ZeroTier has one, we have 9 kB) was tried after the slow state had ended, so it is not shown; the test that decides it is on the page. [[concepts/defender-filter-on-the-mbp]]
 
 ## 2026-11-26 — from the cellular and reboot test on v0.11.29
 
