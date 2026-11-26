@@ -142,3 +142,7 @@ Four of the 47 were done again: one had been planted so that it changed nothing 
 ## Backlinks
 
 - [[e2e-tests]], [[macos-udp-send]], [[../open-questions]]
+
+## The host must be idle
+
+The lab VM shares this Mac's cores. With a load average of 31 on 18 cores (a game and two other VMs) `TestLimitedLine/5ms` failed in every run, with the binaries of the commit that added it too: tunnel 4 to 9 Mbit/s against 13 to 16 at a load of 5. Check `uptime` before a run and note it with the numbers.

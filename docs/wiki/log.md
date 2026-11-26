@@ -327,3 +327,5 @@ Pages touched: open-questions.
 01:05 to 01:15, lab: `TestLimitedLine/5ms` three times on the tip and three times with the binaries of `bf557ea`: fails with both. The host's load average was 31 on 18 cores. Filed in open-questions; the test is unchanged.
 
 Pages touched: open-questions.
+
+01:55, lab: with the host idle `TestLimitedLine/5ms` passes three of three (13.0 to 14.0 against 16.1 to 16.3 Mbit/s). It was the host's load.
