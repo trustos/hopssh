@@ -59,6 +59,20 @@ The test fails when the tunnel has more than twice the retransmits of the connec
 
 The lab's line got a queue depth for this: `Wire.Queue`, 200 ms if not set. `Cable.full` counts what did not fit.
 
+## Tailscale does the same
+
+Three tunnels side by side, Wi-Fi, 8 s uploads MBP to mini, three rounds (2026-11-26, Tailscale direct, not over its relay):
+
+| | Mbit/s | retransmits |
+|---|---|---|
+| hop | 182, 179, 186 | 1953, 708, 3158 |
+| Tailscale | 172, 177, 178 | 1112, 2058, 2837 (1005, 1517, 2539 of them in the first second) |
+| ZeroTier | 166, 192, 165 | 1028, 455, 637 |
+
+The same burst at the start, with a tunnel that has years of tuning behind it. It is the line.
+
+The downloads of that comparison were slow for hop only (34 to 65 Mbit/s against 157 and 137). That is another thing, on the MBP: [[concepts/defender-filter-on-the-mbp]].
+
 ## What was tried against it, and why it is not in
 
 **Idea:** the queue is on the line, so it cannot be seen. But what waits in it comes back later. After every 32 packets to a host a test request goes out with the time in it; the other side sends it back, as it does with any test request (so it needs nothing new there). The time it took, less the shortest seen, is how long packets wait. When that is above 20 ms, one TCP packet with data is not sent, and the sender slows down a few hundred packets earlier than it would have.

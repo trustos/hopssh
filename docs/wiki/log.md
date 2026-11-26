@@ -280,3 +280,12 @@ Pages touched: this log, open-questions.
 - `networkQuality -d` on the hotspot: 31 Mbit/s up. It does not count in `netstat -s -p tcp`.
 
 Pages touched: concepts/loss-on-a-limited-line (new), open-questions, index, concepts/netlab.
+
+## 2026-11-26 (sixth round) — Tailscale beside us; a filter on the MBP caps our download
+
+- Tailscale started on the mini for the comparison (the user signed in), stopped again afterwards.
+- Upload, three rounds: hop 179 to 186 Mbit/s with 708 to 3158 retransmits, Tailscale 172 to 178 with 1112 to 2837, ZeroTier 165 to 192 with 455 to 1028. Tailscale has the same burst at the start.
+- Download: hop 34 to 65, Tailscale 157 to 161, ZeroTier 91 to 180. Cause found on the MBP: Microsoft Defender's network extension inspects hop's packets (56 % CPU) and not ZeroTier's. Ruled out: path, packet size (MTU 1280 to 1420), the line, Tailscale, the mini.
+- Open: why it was fast at noon.
+
+Pages touched: concepts/loss-on-a-limited-line, concepts/defender-filter-on-the-mbp (new), open-questions, index.
