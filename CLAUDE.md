@@ -515,7 +515,7 @@ Verified end-to-end with `hop-agent migration` against a deployed QUIC echo serv
     14. Don't switch a test off "for now". Four tripwires for the watchdogs were off from May to November; 11 of 14 planted wiring bugs got through.
     15. Run a test for a race against the bug until you know how often it fails. The first `TestReapIdleInstances` passed 3 of 3 without patch 27; it fails 40 of 40 now.
 
-- **A UDP send on macOS did not return for four minutes (2026-11-26, fixed on a branch, not released).** The socket blocks and sends hold `sendMu`: the network could send nothing and could not be closed. `docs/wiki/incidents/2026-11-26-mbp-send-stuck-in-kernel.md`.
+- **A UDP send on macOS did not return for four minutes (2026-11-26, fixed in v0.11.30).** The socket blocks and sends hold `sendMu`: the network could send nothing and could not be closed. `docs/wiki/incidents/2026-11-26-mbp-send-stuck-in-kernel.md`.
   - **Rules:**
     1. A blocking call under a lock needs a time limit. `Close` must never wait for something without one.
     2. When a teardown did not finish and its port is still taken, end the process; waiting frees nothing.
@@ -523,7 +523,7 @@ Verified end-to-end with `hop-agent migration` against a deployed QUIC echo serv
     4. On a Mac with a content filter the kernel's "full socket buffers" counter is not a loss counter.
     5. The limit alone left a network silent for a minute the same evening: every send ran into it. A socket that takes nothing for 5 s is replaced (`internal/client/send_watch.go`). Do not raise the send buffer there: 1 MB was three to four times slower (`docs/wiki/concepts/defender-filter-on-the-mbp.md`).
 
-- **Paths between devices, measured in real networks (2026-11-24, not released yet).** `scripts/netlab.sh` runs the real server and real root agents behind simulated routers in the Linux VM (9 min). It found nine faults of v0.11.27 and before that are fixed, among them: a relay that sticks, 60 to 84 s of silence after a restart of the server or a new public address, `preferred_ranges` never in effect, a path that works one way only kept for minutes. It also found one that the fix of `preferred_ranges` brought in (a one-way LAN went dead) and one that is only pinned (big packets lost). Fixes: `internal/client/path_watch.go` and patches 33 to 36. Table, causes and what is still pinned: `docs/wiki/concepts/netlab.md`.
+- **Paths between devices, measured in real networks (2026-11-24, in v0.11.29).** `scripts/netlab.sh` runs the real server and real root agents behind simulated routers in the Linux VM (9 min). It found nine faults of v0.11.27 and before that are fixed, among them: a relay that sticks, 60 to 84 s of silence after a restart of the server or a new public address, `preferred_ranges` never in effect, a path that works one way only kept for minutes. It also found one that the fix of `preferred_ranges` brought in (a one-way LAN went dead) and one that is only pinned (big packets lost). Fixes: `internal/client/path_watch.go` and patches 33 to 36. Table, causes and what is still pinned: `docs/wiki/concepts/netlab.md`.
   - **Rules:**
     1. Any change to paths, patches of Nebula's hostmap/handshake/connection manager, or the keepalives: run the lab, and write the test that shows the fault before the fix.
     2. What comes over the relay says nothing about the direct path, and what comes from an address says nothing about the way back to it.

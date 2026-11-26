@@ -305,3 +305,5 @@ Pages touched: concepts/defender-filter-on-the-mbp (rewritten), incidents/2026-1
 Pages touched: incidents/2026-11-26-mbp-send-stuck-in-kernel, open-questions, index.
 
 22:12 to 22:40, Linux: the whole lab on the tip. All pass but `TestLimitedLine/5ms` (8 of 8 runs, with and without the new loop; passed at 16:00). Filed in open-questions. CI on PR 6 green on `75f5c50`, macOS and Ubuntu.
+
+23:00 to 23:15: PR 6 merged (`05b4c48`), v0.11.30 tagged after `make release`'s gate, release run 45894171687 all jobs green. Server on v0.11.30 (`/version`). Agent v0.11.30 (05b4c48, built here from the tag) on both Macs: 154 to 185 Mbit/s over hop beside ZeroTier's 187 with the same code an hour before, pings 0 % loss, no send-watch line. Test builds and the recorder's files removed from the Macs.

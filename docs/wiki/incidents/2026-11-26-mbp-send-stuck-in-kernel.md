@@ -1,7 +1,7 @@
 ---
 type: incident
 title: 2026-11-26 — MBP: one UDP send did not return for four minutes, the network was dead and could not be closed
-status: fixed on the branch fix/followups-v0.11.29, not released
+status: fixed in v0.11.30
 last_compiled: 2026-11-26
 sources:
   - patches/darwin-udp.patch
