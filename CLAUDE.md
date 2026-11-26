@@ -146,32 +146,20 @@ Packages NOT carried over (Pulumi/OCI-specific):
 
 ## Vendor Patch: Nebula
 
-We vendor dependencies and pin `slackhq/nebula` **v1.10.3** with **37 patches** in `patches/` (01–38, no 23; inventory in `patches/README.md`). They cover:
+We vendor dependencies and pin `slackhq/nebula` **v1.11.2** with **10 patches** in `patches/`, one theme each (inventory, what each replaced, and what to run after touching them: `patches/README.md`):
 
-- graceful shutdown (01, completed by 27);
-- a test-reply panic (02);
-- macOS batched UDP/TUN I/O, priority queue and pipelining (03–10, 12, 13, 17–19, 24, 28);
-- NAT-PMP advertise addresses (11);
-- roam suppression and preferred-range roaming (14–16);
-- control-plane hostmap injection (20–22);
-- cert clock-skew tolerance (25);
-- relay-manager drop warnings (26);
-- closing the netstack of a userspace service (29), and a shared-global race (30);
-- Linux: closing a network releases its UDP port and TUN device (31); the TUN descriptor is close-on-exec (32);
-- paths between peers: one stray packet no longer closes a relayed tunnel (33), counters of what was received (34), nobody moves to another path before an answer has come back on it (35), a new tunnel stays the one in use (36);
-- two data races between sending, receiving and status: the address a peer is sent to (37), a peer's relay list (38). Only `go test -race` shows them, and CI does not run it.
+- macOS batched UDP and TUN I/O (`darwin-udp`, `darwin-tun`, `read-loop`);
+- which address a peer is sent to: roam suppression, LAN preferred, ask before moving, a new tunnel stays (`paths`);
+- what the agent calls on `*nebula.Control`: port-mapping addresses, peer endpoints, probes, counters (`control-api`);
+- cert clock-skew tolerance (`cert-skew`); relay-list race and drop warnings (`relays`); closing the netstack of a userspace service (`service-netstack`);
+- Linux: closing a network waits until its UDP port and TUN device are free, and the TUN descriptor is close-on-exec (`linux-udp-close`, `linux-tun`).
 
-- **Apply**: `make patch-vendor`, or `make vendor` (vendor + patch). Always do this after `go mod vendor`.
-- **⚠ `make patch-vendor` swallows failures** (`|| true`, then deletes `*.rej`). **Patch 12 (and, on Linux, hunk 3 of 19) does not apply on a clean tree**, so its pipelined macOS `listenIn` is in no release or Docker build, the "2.7× downlink" numbers credited to it do not describe what we ship, and `go vet github.com/slackhq/nebula` fails on its test. After patching, check by hand that every patch applied (e.g. `patch --dry-run -R` per file) until the Makefile fails loudly.
+- **Apply**: `make patch-vendor`, or `make vendor` (vendor + patch). Always do this after `go mod vendor`. It stops at a patch that does not apply (until November 2026 it carried on in silence).
 - **Build**: `go build -mod=vendor ./...` (or `make build`).
-- **There is no `scripts/check-nebula-patch.sh`** (older docs referenced one). Vendored tests are not part of `./...`; run `go test -mod=vendor -race github.com/slackhq/nebula/udp` after touching the UDP patches. They are macOS-only and CI is ubuntu-only.
-- **Patch 01 history:** upstream issue #1031 (`svc.Close()` → `os.Exit(2)`). PR #1375 was closed unmerged; the real fix is **PR #1661, released in v1.11.0**. On upgrade, delete 01, 27, 37 (upstream has the same change) and the TUN half of 31 (its UDP half went into v1.12.0). `vendor/` is gitignored, but `nebula/control.go` and `nebula/overlay/tun_darwin.go` are tracked.
-- **Upgrade status (surveyed 2026-11-18):**
-  - Upstream is at v1.12.0 (requires Go 1.27.3). The recommended target is **v1.11.2** (needs Go 1.26, which we're on now).
-  - What it brings: two firewall classifier bypass fixes, a relay re-establishment fix matching our 2026-05-14 relay stall, and hostmap/roam race fixes.
-  - **Patch 25 (clock-skew) remains ours**, because upstream `Expired()` has no tolerance.
-  - Roughly 10–14 patches need real rework (the macOS perf stack and the hostmap-control API).
-  - Full survey: `docs/wiki/raw/nebula-upgrade/2026-11-18-upstream-survey.md`.
+- Vendored tests are not part of `./...`; run `go test -mod=vendor -race github.com/slackhq/nebula github.com/slackhq/nebula/udp` after touching the patches. The UDP ones are macOS-only and CI is ubuntu-only. Only `go test -race` shows data races, and CI does not run it.
+- **Nebula logs with `log/slog` since v1.11** and no longer sets the level of the logger it is given: `nebulacfg.Logger(cfg)` does (`logging.level` of the config, "info" by default). Lines read `level=INFO msg="…" key=value`.
+- **A fix that is "upstream" has to be shown on Linux before our patch goes.** In the upgrade to v1.11.2 upstream's own close looked like our patch 31, and on the Mac all was green; in the Linux VM the kernel-TUN close test failed 6 of 10 and the userspace one every time.
+- **Upgrade status (2026-11-26):** on v1.11.2. Upstream is at v1.12.0 (requires Go 1.27.3); there `linux-udp-close` can go. `cert-skew` remains ours. Survey of the upgrade: `docs/wiki/raw/nebula-upgrade/`.
 
 ---
 

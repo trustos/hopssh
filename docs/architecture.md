@@ -584,7 +584,7 @@ All modes issue a Nebula certificate with group `node`, configure the mesh, and 
 | Layer | Choice | Rationale |
 |-------|--------|-----------|
 | Language | Go 1.24 | Single static binary, no runtime deps, strong concurrency |
-| Mesh | Nebula v1.10.3 (vendor patched) | Userspace, built-in PKI, relay (v1.6+), MIT licensed |
+| Mesh | Nebula v1.11.2 (vendor patched) | Userspace, built-in PKI, relay (v1.6+), MIT licensed |
 | HTTP | chi router | Lightweight, middleware, URL params |
 | Database | SQLite (modernc.org/sqlite) | Pure Go, no CGO, embedded, zero ops |
 | DB queries | sqlc | Type-safe generated Go code from SQL files |
