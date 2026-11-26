@@ -4,6 +4,10 @@ Cross-cutting unresolved items. Acts as a handoff state machine across sessions:
 
 Per-incident open items live on the incident page itself (`## Open` section). This file is for items that span multiple pages or that don't have a natural home yet.
 
+## 2026-11-26 — lab: `TestLimitedLine/5ms` fails in the evening, passed in the afternoon
+
+The whole lab on the branch's tip (22:12): 38 tests pass, this one case fails. A line of 20 Mbit/s with a queue of 5 ms (about 8 packets): through the tunnel 3.4 to 7.0 Mbit/s, beside it 9.3 to 13.9, in 8 runs of 8; the bar is 70 %. At 16:00 it was 13.3 against 15.5, twice. Between the two only one loop was added to the agent (`runSendWatch`), and with it switched off the case fails the same (4.2 against 10.6, 5.0 against 13.4). So it is not that change, and not known what it is: the VM, or a case that passed by luck. The other four queues pass. **Next:** run the case 10 times on the commit `bf557ea` that added it; if it fails there too, the tunnel on a line with almost no queue is a finding of its own (batches of ours into 8 places).
+
 ## 2026-11-26 — hop's download to the MBP was slow for six hours
 
 25 to 68 Mbit/s from 14:02 to 20:20, 145 to 185 before and after, where Tailscale and ZeroTier did 137 to 190 throughout. In the slow hours Defender's network filter on the MBP handled every packet of ours (50 to 100 % CPU) and not ZeroTier's; why it began and ended is not known, both followed a change of network on the MBP by some minutes. Ruled out: path, packet size, line, the mini, how the socket is used. It came back from 21:37 to 21:42. A 1 MB send buffer (ZeroTier has one, we have 9 kB) is ruled out: measured beside ours in the slow state it was three to four times slower. Not the trigger: the agent's rebind, a screen-sharing session. [[concepts/defender-filter-on-the-mbp]]

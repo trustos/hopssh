@@ -303,3 +303,5 @@ Pages touched: concepts/defender-filter-on-the-mbp (rewritten), incidents/2026-1
 22:00 to 23:00: the recorder read (12:19 to 20:32). One minute of silence on `home` at 20:09:54, every send into the 1 s limit while receiving went on; the agent now replaces a socket that takes nothing for 5 s (`send_watch.go`, `SendStuckFor` in two patches). The 20 s on hotspot to Wi-Fi is the change itself (ZeroTier: 47 s). The short silences stay unexplained. The 1 in 30 failure of `TestPeerCache_SaveSkipsWhenUnchanged` fixed (both saves in one second of the clock). Recorder stopped. PR 6 opened; Actions minutes are not billed for this repo, it is public.
 
 Pages touched: incidents/2026-11-26-mbp-send-stuck-in-kernel, open-questions, index.
+
+22:12 to 22:40, Linux: the whole lab on the tip. All pass but `TestLimitedLine/5ms` (8 of 8 runs, with and without the new loop; passed at 16:00). Filed in open-questions. CI on PR 6 green on `75f5c50`, macOS and Ubuntu.
