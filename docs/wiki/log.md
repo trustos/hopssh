@@ -255,3 +255,19 @@ Build v0.11.29-followups on both Macs. The MBP was reached through the mini (`ss
 - **Recorder, 12:19 to 14:05:** no silence of 2 s without a cause. Single pings lost on `home` and `work` in the same instant three times on cellular (13:22:19, 13:32:19, 13:45:08), nothing in the log. Two pings lost on `work` at 14:01:55: its cert renewal, which restarts the network (about 1 s). 13:11:13: all three, ZeroTier too, so the line.
 
 Pages touched: this log, open-questions.
+
+## [2026-11-26] follow-ups, fourth round: cellular upload, measured cleanly
+
+MBP on the hotspot again (about 14:30), nothing else sending (56 UDP datagrams a second before the runs). 8 s uploads to the mini:
+
+| run | speed | retransmits | our UDP lost on the way |
+|---|---|---|---|
+| hop, uncapped | 27 Mbit/s | 4194 | 3284 of 25666 (13 %) |
+| hop, uncapped, again | 17 Mbit/s | 1026 | 762 of 14744 (5 %) |
+| hop, capped at 10 Mbit/s | 10 | 46 | none |
+| hop, capped at 5 Mbit/s | 5 | 161 | none |
+| ZeroTier, uncapped | 11 Mbit/s | 480 | none |
+
+Same as on Wi-Fi: the loss is the line's limit. TCP inside hop pushes the cellular uplink past what it takes and loses 5 to 13 % there; ZeroTier limits itself below that and is 1.5 to 2.5 times slower. No tunnel drops, nothing fragmented. The 17526 retransmits of 2026-11-25 are this. What would lower them is a queue on our side that holds TCP back before the line does (pacing, or dropping early like fq_codel); not built, see open-questions.
+
+Pages touched: this log, open-questions.
