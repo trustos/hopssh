@@ -232,3 +232,13 @@ Pages touched: this log, open-questions, raw/others (already in PR 5).
 Pages touched: 1 new (incidents/2026-11-26-mbp-send-stuck-in-kernel), index, open-questions, this log, patches/README.md, CLAUDE.md.
 
 Both Macs run this branch as a test build (v0.11.29-followups, 2e88874) since 11:57; pings both ways without loss. The release binary is beside it in `~/hopssh-saved-2026-11-25/`.
+
+## [2026-11-26] follow-ups, second round: the loss on the line, the router-reboot test
+
+**Loss of our packets on the line is the line's limit.** Capped sender: 0 lost at 60 Mbit/s, up to 0.5 % at 100, 1.3 % at 140; uncapped 173 to 185 Mbit/s with 2 to 3 %. ZeroTier beside it stops at 122 to 167 and loses none. Not the bursts (test builds with the tunnel reader's batch at 4 and 1 against 32, alternating, no difference), not fragments (none). Nothing changed in the code.
+
+**`TestRouterReboot` failed in the full lab run (60.9 s, limit 45 s), 29 of 30 passed.** It is TCP's retry timer, not the path: see open-questions 2026-11-25, closed. The test now asks with a new connection after the router is back (limit 5 s; measured 0.1 to 1.2 s in 4 runs) and allows the open session 65 s.
+
+**Recorder for the 2.0 s silences** runs on the MBP since 12:19: `ping -i 0.5` over `home`, `work` and ZeroTier, into `/tmp/hoprec/*.log`.
+
+Pages touched: open-questions, this log. Both Macs are back on v0.11.29-followups (2e88874) after the test builds.

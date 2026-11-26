@@ -70,9 +70,16 @@ func TestRouterReboot(t *testing.T) {
 	time.Sleep(30 * time.Second)
 	ra.forget()
 	ra.line.cut.Store(false)
+	// How soon the path works again is asked with a new connection. The open
+	// one says only when its TCP tried next: about 30.4 s and 61 s after the
+	// cut, and the first of the two falls 0.4 s after the router's return, or
+	// before it when the machine is busy (2 of about 14 full runs).
+	if took := tcp(a, b, 30*time.Second); took > 5*time.Second {
+		t.Errorf("a new connection took %s after the router came back", took.Round(100*time.Millisecond))
+	}
 	time.Sleep(60 * time.Second)
 	want(a, b, "direct", time.Second)
-	s.close("30 s without the router", 45*time.Second)
+	s.close("30 s without the router", 65*time.Second)
 }
 
 func TestServerRestart(t *testing.T) {
