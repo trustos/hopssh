@@ -291,3 +291,5 @@ Pages touched: concepts/loss-on-a-limited-line (new), open-questions, index, con
 Pages touched: concepts/loss-on-a-limited-line, concepts/defender-filter-on-the-mbp (new), open-questions, index.
 
 Correction the same evening: a repeat showed Defender's filter as busy during a ZeroTier download that was still fast, so the filter is a suspect only. The downloads are slow since the MBP rejoined Wi-Fi at 13:54, perhaps on another office network. Page and open question reworded.
+
+20:14: the MBP switched to the office's other Wi-Fi name: same gateway and subnet, hop download still 36 to 38 Mbit/s, ZeroTier 180 to 186. The Wi-Fi name is not the cause.

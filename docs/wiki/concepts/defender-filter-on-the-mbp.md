@@ -39,6 +39,12 @@ CPU on the MBP (`top`, 5 s) during 8 s downloads from the mini:
 - Not Tailscale on the mini: the same with it on and off.
 - Not the mini: nothing in its log, the agent is not among its busiest processes, and it sends 180 Mbit/s to the MBP over ZeroTier.
 
+## The other office Wi-Fi (20:14)
+
+The user switched the MBP between the office's two Wi-Fi names during the day; which one it was on at noon is not certain. After a switch at 20:14 (agent log: network change): the same gateway, subnet and channel, so the two names are one network. hop 38 and 36 Mbit/s with `netext` at 54 and 50 %; ZeroTier 180 and 186 with `netext` not among the first seven; hop upload 185 with `netext` at 104 %.
+
+So the Wi-Fi name is not it. `netext` was absent in four of five ZeroTier runs and present in every hop run, which leaves the filter as the likelier of the two suspects. Still not explained: the fast downloads at noon. The MBP had been restarted at about 11:15; a filter that gets its full rules some time after a start would fit, and is a guess.
+
 ## What is not known, and the test that decides
 
 - Whether it is this Wi-Fi (something on it that slows unknown UDP towards the MBP: Tailscale's and ZeroTier's ports are well known, ours are not) or the filters on the MBP (their rules may depend on the network).
