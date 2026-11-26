@@ -242,3 +242,16 @@ Both Macs run this branch as a test build (v0.11.29-followups, 2e88874) since 11
 **Recorder for the 2.0 s silences** runs on the MBP since 12:19: `ping -i 0.5` over `home`, `work` and ZeroTier, into `/tmp/hoprec/*.log`.
 
 Pages touched: open-questions, this log. Both Macs are back on v0.11.29-followups (2e88874) after the test builds.
+
+## [2026-11-26] follow-ups, third round: the MBP on the hotspot (13:15 to 13:54), the recorder
+
+Build v0.11.29-followups on both Macs. The MBP was reached through the mini (`ssh -J`), ZeroTier from the third machine found no path to it on cellular.
+
+- **The switches.** To the hotspot (13:15:43): `home` missed one ping of the recorder (0.5 s apart), `work` none, ZeroTier 88 (44 s). Both networks were direct to the mini again at 13:15:46. Back to Wi-Fi (13:53:59): ours 40 pings (20 s), ZeroTier 94 (47 s); the agent logged the change at 13:54:21. How much of the 20 s was the Mac joining the Wi-Fi is not known.
+- **Broadcasts:** no handshake with an `x.x.x.255` address after the start of this build (last one 11:57:12, the old one), through both switches. Closed.
+- **"Flush failed":** six lines in the second of the first switch ("can't assign requested address", "cannot allocate memory"), none else. No send ran into the 1 s limit.
+- **Speed, 8 s, one run each:** hop up 20 Mbit/s (6153 retransmits), down 54 (1327); ZeroTier up 2 (259), down 33 (891). **The upload numbers are not valid:** a Screen Sharing stream from the MBP over ZeroTier was using the uplink at about 5 MB/s the whole time (`nettop`: `avconferenced`, `zerotier-one`). The "udp lost" column of the script counts all UDP of the machine and was drowned by it. A second try came after the MBP had left the hotspot. So the cellular upload retransmits (17526 on 2026-11-25) are still open.
+- **Nothing fragmented** on cellular (0 fragments received on the mini).
+- **Recorder, 12:19 to 14:05:** no silence of 2 s without a cause. Single pings lost on `home` and `work` in the same instant three times on cellular (13:22:19, 13:32:19, 13:45:08), nothing in the log. Two pings lost on `work` at 14:01:55: its cert renewal, which restarts the network (about 1 s). 13:11:13: all three, ZeroTier too, so the line.
+
+Pages touched: this log, open-questions.
