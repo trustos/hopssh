@@ -60,6 +60,10 @@ func TestPeerCache_SaveSkipsWhenUnchanged(t *testing.T) {
 	inst := newMeshInstance(&Enrollment{Name: "home"})
 	inst.customDir = dir
 
+	// Both saves have to fall into one second of the clock: wait for the
+	// start of the next one. Without this the test failed 1 time in about 30.
+	time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second)))
+
 	in := map[string][]string{"10.42.1.7": {"203.0.113.10:4242"}}
 	if err := savePeerCache(inst, in); err != nil {
 		t.Fatal(err)

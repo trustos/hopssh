@@ -163,21 +163,32 @@ func (c *Client) Start(ctx context.Context) error {
 	// failure, record it for surfacing via /local/status's LastError
 	// field, continue with the remaining enrollments. Start returns
 	// error ONLY if every enrollment failed.
-	var attempted, failed int
-	for _, e := range c.enrolls.List() {
-		attempted++
-		// Phase HH: a failed enrollment keeps retrying in the background
-		// (renew-before-start + recovery loop) instead of staying dead
-		// until the next process restart.
-		if err := c.connectAndSupervise(e.Name, true); err != nil {
-			log.Printf("[client] enrollment %q connect failed (agent continues; see /local/status lastError): %v",
-				e.Name, err)
-			c.recordBootError(e.Name, err)
-			failed++
-			continue
-		}
-		c.clearBootError(e.Name)
+	//
+	// Together, not one after the other: a network takes about 3 s to come
+	// up, and one whose port is busy retries for 25 s.
+	list := c.enrolls.List()
+	attempted := len(list)
+	var nFailed atomic.Int64
+	var wg sync.WaitGroup
+	for _, e := range list {
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			// Phase HH: a failed enrollment keeps retrying in the background
+			// (renew-before-start + recovery loop) instead of staying dead
+			// until the next process restart.
+			if err := c.connectAndSupervise(name, true); err != nil {
+				log.Printf("[client] enrollment %q connect failed (agent continues; see /local/status lastError): %v",
+					name, err)
+				c.recordBootError(name, err)
+				nFailed.Add(1)
+				return
+			}
+			c.clearBootError(name)
+		}(e.Name)
 	}
+	wg.Wait()
+	failed := int(nFailed.Load())
 	if attempted > 0 && failed == attempted {
 		return fmt.Errorf("all %d enrollment(s) failed to boot — see per-enrollment lastError in /local/status", failed)
 	}

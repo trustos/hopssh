@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // Phase GG (v0.11.26) tripwires. Cover the boot-resilience guarantee:
@@ -182,5 +184,39 @@ func TestMain_StartFailureDoesNotCallFatalf(t *testing.T) {
 	}
 	if !strings.Contains(block, "log.Printf") {
 		t.Error("cmd/agent/main.go's c.Start error branch must log something — without ANY log line, operators can't see what's wrong. Use log.Printf at minimum.")
+	}
+}
+
+// TestStart_NetworksStartTogether: they used to start one after the other,
+// about 3 s each, and a network whose port was busy held the ones behind it
+// for the 25 s of its retries.
+func TestStart_NetworksStartTogether(t *testing.T) {
+	c, _ := newTestClientForBootResilience(t)
+	names := []string{"home", "work", "member-test"}
+	for _, n := range names {
+		if err := c.enrolls.Add(&Enrollment{Name: n, NodeID: n}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var arrived sync.WaitGroup
+	arrived.Add(len(names))
+	all := make(chan struct{})
+	go func() { arrived.Wait(); close(all) }()
+	c.connectOverride = func(name string) error {
+		arrived.Done()
+		select {
+		case <-all:
+			return nil
+		case <-time.After(2 * time.Second):
+			return fmt.Errorf("%s started alone", name)
+		}
+	}
+	if err := c.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range names {
+		if got := c.LastBootError(n); got != "" {
+			t.Errorf("%s: %s", n, got)
+		}
 	}
 }

@@ -2,7 +2,7 @@
 -include .env
 export
 
-.PHONY: all setup vendor patch-vendor build build-all build-linux vet test netlab \
+.PHONY: all setup vendor patch-vendor build build-all build-linux vet test test-race preflight netlab \
        generate clean clean-vendor clean-stuck-dumps frontend frontend-embed \
        run dev release wifi-snapshot \
        desktop-build desktop-app desktop-dev desktop-smoke desktop-clean
@@ -99,6 +99,16 @@ generate:
 test:
 	go test -mod=vendor -timeout 30m ./...
 
+# The packages with goroutines and locks of their own, under the race detector.
+# The vendored ones are not part of ./... ; on a Mac this is the only place
+# the macOS UDP and TUN code is tested.
+RACE_PKGS = github.com/slackhq/nebula github.com/slackhq/nebula/udp ./internal/client ./internal/mesh
+test-race:
+	go test -mod=vendor -race -timeout 30m $(RACE_PKGS)
+
+# What has to pass before a release.
+preflight: vet test test-race
+
 # Run the network lab: the real server and agents behind simulated routers.
 # Needs root on Linux, or the podman VM on a Mac. ARGS go to the test binary.
 netlab:
@@ -131,7 +141,8 @@ remote-exec:
 
 # Create a new release.
 BUMP ?= patch
-release:
+release: preflight
+	@if [ -n "$$(git status --porcelain)" ]; then echo "uncommitted changes: the tests ran on something else than the tag"; exit 1; fi
 	@LATEST=$$(git tag --sort=-v:refname | grep '^v' | head -1); \
 	if [ -z "$$LATEST" ]; then \
 		NEXT="v0.1.0"; \

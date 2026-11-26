@@ -200,3 +200,108 @@ Tested: all packages (one old flake, `TestPeerCache_SaveSkipsWhenUnchanged`); `-
 **Speed, mini and MBP, 15 s iperf3 each way, three rounds, the same half hour** (`results/perf-20261126-nebula-1.11.2/`): v0.11.28 162 to 181 Mbit/s with 6666 to 10220 retransmits; v1.11.2 165 to 185 Mbit/s with 3631 to 9203; ZeroTier beside both 173 to 188 with 99 to 1569. No difference to be seen; the line is the limit. The Macs run v0.11.28 again.
 
 Pages touched: 2 updated (concepts/netlab, open-questions), this log, patches/README.md, CLAUDE.md, docs/architecture.md.
+
+## [2026-11-26] ingest | v0.11.29 released and deployed; cellular, restart and reboot measured on the two Macs
+
+Nebula v1.11.2 is merged (PR 5, three reviews: no behaviour of the old patches lost), released as v0.11.29 and on the production server and both Macs since 10:27.
+
+**Restart of the mini's agent, MBP pinging every 0.5 s:** clean restart 120 of 120 answers, SIGKILL 118 of 120.
+
+**MBP from Wi-Fi to a phone hotspot (10:49):** both networks direct to the mini again about 2 s after the change was seen, no relay. Speed in 8 s runs (`results/perf-20261126-cellular-v0.11.29/`, not in git): up 24.8 and 29.2 Mbit/s (ZeroTier beside 18.9 and 4.9), down 97.6 and 62.8 (47.9 and 41.7); idle ping 44 ms against 57 ms, no loss. Retransmits 1813 to 17526 against 244 to 959.
+
+**Back to Wi-Fi (11:02):** silent 2.0 s on both networks.
+
+**Reboot of the MBP (FileVault on):** agent stopped 11:05:07, answers again 11:06:09 (`work`) and 11:06:16 (`home`): 62 and 70 s, of which the mesh itself took about a second per network once the agent ran. The three networks start one after the other, about 3 s each. The agent started before the network was up (two failed handshake sends) and recovered by itself. No CRITICAL, WATCHDOG or panic.
+
+Not explained: three silences of 2.0 s on both networks at once (10:58:16, 10:59:17, 11:06:32) with nothing in either agent's log.
+
+Pages touched: this log, open-questions, raw/others (already in PR 5).
+
+## [2026-11-26] ingest | Follow-ups after v0.11.29 (branch `fix/followups-v0.11.29`, not pushed, not released)
+
+**Found while measuring retransmits:** one UDP send on the MBP did not return for four minutes; the network was dead and could not be closed. [[incidents/2026-11-26-mbp-send-stuck-in-kernel]]. Fixed: a send may wait 1 s (`darwin-udp.patch`), and a network that did not shut down and whose port is still taken ends the agent at once.
+
+**Retransmits:** see open-questions. Numbers of 8 s runs, MBP to mini and back over `home`, test build: up 135 to 178 Mbit/s with 3641 to 6643 retransmits, down 123 to 173 with 1629 to 9085; ZeroTier beside, down, 109 to 167 with 112 to 715.
+
+**Networks start together** at boot (`Client.Start`), not one after the other; one with a busy port no longer holds the others for its 25 s of retries. `TestStart_NetworksStartTogether`. On the MBP the three networks came up in the same second (11:57:57); before, about 3 s apart.
+
+**Broadcasts are dropped** (`tun.drop_local_broadcast`, set by `ensureP2PConfig` on every start), so no more handshakes with `x.x.x.255`. `TestEnsureP2PConfig_DropsLocalBroadcast`. The setting is in every network's config on both Macs; that the handshakes are gone needs a network change to show.
+
+**Gate:** `make test-race`, `make preflight` (vet, tests, race), and `make release` runs it first and refuses a dirty tree. CI: a `race` job on Linux and on a Mac (the vendored macOS tests ran nowhere before); the dead `check-patches` job is gone. The release workflow builds nothing when the tests fail. The workflows have not run yet: the branch is not pushed.
+
+Pages touched: 1 new (incidents/2026-11-26-mbp-send-stuck-in-kernel), index, open-questions, this log, patches/README.md, CLAUDE.md.
+
+Both Macs run this branch as a test build (v0.11.29-followups, 2e88874) since 11:57; pings both ways without loss. The release binary is beside it in `~/hopssh-saved-2026-11-25/`.
+
+## [2026-11-26] follow-ups, second round: the loss on the line, the router-reboot test
+
+**Loss of our packets on the line is the line's limit.** Capped sender: 0 lost at 60 Mbit/s, up to 0.5 % at 100, 1.3 % at 140; uncapped 173 to 185 Mbit/s with 2 to 3 %. ZeroTier beside it stops at 122 to 167 and loses none. Not the bursts (test builds with the tunnel reader's batch at 4 and 1 against 32, alternating, no difference), not fragments (none). Nothing changed in the code.
+
+**`TestRouterReboot` failed in the full lab run (60.9 s, limit 45 s), 29 of 30 passed.** It is TCP's retry timer, not the path: see open-questions 2026-11-25, closed. The test now asks with a new connection after the router is back (limit 5 s; measured 0.1 to 1.2 s in 4 runs) and allows the open session 65 s.
+
+**Recorder for the 2.0 s silences** runs on the MBP since 12:19: `ping -i 0.5` over `home`, `work` and ZeroTier, into `/tmp/hoprec/*.log`.
+
+Pages touched: open-questions, this log. Both Macs are back on v0.11.29-followups (2e88874) after the test builds.
+
+## [2026-11-26] follow-ups, third round: the MBP on the hotspot (13:15 to 13:54), the recorder
+
+Build v0.11.29-followups on both Macs. The MBP was reached through the mini (`ssh -J`), ZeroTier from the third machine found no path to it on cellular.
+
+- **The switches.** To the hotspot (13:15:43): `home` missed one ping of the recorder (0.5 s apart), `work` none, ZeroTier 88 (44 s). Both networks were direct to the mini again at 13:15:46. Back to Wi-Fi (13:53:59): ours 40 pings (20 s), ZeroTier 94 (47 s); the agent logged the change at 13:54:21. How much of the 20 s was the Mac joining the Wi-Fi is not known.
+- **Broadcasts:** no handshake with an `x.x.x.255` address after the start of this build (last one 11:57:12, the old one), through both switches. Closed.
+- **"Flush failed":** six lines in the second of the first switch ("can't assign requested address", "cannot allocate memory"), none else. No send ran into the 1 s limit.
+- **Speed, 8 s, one run each:** hop up 20 Mbit/s (6153 retransmits), down 54 (1327); ZeroTier up 2 (259), down 33 (891). **The upload numbers are not valid:** a Screen Sharing stream from the MBP over ZeroTier was using the uplink at about 5 MB/s the whole time (`nettop`: `avconferenced`, `zerotier-one`). The "udp lost" column of the script counts all UDP of the machine and was drowned by it. A second try came after the MBP had left the hotspot. So the cellular upload retransmits (17526 on 2026-11-25) are still open.
+- **Nothing fragmented** on cellular (0 fragments received on the mini).
+- **Recorder, 12:19 to 14:05:** no silence of 2 s without a cause. Single pings lost on `home` and `work` in the same instant three times on cellular (13:22:19, 13:32:19, 13:45:08), nothing in the log. Two pings lost on `work` at 14:01:55: its cert renewal, which restarts the network (about 1 s). 13:11:13: all three, ZeroTier too, so the line.
+
+Pages touched: this log, open-questions.
+
+## [2026-11-26] follow-ups, fourth round: cellular upload, measured cleanly
+
+MBP on the hotspot again (about 14:30), nothing else sending (56 UDP datagrams a second before the runs). 8 s uploads to the mini:
+
+| run | speed | retransmits | our UDP lost on the way |
+|---|---|---|---|
+| hop, uncapped | 27 Mbit/s | 4194 | 3284 of 25666 (13 %) |
+| hop, uncapped, again | 17 Mbit/s | 1026 | 762 of 14744 (5 %) |
+| hop, capped at 10 Mbit/s | 10 | 46 | none |
+| hop, capped at 5 Mbit/s | 5 | 161 | none |
+| ZeroTier, uncapped | 11 Mbit/s | 480 | none |
+
+Same as on Wi-Fi: the loss is the line's limit. TCP inside hop pushes the cellular uplink past what it takes and loses 5 to 13 % there; ZeroTier limits itself below that and is 1.5 to 2.5 times slower. No tunnel drops, nothing fragmented. The 17526 retransmits of 2026-11-25 are this. What would lower them is a queue on our side that holds TCP back before the line does (pacing, or dropping early like fq_codel); not built, see open-questions.
+
+Pages touched: this log, open-questions.
+
+## 2026-11-26 (fifth round) — the loss is the start of a connection; an early signal tried and removed
+
+- Per second of the earlier runs: nearly all retransmits in seconds 1 to 3 (the TCP window goes to 2 to 3 MB, then to 0.5 MB), none after. Counted at both interfaces on the hotspot: 22456 packets left the MBP, 21722 reached the mini.
+- Lab: `Wire.Queue` (how deep the line's queue is) and `TestLimitedLine`. A sender that doubles until loss loses 0.1 to 1.5 %, more with a deeper queue, the same through the tunnel and beside it. The test is a gate now (the tunnel may not lose more than twice as much, nor be below 70 % of the speed); a planted 1 % drop fails all five lines.
+- Prototype in the vendored tree (not kept): test requests with the time in them every 32 packets, one TCP packet held back when the answer took 20 ms longer than the shortest. Lab: helps only with a 200 ms queue. Macs on Wi-Fi: retransmits 54, 21, 20 instead of thousands, speed 69, 37, 50 instead of 180 Mbit/s, download 3.9. The Wi-Fi's own pauses of about 100 ms set it off. Removed with `make vendor`; both Macs are back on v0.11.29-followups (control run: 147 Mbit/s, 3939 retransmits).
+- `networkQuality -d` on the hotspot: 31 Mbit/s up. It does not count in `netstat -s -p tcp`.
+
+Pages touched: concepts/loss-on-a-limited-line (new), open-questions, index, concepts/netlab.
+
+## 2026-11-26 (sixth round) — Tailscale beside us; a filter on the MBP caps our download
+
+- Tailscale started on the mini for the comparison (the user signed in), stopped again afterwards.
+- Upload, three rounds: hop 179 to 186 Mbit/s with 708 to 3158 retransmits, Tailscale 172 to 178 with 1112 to 2837, ZeroTier 165 to 192 with 455 to 1028. Tailscale has the same burst at the start.
+- Download: hop 34 to 65, Tailscale 157 to 161, ZeroTier 91 to 180. Cause found on the MBP: Microsoft Defender's network extension inspects hop's packets (56 % CPU) and not ZeroTier's. Ruled out: path, packet size (MTU 1280 to 1420), the line, Tailscale, the mini.
+- Open: why it was fast at noon.
+
+Pages touched: concepts/loss-on-a-limited-line, concepts/defender-filter-on-the-mbp (new), open-questions, index.
+
+Correction the same evening: a repeat showed Defender's filter as busy during a ZeroTier download that was still fast, so the filter is a suspect only. The downloads are slow since the MBP rejoined Wi-Fi at 13:54, perhaps on another office network. Page and open question reworded.
+
+20:14: the MBP switched to the office's other Wi-Fi name: same gateway and subnet, hop download still 36 to 38 Mbit/s, ZeroTier 180 to 186. The Wi-Fi name is not the cause.
+
+20:29 to 20:45: the slow state ended by itself (hop download 145 to 179 Mbit/s, Defender's filter at 3 to 9 % CPU where it had been at 50 to 100 %). Found before that: capped at 20 and 40 Mbit/s the slow state passes clean; a test program could not make the filter busy by any way of using a socket; our send buffer is 9 kB, ZeroTier's 1 MB. A test agent with 1 MB was fast, and so was the unchanged one three minutes later: not shown, not in. The send limit of 1 s was seen ending 106 stuck sends at 20:1x to 20:2x. A test agent with 1 MB on `work` only is on the MBP and a watcher compares the two networks every 10 minutes.
+
+Pages touched: concepts/defender-filter-on-the-mbp (rewritten), incidents/2026-11-26-mbp-send-stuck-in-kernel, open-questions, index.
+
+21:37 to 21:45: the slow state came back for five minutes. Side by side in it: `home` (9 kB send buffer) 36 to 43 Mbit/s down and 170 up, `work` (1 MB) 9 to 10 down and 55 to 87 up, ZeroTier 129 to 191. The big buffer is ruled out. Six provoked rebinds did not bring the state on; screen sharing does not line up. The MBP is back on v0.11.29-followups (2e88874), the watcher has ended.
+
+22:00 to 23:00: the recorder read (12:19 to 20:32). One minute of silence on `home` at 20:09:54, every send into the 1 s limit while receiving went on; the agent now replaces a socket that takes nothing for 5 s (`send_watch.go`, `SendStuckFor` in two patches). The 20 s on hotspot to Wi-Fi is the change itself (ZeroTier: 47 s). The short silences stay unexplained. The 1 in 30 failure of `TestPeerCache_SaveSkipsWhenUnchanged` fixed (both saves in one second of the clock). Recorder stopped. PR 6 opened; Actions minutes are not billed for this repo, it is public.
+
+Pages touched: incidents/2026-11-26-mbp-send-stuck-in-kernel, open-questions, index.
+
+22:12 to 22:40, Linux: the whole lab on the tip. All pass but `TestLimitedLine/5ms` (8 of 8 runs, with and without the new loop; passed at 16:00). Filed in open-questions. CI on PR 6 green on `75f5c50`, macOS and Ubuntu.

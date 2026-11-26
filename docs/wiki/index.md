@@ -35,6 +35,8 @@ Architectural ideas the code embodies but doesn't explain.
 - [[concepts/watchdog]] — Phase P2 stuck-data-plane watchdog, restartFn, forensic dumps
 - [[concepts/e2e-tests]] — the real server and the real agent under test: how to run it, what is covered, what is not, pinned gaps. **Read before changing a route, a permission, renewal or the database.**
 - [[concepts/netlab]] — the real server and root agents behind simulated routers, carriers, relays and bad lines: one command, what it found, what it can't show. **Read before touching paths, relays, roaming or the Nebula patches.**
+- [[concepts/loss-on-a-limited-line]] — the retransmits of a short upload are TCP finding the line's speed, the same without the tunnel; an early signal from the delay was tried and removed. **Read before trying to make the tunnel lose fewer packets.**
+- [[concepts/defender-filter-on-the-mbp]] — open: hop's download to the MBP was 25 to 68 Mbit/s for six hours while Defender's filter handled every packet of ours; what is ruled out, a bigger send buffer makes it worse, how to see the state
 - [[concepts/macos-udp-send]] — batched sends on macOS; why packets waited or were dropped until patch 28. **Read before touching the Darwin UDP patches.**
 - [[concepts/macos-system-mode]] — bundled gvisor vs LaunchDaemon kernel-utun, mirror-token + mirror-port handoff
 - [[concepts/desktop-client]] — Tauri 2 + Svelte 5 macOS app: shipped capabilities (Phase V→DD), 22 commands, forward gaps
@@ -58,6 +60,7 @@ Forensic post-mortems of specific failure events.
 - [[incidents/2026-05-07-mbp-watcher-wedge]] — watchNetworkChanges deadlocked in vendor Nebula call; third watchdog class added in Phase DD (v0.10.96, resolved)
 - [[incidents/2026-05-09-linux-desktop-stuck-onboarding]] — Linux .deb fresh-install panic: nil c.runCtx in startInstance because Start was skipped on no-enrollments branch; two-layer fix in v0.11.19 (resolved)
 - [[incidents/2026-11-18-mbp-all-certs-expired]] — every network "certificate expired" + "no live instance", never recovers. Main cause: agents since v0.10.82 never renewed *before* expiry. Plus: recovery died with the failed instance, watchdog restarts were no-ops, closing an in-app network could end the agent, macOS held back or dropped packets, **the server deleted every machine that was off for a week**, no SQLite setting was in effect. Fixed in v0.11.27; the server has it, the devices don't yet. **Read before touching renewal, watchdogs, rate limits or connect/disconnect.**
+- [[incidents/2026-11-26-mbp-send-stuck-in-kernel]] — one UDP send on macOS did not return for four minutes: it held the send lock, so the network could neither send nor be closed. Fixed on a branch: a send may wait 1 s; a socket that takes nothing for 5 s is replaced; a network that will not shut down ends the agent at once.
 
 ## Evaluations
 

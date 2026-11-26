@@ -2,7 +2,15 @@ diff --git a/github.com/slackhq/nebula/control.go b/github.com/slackhq/nebula/co
 index 7df5a09..3f4cead 100644
 --- a/github.com/slackhq/nebula/control.go
 +++ b/github.com/slackhq/nebula/control.go
-@@ -64,6 +64,8 @@ type ControlHostInfo struct {
+@@ -9,6 +9,7 @@ import (
+ 	"os/signal"
+ 	"sync"
+ 	"syscall"
++	"time"
+ 
+ 	"github.com/slackhq/nebula/cert"
+ 	"github.com/slackhq/nebula/header"
+@@ -64,6 +65,8 @@ type ControlHostInfo struct {
  	RemoteAddrs            []netip.AddrPort `json:"remoteAddrs"`
  	Cert                   cert.Certificate `json:"cert"`
  	MessageCounter         uint64           `json:"messageCounter"`
@@ -11,7 +19,23 @@ index 7df5a09..3f4cead 100644
  	CurrentRemote          netip.AddrPort   `json:"currentRemote"`
  	CurrentRelaysToMe      []netip.Addr     `json:"currentRelaysToMe"`
  	CurrentRelaysThroughMe []netip.Addr     `json:"currentRelaysThroughMe"`
-@@ -385,6 +387,8 @@ func copyHostInfo(h *HostInfo, preferredRanges []netip.Prefix) ControlHostInfo {
+@@ -215,6 +218,15 @@ func (c *Control) RebindUDPServer() {
+ 	c.f.rebindCount++
+ }
+ 
++// SendStuckFor is how long the kernel has taken no packet from the UDP socket.
++// 0 while sends pass, and on systems where a send cannot wait.
++func (c *Control) SendStuckFor() time.Duration {
++	if s, ok := c.f.outside.(interface{ SendStuckFor() time.Duration }); ok {
++		return s.SendStuckFor()
++	}
++	return 0
++}
++
+ // ListHostmapHosts returns details about the actual or pending (handshaking) hostmap by vpn ip
+ func (c *Control) ListHostmapHosts(pendingMap bool) []ControlHostInfo {
+ 	if pendingMap {
+@@ -385,6 +397,8 @@ func copyHostInfo(h *HostInfo, preferredRanges []netip.Prefix) ControlHostInfo {
  		CurrentRelaysToMe:      h.relayState.CopyRelayIps(),
  		CurrentRelaysThroughMe: h.relayState.CopyRelayForIps(),
  		CurrentRemote:          h.GetRemote(),
@@ -20,7 +44,7 @@ index 7df5a09..3f4cead 100644
  	}
  
  	for i, a := range h.vpnAddrs {
-@@ -419,3 +423,117 @@ func listHostMapIndexes(hl controlHostLister) []ControlHostInfo {
+@@ -419,3 +433,117 @@ func listHostMapIndexes(hl controlHostLister) []ControlHostInfo {
  	})
  	return hosts
  }

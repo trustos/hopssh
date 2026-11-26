@@ -61,6 +61,7 @@ Two lines of a new test: `a, b, ra, rb := l.twoHomes(Home, Carrier)` and `s := o
 | `TestOneWayDirect` | silent 2 min 18 s, transfers fail | 0.16 s, 24 to 68 Mbit/s |
 | `TestOneDirectionBreaks` | not measured | 7.5 to 15.7 s (see 11) |
 | `TestRenewalOnTheRelay` (new 2026-11-25) | not measured | 0.7 to 0.85 s, for one renewal and for both ends at once |
+| `TestLimitedLine` | a line with a speed limit and a queue: the tunnel loses no more than a connection beside it, and is not much slower. [[concepts/loss-on-a-limited-line]] | |
 | `TestRoaming`, `TestRouterReboot`, `TestRelayedPeerMoves`, `TestRenewalDuringSession`, `TestBadLine`, `TestHairpin`, `TestPortMappingStrict`, `TestSleep`, `TestSameProvider` | as good as now | |
 
 `TestRoaming`, home to mobile, is either about 3.8 to 4.4 s or about 7.6 to 7.8 s (13 runs, also with an older state of the path loop). 2 s of them are without any network. `watchNetworkChanges` looks every 5 s: when that look came 3 s after the cable was out, the session was silent for 3.75 s, when it came after 4 s, for 7.6 s. *Likely:* TCP doubles its waits, so its retry at 3.75 s just finds the new path or just misses it. A message from the kernel instead of a look every 5 s would end that (not built).
