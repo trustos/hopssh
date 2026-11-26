@@ -22,7 +22,6 @@ Source / context: `docs/wiki/log.md` 2026-11-26
 
 - **v1.12.0** needs Go 1.27.3 and a much newer gvisor. There `linux-udp-close.patch` can go (upstream waits for the reader); `linux-tun.patch` has to be shown unnecessary with the kernel-TUN test first.
 - **Log level.** Nebula v1.11 no longer sets the level of the logger it is given. Before, `nebula.Main` did, so the agent's "warn" and `HOPSSH_LIGHTHOUSE_LOG_LEVEL` never had an effect. Now `nebulacfg.Logger` applies the config's `logging.level` and the server variable works for the first time (default info). Anything that reads the logs by pattern has to expect `level=INFO msg="…" key=value`.
-- **`TestPeerCache_SaveSkipsWhenUnchanged` is flaky** (1 of about 30): it compares modification times, and two saves that straddle a tick of the clock look like a rewrite. Older than the upgrade.
 - **CI job `check-patches`** calls `make check-patches`, which does not exist; `continue-on-error` hides it. Remove the job or write the target.
 - **`TestUncleanShutdownRaceLoser`** of upstream's e2e does not end with `paths.patch` (explained in `patches/README.md`); upstream's e2e are still in no script.
 - **Windows** was only compiled and vetted, not run.
