@@ -329,3 +329,7 @@ Pages touched: open-questions.
 Pages touched: open-questions.
 
 01:55, lab: with the host idle `TestLimitedLine/5ms` passes three of three (13.0 to 14.0 against 16.1 to 16.3 Mbit/s). It was the host's load.
+
+02:05 to 02:25, the one Windows line left unexplained: `Failed to write to log, write /dev/stderr: The handle is invalid.`, once per start. It is logrus's own complaint, not ours. The port mapper logs with logrus (`internal/portmap/portmap.go:54`), and logrus took `os.Stderr` when the process started; a Windows service has no console handles, so the write fails. Every `portmap:` line was lost, and the log got the complaint instead. Fix on `fix/windows-vm-findings`: `routeStandardLog` points the standard logrus logger at wherever the standard log writes when the line is written, so it follows the service's redirect (`TestStandardLogrus_LandsInTheAgentLog`, `TestStandardLogrus_FollowsTheLogWhenItMoves`; red before the fix, green after). In the VM with the new binary: the `portmap: no protocol available` line is in `C:\ProgramData\hopssh\hop-agent.log`, and no failed-write line after that start (the start two minutes earlier, old binary, still had one). Nebula's own lines were already fine: `nebulacfg.Logger` sets its writer.
+
+Pages touched: open-questions.
