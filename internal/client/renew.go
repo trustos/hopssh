@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"runtime/pprof"
 	"strings"
 	"sync"
@@ -152,6 +153,12 @@ func sendHeartbeat(inst *meshInstance) error {
 	reqBody := map[string]any{
 		"nodeId":       inst.nodeID(),
 		"agentVersion": buildinfo.Version, // "vX.Y.Z" (tagged) or "vX.Y.Z-N-gSHORTSHA(-dirty)" (dev)
+		// The machine's own OS and arch, from the runtime running this
+		// code. The node row keeps what enrollment claimed, and an
+		// enrollment guesses: the install script says "linux" whatever
+		// it runs on. This is where the truth arrives.
+		"os":   runtime.GOOS,
+		"arch": detectArch(),
 	}
 	// ClientType is build-baked (-X main.clientType=...) so the dashboard
 	// can show "Desktop" vs "CLI" provenance per node. Skip when empty
