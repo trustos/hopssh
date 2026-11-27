@@ -124,9 +124,11 @@ func (s *InviteStore) ListForNetwork(networkID string) ([]NetworkInvite, error) 
 	return invites, nil
 }
 
-func (s *InviteStore) Delete(networkID, id string) error {
+// Delete deletes an invite and reports whether there was one.
+func (s *InviteStore) Delete(networkID, id string) (bool, error) {
 	q := dbsqlc.New(WrapDB(s.wdb))
-	return q.DeleteInvite(context.Background(), dbsqlc.DeleteInviteParams{NetworkID: networkID, ID: id})
+	n, err := q.DeleteInvite(context.Background(), dbsqlc.DeleteInviteParams{NetworkID: networkID, ID: id})
+	return n > 0, err
 }
 
 func (s *InviteStore) DeleteExpired() error {

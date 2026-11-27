@@ -176,8 +176,8 @@ func main() {
 		Sessions: sessions,
 		Audit:    audit,
 	}
-	networkH := &api.NetworkHandler{Networks: networks, Nodes: nodes, Members: members, NetworkManager: netMgr, ForwardManager: fwdMgr}
-	enrollH := &api.EnrollHandler{Networks: networks, Nodes: nodes, Members: members, NetworkManager: netMgr, Endpoint: *endpoint, LighthouseHost: *lighthouseHost}
+	networkH := &api.NetworkHandler{Networks: networks, Nodes: nodes, Members: members, NetworkManager: netMgr, ForwardManager: fwdMgr, Audit: audit}
+	enrollH := &api.EnrollHandler{Networks: networks, Nodes: nodes, Members: members, NetworkManager: netMgr, Endpoint: *endpoint, LighthouseHost: *lighthouseHost, Audit: audit}
 	proxyH := &api.ProxyHandler{
 		NetworkManager: netMgr,
 		ForwardManager: fwdMgr,
@@ -195,6 +195,7 @@ func main() {
 		Members:        members,
 		NetworkManager: netMgr,
 		LighthouseHost: *lighthouseHost,
+		Audit:          audit,
 	}
 	bundleH := &api.BundleHandler{
 		Networks:       networks,
@@ -202,16 +203,17 @@ func main() {
 		Bundles:        bundles,
 		Endpoint:       *endpoint,
 		LighthouseHost: *lighthouseHost,
+		Audit:          audit,
 	}
 
 	renewH := &api.RenewHandler{Networks: networks, Nodes: nodes, DNSRecords: dnsRecords, NetworkManager: netMgr}
-	dnsH := &api.DNSHandler{Networks: networks, DNSRecords: dnsRecords, Members: members, NetworkManager: netMgr}
+	dnsH := &api.DNSHandler{Networks: networks, DNSRecords: dnsRecords, Members: members, NetworkManager: netMgr, Audit: audit}
 
 	auditH := &api.AuditHandler{Audit: audit, Networks: networks, Members: members}
 
 	distH := &api.DistributionHandler{Endpoint: *endpoint}
-	memberH := &api.MemberHandler{Networks: networks, Members: members, ProxyCache: proxyH}
-	inviteH := &api.InviteHandler{Networks: networks, Members: members, Invites: invites}
+	memberH := &api.MemberHandler{Networks: networks, Members: members, ProxyCache: proxyH, Audit: audit}
+	inviteH := &api.InviteHandler{Networks: networks, Members: members, Invites: invites, Audit: audit}
 
 	eventHub := api.NewEventHub()
 	eventsH := &api.EventsHandler{Networks: networks, Members: members, Hub: eventHub}

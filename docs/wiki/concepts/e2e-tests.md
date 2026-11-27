@@ -2,11 +2,12 @@
 type: concept
 title: End-to-end tests (real server, real agent)
 status: current
-last_compiled: 2026-11-24
+last_compiled: 2026-11-27
 sources:
   - internal/e2etest/server.go
   - internal/e2etest/peer.go
   - internal/api/e2e_test.go
+  - internal/api/audit_e2e_test.go
   - cmd/agent/e2e_test.go
   - internal/client/recovery_e2e_test.go
   - internal/client/nebula_close_linux_test.go
@@ -37,7 +38,7 @@ go test -mod=vendor ./internal/api ./cmd/agent -run TestE2E -v
 
 | Tests | What is real | What they check |
 |---|---|---|
-| `internal/api` `TestE2E_*` (23) | server, SQLite, HTTP, DNS | who may do what on **every** route, IDs of another network, enrollment, device flow, renewal, limits, accounts, invites, DNS, bundles, prune, capabilities, history, network delete, load, proxy, clipboard, restart, a database left by an older server |
+| `internal/api` `TestE2E_*` (24) | server, SQLite, HTTP, DNS | who may do what on **every** route, what the audit log records of every change, IDs of another network, enrollment, device flow, renewal, limits, accounts, invites, DNS, bundles, prune, capabilities, history, network delete, load, proxy, clipboard, restart, a database left by an older server |
 | `cmd/agent` `TestE2E_*` (9) | server, agent process, Nebula, mesh peers | the whole life of a device, off for half a year, server without its database, deleted node, member's shell, deleted peer, upgrade from a released version and back |
 | `internal/client` `TestE2E_*` (17) | client, Nebula; **fake** control plane | recovery, renewal during disconnect, keepalive, refused addresses, which paths a peer is sent on, the firewall blocks between two peers, reconnecting into a TIME_WAIT, and that every loop which keeps a network up runs exactly once (also after a renewal and a watchdog restart) and not at all once it is turned off |
 | `internal/client` `TestKernelTunClose` (Linux, root) | kernel TUN device, Nebula | a closed system-wide network leaves neither its port nor its device behind, even with a program from its terminal still running |
@@ -45,7 +46,7 @@ go test -mod=vendor ./internal/api ./cmd/agent -run TestE2E -v
 | `internal/db` | SQLite | the settings really are in effect |
 | `internal/mesh` | Nebula lighthouses, SQLite | an idle network's lighthouse is closed and comes back without ending the server |
 
-`TestE2E_Access` walks the router (`chi.Walk`) and fails for any `/api` route that its table does not mention, so a new route cannot be added without deciding who may call it.
+`TestE2E_Access` walks the router (`chi.Walk`) and fails for any `/api` route that its table does not mention, so a new route cannot be added without deciding who may call it. `TestE2E_Audit` does the same for the audit log: every route is in exactly one of `auditedRoutes`, `notAudited` (with the reason) and `readOnly` (the GETs that change nothing), so a GET is not taken on trust either.
 
 ## What covers what
 
@@ -69,6 +70,7 @@ Fixes in the tree (letters as in [[../incidents/2026-11-18-mbp-all-certs-expired
 | W, X a closed system-wide network frees its device, and programs don't inherit it (patches 31, 32) | `TestKernelTunClose_ReleasesDeviceAndPort` (Linux as root; X on macOS: nothing) |
 | a node's OS and CPU are corrected by its heartbeat, not only by enrollment | `TestSendHeartbeat_ReportsItsOwnMachine`, `TestE2E_HeartbeatCorrectsPlatform` |
 | a connection to a userspace node that meets its TIME_WAIT is answered (patch `gvisor-time-wait`) | `TestTimeWaitReopen` (also under `-race`), `TestE2E_ConnectAgainAfterTimeWait`, `TestE2E_ProxyBackToBack` |
+| every change to a network, its nodes, its DNS and its people is in the audit log with who, where and what; a delete that deleted nothing, or lost a race, writes none; no entry holds a token or code | `TestE2E_Audit` |
 
 Improvements that are only proposed:
 
@@ -78,7 +80,7 @@ Improvements that are only proposed:
 | Reload the cert in place, so a renewal ends no sessions | `KnownGap` in `TestE2E_Lifecycle` |
 | Revoke a deleted device at once | `KnownGap` in `TestE2E_DeletedPeer` |
 | Give proxied pages their own origin | `KnownGap` in `TestE2E_Proxy` |
-| 404 for outsiders, audit of removals, invite uses, DNS of deleted nodes | `KnownGap` in `TestE2E_Access`, `TestE2E_History`, `TestE2E_Invites`, `TestE2E_DNS` |
+| 404 for outsiders, invite uses, DNS of deleted nodes | `KnownGap` in `TestE2E_Access`, `TestE2E_History`, `TestE2E_Invites`, `TestE2E_DNS` |
 | Nebula v1.11 | nothing of its own; all of the above must still pass |
 | Signed updates, `hop ssh`, resumable sessions, recording, TCP/443 | nothing, they don't exist yet |
 
@@ -103,6 +105,8 @@ They found eleven product bugs nobody had seen: L, M, N, O, Q, S, T on their fir
 **TIME_WAIT** (2026-11-27). A connection to a userspace node that met one of the node's TIME_WAITs hung until the server's 30 s timeout, about once in a few hundred requests (gVisor, see `patches/gvisor-time-wait.patch`). Three tests, red without the patch: `TestTimeWaitReopen` (two bare gVisor stacks, the second connection from the same port) every time, also under `-race`, and a half fix that lets only the resend after 1 s through; `TestE2E_ConnectAgainAfterTimeWait` (internal/client, real Nebula, 2000 random ports) 6 of 6; `TestE2E_ProxyBackToBack` (internal/api, real server, 2000 health checks) 5 of 5 on the Mac and 5 of 5 on Linux. Under `-race` a connection through Nebula's userspace stack takes about 0.5 s against well under 1 ms without it (profiled: the race detector's instrumentation and the scheduler, not our code), so the two through Nebula skip themselves there (`raceEnabled`), and a test that must run under `-race` goes to bare stacks, where it takes 0.1 to 0.4 s. A bar shorter than gVisor's 1 s resend over Nebula would fail on one lost packet on a loaded machine (found by review, not seen); the bare stacks hand packets over in memory, so their 500 ms bar is safe.
 
 **A UDP probe through gonet** (2026-11-27). A read does not wake for the ICMP "port unreachable"; the next write returns it as "connection refused". With one deadline for two tries, an answer that came while the first read waited (half a second under `-race`) left the second write to fail on the deadline: `TestE2E_FirewallUDPBetweenAgents` failed 3 of 3 under `-race`. Each try now has its own deadline (`udpReaches`); a block that drops UDP is still caught, with and without `-race`.
+
+**Audit log** (2026-11-27). `TestE2E_Audit` was red before the fix with 20 missing entries. 21 bugs planted one at a time, all caught, each by the line about it: an entry not written (member removal, DNS delete, shell, node delete), the creator of a node never stored, the wrong user or network on a machine's enrollment or a bundle download, the old name lost from a rename, a stopped forward without its node, an entry for a delete that deleted nothing or lost a race, an invite code, agent token or user code in the details (the secrets check), the server not handing the store to a handler, and a route left out of every list or a GET dropped from `readOnly` (the route gate). The racing delete was caught in 3 of 10 runs while each request opened its own connection, and in 10 of 10 once the 16 connections were opened first, so that the deletes reach the server together (`burst`).
 
 **Wiring.** Another 14 bugs were planted in how the agent starts and stops its background work (a loop not started, started twice, or tied to the agent instead of to the network; a watchdog restart that only reconnects). Without `TestE2E_BackgroundWork` the package missed **11 of 14**, with it none. Four source-scan tests had been meant to notice; they were switched off with `t.Skip("… reimplemented in M3")` when the code moved to `internal/client` in May 2026 (`a37656f`), and M3 never came. `TestE2E_BackgroundWork` replaces three, the fourth is in `cmd/agent/main_test.go`.
 

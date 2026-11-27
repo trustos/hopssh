@@ -14,6 +14,7 @@ type MemberHandler struct {
 	Networks   *db.NetworkStore
 	Members    *db.NetworkMemberStore
 	ProxyCache ProxyCacheInvalidator
+	Audit      *db.AuditStore
 }
 
 // ListMembers returns all members of a network.
@@ -84,13 +85,34 @@ func (h *MemberHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Members.Remove(networkID, memberID); err != nil {
+	// Find whom the membership belongs to: the entry names the user removed.
+	var removed *db.NetworkMemberWithUser
+	if members, err := h.Members.ListForNetwork(networkID); err == nil {
+		for i := range members {
+			if members[i].ID == memberID {
+				removed = &members[i]
+				break
+			}
+		}
+	}
+	// A membership that is not there (any more) is a 204 with no entry: of
+	// two removals at once only the one that removed it writes one.
+	deleted, err := h.Members.Remove(networkID, memberID)
+	if err != nil {
 		if err == sql.ErrNoRows {
 			http.Error(w, "member not found", http.StatusNotFound)
 			return
 		}
 		http.Error(w, "failed to remove member", http.StatusInternalServerError)
 		return
+	}
+	if deleted {
+		details := map[string]any{"memberId": memberID}
+		if removed != nil {
+			details["userId"] = removed.UserID
+			details["role"] = removed.Role
+		}
+		logAudit(h.Audit, user.ID, "member.remove", networkID, "", details)
 	}
 
 	if h.ProxyCache != nil {

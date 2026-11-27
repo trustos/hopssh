@@ -716,3 +716,43 @@ Nebula** (step 6, continued).
 - Left for the firewall work (item 17), from the review, read and not run:
   the conntrack reach on port 41820 ([[open-questions]], under the
   `TestE2E_Proxy` entry).
+
+18:40 to 19:10, **the audit log** (step 7: item 12 of the plan). A scout read
+every route; 19 that change something wrote no entry, among them removing a member, deleting
+a network, approving a device and downloading a bundle. `TestE2E_Audit`
+(internal/api, the real server) does each of 28 audited routes as the user who
+may, then reads every actor's `/api/audit`: who, network, node and details,
+for 24 entries. It also checks that no entry holds an invite code, enrollment
+token, device code or bundle token, and that every route that is not a GET is
+in `auditedRoutes` or, with a reason, in `notAudited` (logout, the anonymous
+device code, renew, heartbeat, clipboard announce). Red at 18:49 with 20
+entries missing. A machine enrolls and fetches its bundle without a session, so
+migration 010 adds `nodes.created_by`, written in the same transaction as the
+node by every path that creates one, and those two entries name that user; a
+token or bundle from before the migration gets none (they live 10 and 15
+minutes). Green at 19:00; `internal/api` and `internal/db` passed (140 s, 6 s),
+and `TestE2E_Upgrade` against v0.11.30 both ways (144 s). The `KnownGap` for
+member removal in `TestE2E_History` reported itself fixed and went. 11 bugs
+planted one at a time (19:01 to 19:06), all caught for the stated reason:
+[[concepts/e2e-tests]]. The coverage map: `raw/audit/coverage-2026-11-27.md`.
+
+19:10 to 20:00, **an adversarial review of the audit work**, four findings
+confirmed. (1) Removing a member or revoking an invite that was not there
+wrote an entry, and of 16 DNS deletes of one record at once several did: the
+stores did not say whether they deleted anything. The three delete queries
+are `:execrows` now (sqlc's generated shape, written by hand: `make generate`
+needs a download not approved), the stores return `(bool, error)`, and the
+handlers write the entry only for the delete that deleted; HTTP stays 204.
+(2) The secrets check missed the agent tokens (enroll, join, device poll, the
+bundle) and the user code; all are in it now. (3) Four actions were "audited
+elsewhere" on trust; `TestE2E_Audit` does them itself now (shell, exec, a
+proxied request, node delete). (4) The route gate trusted every GET; the GETs
+that change nothing are a list of 27 (`readOnly`), the node health check is in
+`notAudited` with its reason, and a route must be in exactly one of the three
+lists. The racing DNS delete was caught only now and then: the test client
+opens a new connection per request, so 16 deletes rarely met (3 of 10 runs).
+With the connections opened first they arrive together: 10 of 10, and the
+test without a plant passed 10 of 10. 21 planted bugs, all caught, each for
+its own reason (`TestE2E_Audit` lines: "N entries … want 1", "an entry holds a
+secret", "no entry …", "list it in exactly one of …"). What is left:
+[[open-questions]], 2026-11-27 audit entry.

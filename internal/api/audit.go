@@ -6,10 +6,26 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
 	"github.com/trustos/hopssh/internal/auth"
 	"github.com/trustos/hopssh/internal/authz"
 	"github.com/trustos/hopssh/internal/db"
 )
+
+// logAudit writes one audit entry; "" leaves the network or node empty, and
+// a nil store writes nothing. Details never carry a token, code or key.
+func logAudit(a *db.AuditStore, userID, action, networkID, nodeID string, details map[string]any) {
+	if a == nil {
+		return
+	}
+	opt := func(s string) *string {
+		if s == "" {
+			return nil
+		}
+		return &s
+	}
+	a.Log(uuid.New().String(), userID, action, opt(networkID), opt(nodeID), jsonDetails(details))
+}
 
 // auditHistoryDefaultWindow matches the activity log history endpoint.
 const auditHistoryDefaultWindow = 24 * time.Hour

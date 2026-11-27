@@ -25,7 +25,7 @@ func (q *Queries) DNSRecordNameExists(ctx context.Context, arg DNSRecordNameExis
 	return count, err
 }
 
-const deleteDNSRecord = `-- name: DeleteDNSRecord :exec
+const deleteDNSRecord = `-- name: DeleteDNSRecord :execrows
 DELETE FROM dns_records WHERE id = ? AND network_id = ?
 `
 
@@ -34,9 +34,12 @@ type DeleteDNSRecordParams struct {
 	NetworkID string
 }
 
-func (q *Queries) DeleteDNSRecord(ctx context.Context, arg DeleteDNSRecordParams) error {
-	_, err := q.db.ExecContext(ctx, deleteDNSRecord, arg.ID, arg.NetworkID)
-	return err
+func (q *Queries) DeleteDNSRecord(ctx context.Context, arg DeleteDNSRecordParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteDNSRecord, arg.ID, arg.NetworkID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const deleteDNSRecordsForNetwork = `-- name: DeleteDNSRecordsForNetwork :exec

@@ -19,7 +19,7 @@ WHERE code = ?
 SELECT id, network_id, created_by, code, role, max_uses, use_count, expires_at, created_at
 FROM network_invites WHERE network_id = ? ORDER BY created_at DESC;
 
--- name: DeleteInvite :exec
+-- name: DeleteInvite :execrows
 DELETE FROM network_invites WHERE network_id = ? AND id = ?;
 
 -- name: DeleteExpiredInvites :exec

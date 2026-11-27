@@ -56,6 +56,16 @@ Move closed items to a "Resolved" section at the bottom rather than deleting —
 
 ## Open
 
+## 2026-11-27 — audit log: what is left
+
+- **A removed member's credentials keep working for minutes.** An enrollment token (10 min), a bundle URL (15 min) or a device code they approved still brings a node into the network after they are removed, and the entry names them. `Enroll`, `Poll` and `DownloadBundle` check no membership. Proposed: refuse them when the creator is no longer the owner or a member. Needs a yes; it changes what a token does.
+- **Failed logins write no entry.** Only the rate limiter sees them.
+- **Every member reads the network's audit log** (`CanView`), with the address a machine enrolled or fetched its bundle from. That address is `X-Forwarded-For` only with `--trusted-proxy`; whether production behind Traefik records the client's address was not checked.
+- **Two deletes of one network at once can both write `network.delete`** (`Networks.Delete` reports nothing). Owner only; a nit.
+- `internal/api/members.go` keeps a branch for `sql.ErrNoRows` from `Remove`, which no longer returns it.
+
+Source / context: `docs/wiki/raw/audit/coverage-2026-11-27.md`, `docs/wiki/log.md` 2026-11-27.
+
 ## 2026-11-27 — loose ends seen while fixing the API and the debug listener
 
 - **A full network uses up the device code.** The device flow takes the address in `Poll`, after `ClaimAuthorized` has consumed the code (`internal/api/device.go`). The 409 now says the network is full, but the user has to start the device flow again. Same shape as "`Enroll` and device `Poll` use up the token before the 409 check" in the API gaps below.
@@ -123,7 +133,7 @@ Each has a `KnownGap` in the test named, which fails once the gap is closed, so 
 | A deleted node's name keeps resolving: `DeleteNode` doesn't call `RefreshDNS` | `TestE2E_DNS` |
 | An outsider gets 403 instead of 404 on admin routes, so they can tell which network IDs exist (9 routes) | `TestE2E_Access` |
 | A member who opens an invite uses it up for the person it was meant for | `TestE2E_Invites` |
-| Removing a member leaves no audit trace. Nor do `StopPortForward`, `DeleteNetwork`, invite create/delete and `JoinNetwork` (read in the code, not pinned) | `TestE2E_History` |
+| *(closed 2026-11-27)* Removing a member left no audit trace, nor did 18 other routes (networks, enrollment, device approval, bundles, rename, capabilities, routes, stopped forwards, DNS, invites). Now each is logged with who, where and what, and a machine's enrollment or bundle download names the user who made its token or bundle (`nodes.created_by`, migration 010) | `TestE2E_Audit` (normal test now) |
 | Every renewal ends the open sessions of an in-app network (not a system install: with kernel TUN the session lives on, asserted when the test runs as root) | `TestE2E_Lifecycle` |
 | Any member runs commands on every node; the audit log doesn't say which command | `TestE2E_MemberShell` |
 | What a device copies (up to 8 KB) is sent to every open dashboard of the network, where nothing uses it | `TestE2E_Clipboard` |

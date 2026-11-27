@@ -88,12 +88,30 @@
 			'node.delete': 'Node deleted',
 			'node.capabilities': 'Capabilities updated',
 			'node.rename': 'Node renamed',
+			'login.github': 'Logged in with GitHub',
+			'network.create': 'Network created',
+			'network.delete': 'Network deleted',
+			'node.create': 'Enrollment token created',
+			'node.enroll': 'Node enrolled',
+			'node.join': 'Device joined',
+			'device.authorize': 'Device approved',
+			'bundle.create': 'Bundle created',
+			'bundle.download': 'Bundle downloaded',
+			'node.routes': 'Routes updated',
+			'nodes.prune': 'Stale nodes removed',
+			'port_forward.stop': 'Port forward stopped',
+			'dns.create': 'DNS record added',
+			'dns.delete': 'DNS record deleted',
+			'member.remove': 'Member removed',
+			'invite.create': 'Invite created',
+			'invite.revoke': 'Invite revoked',
+			'invite.accept': 'Invite accepted',
 		};
 		return labels[action] || action;
 	}
 
 	function actionVariant(action: string): 'default' | 'secondary' | 'destructive' | 'outline' {
-		if (action === 'node.delete') return 'destructive';
+		if (action === 'node.delete' || action === 'network.delete' || action === 'member.remove' || action === 'nodes.prune') return 'destructive';
 		if (action.startsWith('shell') || action.startsWith('exec') || action.startsWith('port_forward')) return 'default';
 		return 'secondary';
 	}

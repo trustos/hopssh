@@ -482,10 +482,18 @@ func (h *ProxyHandler) StopPortForward(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var nodeID *string
+	for _, pf := range h.ForwardManager.List(networkID) {
+		if pf.ID == fwdID {
+			nodeID = &pf.NodeID
+			break
+		}
+	}
 	if err := h.ForwardManager.StopForNetwork(networkID, fwdID); err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	h.audit(user.ID, "port_forward.stop", &networkID, nodeID, jsonDetails(map[string]any{"forwardId": fwdID}))
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1099,6 +1107,8 @@ func (h *ProxyHandler) RenameNode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to rename node: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	user := auth.UserFromContext(r.Context())
+	h.audit(user.ID, "node.rename", &network.ID, &node.ID, jsonDetails(map[string]any{"from": node.Hostname, "to": body.Name}))
 
 	if h.NetworkManager != nil {
 		h.NetworkManager.RefreshDNS(network.ID)
@@ -1150,6 +1160,8 @@ func (h *ProxyHandler) UpdateCapabilities(w http.ResponseWriter, r *http.Request
 		http.Error(w, "failed to update capabilities", http.StatusInternalServerError)
 		return
 	}
+	user := auth.UserFromContext(r.Context())
+	h.audit(user.ID, "node.capabilities", &node.NetworkID, &node.ID, jsonDetails(map[string]any{"capabilities": body.Capabilities}))
 
 	h.InvalidateProxyCache(node.NetworkID, node.ID)
 
@@ -1253,6 +1265,8 @@ func (h *ProxyHandler) UpdateRoutes(w http.ResponseWriter, r *http.Request) {
 	for i, r := range cleaned {
 		out[i] = r.Route
 	}
+	user := auth.UserFromContext(r.Context())
+	h.audit(user.ID, "node.routes", &node.NetworkID, &node.ID, jsonDetails(map[string]any{"routes": out}))
 	writeJSON(w, map[string]interface{}{"routes": out})
 }
 

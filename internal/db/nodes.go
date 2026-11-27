@@ -50,6 +50,7 @@ type Node struct {
 	PeerState           *string // JSON array: [{vpnAddr, direct, remoteAddr, rttMs}, ...]; nil if never reported
 	AgentVersion        *string // self-reported hop-agent build (e.g. "v0.9.15"); nil for pre-v0.9.15 agents
 	ClientType          *string // "desktop" | "cli" | nil; build-baked at the agent, written once via SetClientType
+	CreatedBy           string  // user who brought the node in; written by Create, read by CreatedBy
 }
 
 // HasCapability checks if a node has a specific capability enabled.
@@ -198,8 +199,13 @@ func (s *NodeStore) Create(n *Node) error {
 		nodeType = "agent"
 	}
 
-	q := dbsqlc.New(WrapDB(s.wdb))
-	return q.InsertNode(context.Background(), dbsqlc.InsertNodeParams{
+	tx, err := s.wdb.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	q := dbsqlc.New(WrapTx(tx))
+	err = q.InsertNode(context.Background(), dbsqlc.InsertNodeParams{
 		ID:                  n.ID,
 		NetworkID:           n.NetworkID,
 		Hostname:            n.Hostname,
@@ -215,6 +221,25 @@ func (s *NodeStore) Create(n *Node) error {
 		DnsName:             n.DNSName,
 		Status:              n.Status,
 	})
+	if err != nil {
+		return err
+	}
+	if n.CreatedBy != "" {
+		if _, err := tx.Exec(`UPDATE nodes SET created_by = ? WHERE id = ?`, n.CreatedBy, n.ID); err != nil {
+			return fmt.Errorf("record creator: %w", err)
+		}
+	}
+	return tx.Commit()
+}
+
+// CreatedBy returns the user who brought the node in, "" if unknown.
+func (s *NodeStore) CreatedBy(id string) (string, error) {
+	var userID sql.NullString
+	err := s.rdb.QueryRow(`SELECT created_by FROM nodes WHERE id = ?`, id).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return userID.String, err
 }
 
 func (s *NodeStore) Get(id string) (*Node, error) {

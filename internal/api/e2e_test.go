@@ -1436,13 +1436,7 @@ func TestE2E_History(t *testing.T) {
 		}
 		seen += string(msg)
 	}
-	e2etest.KnownGap(t, "removing a member leaves no trace in the audit log", func(g *e2etest.Gap) {
-		h.owner.Want(204, "DELETE", h.url("/members/%s", memberID(h.owner, h.net.ID, h.member.ID)), nil, nil)
-		time.Sleep(3 * time.Second)
-		if _, body := h.owner.Do("GET", h.url("/audit"), nil); !strings.Contains(string(body), "member") {
-			g.Errorf("no such entry")
-		}
-	})
+	// Removing a member, and the rest of what changes a network: TestE2E_Audit.
 }
 
 // TestE2E_DeleteNetwork: nothing of a deleted network is left, running or

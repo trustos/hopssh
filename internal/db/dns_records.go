@@ -76,12 +76,14 @@ func (s *DNSRecordStore) Get(id, networkID string) (*DNSRecord, error) {
 	}, nil
 }
 
-func (s *DNSRecordStore) Delete(id, networkID string) error {
+// Delete deletes a record and reports whether there was one.
+func (s *DNSRecordStore) Delete(id, networkID string) (bool, error) {
 	q := dbsqlc.New(WrapDB(s.wdb))
-	return q.DeleteDNSRecord(context.Background(), dbsqlc.DeleteDNSRecordParams{
+	n, err := q.DeleteDNSRecord(context.Background(), dbsqlc.DeleteDNSRecordParams{
 		ID:        id,
 		NetworkID: networkID,
 	})
+	return n > 0, err
 }
 
 func (s *DNSRecordStore) DeleteForNetwork(networkID string) error {

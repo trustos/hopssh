@@ -28,6 +28,7 @@ type DeviceHandler struct {
 	LighthouseHost string
 	EventHub       *EventHub
 	Events         *db.NetworkEventStore
+	Audit          *db.AuditStore
 }
 
 // RequestCode is called by the agent to initiate the device flow.
@@ -181,6 +182,9 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		NodeType:   "node",
 		Status:     "pending",
 	}
+	if dc.UserID != nil {
+		node.CreatedBy = *dc.UserID
+	}
 	if err := h.Nodes.Create(node); err != nil {
 		http.Error(w, "failed to create node: "+err.Error(), http.StatusInternalServerError)
 		return
@@ -218,6 +222,11 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		targetID := nodeID
 		details := jsonDetails(map[string]any{"hostname": body.Hostname})
 		h.Events.Record(*dc.NetworkID, "node.enrolled", &targetID, nil, details)
+	}
+	// The machine has no session: the entry names who approved the code.
+	if node.CreatedBy != "" {
+		logAudit(h.Audit, node.CreatedBy, "node.enroll", *dc.NetworkID, nodeID,
+			map[string]any{"hostname": body.Hostname, "via": "device", "ip": captureAgentIP(r)})
 	}
 
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
@@ -290,6 +299,7 @@ func (h *DeviceHandler) Authorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	logAudit(h.Audit, user.ID, "device.authorize", body.NetworkID, "", nil)
 
 	writeJSON(w, map[string]string{"status": "authorized"})
 }

@@ -28,6 +28,7 @@ type NetworkHandler struct {
 	NetworkManager *mesh.NetworkManager
 	ForwardManager ForwardNetworkStopper // for cleaning up port forwards on network delete
 	ProxyCache     ProxyCacheInvalidator // for clearing proxy auth cache on network delete
+	Audit          *db.AuditStore
 }
 
 // ForwardNetworkStopper stops all port forwards for a network.
@@ -138,6 +139,7 @@ func (h *NetworkHandler) CreateNetwork(w http.ResponseWriter, r *http.Request) {
 	if h.Members != nil {
 		h.Members.Add(network.ID+"-owner", network.ID, user.ID, "admin")
 	}
+	logAudit(h.Audit, user.ID, "network.create", network.ID, "", map[string]any{"name": network.Name})
 
 	// Start the lighthouse for this network.
 	if err := h.NetworkManager.StartNetwork(network); err != nil {
@@ -405,6 +407,7 @@ func (h *NetworkHandler) DeleteNetwork(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	logAudit(h.Audit, user.ID, "network.delete", networkID, "", map[string]any{"name": network.Name})
 
 	w.WriteHeader(http.StatusNoContent)
 }

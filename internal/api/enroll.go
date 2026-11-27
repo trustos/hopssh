@@ -32,6 +32,7 @@ type EnrollHandler struct {
 	LighthouseHost string // public IP/host for Nebula lighthouse UDP (separate from HTTP endpoint)
 	EventHub       *EventHub
 	Events         *db.NetworkEventStore
+	Audit          *db.AuditStore
 }
 
 // CreateNode generates an enrollment token and returns the install command.
@@ -82,6 +83,7 @@ func (h *EnrollHandler) CreateNode(w http.ResponseWriter, r *http.Request) {
 		EnrollmentToken:     &enrollToken,
 		EnrollmentExpiresAt: &enrollExpiry,
 		Status:              "pending",
+		CreatedBy:           user.ID,
 	}
 	if err := h.Nodes.Create(node); err != nil {
 		if db.IsUniqueViolation(err) {
@@ -91,6 +93,7 @@ func (h *EnrollHandler) CreateNode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create node: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	logAudit(h.Audit, user.ID, "node.create", networkID, node.ID, nil)
 
 	writeJSONStatus(w, http.StatusCreated, map[string]interface{}{
 		"nodeId":          node.ID,
@@ -210,6 +213,14 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		details := jsonDetails(map[string]any{"hostname": body.Hostname})
 		h.Events.Record(node.NetworkID, "node.enrolled", &targetID, nil, details)
 	}
+	// The machine has no session: the entry names who made the token. A
+	// token from before migration 010 has no creator and gets no entry.
+	if creator, err := h.Nodes.CreatedBy(node.ID); err != nil {
+		log.Printf("[enroll] audit: creator of %s: %v", node.ID, err)
+	} else if creator != "" {
+		logAudit(h.Audit, creator, "node.enroll", node.NetworkID, node.ID,
+			map[string]any{"hostname": body.Hostname, "via": "token", "ip": captureAgentIP(r)})
+	}
 
 	// Compute lighthouse VPN IP and port for agent's static_host_map.
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
@@ -297,6 +308,7 @@ func (h *EnrollHandler) JoinNetwork(w http.ResponseWriter, r *http.Request) {
 		AgentToken: agentToken,
 		NodeType:   "node",
 		Status:     "enrolled",
+		CreatedBy:  user.ID,
 	}
 	if err := h.Nodes.Create(node); err != nil {
 		http.Error(w, "failed to create node: "+err.Error(), http.StatusInternalServerError)
@@ -314,6 +326,8 @@ func (h *EnrollHandler) JoinNetwork(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to complete enrollment: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	logAudit(h.Audit, user.ID, "node.join", networkID, nodeID, map[string]any{"hostname": body.Hostname})
 
 	dnsName := sanitizeDNSName(body.Hostname)
 	h.Nodes.UpdateDNSName(nodeID, dnsName)

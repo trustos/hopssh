@@ -26,6 +26,7 @@ type DNSHandler struct {
 	DNSRecords     *db.DNSRecordStore
 	Members        *db.NetworkMemberStore
 	NetworkManager *mesh.NetworkManager
+	Audit          *db.AuditStore
 }
 
 // ListDNSRecords returns all DNS records for a network.
@@ -138,6 +139,7 @@ func (h *DNSHandler) CreateDNSRecord(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create DNS record: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	logAudit(h.Audit, user.ID, "dns.create", networkID, "", map[string]any{"recordId": id, "name": body.Name, "ip": body.NebulaIP})
 
 	// Refresh DNS server with new records.
 	if h.NetworkManager != nil {
@@ -168,9 +170,25 @@ func (h *DNSHandler) DeleteDNSRecord(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.DNSRecords.Delete(recordID, networkID); err != nil {
+	// Read it first: the entry says what was deleted. A record that does not
+	// exist is a 204 as before, with no entry; of two deletes at once only
+	// the one that deleted it writes one.
+	rec, err := h.DNSRecords.Get(recordID, networkID)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	deleted, err := h.DNSRecords.Delete(recordID, networkID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if deleted {
+		details := map[string]any{"recordId": recordID}
+		if rec != nil {
+			details["name"], details["ip"] = rec.Name, rec.NebulaIP
+		}
+		logAudit(h.Audit, user.ID, "dns.delete", networkID, "", details)
 	}
 
 	// Refresh DNS server.
