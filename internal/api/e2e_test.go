@@ -117,6 +117,12 @@ func TestE2E_Access(t *testing.T) {
 		return h.url("/members/%s", memberID(h.owner, h.net.ID, u.ID))
 	}
 	names := 0
+	ownerSet := func() string {
+		names++
+		var set struct{ ID string }
+		h.owner.Want(201, "POST", "/api/firewall/sets", M{"name": fmt.Sprint("set", names)}, &set)
+		return set.ID
+	}
 	covered := map[string]bool{}
 
 	// want: the status for owner, admin, member, outsider and an anonymous
@@ -182,6 +188,17 @@ func TestE2E_Access(t *testing.T) {
 		{route: "POST /api/networks/{networkID}/invites", path: at(h.url("/invites")), body: M{}, want: "201 201 403 404 401", gap: "201 201 403 403 401"},
 		{route: "DELETE /api/networks/{networkID}/invites/{inviteID}", path: func() string { id, _ := invite(); return h.url("/invites/%s", id) }, want: "204 204 403 404 401", gap: "204 204 403 403 401"},
 
+		// Firewall rules. 428: no If-Match (TestE2E_Firewall sends it). A rule
+		// set is its owner's alone; attaching is for the network's owner.
+		{route: "GET /api/networks/{networkID}/firewall", path: at(h.url("/firewall")), want: "200 200 200 404 401"},
+		{route: "PUT /api/networks/{networkID}/firewall", path: at(h.url("/firewall")), body: M{"preset": "all", "rules": []any{}}, want: "428 428 403 404 401"},
+		{route: "GET /api/firewall/sets", path: at("/api/firewall/sets"), want: "200 200 200 200 401"},
+		{route: "POST /api/firewall/sets", path: at("/api/firewall/sets"), body: func() any { names++; return M{"name": fmt.Sprint("s", names)} }, want: "201 201 201 201 401"},
+		{route: "PUT /api/firewall/sets/{setID}", path: func() string { return "/api/firewall/sets/" + ownerSet() }, body: M{"name": "x"}, want: "428 404 404 404 401"},
+		{route: "DELETE /api/firewall/sets/{setID}", path: func() string { return "/api/firewall/sets/" + ownerSet() }, want: "204 404 404 404 401"},
+		{route: "PUT /api/networks/{networkID}/firewall/sets/{setID}", path: func() string { return h.url("/firewall/sets/%s", ownerSet()) }, want: "204 403 403 404 401"},
+		{route: "DELETE /api/networks/{networkID}/firewall/sets/{setID}", path: func() string { return h.url("/firewall/sets/%s", ownerSet()) }, want: "204 403 403 404 401"},
+
 		// Last: the outsider gets in, the owner deletes it, everyone signs out.
 		{route: "POST /api/invites/{code}/accept", path: func() string { _, code := invite(); return "/api/invites/" + code + "/accept" }, want: "409 409 409 201 401"},
 		{route: "DELETE /api/networks/{networkID}", path: func() string { return "/api/networks/" + h.owner.CreateNetwork("other").ID }, want: "204 404 404 404 401"},
@@ -227,7 +244,7 @@ func TestE2E_Access(t *testing.T) {
 func routerRoutes(t *testing.T) map[string]bool {
 	t.Helper()
 	r := api.NewRouter(nil, nil, &api.AuthHandler{}, nil, nil, nil, nil, nil, nil, &api.RenewHandler{},
-		nil, nil, nil, nil, nil, nil, nil, &api.ClipboardHandler{})
+		nil, nil, nil, nil, nil, nil, nil, &api.ClipboardHandler{}, nil)
 	routes := map[string]bool{}
 	err := chi.Walk(r, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		if strings.HasSuffix(route, "/proxy/{port}/*") {
@@ -1450,6 +1467,10 @@ func TestE2E_DeleteNetwork(t *testing.T) {
 	h.owner.Want(201, "POST", h.url("/invites"), M{}, nil)
 	h.owner.Want(201, "POST", h.url("/bundles"), nil, nil)
 	h.owner.Want(201, "POST", h.url("/nodes/%s/port-forwards", box.NodeID), M{"remotePort": 8080}, nil)
+	h.owner.With("If-Match", `"0"`).Want(200, "PUT", h.url("/firewall"), M{"preset": "ping", "rules": []any{}}, nil)
+	var set struct{ ID string }
+	h.owner.Want(201, "POST", "/api/firewall/sets", M{"name": "web"}, &set)
+	h.owner.Want(204, "PUT", h.url("/firewall/sets/%s", set.ID), nil, nil)
 	e2etest.Within(t, 15*time.Second, "events in the database", func() bool { return count(h, "network_events") > 0 })
 
 	h.owner.Want(204, "DELETE", h.url(""), nil, nil)
@@ -1461,11 +1482,13 @@ func TestE2E_DeleteNetwork(t *testing.T) {
 	a.Token = box.AgentToken
 	a.Want(401, "POST", "/api/renew", M{"nodeId": box.NodeID}, nil)
 	time.Sleep(3 * time.Second) // buffered events of the deletion
-	for _, table := range []string{"nodes", "dns_records", "network_members", "network_invites", "network_events"} {
+	for _, table := range []string{"nodes", "dns_records", "network_members", "network_invites", "network_events", "network_firewall", "network_firewall_sets"} {
 		if n := count(h, table); n != 0 {
 			t.Errorf("%d rows of the network left in %s", n, table)
 		}
 	}
+	// The owner's rule set stays, attached nowhere.
+	h.owner.Want(204, "DELETE", "/api/firewall/sets/"+set.ID, nil, nil)
 	if n := h.s.Exec("UPDATE enrollment_bundles SET expires_at = expires_at"); n != 0 {
 		t.Errorf("%d bundles left", n)
 	}

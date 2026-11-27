@@ -106,6 +106,12 @@
 			'invite.create': 'Invite created',
 			'invite.revoke': 'Invite revoked',
 			'invite.accept': 'Invite accepted',
+			'firewall.update': 'Firewall rules changed',
+			'firewall_set.create': 'Rule set created',
+			'firewall_set.update': 'Rule set changed',
+			'firewall_set.delete': 'Rule set deleted',
+			'firewall_set.attach': 'Rule set attached',
+			'firewall_set.detach': 'Rule set detached',
 		};
 		return labels[action] || action;
 	}

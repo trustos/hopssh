@@ -38,7 +38,7 @@ Architectural ideas the code embodies but doesn't explain.
 - [[concepts/loss-on-a-limited-line]] — the retransmits of a short upload are TCP finding the line's speed, the same without the tunnel; an early signal from the delay was tried and removed. **Read before trying to make the tunnel lose fewer packets.**
 - [[concepts/defender-filter-on-the-mbp]] — open: hop's download to the MBP was 25 to 68 Mbit/s for six hours while Defender's filter handled every packet of ours; what is ruled out, a bigger send buffer makes it worse, how to see the state
 - [[concepts/macos-udp-send]] — batched sends on macOS; why packets waited or were dropped until patch 28. **Read before touching the Darwin UDP patches.**
-- [[concepts/firewall-rules]] — proposed: rules between devices set in the dashboard, sent in the heartbeat, loaded by Nebula's in-place reload; what the agent always keeps; what the others do; seven things found on the way. **Read before changing the `firewall:` block or adding rules.**
+- [[concepts/firewall-rules]] — rules between devices set in the dashboard (phase 1 built 2026-11-27: stored, edited, audited; devices don't apply them yet), sent in the heartbeat, loaded by Nebula's in-place reload; what the agent always keeps; what the others do; seven things found on the way. **Read before changing the `firewall:` block or adding rules.**
 - [[concepts/macos-system-mode]] — bundled gvisor vs LaunchDaemon kernel-utun, mirror-token + mirror-port handoff
 - [[concepts/desktop-client]] — Tauri 2 + Svelte 5 macOS app: shipped capabilities (Phase V→DD), 22 commands, forward gaps
 - [[concepts/client-strategy]] — unified Tauri 2 delivery across iOS/Android/macOS/Windows/Linux: shared Svelte UI + gomobile core. **Substrate built (Phase NN, 2026-05-09)** — `internal/client/` extracted from `cmd/agent/`; iOS + Android substrate-ready (gomobile binding pending NN+1).
@@ -52,6 +52,7 @@ Why we chose Y over Z. Status: proposed / accepted / superseded.
 - [[decisions/client-windows-linux-architecture]] — Windows + Linux desktop delta on top of macOS baseline (proposed, agent-side ready)
 - [[decisions/client-ios-architecture]] — iOS Tauri main app + Network Extension + gomobile xcframework (proposed, substrate built Phase NN)
 - [[decisions/client-android-architecture]] — Android Tauri + VpnService foreground + gomobile aar (proposed, substrate built Phase NN)
+- [[decisions/firewall-rule-sets]] — a network allows what is always kept, its preset, its own rules and the rule sets its owner attaches; versions with `If-Match` (412 when stale); who may change and attach (accepted 2026-11-27, phase 1 built)
 
 ## Incidents
 

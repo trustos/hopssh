@@ -281,6 +281,8 @@ type Client struct {
 	Token string // bearer token; "" for an anonymous caller
 	ID    string // user ID
 	Email string
+	// Header is sent with every request (With adds to it).
+	Header http.Header
 }
 
 // Anonymous returns a caller without a session, from an IP of its own so that
@@ -345,8 +347,11 @@ var httpClient = &http.Client{
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 }
 
-// Headers sets the caller's identity.
+// Headers sets c.Header and the caller's identity.
 func (c *Client) Headers(h http.Header) {
+	for k, v := range c.Header {
+		h[k] = append([]string(nil), v...)
+	}
 	h.Set("X-Forwarded-For", c.IP)
 	if c.Token != "" {
 		h.Set("Authorization", "Bearer "+c.Token)
@@ -438,6 +443,17 @@ func (c *Client) Enroll(networkID, hostname string) Enrollment {
 	anon.IP = fmt.Sprintf("198.19.%d.%d", rand.Intn(256), rand.Intn(256)) // a machine of its own
 	anon.Want(http.StatusOK, "POST", "/api/enroll", M{"token": token, "hostname": hostname, "os": "linux", "arch": "arm64"}, &e)
 	return e
+}
+
+// With is c sending one more header with every request.
+func (c *Client) With(key, value string) *Client {
+	w := *c
+	w.Header = c.Header.Clone()
+	if w.Header == nil {
+		w.Header = http.Header{}
+	}
+	w.Header.Set(key, value)
+	return &w
 }
 
 // As is c with another bearer token, as an agent of the household sends it.

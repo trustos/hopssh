@@ -602,6 +602,10 @@ const (
 	firewallPresetTCP = "tcp"
 	// firewallPresetAll: every protocol from every node.
 	firewallPresetAll = "all"
+	// firewallPresetPing: only what hopssh needs, the agent API from the
+	// control plane and from other nodes (their keepalive dials it), and
+	// ICMP. Rules add the rest (P2, docs/wiki/decisions/firewall-rule-sets.md).
+	firewallPresetPing = "ping"
 )
 
 // agentFirewallYAML is the firewall section an agent enrollment writes for
@@ -653,6 +657,29 @@ func agentFirewallYAML(preset string) string {
       proto: icmp
       host: any
 `, agentAPIPort)
+	case firewallPresetPing:
+		return fmt.Sprintf(`firewall:
+  inbound_action: drop
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    # Control plane (admin group) can reach agent API
+    - port: %d
+      proto: tcp
+      groups:
+        - admin
+    # Other nodes' keepalive reaches the agent API
+    - port: %d
+      proto: tcp
+      groups:
+        - node
+    # ICMP for diagnostics
+    - port: any
+      proto: icmp
+      host: any
+`, agentAPIPort, agentAPIPort)
 	}
 	log.Printf("  Warning: unknown firewall preset %q; writing the %q block", preset, firewallPresetTCP)
 	return agentFirewallYAML(firewallPresetTCP)

@@ -31,6 +31,9 @@ jobs:
       - name: Build frontend
         run: make frontend-embed
 
+      - name: Test frontend
+        run: cd frontend && npm test
+
       - name: Build
         run: make build
 

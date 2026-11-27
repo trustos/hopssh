@@ -23,6 +23,7 @@
 	import NetworkTopology from '$lib/components/network-topology.svelte';
 	import ActivityTable from '$lib/components/activity-table.svelte';
 	import OsIcon from '$lib/components/os-icon.svelte';
+	import FirewallTab from '$lib/components/firewall-tab.svelte';
 
 	const termStore = getTerminals();
 	const serverInfo = getServerInfo();
@@ -68,7 +69,7 @@
 	let deleteNodeError = $state('');
 
 	// Active tab — default to "join" for new networks, "nodes" once there are nodes
-	let activeTab = $state<'nodes' | 'dns' | 'join' | 'members' | 'topology' | 'activity'>('nodes');
+	let activeTab = $state<'nodes' | 'dns' | 'firewall' | 'join' | 'members' | 'topology' | 'activity'>('nodes');
 	let initialTabSet = $state(false);
 
 	// Rename node
@@ -740,6 +741,7 @@
 				<Tabs.Trigger value="nodes">Nodes ({visibleNodes.length})</Tabs.Trigger>
 				<Tabs.Trigger value="topology" class="hidden sm:inline-flex">Topology</Tabs.Trigger>
 				<Tabs.Trigger value="dns">DNS</Tabs.Trigger>
+				<Tabs.Trigger value="firewall">Firewall</Tabs.Trigger>
 				<Tabs.Trigger value="members">Members ({networkMembers.length})</Tabs.Trigger>
 				<Tabs.Trigger value="activity">Activity{activity.length > 0 ? ` (${activity.length})` : ''}</Tabs.Trigger>
 			</Tabs.List>
@@ -1264,6 +1266,9 @@
 					</Table.Root>
 				</div>
 			{/if}
+
+		{:else if activeTab === 'firewall'}
+			<FirewallTab {networkId} nodes={network.nodes.filter((n) => n.nodeType !== 'lighthouse')} />
 
 		<!-- Join Tab -->
 		{:else if activeTab === 'join'}

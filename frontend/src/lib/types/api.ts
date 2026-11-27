@@ -96,6 +96,42 @@ export interface NodeResponse {
 	clientType?: 'desktop' | 'cli';
 }
 
+/** Firewall (docs/wiki/decisions/firewall-rule-sets.md). Rules only allow. */
+export type FirewallPreset = 'all' | 'tcp' | 'ping';
+
+export interface FirewallRule {
+	proto: 'tcp' | 'udp' | 'icmp' | 'any';
+	/** "any", "N" or "N-M"; "any" for icmp. */
+	port: string;
+	/** Empty: any device of the network. */
+	sourceNodeId?: string;
+	/** Empty: every device. */
+	targetNodeId?: string;
+	description?: string;
+}
+
+export interface FirewallSetResponse {
+	id: string;
+	name: string;
+	version: number;
+	rules: FirewallRule[];
+	updatedAt: number;
+	/** Only in the owner's own list. */
+	networkIds?: string[];
+}
+
+export interface NetworkFirewallResponse {
+	version: number;
+	preset: FirewallPreset;
+	rules: FirewallRule[];
+	updatedAt?: number;
+	sets: FirewallSetResponse[];
+	/** Owner and admin members. */
+	canEdit: boolean;
+	/** Only the network's owner, with their own sets. */
+	canAttach: boolean;
+}
+
 export interface CreateNodeResponse {
 	nodeId: string;
 	enrollmentToken: string;

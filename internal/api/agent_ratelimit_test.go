@@ -48,7 +48,7 @@ func TestRouter_AgentTrafficFromOneIPNotThrottled(t *testing.T) {
 	// malformed body return 401/400 before any store is touched, which is
 	// all we need — the limiter runs first.
 	r := NewRouter(nil, nil, &AuthHandler{}, nil, nil, nil, nil, nil, nil,
-		&RenewHandler{}, nil, nil, nil, nil, nil, nil, nil, nil)
+		&RenewHandler{}, nil, nil, nil, nil, nil, nil, nil, nil, nil)
 
 	send := func(path, body string) int {
 		req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))

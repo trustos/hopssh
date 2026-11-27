@@ -19,8 +19,13 @@ export class ApiError extends Error {
 	}
 }
 
-async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-	const headers: Record<string, string> = {};
+async function request<T>(
+	method: string,
+	path: string,
+	body?: unknown,
+	extraHeaders?: Record<string, string>
+): Promise<T> {
+	const headers: Record<string, string> = { ...extraHeaders };
 
 	if (body) {
 		headers['Content-Type'] = 'application/json';
@@ -232,6 +237,40 @@ export const invites = {
 			`/api/invites/${e(code)}/accept`,
 			{}
 		)
+};
+
+// --- Firewall rules (docs/wiki/decisions/firewall-rule-sets.md) ---
+// A change sends the version it was made against; the server answers 412
+// when someone changed it first.
+const ifMatch = (version: number) => ({ 'If-Match': `"${version}"` });
+type FirewallRule = import('$lib/types/api').FirewallRule;
+type NetworkFirewallResponse = import('$lib/types/api').NetworkFirewallResponse;
+type FirewallSetResponse = import('$lib/types/api').FirewallSetResponse;
+export const firewall = {
+	get: (networkId: string) =>
+		request<NetworkFirewallResponse>('GET', `/api/networks/${e(networkId)}/firewall`),
+	update: (networkId: string, version: number, preset: string, rules: FirewallRule[]) =>
+		request<NetworkFirewallResponse>(
+			'PUT',
+			`/api/networks/${e(networkId)}/firewall`,
+			{ preset, rules },
+			ifMatch(version)
+		),
+	attach: (networkId: string, setId: string) =>
+		request<void>('PUT', `/api/networks/${e(networkId)}/firewall/sets/${e(setId)}`),
+	detach: (networkId: string, setId: string) =>
+		request<void>('DELETE', `/api/networks/${e(networkId)}/firewall/sets/${e(setId)}`),
+	listSets: () => request<FirewallSetResponse[]>('GET', '/api/firewall/sets'),
+	createSet: (name: string, rules: FirewallRule[]) =>
+		request<FirewallSetResponse>('POST', '/api/firewall/sets', { name, rules }),
+	updateSet: (setId: string, version: number, name: string, rules: FirewallRule[]) =>
+		request<FirewallSetResponse>(
+			'PUT',
+			`/api/firewall/sets/${e(setId)}`,
+			{ name, rules },
+			ifMatch(version)
+		),
+	deleteSet: (setId: string) => request<void>('DELETE', `/api/firewall/sets/${e(setId)}`)
 };
 
 // --- Device Flow ---

@@ -57,6 +57,13 @@ var (
 		"in any any groups=node",
 		"in icmp any host=any",
 	}, outboundAny...)
+	// Agents in a network with the "ping" preset, 2026-11-27 on: the agent
+	// API from the control plane and from other nodes, and ICMP.
+	agentPing20261127 = append([]string{
+		"in tcp 41820 groups=admin",
+		"in tcp 41820 groups=node",
+		"in icmp any host=any",
+	}, outboundAny...)
 	// Clients (`hop client join`), 3f30d27 to 2026-11-27: ping only.
 	client3f30d27 = append([]string{
 		"in icmp any host=any",
@@ -69,12 +76,13 @@ var (
 )
 
 var historicalFirewallBlocks = map[string][]string{
-	"agent-80fdbaa.yaml":        agent80fdbaa,
-	"agent-791ac0b.yaml":        agent791ac0b,
-	"agent-41ce077.yaml":        agent41ce077,
-	"agent-2026-11-27-all.yaml": agentAll20261127,
-	"client-3f30d27.yaml":       client3f30d27,
-	"client-2026-11-27.yaml":    client20261127,
+	"agent-80fdbaa.yaml":         agent80fdbaa,
+	"agent-791ac0b.yaml":         agent791ac0b,
+	"agent-41ce077.yaml":         agent41ce077,
+	"agent-2026-11-27-all.yaml":  agentAll20261127,
+	"agent-2026-11-27-ping.yaml": agentPing20261127,
+	"client-3f30d27.yaml":        client3f30d27,
+	"client-2026-11-27.yaml":     client20261127,
 }
 
 func TestFirewall_EveryHistoricalBlockParses(t *testing.T) {
@@ -111,10 +119,11 @@ func TestFirewall_EveryHistoricalBlockParses(t *testing.T) {
 // fixture; the old blocks stay as they are.
 func TestFirewall_TodaysTemplates(t *testing.T) {
 	for preset, want := range map[string][]string{
-		firewallPresetTCP: agent41ce077,
-		firewallPresetAll: agentAll20261127,
-		"":                agent41ce077, // a server before migration 009
-		"bogus":           agent41ce077, // never wider than asked
+		firewallPresetTCP:  agent41ce077,
+		firewallPresetAll:  agentAll20261127,
+		firewallPresetPing: agentPing20261127,
+		"":                 agent41ce077, // a server before migration 009
+		"bogus":            agent41ce077, // never wider than asked
 	} {
 		for _, mode := range []string{"kernel", "userspace"} {
 			dir := t.TempDir()
@@ -151,7 +160,7 @@ func TestFirewall_ProductionFileRoundTripped(t *testing.T) {
 // nebula.yaml changes what the firewall allows. "Old networks keep their
 // block" rests on this.
 func TestFirewall_WritersKeepIt(t *testing.T) {
-	for name, block := range map[string]string{"80fdbaa": "agent-80fdbaa.yaml", "41ce077": "agent-41ce077.yaml", "all": "agent-2026-11-27-all.yaml"} {
+	for name, block := range map[string]string{"80fdbaa": "agent-80fdbaa.yaml", "41ce077": "agent-41ce077.yaml", "all": "agent-2026-11-27-all.yaml", "ping": "agent-2026-11-27-ping.yaml"} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
 			writeNebulaConfig(dir, "10.42.1.1", "127.0.0.1", 42001, "userspace", 4242, firewallPresetTCP)

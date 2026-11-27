@@ -55,6 +55,13 @@ var auditedRoutes = map[string]string{
 	"POST /api/networks/{networkID}/invites":              "invite.create",
 	"DELETE /api/networks/{networkID}/invites/{inviteID}": "invite.revoke",
 	"POST /api/invites/{code}/accept":                     "invite.accept",
+
+	"PUT /api/networks/{networkID}/firewall":                 "firewall.update",
+	"POST /api/firewall/sets":                                "firewall_set.create",
+	"PUT /api/firewall/sets/{setID}":                         "firewall_set.update",
+	"DELETE /api/firewall/sets/{setID}":                      "firewall_set.delete",
+	"PUT /api/networks/{networkID}/firewall/sets/{setID}":    "firewall_set.attach",
+	"DELETE /api/networks/{networkID}/firewall/sets/{setID}": "firewall_set.detach",
 }
 
 // notAudited: routes that change something and write no entry, and why.
@@ -98,6 +105,8 @@ var readOnly = map[string]bool{
 	"GET /api/device/verify/{code}":                true,
 	"GET /api/clipboard/poll":                      true,
 	"GET /api/clipboard/{clipId}":                  true,
+	"GET /api/networks/{networkID}/firewall":       true,
+	"GET /api/firewall/sets":                       true,
 }
 
 // auditedElsewhere: actions TestE2E_Audit does not perform itself.
@@ -165,10 +174,10 @@ func TestE2E_Audit(t *testing.T) {
 	expectN := func(n int, who *e2etest.Client, action, network string, details e2etest.M) {
 		counts = append(counts, counted{auditWant{who, action, network, "", details}, n})
 	}
-	// burst sends the same DELETE several times at once; each answers 204.
-	// The connections are opened first, so that the DELETEs reach the
-	// server together.
-	burst := func(c *e2etest.Client, path string) {
+	// burst sends the same request several times at once and returns the
+	// statuses. The connections are opened first, so that the requests
+	// reach the server together.
+	burst := func(c *e2etest.Client, method, path string) []int {
 		t.Helper()
 		const n = 16
 		client := &http.Client{Transport: &http.Transport{MaxIdleConnsPerHost: n}}
@@ -206,10 +215,15 @@ func TestE2E_Audit(t *testing.T) {
 			return statuses
 		}
 		run("OPTIONS")
-		statuses := run("DELETE")
+		return run(method)
+	}
+	// burst204: each of the requests answers 204.
+	burst204 := func(c *e2etest.Client, method, path string) {
+		t.Helper()
+		statuses := burst(c, method, path)
 		for _, s := range statuses {
 			if s != 204 {
-				t.Errorf("DELETE %s: HTTP %v, want 204 each time", path, statuses)
+				t.Errorf("%s %s: HTTP %v, want 204 each time", method, path, statuses)
 				break
 			}
 		}
@@ -237,7 +251,7 @@ func TestE2E_Audit(t *testing.T) {
 	guest.Want(201, "POST", "/api/invites/"+inv.Code+"/accept", nil, nil)
 	expect(guest, "invite.accept", h.net.ID, "", e2etest.M{"inviteId": inv.ID, "role": "member"})
 	gm := memberID(h.admin, h.net.ID, guest.ID)
-	burst(h.admin, h.url("/members/%s", gm))
+	burst204(h.admin, "DELETE", h.url("/members/%s", gm))
 	expect(h.admin, "member.remove", h.net.ID, "", e2etest.M{"userId": guest.ID, "role": "member"})
 	expectN(1, h.admin, "member.remove", h.net.ID, e2etest.M{"memberId": gm})
 	h.admin.Want(204, "DELETE", h.url("/members/%s", noSuchID), nil, nil)
@@ -246,7 +260,7 @@ func TestE2E_Audit(t *testing.T) {
 	h.owner.Want(201, "POST", h.url("/invites"), e2etest.M{"role": "admin"}, &inv2)
 	secrets = append(secrets, inv2.Code)
 	expect(h.owner, "invite.create", h.net.ID, "", e2etest.M{"inviteId": inv2.ID, "role": "admin"})
-	burst(h.owner, h.url("/invites/%s", inv2.ID))
+	burst204(h.owner, "DELETE", h.url("/invites/%s", inv2.ID))
 	expect(h.owner, "invite.revoke", h.net.ID, "", e2etest.M{"inviteId": inv2.ID})
 	expectN(1, h.owner, "invite.revoke", h.net.ID, e2etest.M{"inviteId": inv2.ID})
 	h.owner.Want(204, "DELETE", h.url("/invites/%s", noSuchID), nil, nil)
@@ -316,12 +330,38 @@ func TestE2E_Audit(t *testing.T) {
 		var rec struct{ ID string }
 		h.admin.Want(201, "POST", h.url("/dns"), e2etest.M{"name": name, "nebulaIP": ip}, &rec)
 		expect(h.admin, "dns.create", h.net.ID, "", e2etest.M{"recordId": rec.ID, "name": name, "ip": ip})
-		burst(h.owner, h.url("/dns/%s", rec.ID))
+		burst204(h.owner, "DELETE", h.url("/dns/%s", rec.ID))
 		expect(h.owner, "dns.delete", h.net.ID, "", e2etest.M{"recordId": rec.ID, "name": name, "ip": ip})
 		expectN(1, h.owner, "dns.delete", h.net.ID, e2etest.M{"recordId": rec.ID})
 	}
 	h.owner.Want(204, "DELETE", h.url("/dns/%s", noSuchID), nil, nil)
 	expectN(0, h.owner, "dns.delete", h.net.ID, e2etest.M{"recordId": noSuchID})
+
+	// Firewall rules: a network's own, changed by an admin, and a rule set of
+	// the owner's, attached and detached. A change against a stale version,
+	// and attaches, detaches and deletes that race, write no entry.
+	h.admin.With("If-Match", `"0"`).Want(200, "PUT", h.url("/firewall"), e2etest.M{"preset": "ping", "rules": []e2etest.M{{"proto": "tcp", "port": "22"}}}, nil)
+	expect(h.admin, "firewall.update", h.net.ID, "", e2etest.M{"fromVersion": 0, "toVersion": 1, "fromPreset": "all", "preset": "ping", "rules": 1})
+	h.owner.With("If-Match", `"0"`).Want(412, "PUT", h.url("/firewall"), e2etest.M{"preset": "all", "rules": []any{}}, nil)
+	expectN(0, h.owner, "firewall.update", h.net.ID, nil)
+	var set struct{ ID string }
+	h.owner.Want(201, "POST", "/api/firewall/sets", e2etest.M{"name": "web", "rules": []e2etest.M{{"proto": "tcp", "port": "443"}}}, &set)
+	expect(h.owner, "firewall_set.create", "", "", e2etest.M{"setId": set.ID, "name": "web", "rules": 1})
+	h.owner.With("If-Match", `"1"`).Want(200, "PUT", "/api/firewall/sets/"+set.ID, e2etest.M{"name": "web2", "rules": []any{}}, nil)
+	expect(h.owner, "firewall_set.update", "", "", e2etest.M{"setId": set.ID, "name": "web2", "fromVersion": 1, "toVersion": 2, "rules": 0, "networks": 0})
+	attachURL := h.url("/firewall/sets/%s", set.ID)
+	burst204(h.owner, "PUT", attachURL)
+	expect(h.owner, "firewall_set.attach", h.net.ID, "", e2etest.M{"setId": set.ID, "name": "web2", "version": 2})
+	expectN(1, h.owner, "firewall_set.attach", h.net.ID, e2etest.M{"setId": set.ID})
+	burst204(h.owner, "DELETE", attachURL)
+	expect(h.owner, "firewall_set.detach", h.net.ID, "", e2etest.M{"setId": set.ID, "name": "web2"})
+	expectN(1, h.owner, "firewall_set.detach", h.net.ID, e2etest.M{"setId": set.ID})
+	statuses := burst(h.owner, "DELETE", "/api/firewall/sets/"+set.ID)
+	if n := strings.Count(fmt.Sprint(statuses), "204"); n != 1 || strings.Count(fmt.Sprint(statuses), "404") != len(statuses)-1 {
+		t.Errorf("deletes of one set at once: HTTP %v, want one 204 and the rest 404", statuses)
+	}
+	expect(h.owner, "firewall_set.delete", "", "", e2etest.M{"setId": set.ID, "name": "web2"})
+	expectN(1, h.owner, "firewall_set.delete", "", e2etest.M{"setId": set.ID})
 
 	// A port forward, started by the admin and stopped by a member.
 	box := h.owner.Enroll(h.net.ID, "web")

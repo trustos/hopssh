@@ -233,7 +233,8 @@ func main() {
 	renewH.Events = networkEvents
 
 	clipboardH := api.NewClipboardHandler(nodes, eventsH.Hub)
-	router := api.NewRouter(users, sessions, authH, oauthH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH, eventsH, netEventsH, clipboardH)
+	firewallH := &api.FirewallHandler{Networks: networks, Members: members, Firewall: db.NewFirewallStore(database), Audit: audit}
+	router := api.NewRouter(users, sessions, authH, oauthH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH, eventsH, netEventsH, clipboardH, firewallH)
 
 	// Clean up expired sessions periodically with graceful shutdown.
 	stopCleanup := make(chan struct{})

@@ -68,7 +68,7 @@ All five configure rules in a web UI. NetBird is the closest match: self-hosted,
 
 **Where and who.**
 - A Firewall tab beside DNS (`frontend/src/routes/(app)/networks/[id]/+page.svelte:71,737-745`).
-- `GET` for members, `PUT` for admins and the owner, with `If-Match: <version>` (409 when stale).
+- `GET` for members, `PUT` for admins and the owner, with `If-Match: <version>` (412 when stale; built so in phase 1, see [[../decisions/firewall-rule-sets]]).
 - Gate the `PUT` on `CheckAccess(...).CanAdmin()`; `CanAdmin` on a membership row alone locks the owner out.
 - Every `PUT` is audited with the old and new version.
 - `TestE2E_Access` must get rows for it, or it fails.

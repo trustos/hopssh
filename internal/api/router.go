@@ -103,6 +103,7 @@ func NewRouter(
 	eventsH *EventsHandler,
 	netEventsH *NetworkEventsHandler,
 	clipboardH *ClipboardHandler,
+	firewallH *FirewallHandler,
 ) chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
@@ -248,6 +249,17 @@ func NewRouter(
 		r.With(wt).Get("/api/networks/{networkID}/invites", inviteH.ListInvites)
 		r.With(wt).Delete("/api/networks/{networkID}/invites/{inviteID}", inviteH.DeleteInvite)
 		r.With(wt).Post("/api/invites/{code}/accept", inviteH.AcceptInvite)
+
+		// Firewall rules of a network, and the rule sets its owner shares
+		// between networks (docs/wiki/decisions/firewall-rule-sets.md).
+		r.With(wt).Get("/api/networks/{networkID}/firewall", firewallH.GetNetworkFirewall)
+		r.With(wt).Put("/api/networks/{networkID}/firewall", firewallH.UpdateNetworkFirewall)
+		r.With(wt).Put("/api/networks/{networkID}/firewall/sets/{setID}", firewallH.AttachFirewallSet)
+		r.With(wt).Delete("/api/networks/{networkID}/firewall/sets/{setID}", firewallH.DetachFirewallSet)
+		r.With(wt).Get("/api/firewall/sets", firewallH.ListFirewallSets)
+		r.With(wt).Post("/api/firewall/sets", firewallH.CreateFirewallSet)
+		r.With(wt).Put("/api/firewall/sets/{setID}", firewallH.UpdateFirewallSet)
+		r.With(wt).Delete("/api/firewall/sets/{setID}", firewallH.DeleteFirewallSet)
 	})
 
 	// Health check for container orchestrators (no auth, no rate limit).

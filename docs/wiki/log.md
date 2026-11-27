@@ -756,3 +756,84 @@ test without a plant passed 10 of 10. 21 planted bugs, all caught, each for
 its own reason (`TestE2E_Audit` lines: "N entries … want 1", "an entry holds a
 secret", "no entry …", "list it in exactly one of …"). What is left:
 [[open-questions]], 2026-11-27 audit entry.
+
+20:05, the audit work committed (a212291). 20:07 to 20:15, **firewall rules,
+phase 1** (step 8: item 16), the server side, drafted while the audit gates
+ran. The five points the owner asked to settle are in
+[[decisions/firewall-rule-sets]]. Migration 011 (a network's own rules with a
+version, rule sets owned by one user, which sets a network has attached), the
+store (`internal/db/firewall.go`: a change and its check of node IDs in one
+transaction), the rules (`internal/fwpolicy`) and eight routes with
+`ETag`/`If-Match`. `TestE2E_Firewall` (the real server): who may change what,
+428/409/400 for a missing, stale or malformed version, two changes against one
+version store one, what is refused stores nothing, sets per user, attach only
+by the network's owner and only their own sets, a change of an attached set
+checked in every network it is in, delete only once attached nowhere, a
+network's delete takes its attachments and not the set, a deleted node stays
+in the rules that name it, a new enrollment gets the preset. Its first run
+failed: `sourceNodeID` was accepted, since Go's JSON decoder matches field
+names without regard to case (it is `sourceNodeId`, so nothing was lost); the
+case now sends a field the API does not know, which is refused. Also
+`TestE2E_Access` (8 rows), `TestE2E_Audit` (6 routes, attach and detach of
+the same set at once write one entry), `TestE2E_DeleteNetwork` (the two new
+tables). The agent learns the `ping` preset: TCP 41820 from `admin` and
+`node`, ICMP; golden fixture `agent-2026-11-27-ping.yaml`. Two planted bugs in
+that block: one only broke the build (vet counts the `%d`), so it proved
+nothing, replaced by one that keeps it (`node` → `admin`), caught by
+`TestFirewall_TodaysTemplates` for that reason. Agents of v0.11.31 and before
+ignore the preset and write `tcp`. Next: the Firewall tab, a review, the gates.
+
+20:15 to 20:25, **the Firewall tab** (`frontend/src/lib/components/firewall-tab.svelte`,
+a tab of a network's page), tried in a browser against a local server with two
+devices and an admin member. As the owner: a rule (tcp 22 from one device to
+the other) and the `ping` preset saved as version 1; a change made through the
+API meanwhile, then a save from the tab: 409, the tab says so and reloads
+version 2. A rule set with port 0: 400, shown with the rule and the value; with
+443 it is saved, attached, its Delete greyed while attached, detached and
+deleted. Each change is in the audit log under its own label, and the refused
+save is not. As the admin: preset and rules can be changed, an attached set is
+shown read-only, and attaching is left to the owner. The tab says plainly that
+devices do not apply the rules yet, and that a preset reaches only devices that
+join from now on with an agent newer than v0.11.31. Fixed on the way: "1
+rules", and the reason a set cannot be deleted was only in the tooltip of a
+disabled button, which some browsers never show. `svelte-check`: the 5 errors
+from before, none new.
+
+20:27 to 20:55, **a review of phase 1**: nine agents, each finding checked by
+one that tried to refute it. Three hold, each reproduced; one was refuted.
+- **A rule set renamed to a name its owner already has: 500.** The store
+  returned the unique violation as it was, and only the create mapped it to
+  409. Now 409 for both, and nothing changes. A stale version is now **412**,
+  not 409: RFC 9110 requires 412 for a false `If-Match`, and the tab has to
+  tell "someone changed this first" (reload) from "that name is taken" (keep
+  what was typed). `TestE2E_Firewall` checks both; red before the fix.
+- **The tab threw away an unsaved change of the network's rules** on attach,
+  detach, saving or deleting a rule set (each reloaded everything), and a
+  refused save of the network's rules closed an open rule-set editor. Now a
+  reload keeps an unsaved change together with the version it was made
+  against, so if someone saved meanwhile its save is refused (412) and not
+  written over theirs. A rule set saved against a stale version reopens as it
+  is now.
+- **A device of another network read "deleted device"** in the editor of a
+  set that is not attached here. It reads "not a device of this network" now;
+  in the network's rules and in an attached set an unknown device is still a
+  deleted one (an attached set can name only devices of the networks it is
+  attached to, and IDs are never reused).
+- Refuted: "members cannot see that a rule set changed". They see the set,
+  its version and its time. What holds of it: the audit entry of a set's
+  change says in how many networks the set is, not in which; the attach
+  entries say which. Left as it is.
+
+The dashboard had no tests of its own. `frontend/tests/firewall-tab.test.mjs`
+(`npm test`, and a CI step) compiles the tab's real script with Svelte's
+compiler against a fake API and calls its functions: 9 cases. 10 bugs planted
+one at a time in the tab, all caught, each by the case about it.
+
+20:43 to 20:56, **33 bugs planted in phase 1** (store, migration, handlers,
+rule checks), one at a time: all caught, each by the line about it. Four were
+first "caught" only because they did not compile (a variable left unused): a
+build failure is not a test noticing anything. Rewritten so that they compile,
+the tests catch them. Three showed only the known-gap notes of
+`TestE2E_Access`; the line that failed was behind them. The planting script
+now calls a plant that does not compile BROKEN, and leaves the known-gap
+notes out. Details: [[concepts/e2e-tests]], "Firewall rules".

@@ -56,6 +56,16 @@ Move closed items to a "Resolved" section at the bottom rather than deleting —
 
 ## Open
 
+## 2026-11-27 — firewall rules, phase 1: what is left
+
+- **Devices don't apply the rules yet.** Phase 1 stores, checks and audits them; phase 2 sends them in the heartbeat and reloads Nebula's firewall ([[decisions/firewall-rule-sets]]). The tab says so.
+- **A preset reaches only devices that join from now on, with an agent newer than v0.11.31.** Released agents ignore it and write `tcp`. Phase 2 makes it apply to every device.
+- **A rule set that names a device works only in that device's network**, so such a set can be attached to one network only (an attach elsewhere is refused with 400). The editor offers only the devices of the network it was opened from.
+- **The tab was not tried as a plain member** in a browser; `TestE2E_Firewall` checks what a member may do.
+- **`swagger/` has not been regenerated since April 2026** (no Makefile target, `swag` not installed): it lacks the firewall routes and much else.
+
+Source / context: `docs/wiki/log.md` 2026-11-27 20:07 to 20:55.
+
 ## 2026-11-27 — audit log: what is left
 
 - **A removed member's credentials keep working for minutes.** An enrollment token (10 min), a bundle URL (15 min) or a device code they approved still brings a node into the network after they are removed, and the entry names them. `Enroll`, `Poll` and `DownloadBundle` check no membership. Proposed: refuse them when the creator is no longer the owner or a member. Needs a yes; it changes what a token does.
