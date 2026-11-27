@@ -59,7 +59,8 @@ func nextHeartbeatRetry(interval time.Duration, err error) time.Duration {
 // runHeartbeat sends periodic heartbeats to the control plane so the
 // dashboard shows the node as "online".
 //
-// Normal mode: every 5 minutes. On failure: fast retry with exponential
+// Normal mode: every 60 s (normalInterval), counted from the end of the
+// previous POST. On failure: fast retry with exponential
 // backoff (5s → 10s → 20s → ... → 2m cap) so agents recover within seconds
 // of a server redeploy. All intervals include ±10% jitter to prevent
 // thundering herd across agents.

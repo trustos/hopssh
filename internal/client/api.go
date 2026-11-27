@@ -32,6 +32,8 @@ type Config struct {
 	ConfigDir         string
 	LogWriter         io.Writer
 	UserAgent         string
+	// HeartbeatInterval is not read: the heartbeat runs every 60 s
+	// (runHeartbeat in renew.go). Kept because the mobile binding sets it.
 	HeartbeatInterval time.Duration
 }
 

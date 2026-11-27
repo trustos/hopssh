@@ -59,7 +59,8 @@ type Session struct {
 
 // NewSession constructs a Session backed by a fresh *client.Client.
 // configDir is the on-disk root for enrollments.json + per-enrollment
-// subdirs. heartbeatSeconds defaults to 60 if 0. userAgent is sent
+// subdirs. heartbeatSeconds is not used yet: the heartbeat runs every
+// 60 s whatever it says. userAgent is sent
 // with outbound heartbeats; pass an empty string to use the default.
 //
 // gomobile-bind shape: returns (*Session, error). Both types bind cleanly.
