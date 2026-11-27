@@ -1,0 +1,12 @@
+# The firewall block hopssh wrote for hop client join devices enrolled from 3f30d27 (2026-04-06) on:
+# cmd/agent/client.go at that commit. Do not edit: devices enrolled then
+# still run it, since nothing rewrites the firewall section.
+firewall:
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    - port: any
+      proto: icmp
+      host: any

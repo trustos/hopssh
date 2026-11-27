@@ -586,3 +586,20 @@ never written again. Fixed to change only the device
 AppleDouble `._*` files (426 in the VM's copy); Go's build skips them, a test
 that globs `*.go` does not. Sync with `--exclude='._*'`; the source scan now skips
 what the build skips.
+
+17:30 to 18:10, **golden tests of every firewall block** (P0, step 4). `git show`
+of the commits that changed a firewall block gives three agent blocks (80fdbaa:
+TCP from group `server`; 791ac0b: TCP 41820 from `admin`, TCP from `user` and
+`agent`; 41ce077 to today: TCP 41820 from `admin`, TCP from `node`) and one client
+block (3f30d27 to today: ICMP only), all in `internal/client/testdata/firewall/`.
+`firewall_golden_test.go` reads them through `nebula.AddFirewallRulesFromConfig`
+with a recorder, so it compares what Nebula would install, not text. It pins:
+each old block still parses and allows what it did; today's agent template (both
+TUN modes) and client template give the newest block; the production file of
+2026-05-02, rewritten by `yaml.Marshal`, gives today's; and `ensureP2PConfig`, the
+routes and renewal writers, `upgradeTunMode` and the repair leave the firewall
+alone, for the oldest block too. Planted: TCP from `node` widened to any proto
+(caught, both TUN modes, the message lists the new rule), TCP 41820 added to the
+client (caught), `ensureP2PConfig` dropping the ICMP rule (caught), a fixture
+edited (caught). Green on Linux. The client's template text moved into
+`clientNebulaConfig`, since `writeClientNebulaConfig` writes to `/etc/hop-client`.

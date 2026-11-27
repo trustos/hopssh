@@ -98,7 +98,7 @@ The server could already run commands on every agent through 41820, so a policy 
 
 | Phase | What | Gate |
 |---|---|---|
-| P0 | one renderer for the agent and client blocks; no change in behaviour | golden tests from today's template and from older templates (`git log -G 'groups:'`), compared as parsed rules, not text |
+| P0 (done 2026-11-27) | golden tests of every block written so far; no change in behaviour | `internal/client/firewall_golden_test.go`: each block in `testdata/firewall/` parses with Nebula's own parser and allows what the test pins; today's agent and client templates and a round-tripped production file give the newest; no rewrite by the agent changes the firewall |
 | P1 | table, `GET`/`PUT`, audit, tab with the three choices and the rule table | `TestE2E_Access`, `TestE2E_History` |
 | P2 | heartbeat field, validation, in-place reload, ack | E2E with two real Nebula peers: a removed rule stops new and open flows within one heartbeat; ICMP keeps its tunnel with no new handshake; a rejected policy leaves the file byte for byte and tunnels up; under `-race` |
 | P3 | device switch, "who can reach" | E2E from the CLI and the local API |
@@ -120,7 +120,7 @@ Each was checked in the code on 2026-11-27.
 
 8. **Agents probe clients on a port that clients drop** (read in the code 2026-11-27, not run). The keepalive dials TCP 41820 on every peer in the hostmap except lighthouses (`internal/client/keepalive.go:338-385`; `pathQualityRecent` always answers false). A `hop client join` device allows inbound ICMP only and runs no listener, so its Nebula drops the SYN and the dial times out after 2 s, which counts as dead (only "refused" counts as alive, `keepalive.go:126`). An agent whose only peers are clients sees every cycle as stuck and restarts the network with the backoff of `recovery.go`. Fix: allow TCP 41820 from `node` on clients (a closed port then answers "refused"), or leave clients out of the probe; a lab test first.
 
-P0 must parse more than today's agent block: the client block (`cli_join.go`, ICMP only), the round-tripped form in `testdata/`, and older agent blocks with groups `[server]` and `[user, agent]`. `git log -G 'groups:'` gives 169ee66, c524fa2, 80fdbaa, 791ac0b, 3f30d27, 41ce077, 00a4e19 and a94baf7, but c524fa2 and a94baf7 touch no enroll file (the lighthouse's block and the multi-network work). Before a37656f the agent's template lived in `cmd/agent/enroll.go` and before that partly in `internal/api/enroll.go`; golden tests read old revisions with `git show` on those paths.
+(Done 2026-11-27. Three agent blocks: 80fdbaa, TCP from group `server`; 791ac0b, TCP 41820 from `admin` and TCP from `user` and `agent`; 41ce077 to today, TCP 41820 from `admin` and TCP from `node` (00a4e19 changed only the arguments). One client block, ICMP only, from 3f30d27 to today. The one renderer was left out, as the plan review advised; only the client's text moved into `clientNebulaConfig` so a test can render it.) P0 must parse more than today's agent block: the client block (`cli_join.go`, ICMP only), the round-tripped form in `testdata/`, and older agent blocks with groups `[server]` and `[user, agent]`. `git log -G 'groups:'` gives 169ee66, c524fa2, 80fdbaa, 791ac0b, 3f30d27, 41ce077, 00a4e19 and a94baf7, but c524fa2 and a94baf7 touch no enroll file (the lighthouse's block and the multi-network work). Before a37656f the agent's template lived in `cmd/agent/enroll.go` and before that partly in `internal/api/enroll.go`; golden tests read old revisions with `git show` on those paths.
 
 ## Decide
 

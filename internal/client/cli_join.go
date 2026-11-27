@@ -158,11 +158,23 @@ func writeClientNebulaConfig(serverIP, serverHost string, lighthousePort int) {
 		log.Printf("  Warning: could not detect physical interface: %v", err)
 	}
 
+	nebulaConfig := clientNebulaConfig(serverIP, serverHost, lighthousePort, physicalIface)
+	cfgPath := filepath.Join(clientDir, "nebula.yaml")
+	unlock := lockNebulaYAML(cfgPath)
+	werr := writeNebulaYAML(cfgPath, []byte(nebulaConfig))
+	unlock()
+	if werr != nil {
+		log.Fatalf("Failed to write %s: %v", cfgPath, werr)
+	}
+}
+
+// clientNebulaConfig is the nebula.yaml of a `hop client join` device.
+func clientNebulaConfig(serverIP, serverHost string, lighthousePort int, physicalIface string) string {
 	if lighthousePort == 0 {
 		lighthousePort = 42001
 	}
 
-	nebulaConfig := fmt.Sprintf(`pki:
+	return fmt.Sprintf(`pki:
   ca: %s/ca.crt
   cert: %s/node.crt
   key: %s/node.key
@@ -223,14 +235,6 @@ firewall:
 		nebulacfg.Routines,
 		nebulacfg.HandshakeTryInterval,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay)
-
-	cfgPath := filepath.Join(clientDir, "nebula.yaml")
-	unlock := lockNebulaYAML(cfgPath)
-	werr := writeNebulaYAML(cfgPath, []byte(nebulaConfig))
-	unlock()
-	if werr != nil {
-		log.Fatalf("Failed to write %s: %v", cfgPath, werr)
-	}
 }
 
 func getHostname() string {
