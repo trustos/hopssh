@@ -56,6 +56,16 @@ Move closed items to a "Resolved" section at the bottom rather than deleting —
 
 ## Open
 
+## 2026-11-27 — `TestE2E_Proxy`: a request hangs when both ends start a tunnel at once
+
+In one of two full runs of `go test ./...` on the Mac (14:14), the 30th health check of `TestE2E_Proxy` (`internal/api/e2e_test.go:1548`) got the route timeout (503 after 30 s); the 29 before it took about 1 ms. Alone it passed 45 of 45 (5, then 40 in a loop); in 35 of those 40 both ends had started a tunnel at once and none had a dead tunnel, so two tunnels alone do not cause it — the full run's load (three packages of end-to-end tests at once) is part of it. Neither fix of the day is on its path (fake agent, first node, nothing deleted).
+
+What the log shows: the fake agent started a tunnel to the lighthouse (agent index 3151938886, server 2348978550) and, 14 ms later, the control plane started one to the agent (server 2411564706, agent 2394334941), so both ends held two tunnels. 21 s after the hang began, both ends marked the agent-started tunnel dead in the same second (`tunnelCheck="map[method:active state:dead]"`); the control plane's tunnel lived until the test closed it. **Hypothesis, not shown:** one end kept sending on the tunnel the other end no longer answered, and the request's packets went there. If so, it can happen in use: an agent that has just started while someone opens its terminal or health. **Next:** a test that starts both tunnels at once and then sends, run until the rate is known (rule 15); read which tunnel each side sends on.
+
+Seen in the same log, not a fault of the test: the real agents of the Linux and Windows VMs (192.168.64.6, .5) sent handshakes to the test lighthouse, because their own server had been on this Mac's port 42001.
+
+Source / context: `docs/wiki/log.md` 2026-11-27
+
 ## 2026-11-24 — v0.11.27: prove it on devices
 
 The server runs it, no device does. Open until then: a device renews at half its certificate's life and stays online for 24 h (E); an in-app network on a Mac and a system-wide one; a machine that was off for a week comes back (B, L). Steps 7 and 8 of [[runbooks/release-v0.11.27]].
@@ -108,9 +118,11 @@ Clipboard, seen while writing `TestE2E_Clipboard`, not pinned: `since` has secon
 
 Proven in [[concepts/netlab]] (`TestUDPBetweenDevices`, pinned), and read off the live config on the mini (2026-11-27): the agent allows inbound **TCP on every port** from the `node` group, TCP 41820 from `admin`, and ICMP — no UDP (`internal/client/enroll.go:654`). `hop client join` allows inbound ICMP only, so a client accepts nothing at all from the mesh (`internal/client/cli_join.go:206`). The control plane's own lighthouse allows everything (`internal/mesh/network_manager.go:538`).
 
-So the UDP line buys nothing that the TCP line does not already give away: any node can already reach any TCP port on any other. It costs mosh, QUIC, WireGuard and Screen Sharing's media, and there is no user-facing control to open it again — firewall rules are roadmap #13, not built. Tailscale's default ACL permits every protocol between nodes. Nothing in the code or the docs says who chose this; it is unchanged since the first agent commit (2026-06-05).
+So the UDP line buys nothing that the TCP line does not already give away: any node can already reach any TCP port on any other. It costs mosh, QUIC, WireGuard and Screen Sharing's media, and there is no user-facing control to open it again — firewall rules are roadmap #8, not built. How they could be set (dashboard tab, heartbeat, in-place reload) and what the others do: [[concepts/firewall-rules]] (proposed 2026-11-27). Tailscale's default ACL permits every protocol between nodes. Nothing in the code or the docs says who chose this; it is unchanged since the first agent commit (2026-06-05).
 
 **Decide:** allow UDP for all, per network, or with the firewall rules of the roadmap. The change itself is one line; existing agents need their `nebula.yaml` rewritten (`ensureP2PConfig` rewrites what it owns on every boot, so it can heal the rest).
+
+**Proposed 2026-11-27, waiting for the owner's yes:** new networks allow everything between agents, UDP included, as Tailscale, NetBird, Headscale and ZeroTier (rules off) do; clients stay ICMP-only inbound; the agent keeps TCP 41820 from `admin` and `node`, ICMP and `inbound_action: drop` whatever else changes. Shared rules later as an account-level library that networks attach (Defined's model), combined as a union of allows, not inheritance with override, which none of the products read has ([[concepts/firewall-rules]], "Decide").
 
 **What the others do** (read 2026-11-27 from their own docs):
 
@@ -122,7 +134,7 @@ So the UDP line buys nothing that the TCP line does not already give away: any n
 
 Defined Networking was founded in 2020 by Nebula's creators (Ryan Huber, Nate Brown) "to focus on Nebula development"; Slack "continues to be a primary sponsor" ([nebula docs](https://nebula.defined.net/)). Not confirmed from a page: whether Tailscale's userspace SOCKS5 proxy carries UDP.
 
-Two facts of ours that bound the decision: (1) in userspace mode (a non-root agent, `hop client join`) only the agent's own API listens on the mesh, so no host program is reachable over TCP *or* UDP; the rule matters for system installs (kernel TUN) only. (2) Nebula's conntrack lets a UDP *reply* in, so an app whose two ends both send first can half-work today; what is blocked is UDP that the other side starts (a mosh server, a DNS server, a game server, QUIC to a node).
+Two facts of ours that bound the decision: (1) in userspace mode only the agent's own API listens on the mesh (a non-root agent), or nothing at all (`hop client join` starts no listener), so no host program is reachable over TCP *or* UDP; the rule matters for system installs (kernel TUN) only. (2) Nebula's conntrack lets a UDP *reply* in, so an app whose two ends both send first can half-work today; what is blocked is UDP that the other side starts (a mosh server, a DNS server, a game server, QUIC to a node).
 
 ## 2026-11-24 — what Tailscale has and the lab shows that we don't
 

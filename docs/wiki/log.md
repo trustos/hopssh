@@ -492,3 +492,57 @@ shell survives the renewal. Green as root in the VM (97.3 s) and as a user on th
 Mac (110.2 s, the gap still reported there). Planted on the Mac (mode forced to
 kernel): fails at the status line and at "the open shell is dead after the
 renewal of a kernel-TUN network", the two places it should.
+
+13:00 to 13:50, how firewall rules could be set: research, design, two reviews.
+The question was whether rules belong in the UI. Three agents read the code, the
+dashboard and five products' own docs; one drafted a design; two checked it,
+one against the code and one looking for ways it breaks. Result:
+[[concepts/firewall-rules]] (proposed), raw notes in `raw/firewall-rules/`.
+(1) **Today nothing can change a running firewall**: the block is written once at
+enrollment, the heartbeat carries no rules, and Nebula's in-place reload, which
+keeps conntrack, is never called (no `*config.C` is kept).
+(2) **The reviews moved the design**: TCP 41820 must stay open from `node` too,
+since every peer's keepalive dials it, or a restrictive rule makes the watchdog
+restart the network every ~4.5 min; a rejected policy must leave the running
+rules and the file as they were, never close and restart.
+(3) **Seven things found on the way, each checked by hand**: the OS-stack
+fallback serves the agent API on `:41820` on every interface; a deleted node's
+address is reused while its cert still works (`NextNodeIndex` takes MAX over the
+nodes still listed); four writers of `nebula.yaml` without a lock, routes not
+atomic; DNS buttons vs API; capability and route writes not audited; Nebula's
+firewall pointer swap is a data race; a stale heartbeat comment.
+
+14:00 to 14:30, two of those seven fixed, test first (branch `test/lifecycle-root`,
+not pushed). (1) **A network whose Nebula is down serves nothing**: the OS-stack
+listener is gone (`serverset.go`), not moved to loopback, because nothing needs
+it: renewal and heartbeats are outbound, and the dashboard reaches an agent only
+through Nebula. On Linux it could also keep another network's kernel-TUN
+listener off `<mesh IP>:41820`. Once Nebula comes up, `rebindMesh` starts the
+mesh listener. Tests in `internal/client/fallback_listener_test.go`: on the old
+code two failed with `listening on [::]:41820 (OS stack)`; the third, recovery
+after a failed start, passes on both. (2) **A deleted node's address is not given
+out again**: migration 008 adds `released_node_ips` and a trigger on every
+delete of a node (API, prune, network cascade, by hand); `NextNodeIndex` never
+goes below the highest address ever used, and in a full /24 reuses only one
+released more than 48 h ago (`ErrNetworkFull` otherwise; before, a full network
+failed in `pki.NodeAddress`). Red on the old code: `.3` came back after the delete
+of `.3` (`internal/db/node_ip_test.go`), and `TestE2E_AddressNotReused` saw the
+deleted and the pruned address come back from the real server. Five planted bugs,
+each caught at the line meant for it; removing the cleanup trigger left 2 rows,
+which shows that a network's cascade does fire the node trigger. Not checked:
+whether `sqlc generate` (run by hand only, not in CI) parses `CREATE TRIGGER`.
+
+14:40 to 16:10, the gate and a review of the plan. The whole Go suite on the Mac
+passed in the second of two runs; in the first, one health check of
+`TestE2E_Proxy` hung for the route's 30 s while both ends had started a tunnel
+at once. Alone it passed 45 of 45, and in 35 of those the same double tunnel
+formed without harm, so load is part of it (open question filed). The changed
+packages passed in the Linux VM as user and the two new client tests as root.
+Two reviewers read the draft plan against the code
+(`raw/firewall-rules/plan-review-2026-11-27.md`). Found: agents probe clients on
+TCP 41820, which a client's ICMP-only firewall drops, so an agent whose only
+peers are clients sees the network as stuck (read, not run); a second plain
+writer of `nebula.yaml` (`listenport.go:73`); a Nebula reload callback cannot
+return an error, so validation has to build a scratch firewall first; "new
+networks only" needs no heartbeat field, a network column sent at enrollment is
+enough. Corrected in `concepts/firewall-rules.md`.

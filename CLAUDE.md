@@ -639,6 +639,7 @@ These rules are derived from 4 rounds of security review. Follow them for all ne
 - **Check `rows.Err()`** after every `for rows.Next()` loop.
 - **Use `wdb` (write DB) for any operation that needs atomicity** — even reads that must be serialized with a subsequent write. The `rdb` (read DB) can return stale data.
 - **Allocation queries (subnet, node IP) use MAX, not COUNT.** COUNT breaks when rows are deleted. MAX ensures monotonically increasing IDs. The UNIQUE constraint is the safety net.
+- **A node's mesh address is never given out again while the deleted node's certificate is valid.** MAX over the live rows alone gave the newest deleted node's address to the next one. A trigger records every deleted address in `released_node_ips` (API, prune, network cascade, a DELETE by hand); `NextNodeIndex` never goes below the highest address ever used, and when the /24 is full it reuses only addresses released more than 48 h ago. Addresses freed before migration 008 are unknown to it.
 - **Hash before storing, hash before querying.** If a token is hashed at rest (enrollment tokens, session tokens, device codes), the lookup query must hash the input before the WHERE clause.
 
 ### Agent

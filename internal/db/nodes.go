@@ -404,29 +404,75 @@ func (s *NodeStore) CountNonPendingForNetwork(networkID string) (int, error) {
 	return int(count), err
 }
 
-// NextNodeIndex returns the next available host index for a network's subnet.
+// releasedIPQuarantine is how long a deleted node's address stays out of use
+// once the network is full: twice the 24 h a node certificate lives, for
+// clocks that are off.
+const releasedIPQuarantine = 48 * time.Hour
+
+// ErrNetworkFull: every address of the network's /24 is in use, or was
+// released too recently to give out again.
+var ErrNetworkFull = errors.New("no free mesh address in this network")
+
+// maxNodeOctet is the last address of a /24 a node can have (.1 is the
+// lighthouse, .255 the broadcast address).
+const maxNodeOctet = 254
+
+// NextNodeIndex returns the next available host index for a network's subnet
+// (pki.NodeAddress adds 2). It never goes below the highest address ever
+// used, deleted nodes included (released_node_ips): a deleted node's
+// certificate stays valid until it expires. Once the /24 is full it gives the
+// lowest address that is free and was released longer ago than
+// releasedIPQuarantine.
 // Uses the write DB to serialize with concurrent node creation (prevents IP collisions).
 func (s *NodeStore) NextNodeIndex(networkID string) (int, error) {
+	ctx := context.Background()
 	q := dbsqlc.New(WrapDB(s.wdb))
-	rows, err := q.ListNodeIPsForNetwork(context.Background(), networkID)
+	live, err := q.ListNodeIPsForNetwork(ctx, networkID)
 	if err != nil {
 		return 0, err
 	}
-
-	if len(rows) == 0 {
-		return 0, nil
-	}
-
-	maxOctet := 1
-	for _, ip := range rows {
+	held := map[int]bool{}
+	highest := 1
+	for _, ip := range live {
 		if ip != nil {
 			octet := parseLastOctet(*ip)
-			if octet > maxOctet {
-				maxOctet = octet
-			}
+			held[octet] = true
+			highest = max(highest, octet)
 		}
 	}
-	return maxOctet - 1, nil
+
+	rows, err := s.wdb.QueryContext(ctx,
+		`SELECT nebula_ip, released_at FROM released_node_ips WHERE network_id = ?`, networkID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	recent := time.Now().Add(-releasedIPQuarantine).Unix()
+	for rows.Next() {
+		var ip string
+		var at int64
+		if err := rows.Scan(&ip, &at); err != nil {
+			return 0, err
+		}
+		octet := parseLastOctet(ip)
+		highest = max(highest, octet)
+		if at > recent {
+			held[octet] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	if highest < maxNodeOctet {
+		return highest - 1, nil
+	}
+	for octet := 2; octet <= maxNodeOctet; octet++ {
+		if !held[octet] {
+			return octet - 2, nil
+		}
+	}
+	return 0, ErrNetworkFull
 }
 
 // parseLastOctet extracts the last octet from a CIDR like "10.42.1.3/24" → 3.

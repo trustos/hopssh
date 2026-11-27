@@ -1192,6 +1192,32 @@ func TestE2E_Prune(t *testing.T) {
 	}
 }
 
+// TestE2E_AddressNotReused: a deleted or pruned node's certificate is valid
+// for up to 24 h more, so its mesh address must not go to the next node.
+func TestE2E_AddressNotReused(t *testing.T) {
+	h := newHousehold(t)
+	h.owner.Enroll(h.net.ID, "first")
+	deleted := h.owner.Enroll(h.net.ID, "deleted")
+	h.owner.Want(204, "DELETE", h.url("/nodes/%s", deleted.NodeID), nil, nil)
+	if next := h.owner.Enroll(h.net.ID, "next"); next.NebulaIP == deleted.NebulaIP {
+		t.Errorf("after a delete the next node got %s, the deleted node's address", next.NebulaIP)
+	}
+
+	pruned := h.owner.Enroll(h.net.ID, "pruned")
+	monthAgo := time.Now().Add(-30 * 24 * time.Hour).Unix()
+	if n := h.s.Exec("UPDATE nodes SET last_seen_at = ?, status = 'offline' WHERE id = ?", monthAgo, pruned.NodeID); n != 1 {
+		t.Fatalf("%d rows updated", n)
+	}
+	var out struct{ DeletedCount int }
+	h.owner.Want(200, "POST", h.url("/nodes/prune"), M{"olderThanSeconds": 7 * 24 * 3600}, &out)
+	if out.DeletedCount != 1 {
+		t.Fatalf("prune deleted %d, want 1", out.DeletedCount)
+	}
+	if next := h.owner.Enroll(h.net.ID, "after-prune"); next.NebulaIP == pruned.NebulaIP {
+		t.Errorf("after a prune the next node got %s, the pruned node's address", next.NebulaIP)
+	}
+}
+
 // TestE2E_Capabilities: what an admin switches off on a node is off at once,
 // for the owner too.
 func TestE2E_Capabilities(t *testing.T) {
