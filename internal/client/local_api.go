@@ -455,7 +455,7 @@ func (s *localAPIServer) enrollmentStatus(e *Enrollment) EnrollmentStatus {
 			//
 			// Cold-start grace: the watcher is only spawned when Nebula
 			// is up AND endpoint is non-empty (cmd/agent/main.go:611).
-			// Bundled mode pre-attach, OS-stack fallback, or empty
+			// Bundled mode pre-attach, Nebula that failed to start, or empty
 			// endpoint enrollments never stamp — treat "never stamped"
 			// as alive (no watcher to wedge). The 100-year threshold
 			// matches runWatcherWatchdog's own cold-start exclusion.

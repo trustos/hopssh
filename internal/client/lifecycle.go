@@ -132,7 +132,7 @@ func startMeshWithError(configPath, tunMode string) (meshService, error) {
 
 	svc, err := startNebula(configPath)
 	if err != nil {
-		log.Printf("[agent] WARNING: Nebula userspace failed: %v (falling back to OS stack)", err)
+		log.Printf("[agent] WARNING: Nebula userspace failed: %v", err)
 		return nil, err
 	}
 	return svc, nil

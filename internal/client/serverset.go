@@ -65,29 +65,10 @@ func (s *serverSet) startMeshListener(inst *meshInstance, handler http.Handler, 
 	return nil
 }
 
-// startOSListener starts an instance-scoped HTTP server on the OS
-// network stack. Used only when Nebula fails and we want the renewal
-// loop to still reach the control plane. Soft-fail on bind error (a
-// port collision with another instance's OS-stack fallback shouldn't
-// kill the whole agent — the renewal loop for this instance will
-// still run and can recover Nebula).
-func (s *serverSet) startOSListener(inst *meshInstance, handler http.Handler, address string) {
-	ln, err := net.Listen("tcp", address)
-	if err != nil {
-		log.Printf("[agent %s] OS-stack fallback listen %s: %v (renewal loop still active)", inst.name(), address, err)
-		return
-	}
-	log.Printf("[agent %s] listening on %s (OS stack)", inst.name(), ln.Addr())
-	srv := newHTTPServer(handler)
-	s.mu.Lock()
-	s.servers[inst.name()] = &instanceServer{srv: srv}
-	s.mu.Unlock()
-	go func() {
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
-			log.Printf("[agent %s] Serve: %v", inst.name(), err)
-		}
-	}()
-}
+// There is no OS-stack listener for a network whose Nebula is down. One
+// served the whole agent API on :41820 of every interface, outside the mesh
+// and its firewall, and nothing needed it: renewal and heartbeats are
+// outbound. rebindMesh starts the mesh listener once Nebula is up.
 
 // startUnscopedOSListener starts a single OS-stack server not tied to
 // any instance. Used when the agent has zero enrollments.

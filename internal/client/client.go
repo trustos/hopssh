@@ -101,7 +101,7 @@ func (c *Client) connectLocked(name string) error {
 			inst.close()
 			return nil, err
 		}
-		// startInstance falls back to OS stack and returns nil even when
+		// startInstance returns nil with the network down even when
 		// both kernel TUN and userspace Nebula failed (e.g. resource
 		// still busy). Detect that here so the API caller sees a real
 		// error and the retry loop fires. inst.lastMeshErr captures the
@@ -195,8 +195,9 @@ func (c *Client) disconnect(name string) error {
 // startInstance brings up Nebula + heartbeat + renewal + DNS for one
 // enrollment and wires a per-instance HTTP server onto its mesh listener
 // (when InstanceHTTPHook is non-nil). Returns an error on hard failures
-// (missing token, port bind on the agent listener); soft failures (Nebula
-// start) fall back to an OS-stack listener so the renewal loop keeps running.
+// (missing token, port bind on the agent listener); on soft failures (Nebula
+// start) it returns nil with the network down: renewal and heartbeat keep
+// running, and nothing is served until Nebula is up.
 //
 // Lifted from cmd/agent/main.go::tryStartMeshInstance with the mux+server
 // wiring abstracted behind c.httpHook (nil = no agent-API listener at all,
@@ -258,13 +259,11 @@ func (c *Client) startInstance(ctx context.Context, inst *meshInstance) error {
 		log.Printf("[agent %s] cert auto-renewal + heartbeat + watchdogs enabled (endpoint: %s)", inst.name(), inst.endpoint())
 	}
 
-	// If nebula.yaml is missing, fall back to OS stack (rare — should only
-	// happen if enrollment is corrupt). Renewal might recover it.
+	// If nebula.yaml is missing (rare — should only happen if enrollment is
+	// corrupt), the network stays down and serves nothing. Renewal might
+	// recover it.
 	if _, err := os.Stat(cfgPath); err != nil {
-		log.Printf("[agent %s] no Nebula config at %s, running on OS stack", inst.name(), cfgPath)
-		if handler != nil {
-			c.servers.startOSListener(inst, handler, fmt.Sprintf(":%d", agentAPIPort))
-		}
+		log.Printf("[agent %s] no Nebula config at %s, network stays down", inst.name(), cfgPath)
 		return nil
 	}
 
@@ -280,10 +279,7 @@ func (c *Client) startInstance(ctx context.Context, inst *meshInstance) error {
 		// using the network port" regardless of root cause — see
 		// v0.11.23 incident notes.
 		inst.lastMeshErr = meshErr
-		log.Printf("[agent %s] all Nebula modes failed — falling back to OS stack", inst.name())
-		if handler != nil {
-			c.servers.startOSListener(inst, handler, fmt.Sprintf(":%d", agentAPIPort))
-		}
+		log.Printf("[agent %s] all Nebula modes failed — network stays down, renewal keeps trying", inst.name())
 		return nil
 	}
 	inst.lastMeshErr = nil

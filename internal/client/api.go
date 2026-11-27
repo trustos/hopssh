@@ -466,8 +466,8 @@ type SubscriptionID struct {
 // skip the agent-API listener entirely.
 //
 // BuildHandler is called once per instance bring-up. The returned handler is
-// served on this instance's mesh listener (and the OS-stack fallback if
-// Nebula fails). Implementations typically wrap a stateless mux with
+// served on this instance's mesh listener only; while Nebula is down nothing
+// serves it. Implementations typically wrap a stateless mux with
 // bearer-token auth.
 type InstanceHTTPHook interface {
 	BuildHandler(name string, authToken string) http.Handler
@@ -482,7 +482,7 @@ func MigrateLegacyLayout(configDir string) error {
 }
 
 // AgentAPIPort is the TCP port the agent's per-instance HTTP listener binds
-// to on the mesh IP (and the OS-stack fallback). Exported so cmd/agent can
+// to on the mesh IP. Exported so cmd/agent can
 // reference the same constant without a separate definition.
 const AgentAPIPort = agentAPIPort
 

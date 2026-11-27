@@ -645,7 +645,7 @@ func renewalTime(notBefore, notAfter time.Time, seed string) time.Time {
 // the other, and the renewal loop is already running by then. A renewal that
 // lands in that window leaves Nebula with the new cert and the old key, and it
 // refuses to start at all — "private key is not a pair with public key in
-// nebula cert" — so the network comes up on the OS stack and Nebula only
+// nebula cert" — so the network stays down and Nebula only
 // arrives on the retry two seconds later. The window is open on every start of
 // a machine that was off for more than half a cert's life, which is 12 h of
 // the 24 h we issue; neither Mac in the fleet has logged it, so it is a race
@@ -1244,7 +1244,7 @@ func reloadNebula(inst *meshInstance) {
 		// Nebula never started — e.g. cert was expired at boot. Try a fresh
 		// start now that we have a renewed cert. This is the fix for the
 		// "screen sharing broken after overnight sleep" bug: agent boots with
-		// expired cert → Nebula fails → falls back to OS stack → renewal
+		// expired cert → Nebula fails → network stays down → renewal
 		// gets fresh cert → this path starts Nebula for the first time.
 		inst.svcMu.Unlock()
 		log.Printf("[renew %s] no embedded Nebula instance — attempting cold start with renewed cert", inst.name())
@@ -1289,7 +1289,7 @@ func reloadNebula(inst *meshInstance) {
 		// so this is effectively a no-op, but kept for symmetry).
 		inst.reinjectPortmapAddr()
 
-		// Swap HTTP listener from OS stack to mesh.
+		// Start the agent API on the mesh listener.
 		if inst.onRestart != nil && !inst.isClosed() {
 			inst.onRestart(newSvc)
 		}
