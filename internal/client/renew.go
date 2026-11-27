@@ -638,9 +638,10 @@ func renewalTime(notBefore, notAfter time.Time, seed string) time.Time {
 // lands in that window leaves Nebula with the new cert and the old key, and it
 // refuses to start at all — "private key is not a pair with public key in
 // nebula cert" — so the network comes up on the OS stack and Nebula only
-// arrives on the retry two seconds later. That is not a corner: it is every
-// machine that was off for more than half a cert's life, which is 12 h of the
-// 24 h we issue.
+// arrives on the retry two seconds later. The window is open on every start of
+// a machine that was off for more than half a cert's life, which is 12 h of
+// the 24 h we issue; neither Mac in the fleet has logged it, so it is a race
+// that is common to hit, not one that has been seen.
 //
 // A crash between the two writes is still caught by certStartProblem
 // ("mismatched") on the next start; this closes the window where nothing
