@@ -642,3 +642,77 @@ agent and the test fails waiting for it. The whole gate then passed in the VM
 5.3 s, `cmd/agent` 272.6 s; on the Mac 248 s, 385 s, 5.4 s, 398 s. (Times of today's entries from 14:15
 on were corrected afterwards from the commits and the session's clock; they had
 run ahead by up to three hours.)
+
+17:00 to 17:55, **the proxy hang** (step 6: item 13 of the plan). Not the two
+tunnels: one is enough. A scratch test of 4 s of back-to-back health checks
+through the real server hung 10 rounds of 10, at requests 514 to 3167, 0.26 to
+1.58 s in (17:03 to 17:13, load about 5). Each hang was a new connection whose
+SYN got no answer at all. gVisor lets a SYN reopen a connection in TIME_WAIT
+only when a listening socket is there (`handleTimeWaitSegments`, `connect.go`);
+Nebula's userspace service accepts through the forwarder and has none, so the
+SYN and every retry were dropped until the TIME_WAIT ended 60 s later, past the
+server's 30 s timeout. The side that closes first keeps the TIME_WAIT, and
+with `DisableKeepAlives` that is the agent. A/B with two peers in one process
+(17:21, load 3.8): listener closes first, 3 stalls in 776 connections and 3 in
+364, each a dial that timed out after 3 s; dialer closes first, none in 25,760
+and 26,469. Upstream unchanged (gVisor's `go` branch, Nebula master). Fix:
+`patches/gvisor-time-wait.patch`, a SYN that may reopen a TIME_WAIT goes to the
+stack's forwarder when no socket listens (new `Stack.TransportProtocolHandler`).
+`TestE2E_ConnectAgainAfterTimeWait` (internal/client, 2000 connections, each
+under 800 ms): red 3 of 3 without the patch (connections 251, 190, 210), green
+3 of 3 and then 20 of 20 with it (17:29, load 3.1, 124 s); one run passed
+through the new path 47 times. A planted variant that drops the SYN once was
+caught ("<nil> after 1.003s"). `TestE2E_ProxyBackToBack` (internal/api, the
+real server, 4 s): red 5 of 5 without the patch (health checks 769 to 894,
+0.36 to 0.41 s in, 503 after 30.0 s), green 10 of 10 with it (8454 to 8856
+checks each; 17:51 to 17:54, load falling from 17 to 5). Under `-race` gVisor
+takes about 0.5 s for a connection (dial p50 237 ms, echo p50 285 ms; without
+`-race` p50 172 µs and 136 µs); the profile is the race runtime and the
+scheduler. So both tests skip under `-race`, with `raceEnabled` in each
+package; 800 connections under `-race`, 2 of them through the new path, gave
+no report. The scratch tests are gone.
+
+17:55 to 18:40, **the gate, a review of the patch, and a test of it without
+Nebula** (step 6, continued).
+
+- The gate on the Mac (17:55 to 18:07, load 5 to 22): build, vet and
+  `go test ./...` passed (`cmd/agent` 417 s, `internal/api` 405 s,
+  `internal/client` 254 s). The race run failed in `internal/client` on
+  `TestE2E_FirewallUDPBetweenAgents` (from 45c94c7), not on the patch. Its UDP
+  probe gave two tries one deadline. A gonet read does not wake for the ICMP
+  "port unreachable"; the next write returns it as "refused". Under `-race`
+  the first read used up the deadline, and the second write failed on that
+  instead of on the refusal. Red 3 of 3 under `-race` (18:07). With a deadline
+  per try it passed 5 of 5, and `TestE2E_KeepaliveReachesClient` beside it
+  5 of 5 (18:09 to 18:11). The planted bug (UDP left out of the `all` block in
+  `agentFirewallYAML`) is still caught, 2 of 2 with and without `-race`.
+- `TestE2E_ProxyBackToBack` became a count, 2000 checks instead of 4 s, so it
+  is the same test on a slower machine. In the VM (18:02 to 18:05) it failed
+  5 of 5 without the patch (checks 169 to 1426, 503 after 30.0 s) and passed
+  5 of 5 with it (2000 in 4.1 s; on the Mac 0.9 s).
+- A review of the patch (17:56 to 18:03; 11 findings, each checked by a
+  skeptic, then by me in the code) led to three changes. A SYN+ACK no longer
+  takes the new path: the forwarder refuses it, so it ended the TIME_WAIT for
+  nothing. `TestTimeWaitReopen` is new: two bare gVisor stacks, no Nebula; the
+  server accepts through a forwarder and closes first, then the client
+  connects again from the same port, once to a server that accepts and once
+  to one that refuses. It is in the race run, where a connection between the
+  bare stacks takes 75 to 380 ms. The 800 ms bar of
+  `TestE2E_ConnectAgainAfterTimeWait` went: over Nebula one lost packet on a
+  loaded machine fails it, and `TestTimeWaitReopen` pins the answer to the
+  first SYN instead. Without the patch that test still failed 3 of 3, at
+  connections 55, 237 and 319 (18:24, load 36: VMs and other programs).
+- `TestTimeWaitReopen` without the patch (18:30 to 18:34): 10 of 10 failed,
+  both cases, and 10 of 10 under `-race`; each second connection timed out
+  after 3 s. With the patch 10 of 10 passed under `-race`. In the VM (18:34)
+  10 of 10 failed the same way without it, and 10 of 10 passed with it. A half
+  fix that lets only the resend through was caught at 1.00 s (18:23).
+- In the VM (18:29 to 18:31), with the patch as it is now: `TestTimeWaitReopen`
+  5 of 5, `TestE2E_ConnectAgainAfterTimeWait`, `TestE2E_FirewallUDPBetweenAgents`
+  and `TestE2E_KeepaliveReachesClient` 3 of 3 each, `TestE2E_ProxyBackToBack`
+  3 of 3.
+- The race run again on the Mac (18:35 to 18:40): passed, `internal/client`
+  281 s, with `TestTimeWaitReopen` in it; both tests through Nebula skipped.
+- Left for the firewall work (item 17), from the review, read and not run:
+  the conntrack reach on port 41820 ([[open-questions]], under the
+  `TestE2E_Proxy` entry).
