@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
+	mathrand "math/rand"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -113,14 +115,64 @@ func (m *e2eMesh) issue(nodeID string, age time.Duration) (crt, key string) {
 	return string(p), string(cert.MarshalPrivateKeyToPEM(cert.Curve_CURVE25519, k))
 }
 
-func freeUDPPort(t *testing.T) int {
+// Test ports come from a band the OS never hands out, and no port is handed
+// out twice in one run. Asking the OS gives the ephemeral range, and Nebula
+// binds with SO_REUSEPORT on Linux, so two instances can hold one port at the
+// same time: the second one starts fine, and a test that then asks whether the
+// port is free after a close sees the other instance's socket and fails at
+// random. That is what TestUserspaceClose_DoesNotExit and
+// TestE2E_DisconnectDuringRenewal did on CI, on ports in the ephemeral range.
+const (
+	udpTestPortBase = 20000
+	udpTestPortSpan = 10000
+)
+
+var (
+	udpPortMu      sync.Mutex
+	udpPortsHanded = map[int]bool{}
+)
+
+// reserveUDPPorts returns the first of n free UDP ports in a row and marks them
+// taken for the rest of this test binary.
+func reserveUDPPorts(t *testing.T, n int) int {
 	t.Helper()
-	p, err := net.ListenPacket("udp4", "0.0.0.0:0")
-	if err != nil {
-		t.Fatal(err)
+	udpPortMu.Lock()
+	defer udpPortMu.Unlock()
+	for i := 0; i < 100; i++ {
+		base := udpTestPortBase + mathrand.Intn(udpTestPortSpan-n)
+		used := false
+		for p := base; p < base+n; p++ {
+			if udpPortsHanded[p] || !udpPortAvailable(p) {
+				used = true
+				break
+			}
+		}
+		if used {
+			continue
+		}
+		for p := base; p < base+n; p++ {
+			udpPortsHanded[p] = true
+		}
+		return base
 	}
-	defer p.Close()
-	return p.LocalAddr().(*net.UDPAddr).Port
+	t.Fatalf("no %d free UDP ports in a row", n)
+	return 0
+}
+
+func freeUDPPort(t *testing.T) int { return reserveUDPPorts(t, 1) }
+
+// The OS is not asked for a port, so it cannot hand out one that another
+// instance already holds.
+func TestFreeUDPPort_NotFromTheEphemeralRange(t *testing.T) {
+	a, b := freeUDPPort(t), freeUDPPort(t)
+	if a == b {
+		t.Fatalf("one port handed out twice: %d", a)
+	}
+	for _, p := range []int{a, b} {
+		if p < udpTestPortBase || p >= udpTestPortBase+udpTestPortSpan {
+			t.Fatalf("port %d is not in the band the OS never hands out", p)
+		}
+	}
 }
 
 func udpPortHeld(port int) bool {
@@ -280,9 +332,13 @@ func TestE2E_DisconnectDuringRenewal(t *testing.T) {
 	}
 
 	m.onRenew.Store(nil)
-	if err := m.c.Connect(context.Background(), "home"); err != nil || !m.live("home") {
-		t.Errorf("reconnect: err %v, live %v", err, m.live("home"))
+	if err := m.c.Connect(context.Background(), "home"); err != nil {
+		t.Fatalf("reconnect: %v", err)
 	}
+	// The instance is up. A renewal that was in flight when the network was
+	// disconnected can still close the fresh instance behind Connect's back;
+	// the recovery loop brings it back, so this waits rather than glances.
+	within(t, 10*time.Second, "the reconnected network to be live", func() bool { return m.live("home") })
 }
 
 // TestE2E_KeepaliveOnUserspaceNetwork: two "in-app" networks on one machine
