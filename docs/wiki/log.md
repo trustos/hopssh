@@ -361,3 +361,30 @@ Pages touched: cert-renewal, open-questions.
 06:25, one Windows swap gotcha for the next dev-deploy: `Stop-Service hop-agent` and then `Copy-Item` over `C:\hop\hop-agent.exe` fails with "being used by another process" even though the service reports STOPPED — the SCM still holds the image of the service it just stopped. The rename-then-copy that self-update already uses (`hop-agent.exe` → `.old`, which Windows allows for a running image) is what works; `cleanupOldBinary` removes the `.old` on the next start.
 
 Pages touched: log, concepts/e2e-tests.
+
+07:00 to 07:40, the fleet on the fixed code, and what our firewall really opens.
+(1) **Production is on everything that was broken.** The Nomad job runs
+`ghcr.io/trustos/hopssh:v0.11.30` and sets `HOPSSH_NODE_PRUNE_AGE_HOURS = "0"`, so
+the control plane no longer deletes a node for being quiet (cause L). Both Macs run
+agent v0.11.30. The renewal deadline is now a countdown to a fixed instant, read
+live on the mini: `due in 20m21s`, then `19m21s`, `18m21s`, `13m21s` (cause E). A
+watcher is waiting for the mini's `home` renewal to land so the reload can be seen
+in the log, not only scheduled.
+(2) **The office loss is not "the office network".** In the worst hour `home` lost
+9 % in both directions between the two Macs while `work` between the same two lost
+nothing; over 40 hours 0.59/0.63 % against 0.16/0.09 %. Corrected in
+[[concepts/loss-on-a-limited-line]] and reopened in [[open-questions]]. The lab pair
+(two networks on the same two VMs, 1000 pings each) is clean, so it is not our
+two-network plumbing either. What would settle it is a packet count on the wire
+during a lossy minute; the run that does it (5 pings a minute per network for 40
+minutes, counting pings, wire packets and the agent's unfiltered log together) was
+refused by the permission classifier on the office Mac and needs the user's OK.
+(3) **The UDP rule protects nothing the TCP rule has not already given away.** Read
+off the live `nebula.yaml` on the mini: inbound is TCP on every port from the `node`
+group, TCP 41820 from `admin`, and ICMP — no UDP. `hop client join` allows inbound
+ICMP only, so a joined client accepts nothing from the mesh. The control plane's own
+lighthouse allows all three protocols. So opening UDP between nodes costs no
+exposure that all-TCP does not already allow; firewall rules (roadmap #13) are the
+thing that would actually restrict anything.
+(4) `govulncheck ./...` on this branch: one reachable finding, the gorilla/websocket
+one that PR 9 pins. Nothing else.
