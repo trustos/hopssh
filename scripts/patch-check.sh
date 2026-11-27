@@ -34,6 +34,9 @@ apply() { # apply DIR PATCH
 		cat "$tmp/out"
 		return 1
 	}
+	# Apple's patch keeps a .orig when a hunk lands at an offset, which two
+	# patches of one file do in one of the orders; the result is the same.
+	find "$1" -name '*.orig' -delete
 }
 
 fail=0

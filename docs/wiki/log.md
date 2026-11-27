@@ -886,3 +886,21 @@ differ), a line added to `outside.go` (touched by a patch) and to `cert.go`
 (touched by none) in `vendor/` (both fail). It passes on the 11 patches here
 and in the Linux VM with GNU patch 2.8 (given a pristine copy, as the VM has
 no module cache). In `make preflight` and CI's build job.
+
+21:52 to 22:10, **patch `firewall-swap`** (phase 2 of firewall rules, its
+first step). A reload of the firewall section swapped the interface's
+firewall with a plain pointer write while the packet threads read it on every
+packet (finding 6 of [[concepts/firewall-rules]]; upstream v1.12.0 is the
+same). The field is now an `atomic.Pointer`; five reads in `inside.go` and
+`outside.go` and four in `interface.go` load it. `TestFirewallSwapIsSafeToRead`
+reloads the firewall 200 times while the main goroutine reads it: without the
+patch it fails 5 of 5 under `-race` (and passes without), with it 30 of 30.
+The same patch adds `Control.CheckFirewall(text)`, which builds the firewall
+a text would install without installing it (under `recover`: no certificate
+panics) and returns its rule hash, and `Control.FirewallRuleHash()`.
+`TestCheckFirewall` pins why: `ReloadConfigString` of a rule Nebula refuses
+(`proto: foo`) returns nil, logs, and keeps the old rules. The patch touches
+`interface.go` and `outside.go`, which other patches touch too; patch-check
+passes, after it learned to delete the `.orig` that Apple's `patch` keeps when
+a hunk lands at an offset (in one of the two orders; the files are the same).
+`make test-race` green, and the two tests, build and vet in the Linux VM.

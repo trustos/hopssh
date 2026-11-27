@@ -1,0 +1,341 @@
+diff --git a/github.com/slackhq/nebula/control_firewall.go b/github.com/slackhq/nebula/control_firewall.go
+new file mode 100644
+index 0000000..a51c173
+--- /dev/null
++++ b/github.com/slackhq/nebula/control_firewall.go
+@@ -0,0 +1,39 @@
++package nebula
++
++import (
++	"fmt"
++	"log/slog"
++
++	"github.com/slackhq/nebula/config"
++)
++
++// hopssh patch firewall-swap: a reload of the config reports nothing about
++// the firewall. A rule Nebula refuses is only logged, and the old rules
++// stay. CheckFirewall builds the firewall that text would install, without
++// installing it, and returns its rule hash; FirewallRuleHash is the hash of
++// the one running. A caller checks first, reloads, and compares the two.
++
++// CheckFirewall builds the firewall of a config text (its firewall section,
++// with this node's certificate) and returns its rule hash, or why it can't.
++func (c *Control) CheckFirewall(text string) (hash string, err error) {
++	defer func() {
++		// NewFirewallFromConfig panics when there is no certificate.
++		if r := recover(); r != nil {
++			hash, err = "", fmt.Errorf("firewall: %v", r)
++		}
++	}()
++	cfg := config.NewC(c.l)
++	if err := cfg.LoadString(text); err != nil {
++		return "", err
++	}
++	fw, err := NewFirewallFromConfig(slog.New(slog.DiscardHandler), c.f.pki.getCertState(), cfg)
++	if err != nil {
++		return "", err
++	}
++	return fw.GetRuleHash(), nil
++}
++
++// FirewallRuleHash returns the rule hash of the firewall in use.
++func (c *Control) FirewallRuleHash() string {
++	return c.f.firewall.Load().GetRuleHash()
++}
+diff --git a/github.com/slackhq/nebula/firewall_swap_race_test.go b/github.com/slackhq/nebula/firewall_swap_race_test.go
+new file mode 100644
+index 0000000..4f9232e
+--- /dev/null
++++ b/github.com/slackhq/nebula/firewall_swap_race_test.go
+@@ -0,0 +1,172 @@
++package nebula
++
++import (
++	"crypto/ed25519"
++	"crypto/rand"
++	"fmt"
++	"log/slog"
++	"net/netip"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/slackhq/nebula/cert"
++	"github.com/slackhq/nebula/config"
++)
++
++// hopssh patch firewall-swap: a reload of the firewall section replaced the
++// interface's firewall with a plain pointer write, while the packet
++// goroutines read it on every packet. hopssh reloads it in place when the
++// network's rules change. Run with -race: without the patch this test fails
++// every time.
++func TestFirewallSwapIsSafeToRead(t *testing.T) {
++	l := slog.New(slog.DiscardHandler)
++	cs := &CertState{v2Cert: testFirewallCert(t)}
++	p := &PKI{l: l}
++	p.cs.Store(cs)
++
++	c := config.NewC(l)
++	if err := c.LoadString(firewallText(1)); err != nil {
++		t.Fatal(err)
++	}
++	fw, err := NewFirewallFromConfig(l, cs, c)
++	if err != nil {
++		t.Fatal(err)
++	}
++	f := &Interface{pki: p, l: l}
++	f.firewall.Store(fw)
++	c.RegisterReloadCallback(f.reloadFirewall)
++
++	const reloads = 200
++	done := make(chan struct{})
++	go func() {
++		defer close(done)
++		for i := range reloads {
++			// Another port each time, so every reload installs a new firewall.
++			if err := c.ReloadConfigString(firewallText(2 + i%2)); err != nil {
++				t.Error(err)
++				return
++			}
++		}
++	}()
++	for running := true; running; {
++		select {
++		case <-done:
++			running = false
++		default:
++		}
++		// What the packet goroutines read: each returns at once, since both
++		// actions are drop.
++		f.rejectInside(nil, nil, 0)
++		f.rejectOutside(nil, nil, nil, nil, nil, 0)
++	}
++	if v := f.firewall.Load().rulesVersion; v != reloads {
++		t.Fatalf("rules version %d after %d reloads", v, reloads)
++	}
++}
++
++func firewallText(port int) string {
++	return fmt.Sprintf(`firewall:
++  outbound:
++    - port: any
++      proto: any
++      host: any
++  inbound:
++    - port: %d
++      proto: tcp
++      host: any
++`, port)
++}
++
++func testFirewallCert(t *testing.T) cert.Certificate {
++	t.Helper()
++	caPub, caKey, err := ed25519.GenerateKey(rand.Reader)
++	if err != nil {
++		t.Fatal(err)
++	}
++	now := time.Now()
++	ca, err := (&cert.TBSCertificate{
++		Version: cert.Version2, Name: "ca", IsCA: true,
++		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour),
++		PublicKey: caPub, Curve: cert.Curve_CURVE25519,
++	}).Sign(nil, cert.Curve_CURVE25519, caKey)
++	if err != nil {
++		t.Fatal(err)
++	}
++	pub := make([]byte, 32)
++	if _, err := rand.Read(pub); err != nil {
++		t.Fatal(err)
++	}
++	node, err := (&cert.TBSCertificate{
++		Version: cert.Version2, Name: "node",
++		Networks:  []netip.Prefix{netip.MustParsePrefix("10.42.1.2/24")},
++		Groups:    []string{"node"},
++		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour),
++		PublicKey: pub, Curve: cert.Curve_CURVE25519,
++	}).Sign(ca, cert.Curve_CURVE25519, caKey)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return node
++}
++
++// CheckFirewall reports what a reload would not: a rule Nebula refuses, and
++// no certificate. The hash it returns is the one the reload installs.
++func TestCheckFirewall(t *testing.T) {
++	l := slog.New(slog.DiscardHandler)
++	cs := &CertState{v2Cert: testFirewallCert(t)}
++	p := &PKI{l: l}
++	p.cs.Store(cs)
++	c := config.NewC(l)
++	if err := c.LoadString(firewallText(1)); err != nil {
++		t.Fatal(err)
++	}
++	fw, err := NewFirewallFromConfig(l, cs, c)
++	if err != nil {
++		t.Fatal(err)
++	}
++	f := &Interface{pki: p, l: l}
++	f.firewall.Store(fw)
++	c.RegisterReloadCallback(f.reloadFirewall)
++	ctrl := &Control{f: f, l: l}
++
++	running := ctrl.FirewallRuleHash()
++	same, err := ctrl.CheckFirewall(firewallText(1))
++	if err != nil || same != running {
++		t.Fatalf("the running rules: %q, %v; want %q", same, err, running)
++	}
++	next, err := ctrl.CheckFirewall(firewallText(2))
++	if err != nil || next == running {
++		t.Fatalf("other rules: %q, %v; want a hash other than %q", next, err, running)
++	}
++	if got := ctrl.FirewallRuleHash(); got != running {
++		t.Fatalf("a check installed rules: %q, want %q", got, running)
++	}
++	if err := c.ReloadConfigString(firewallText(2)); err != nil {
++		t.Fatal(err)
++	}
++	if got := ctrl.FirewallRuleHash(); got != next {
++		t.Fatalf("after the reload %q, want %q", got, next)
++	}
++
++	bad := strings.Replace(firewallText(3), "proto: tcp", "proto: foo", 1)
++	if _, err := ctrl.CheckFirewall(bad); err == nil {
++		t.Fatal("a rule with proto foo was accepted")
++	}
++	// The reload takes it without a word and keeps the old rules: why the
++	// check is needed.
++	if err := c.ReloadConfigString(bad); err != nil {
++		t.Fatal(err)
++	}
++	if got := ctrl.FirewallRuleHash(); got != next {
++		t.Fatalf("a refused rule changed the running hash to %q", got)
++	}
++	if _, err := ctrl.CheckFirewall("firewall: ["); err == nil {
++		t.Fatal("text that is not YAML was accepted")
++	}
++
++	p.cs.Store(&CertState{})
++	if _, err := ctrl.CheckFirewall(firewallText(1)); err == nil {
++		t.Fatal("no certificate, and no error")
++	}
++}
+diff --git a/github.com/slackhq/nebula/inside.go b/github.com/slackhq/nebula/inside.go
+index ca655b9..c305b88 100644
+--- a/github.com/slackhq/nebula/inside.go
++++ b/github.com/slackhq/nebula/inside.go
+@@ -72,7 +72,7 @@ func (f *Interface) consumeInsidePacket(packet []byte, fwPacket *firewall.Packet
+ 		return
+ 	}
+ 
+-	dropReason := f.firewall.Drop(*fwPacket, false, hostinfo, f.pki.GetCAPool(), localCache)
++	dropReason := f.firewall.Load().Drop(*fwPacket, false, hostinfo, f.pki.GetCAPool(), localCache)
+ 	if dropReason == nil {
+ 		f.sendNoMetrics(header.Message, 0, hostinfo.ConnectionState, hostinfo, netip.AddrPort{}, packet, nb, out, q)
+ 
+@@ -88,7 +88,7 @@ func (f *Interface) consumeInsidePacket(packet []byte, fwPacket *firewall.Packet
+ }
+ 
+ func (f *Interface) rejectInside(packet []byte, out []byte, q int) {
+-	if !f.firewall.OutboundSendReject {
++	if !f.firewall.Load().OutboundSendReject {
+ 		return
+ 	}
+ 
+@@ -104,7 +104,7 @@ func (f *Interface) rejectInside(packet []byte, out []byte, q int) {
+ }
+ 
+ func (f *Interface) rejectOutside(packet []byte, ci *ConnectionState, hostinfo *HostInfo, nb, out []byte, q int) {
+-	if !f.firewall.InboundSendReject {
++	if !f.firewall.Load().InboundSendReject {
+ 		return
+ 	}
+ 
+@@ -225,7 +225,7 @@ func (f *Interface) sendMessageNow(t header.MessageType, st header.MessageSubTyp
+ 	}
+ 
+ 	// check if packet is in outbound fw rules
+-	dropReason := f.firewall.Drop(*fp, false, hostinfo, f.pki.GetCAPool(), nil)
++	dropReason := f.firewall.Load().Drop(*fp, false, hostinfo, f.pki.GetCAPool(), nil)
+ 	if dropReason != nil {
+ 		if f.l.Enabled(context.Background(), slog.LevelDebug) {
+ 			f.l.Debug("dropping cached packet",
+diff --git a/github.com/slackhq/nebula/interface.go b/github.com/slackhq/nebula/interface.go
+index c44f38b..b60c3f7 100644
+--- a/github.com/slackhq/nebula/interface.go
++++ b/github.com/slackhq/nebula/interface.go
+@@ -57,7 +57,7 @@ type Interface struct {
+ 	outside               udp.Conn
+ 	inside                overlay.Device
+ 	pki                   *PKI
+-	firewall              *Firewall
++	firewall              atomic.Pointer[Firewall] // hopssh patch firewall-swap: a reload swaps it while packets read it
+ 	connectionManager     *connectionManager
+ 	handshakeManager      *HandshakeManager
+ 	dnsServer             *dnsServer
+@@ -179,7 +179,6 @@ func NewInterface(ctx context.Context, c *InterfaceConfig) (*Interface, error) {
+ 		hostMap:               c.HostMap,
+ 		outside:               c.Outside,
+ 		inside:                c.Inside,
+-		firewall:              c.Firewall,
+ 		dnsServer:             c.DnsServer,
+ 		handshakeManager:      c.HandshakeManager,
+ 		createTime:            time.Now(),
+@@ -209,6 +208,7 @@ func NewInterface(ctx context.Context, c *InterfaceConfig) (*Interface, error) {
+ 		l: c.l,
+ 	}
+ 
++	ifce.firewall.Store(c.Firewall)
+ 	ifce.tryPromoteEvery.Store(c.tryPromoteEvery)
+ 	ifce.reQueryEvery.Store(c.reQueryEvery)
+ 	ifce.reQueryWait.Store(int64(c.reQueryWait))
+@@ -392,7 +392,7 @@ func (f *Interface) reloadFirewall(c *config.C) {
+ 
+ 	// The firewall builds its routableNetworks set from the certificate's UnsafeNetworks at construction.
+ 	// Check to see if that set has changed, and if so, rebuild the firewall.
+-	certUnsafeChanged := curCert != nil && !slices.Equal(curCert.UnsafeNetworks(), f.firewall.unsafeNetworks)
++	certUnsafeChanged := curCert != nil && !slices.Equal(curCert.UnsafeNetworks(), f.firewall.Load().unsafeNetworks)
+ 
+ 	if !c.HasChanged("firewall") && !certUnsafeChanged {
+ 		f.l.Debug("No firewall config change detected")
+@@ -405,7 +405,7 @@ func (f *Interface) reloadFirewall(c *config.C) {
+ 		return
+ 	}
+ 
+-	oldFw := f.firewall
++	oldFw := f.firewall.Load()
+ 	conntrack := oldFw.Conntrack
+ 	conntrack.Lock()
+ 	defer conntrack.Unlock()
+@@ -423,7 +423,7 @@ func (f *Interface) reloadFirewall(c *config.C) {
+ 		fw.Conntrack = conntrack
+ 	}
+ 
+-	f.firewall = fw
++	f.firewall.Store(fw)
+ 
+ 	oldFw.Destroy()
+ 	f.l.Info("New firewall has been installed",
+@@ -510,7 +510,7 @@ func (f *Interface) emitStats(ctx context.Context, i time.Duration) {
+ 	certMaxVersion := metrics.GetOrRegisterGauge("certificate.max_version", nil)
+ 
+ 	emit := func() {
+-		f.firewall.EmitStats()
++		f.firewall.Load().EmitStats()
+ 		f.handshakeManager.EmitStats()
+ 		udpStats()
+ 
+diff --git a/github.com/slackhq/nebula/outside.go b/github.com/slackhq/nebula/outside.go
+index e7b6b9b..02eeb8a 100644
+--- a/github.com/slackhq/nebula/outside.go
++++ b/github.com/slackhq/nebula/outside.go
+@@ -457,7 +457,7 @@ func (f *Interface) handleOutsideMessagePacket(hostinfo *HostInfo, out []byte, p
+ 		return
+ 	}
+ 
+-	dropReason := f.firewall.Drop(*fwPacket, true, hostinfo, f.pki.GetCAPool(), localCache)
++	dropReason := f.firewall.Load().Drop(*fwPacket, true, hostinfo, f.pki.GetCAPool(), localCache)
+ 	if dropReason != nil {
+ 		// NOTE: We give `packet` as the `out` here since we already decrypted from it and we don't need it anymore
+ 		// This gives us a buffer to build the reject packet in
