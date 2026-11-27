@@ -1188,7 +1188,7 @@ func (s *localAPIServer) installEnrollment(er *enrollResponse, endpoint, tunMode
 	// successfully written the cert files, so a write-failure would be
 	// unusual. If/when we refactor those into error-returning forms,
 	// swap in here.
-	writeNebulaConfig(enrollDir, er.ServerIP, serverHost, er.LighthousePort, tunMode, listenPort)
+	writeNebulaConfig(enrollDir, er.ServerIP, serverHost, er.LighthousePort, tunMode, listenPort, er.Firewall)
 	writeDNSConfig(enrollDir, er.DNSDomain, serverHost, er.LighthousePort)
 
 	enrollment := &Enrollment{

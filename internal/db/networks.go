@@ -215,6 +215,14 @@ func (s *NetworkStore) FirstAvailableLighthousePort() (int, error) {
 	return 42001, nil
 }
 
+// FirewallPreset is the network's firewall preset (migration 009), which the
+// enrollment answers carry.
+func (s *NetworkStore) FirewallPreset(id string) (string, error) {
+	var preset string
+	err := s.rdb.QueryRow(`SELECT firewall_preset FROM networks WHERE id = ?`, id).Scan(&preset)
+	return preset, err
+}
+
 // SlugExists checks if a network slug is already taken.
 func (s *NetworkStore) SlugExists(slug string) bool {
 	q := dbsqlc.New(WrapDB(s.rdb))

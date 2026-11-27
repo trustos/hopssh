@@ -65,6 +65,12 @@ Move closed items to a "Resolved" section at the bottom rather than deleting —
 
 Source / context: `docs/wiki/log.md` 2026-11-27, `concepts/firewall-rules.md` "Found on the way".
 
+## 2026-11-27 — `hop client join` gives the device no way to use the mesh
+
+Read in the code while fixing the keepalive, not run. `runClientJoin` (`internal/client/cli_join.go`) starts Nebula with `tun: user: true` and nothing else: no listener, no SOCKS proxy, no port forward, no DNS. The device's programs can't reach the mesh, so the hint it prints ("Try: ping <hostname>") can't work. Every run also enrolls afresh: a new node and certificate each time, and the old node stays on the server. **Decide:** build it out as a client (kernel TUN as an installed service does, or a local proxy), or drop the command in favour of `hop-agent enroll`.
+
+Also: existing networks keep the `tcp` preset; there is no way yet to move a network, or the devices already in it, to `all` (item 4 of the plan, later; [[concepts/firewall-rules]] "Decide").
+
 ## 2026-11-27 — `TestE2E_Proxy`: a request hangs when both ends start a tunnel at once
 
 In one of two full runs of `go test ./...` on the Mac (14:14), the 30th health check of `TestE2E_Proxy` (`internal/api/e2e_test.go:1548`) got the route timeout (503 after 30 s); the 29 before it took about 1 ms. Alone it passed 45 of 45 (5, then 40 in a loop); in 35 of those 40 both ends had started a tunnel at once and none had a dead tunnel, so two tunnels alone do not cause it — the full run's load (three packages of end-to-end tests at once) is part of it. Neither fix of the day is on its path (fake agent, first node, nothing deleted).
@@ -124,6 +130,8 @@ Seen while writing the tests, not pinned: any member can start port forwards (th
 Clipboard, seen while writing `TestE2E_Clipboard`, not pinned: `since` has seconds, so the second of two clips in one second is skipped for a device that polled in between; the limit is 60 requests a minute per address and every device polls 30 times a minute, so three devices behind one router run into it after about four minutes; a database error answers 401 (as renew and heartbeat did, a).
 
 ## 2026-11-24 — UDP between devices is blocked by our own firewall: allow it? (P)
+
+**Decided and built 2026-11-27 (not released):** networks created from migration 009 on allow every protocol between agents; older networks keep TCP only, and moving them is a later decision. Clients now also accept TCP 41820 from `node`, so the keepalive of agents reaches them. How, and the tests: [[concepts/firewall-rules]] ("Today", item 8). The text below is the question as it stood.
 
 Proven in [[concepts/netlab]] (`TestUDPBetweenDevices`, pinned), and read off the live config on the mini (2026-11-27): the agent allows inbound **TCP on every port** from the `node` group, TCP 41820 from `admin`, and ICMP — no UDP (`internal/client/enroll.go:654`). `hop client join` allows inbound ICMP only, so a client accepts nothing at all from the mesh (`internal/client/cli_join.go:206`). The control plane's own lighthouse allows everything (`internal/mesh/network_manager.go:538`).
 

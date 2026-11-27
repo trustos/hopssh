@@ -1143,6 +1143,69 @@ func TestE2E_Bundles(t *testing.T) {
 	}
 }
 
+// TestE2E_FirewallPreset: every answer that hands an agent its certificate
+// names the network's firewall preset, which the agent turns into its
+// firewall block: "all" for a network created now, "tcp" for one from before
+// migration 009. The client join answer has none; `hop client join` writes
+// its own block.
+func TestE2E_FirewallPreset(t *testing.T) {
+	h := newHousehold(t)
+	answers := func() map[string]string {
+		got := map[string]string{}
+		var e struct{ Firewall string }
+		_, token := h.owner.EnrollToken(h.net.ID)
+		h.s.Anonymous().Want(200, "POST", "/api/enroll", M{"token": token, "hostname": "box", "os": "linux", "arch": "arm64"}, &e)
+		got["token"] = e.Firewall
+
+		var c struct{ DeviceCode, UserCode string }
+		h.s.Anonymous().Want(200, "POST", "/api/device/code", M{"hostname": "laptop", "os": "darwin", "arch": "arm64"}, &c)
+		h.owner.Want(200, "POST", "/api/device/authorize", M{"userCode": c.UserCode, "networkId": h.net.ID}, nil)
+		e.Firewall = ""
+		h.s.Anonymous().Want(200, "POST", "/api/device/poll", M{"deviceCode": c.DeviceCode, "hostname": "laptop", "os": "darwin", "arch": "arm64"}, &e)
+		got["device flow"] = e.Firewall
+
+		var out struct{ BundleURL string }
+		h.owner.Want(201, "POST", h.url("/bundles"), nil, &out)
+		req, _ := http.NewRequest("GET", out.BundleURL, nil)
+		req.Header.Set("X-Forwarded-Proto", "https")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for tr := tar.NewReader(gz); ; {
+			f, err := tr.Next()
+			if err != nil {
+				break
+			}
+			if strings.HasSuffix(f.Name, "config.json") {
+				e.Firewall = ""
+				if err := json.NewDecoder(tr).Decode(&e); err != nil {
+					t.Fatal(err)
+				}
+				got["bundle"] = e.Firewall
+			}
+		}
+		return got
+	}
+
+	for _, want := range []string{"all", "tcp"} {
+		if want == "tcp" {
+			h.s.Exec("UPDATE networks SET firewall_preset = 'tcp' WHERE id = ?", h.net.ID)
+		}
+		got := answers()
+		for _, flow := range []string{"token", "device flow", "bundle"} {
+			if got[flow] != want {
+				t.Errorf("%s answer of a network with preset %q names %q", flow, want, got[flow])
+			}
+		}
+	}
+}
+
 // TestE2E_Prune: the "clean up" button takes what it says, of this network
 // only, and never a node that is online.
 func TestE2E_Prune(t *testing.T) {

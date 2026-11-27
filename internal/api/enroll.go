@@ -142,6 +142,11 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "network not found", http.StatusInternalServerError)
 		return
 	}
+	firewallPreset, err := h.Networks.FirewallPreset(network.ID)
+	if err != nil {
+		http.Error(w, "failed to read the network", http.StatusInternalServerError)
+		return
+	}
 
 	// F2 conflict short-circuit (v0.10.85+): same logic as Poll. Note the
 	// token has already been claimed by ClaimEnrollmentToken — it can't
@@ -223,6 +228,7 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		"nebulaIP":       node.NebulaIP,
 		"lighthousePort": lighthousePort,
 		"dnsDomain":      network.DNSDomain,
+		"firewall":       firewallPreset,
 	}
 	if h.LighthouseHost != "" {
 		resp["lighthouseHost"] = h.LighthouseHost

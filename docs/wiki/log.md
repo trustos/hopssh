@@ -512,7 +512,7 @@ nodes still listed); four writers of `nebula.yaml` without a lock, routes not
 atomic; DNS buttons vs API; capability and route writes not audited; Nebula's
 firewall pointer swap is a data race; a stale heartbeat comment.
 
-14:00 to 14:30, two of those seven fixed, test first (branch `test/lifecycle-root`,
+14:00 to 14:15, two of those seven fixed, test first (branch `test/lifecycle-root`,
 not pushed). (1) **A network whose Nebula is down serves nothing**: the OS-stack
 listener is gone (`serverset.go`), not moved to loopback, because nothing needs
 it: renewal and heartbeats are outbound, and the dashboard reaches an agent only
@@ -532,7 +532,7 @@ each caught at the line meant for it; removing the cleanup trigger left 2 rows,
 which shows that a network's cascade does fire the node trigger. Not checked:
 whether `sqlc generate` (run by hand only, not in CI) parses `CREATE TRIGGER`.
 
-14:40 to 16:10, the gate and a review of the plan. The whole Go suite on the Mac
+14:15 to 14:45, the gate and a review of the plan. The whole Go suite on the Mac
 passed in the second of two runs; in the first, one health check of
 `TestE2E_Proxy` hung for the route's 30 s while both ends had started a tunnel
 at once. Alone it passed 45 of 45, and in 35 of those the same double tunnel
@@ -547,7 +547,7 @@ return an error, so validation has to build a scratch firewall first; "new
 networks only" needs no heartbeat field, a network column sent at enrollment is
 enough. Corrected in `concepts/firewall-rules.md`.
 
-16:10 to 16:40, the first small fixes of the approved plan, each red on the old
+15:35 to 16:10, the first small fixes of the approved plan, each red on the old
 code first. (1) **A full network answers 409 with a JSON error**, not 500, on all
 four ways to add a node (`allocNodeIP` in `internal/api/enroll.go`;
 `TestE2E_NetworkFull` failed on all four before). The agent's local API already
@@ -563,7 +563,7 @@ the old code (an admin got 404); a planted bug without the admin check was caugh
 by both `TestE2E_Access` (member got 201) and the source scan. Loose ends filed in
 `open-questions.md`.
 
-16:40 to 17:30, **one lock for every writer of `nebula.yaml`** (step 3 of the
+16:10 to 16:25, **one lock for every writer of `nebula.yaml`** (step 3 of the
 plan). Seven functions write the file; each now holds `lockNebulaYAML` from its
 read to its write and writes with `writeNebulaYAML`, which also keeps
 `nebula.yaml.bak`. `startInstance` restores a missing, empty, unparseable or
@@ -587,7 +587,7 @@ AppleDouble `._*` files (426 in the VM's copy); Go's build skips them, a test
 that globs `*.go` does not. Sync with `--exclude='._*'`; the source scan now skips
 what the build skips.
 
-17:30 to 18:10, **golden tests of every firewall block** (P0, step 4). `git show`
+16:25 to 16:30, **golden tests of every firewall block** (P0, step 4). `git show`
 of the commits that changed a firewall block gives three agent blocks (80fdbaa:
 TCP from group `server`; 791ac0b: TCP 41820 from `admin`, TCP from `user` and
 `agent`; 41ce077 to today: TCP 41820 from `admin`, TCP from `node`) and one client
@@ -603,3 +603,42 @@ alone, for the oldest block too. Planted: TCP from `node` widened to any proto
 client (caught), `ensureP2PConfig` dropping the ICMP rule (caught), a fixture
 edited (caught). Green on Linux. The client's template text moved into
 `clientNebulaConfig`, since `writeClientNebulaConfig` writes to `/etc/hop-client`.
+
+16:30 to 16:55, **a firewall preset per network, and the keepalive of clients**
+(step 5: items 3 and 6 of the plan). Migration 009 adds `networks.firewall_preset`:
+the column's default is `all`, and the same migration sets every existing row to
+`tcp`, so old networks keep what their devices run (`TestMigration009_FirewallPreset`
+builds a database at 008 first). The token, device-flow and bundle answers send it
+as `firewall`; the client join answer does not. `agentFirewallYAML` renders `tcp`
+(today's block, byte for byte) or `all` (every protocol from `node`, with
+`inbound_action: drop` written out); an empty or unknown value gives `tcp`, never
+more. Red before the change, with two real Nebula peers
+(`internal/client/firewall_e2e_test.go`): UDP from one agent to another did not
+get through, and an agent whose only peer was a client counted 0 of 1 probes
+alive. The first red run of the UDP test was wrong for another reason: the
+harness's certificates had no groups, so no `groups: [node]` rule could match;
+they now carry `node`, as the server's do. How UDP is seen without a listener:
+gVisor answers a datagram to a closed port with ICMP port unreachable, the read
+of a connected UDP socket does not wake on it, and the next write returns
+"connection refused". Item 6 went to the client side (TCP 41820 from `node`)
+because an agent can't tell a client's node from an old agent's. Golden tests
+now also record what happens to a packet no rule allows, and pin the two new
+blocks as fixtures dated 2026-11-27. Planted, each caught for the stated reason:
+`all` rendered as `tcp` (UDP test and golden), the client rule's group renamed
+(keepalive test and golden), `inbound_action: reject` (golden), an unknown preset
+rendered as `all` (golden), the migration without its UPDATE (old network "all")
+and with default `tcp` (new network "tcp"), the bundle naming `tcp` (API e2e), the
+local API dropping the answer's preset (agent e2e: a real agent wrote `tcp` rules).
+The netlab's `TestUDPBetweenDevices` was a known gap; its network is new, so it
+now asserts that UDP gets through (passes in the VM). The same VM run failed
+`TestE2E_DebugListenerLoopback` (step 1's test, until then run on the Mac only):
+the VM's installed agent listens on port 41820 at its mesh addresses, and the
+test took any answer there for the debug listener. It now asks for `/health`
+with the debug token, which only its own agent knows, after checking that
+loopback answers. With the listener planted on every interface the Mac reports
+each address; in the VM the planted listener can't bind beside the installed
+agent and the test fails waiting for it. The whole gate then passed in the VM
+(Linux arm64): `internal/client` 267.6 s, `internal/api` 409.6 s, `internal/db`
+5.3 s, `cmd/agent` 272.6 s; on the Mac 248 s, 385 s, 5.4 s, 398 s. (Times of today's entries from 14:15
+on were corrected afterwards from the commits and the session's clock; they had
+run ahead by up to three hours.)

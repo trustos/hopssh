@@ -23,6 +23,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/slackhq/nebula/cert"
+	"gopkg.in/yaml.v3"
 
 	"github.com/trustos/hopssh/internal/e2etest"
 	"github.com/trustos/hopssh/internal/nebulacfg"
@@ -818,6 +819,22 @@ func TestE2E_DebugListenerLoopback(t *testing.T) {
 		t.Fatalf("debug listener on %q, want a loopback address", addr)
 	}
 
+	// An agent installed on this machine may listen on the same port at its
+	// mesh addresses; only this one knows debug-token, so it is asked for
+	// /health with it rather than just dialled.
+	answers := func(hostPort string) bool {
+		req, _ := http.NewRequest("GET", "http://"+hostPort+"/health", nil)
+		req.Header.Set("Authorization", "Bearer debug-token")
+		resp, err := (&http.Client{Timeout: time.Second}).Do(req)
+		if err != nil {
+			return false
+		}
+		resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}
+	if !answers(addr) {
+		t.Fatalf("the debug listener on %s does not answer /health with its token", addr)
+	}
 	addrs, _ := net.InterfaceAddrs()
 	for _, a := range addrs {
 		ipn, ok := a.(*net.IPNet)
@@ -825,9 +842,47 @@ func TestE2E_DebugListenerLoopback(t *testing.T) {
 			continue
 		}
 		lan := net.JoinHostPort(ipn.IP.String(), fmt.Sprint(ap.Port()))
-		if c, err := net.DialTimeout("tcp", lan, time.Second); err == nil {
-			c.Close()
+		if answers(lan) {
 			t.Errorf("the agent API answers on %s", lan)
 		}
+	}
+}
+
+// TestE2E_FirewallPreset: a real agent writes the firewall block its
+// network's preset names. In a new network every node may reach it on every
+// protocol; in one from before migration 009 on TCP only, as before.
+func TestE2E_FirewallPreset(t *testing.T) {
+	s := e2etest.Start(t)
+	owner := s.Register("owner")
+	for preset, want := range map[string]string{"all": "any", "tcp": "tcp"} {
+		t.Run(preset, func(t *testing.T) {
+			n := owner.CreateNetwork(preset)
+			if preset == "tcp" {
+				s.Exec("UPDATE networks SET firewall_preset = 'tcp' WHERE id = ?", n.ID)
+			}
+			a := newAgent(t)
+			a.enroll(s, owner, n.ID, preset)
+			var cfg struct {
+				Firewall struct {
+					Inbound []struct {
+						Port   any
+						Proto  string
+						Groups []string
+					}
+				}
+			}
+			if err := yaml.Unmarshal([]byte(a.read(preset, "nebula.yaml")), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, r := range cfg.Firewall.Inbound {
+				if fmt.Sprint(r.Port) == "any" && len(r.Groups) == 1 && r.Groups[0] == "node" {
+					got = append(got, r.Proto)
+				}
+			}
+			if len(got) != 1 || got[0] != want {
+				t.Errorf("rules for every port from group node allow %v, want [%s]", got, want)
+			}
+		})
 	}
 }

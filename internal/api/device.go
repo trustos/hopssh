@@ -136,6 +136,11 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "network not found", http.StatusInternalServerError)
 		return
 	}
+	firewallPreset, err := h.Networks.FirewallPreset(network.ID)
+	if err != nil {
+		http.Error(w, "failed to read the network", http.StatusInternalServerError)
+		return
+	}
 
 	// F2 conflict short-circuit (v0.10.85+): if the agent already has
 	// this network in its local registry, return 409 BEFORE creating
@@ -231,6 +236,7 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		"nebulaIP":       node.NebulaIP,
 		"lighthousePort": lighthousePort,
 		"dnsDomain":      network.DNSDomain,
+		"firewall":       firewallPreset,
 	}
 	if h.LighthouseHost != "" {
 		resp["lighthouseHost"] = h.LighthouseHost

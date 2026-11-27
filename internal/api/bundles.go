@@ -135,6 +135,11 @@ func (h *BundleHandler) DownloadBundle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "network not found", http.StatusInternalServerError)
 		return
 	}
+	firewallPreset, err := h.Networks.FirewallPreset(network.ID)
+	if err != nil {
+		http.Error(w, "failed to read the network", http.StatusInternalServerError)
+		return
+	}
 
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
 	lighthousePort := 0
@@ -155,9 +160,10 @@ func (h *BundleHandler) DownloadBundle(w http.ResponseWriter, r *http.Request) {
   "nebulaIP": %q,
   "lighthousePort": %d,
   "dnsDomain": %q,
+  "firewall": %q,
   "endpoint": %q%s
 }
-`, node.ID, node.NetworkID, node.AgentToken, serverIP.Addr().String(), node.NebulaIP, lighthousePort, network.DNSDomain, h.Endpoint, lighthouseHostJSON)
+`, node.ID, node.NetworkID, node.AgentToken, serverIP.Addr().String(), node.NebulaIP, lighthousePort, network.DNSDomain, firewallPreset, h.Endpoint, lighthouseHostJSON)
 
 	// Write tarball.
 	w.Header().Set("Content-Type", "application/gzip")

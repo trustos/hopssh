@@ -221,6 +221,12 @@ firewall:
       proto: any
       host: any
   inbound:
+    # The mesh keepalive of every agent dials this port. Nothing listens
+    # here, so the reset tells the agent the tunnel works.
+    - port: %d
+      proto: tcp
+      groups:
+        - node
     - port: any
       proto: icmp
       host: any
@@ -234,7 +240,8 @@ firewall:
 		nebulacfg.ListenPort,
 		nebulacfg.Routines,
 		nebulacfg.HandshakeTryInterval,
-		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay)
+		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay,
+		agentAPIPort)
 }
 
 func getHostname() string {

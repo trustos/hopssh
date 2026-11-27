@@ -28,7 +28,9 @@ import (
 // from cmd/agent/client.go to internal/client/cli_join.go.
 
 var (
-	outboundAny = []string{"out any any host=any"}
+	// Every block so far: all outbound, and whatever no rule allows is
+	// dropped in both directions (explicitly or by Nebula's default).
+	outboundAny = []string{"out any any host=any", "in default drop", "out default drop"}
 
 	// Agents, 80fdbaa: TCP from group server only.
 	agent80fdbaa = append([]string{
@@ -48,17 +50,31 @@ var (
 		"in tcp any groups=node",
 		"in icmp any host=any",
 	}, outboundAny...)
-	// Clients (`hop client join`), 3f30d27 to today: ping only.
+	// Agents in a network with the "all" preset, 2026-11-27 on: every
+	// protocol from every node.
+	agentAll20261127 = append([]string{
+		"in tcp 41820 groups=admin",
+		"in any any groups=node",
+		"in icmp any host=any",
+	}, outboundAny...)
+	// Clients (`hop client join`), 3f30d27 to 2026-11-27: ping only.
 	client3f30d27 = append([]string{
+		"in icmp any host=any",
+	}, outboundAny...)
+	// Clients, 2026-11-27 on: also the port the agents' keepalive dials.
+	client20261127 = append([]string{
+		"in tcp 41820 groups=node",
 		"in icmp any host=any",
 	}, outboundAny...)
 )
 
 var historicalFirewallBlocks = map[string][]string{
-	"agent-80fdbaa.yaml":  agent80fdbaa,
-	"agent-791ac0b.yaml":  agent791ac0b,
-	"agent-41ce077.yaml":  agent41ce077,
-	"client-3f30d27.yaml": client3f30d27,
+	"agent-80fdbaa.yaml":        agent80fdbaa,
+	"agent-791ac0b.yaml":        agent791ac0b,
+	"agent-41ce077.yaml":        agent41ce077,
+	"agent-2026-11-27-all.yaml": agentAll20261127,
+	"client-3f30d27.yaml":       client3f30d27,
+	"client-2026-11-27.yaml":    client20261127,
 }
 
 func TestFirewall_EveryHistoricalBlockParses(t *testing.T) {
@@ -94,19 +110,26 @@ func TestFirewall_EveryHistoricalBlockParses(t *testing.T) {
 // newest block of its kind. A new default changes this test and adds a
 // fixture; the old blocks stay as they are.
 func TestFirewall_TodaysTemplates(t *testing.T) {
-	for _, mode := range []string{"kernel", "userspace"} {
-		dir := t.TempDir()
-		writeNebulaConfig(dir, "10.42.1.1", "127.0.0.1", 42001, mode, 4242)
-		data, err := os.ReadFile(filepath.Join(dir, "nebula.yaml"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := firewallRules(t, string(data)); !slices.Equal(got, sorted(agent41ce077)) {
-			t.Errorf("agent template (%s TUN) allows\n  %s", mode, strings.Join(got, "\n  "))
+	for preset, want := range map[string][]string{
+		firewallPresetTCP: agent41ce077,
+		firewallPresetAll: agentAll20261127,
+		"":                agent41ce077, // a server before migration 009
+		"bogus":           agent41ce077, // never wider than asked
+	} {
+		for _, mode := range []string{"kernel", "userspace"} {
+			dir := t.TempDir()
+			writeNebulaConfig(dir, "10.42.1.1", "127.0.0.1", 42001, mode, 4242, preset)
+			data, err := os.ReadFile(filepath.Join(dir, "nebula.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := firewallRules(t, string(data)); !slices.Equal(got, sorted(want)) {
+				t.Errorf("agent template, preset %q (%s TUN), allows\n  %s", preset, mode, strings.Join(got, "\n  "))
+			}
 		}
 	}
 	text := clientNebulaConfig("10.42.1.1", "127.0.0.1", 42001, "")
-	if got := firewallRules(t, text); !slices.Equal(got, sorted(client3f30d27)) {
+	if got := firewallRules(t, text); !slices.Equal(got, sorted(client20261127)) {
 		t.Errorf("client template allows\n  %s", strings.Join(got, "\n  "))
 	}
 }
@@ -128,10 +151,10 @@ func TestFirewall_ProductionFileRoundTripped(t *testing.T) {
 // nebula.yaml changes what the firewall allows. "Old networks keep their
 // block" rests on this.
 func TestFirewall_WritersKeepIt(t *testing.T) {
-	for name, block := range map[string]string{"80fdbaa": "agent-80fdbaa.yaml", "41ce077": "agent-41ce077.yaml"} {
+	for name, block := range map[string]string{"80fdbaa": "agent-80fdbaa.yaml", "41ce077": "agent-41ce077.yaml", "all": "agent-2026-11-27-all.yaml"} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
-			writeNebulaConfig(dir, "10.42.1.1", "127.0.0.1", 42001, "userspace", 4242)
+			writeNebulaConfig(dir, "10.42.1.1", "127.0.0.1", 42001, "userspace", 4242, firewallPresetTCP)
 			path := filepath.Join(dir, "nebula.yaml")
 			replaceFirewallSection(t, path, filepath.Join("testdata", "firewall", block))
 			want := firewallRules(t, readFile(t, path))
@@ -173,6 +196,15 @@ func firewallRules(t *testing.T, yamlText string) []string {
 		if err := nebula.AddFirewallRulesFromConfig(l, inbound, c, &r); err != nil {
 			t.Fatalf("Nebula rejects the firewall: %v", err)
 		}
+	}
+	// What happens to a packet no rule allows, read as NewFirewallFromConfig
+	// reads it: anything but "reject" is drop.
+	for dir, key := range map[string]string{"in": "firewall.inbound_action", "out": "firewall.outbound_action"} {
+		action := "drop"
+		if c.GetString(key, "drop") == "reject" {
+			action = "reject"
+		}
+		r = append(r, dir+" default "+action)
 	}
 	return sorted(r)
 }

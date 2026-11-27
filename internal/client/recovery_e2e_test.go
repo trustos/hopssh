@@ -140,8 +140,10 @@ func (m *e2eMesh) issue(nodeID string, age time.Duration) (crt, key string) {
 		panic(err)
 	}
 	nb := time.Now().Add(-time.Minute - age)
+	// Group "node", as every cert the server issues has: the firewall blocks
+	// of enrollments allow by it.
 	tbs := &cert.TBSCertificate{Version: cert.Version1, Name: nodeID, PublicKey: pub, Curve: cert.Curve_CURVE25519,
-		Networks: []netip.Prefix{m.addrs[nodeID]}, NotBefore: nb, NotAfter: nb.Add(24 * time.Hour)}
+		Networks: []netip.Prefix{m.addrs[nodeID]}, Groups: []string{"node"}, NotBefore: nb, NotAfter: nb.Add(24 * time.Hour)}
 	c, err := tbs.Sign(m.ca, cert.Curve_CURVE25519, m.priv)
 	if err != nil {
 		panic(err)
