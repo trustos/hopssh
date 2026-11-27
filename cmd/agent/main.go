@@ -193,9 +193,10 @@ func runServe(args []string) {
 	} else if len(names) == 0 {
 		// No enrollment + no --listen → soft-fail OS-stack listener so a
 		// freshly-installed agent stays alive long enough for enrollment
-		// via the local API.
+		// via the local API. On loopback: it serves exec, shell and upload
+		// outside any firewall; --listen is how to widen it.
 		log.Printf("[agent] no enrollments found, awaiting enrollment (use the desktop client or 'hop-agent enroll')")
-		if err := startDebugOSListener(c, mux, *tokenFlag, *tokenFile, fmt.Sprintf(":%d", client.AgentAPIPort)); err != nil {
+		if err := startDebugOSListener(c, mux, *tokenFlag, *tokenFile, fmt.Sprintf("127.0.0.1:%d", client.AgentAPIPort)); err != nil {
 			log.Printf("[agent] mesh API listener not started (this is expected for a fresh install): %v", err)
 		}
 	}

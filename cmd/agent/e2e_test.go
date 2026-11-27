@@ -792,3 +792,42 @@ func TestE2E_Upgrade(t *testing.T) {
 	check("old server, old agent again")
 	agentNow(os.Args[0]) // one that stops in time
 }
+
+// TestE2E_DebugListenerLoopback: `serve --token` with no enrollment serves
+// the agent API (exec, shell, upload) for local testing. Without --listen it
+// must stay on loopback, not on every interface of the machine.
+func TestE2E_DebugListenerLoopback(t *testing.T) {
+	dir := t.TempDir()
+	l := &e2etest.Log{}
+	cmd := exec.Command(os.Args[0], "serve", "--config-dir", filepath.Join(dir, "config"), "--token", "debug-token")
+	cmd.Env = []string{"HOP_E2E_AGENT=1", "PATH=" + os.Getenv("PATH"), "HOME=" + dir, "TMPDIR=" + dir}
+	cmd.Stdout, cmd.Stderr = l, l
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer e2etest.StopProcess(t, "agent", cmd, l)
+
+	var addr string
+	e2etest.Within(t, time.Minute, "the debug listener", func() bool {
+		_, rest, ok := strings.Cut(l.String(), "hop-agent listening on ")
+		addr, _, _ = strings.Cut(rest, " ")
+		return ok
+	})
+	ap, err := netip.ParseAddrPort(addr)
+	if err != nil || !ap.Addr().IsLoopback() {
+		t.Fatalf("debug listener on %q, want a loopback address", addr)
+	}
+
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok || ipn.IP.IsLoopback() || ipn.IP.To4() == nil {
+			continue
+		}
+		lan := net.JoinHostPort(ipn.IP.String(), fmt.Sprint(ap.Port()))
+		if c, err := net.DialTimeout("tcp", lan, time.Second); err == nil {
+			c.Close()
+			t.Errorf("the agent API answers on %s", lan)
+		}
+	}
+}
