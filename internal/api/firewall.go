@@ -4,9 +4,13 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
@@ -25,13 +29,27 @@ import (
 //     every network it is attached to.
 //   - Attaching and detaching: only the network's owner, with their own sets.
 //
-// Changes need If-Match with the version the change was made against.
-// Agents do not apply rules yet (P2); the stored rules are what they will get.
+// Changes need If-Match with the version the change was made against. The
+// heartbeat answer carries a managed network's rules to its devices
+// (RenewHandler), and each device's report is shown here.
 type FirewallHandler struct {
 	Networks *db.NetworkStore
 	Members  *db.NetworkMemberStore
+	Nodes    *db.NodeStore
 	Firewall *db.FirewallStore
 	Audit    *db.AuditStore
+}
+
+// firewallDevice: what a device of the network should run and what it last
+// said it runs. Expected is empty while the network is not managed. A device
+// that never reported has ReportedAt 0: an agent too old to apply rules, or
+// one that has not had a heartbeat since.
+type firewallDevice struct {
+	NodeID      string `json:"nodeId"`
+	Expected    string `json:"expected,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	Error       string `json:"error,omitempty"`
+	ReportedAt  int64  `json:"reportedAt,omitempty"`
 }
 
 type firewallSetResponse struct {
@@ -55,7 +73,8 @@ type networkFirewallResponse struct {
 	CanAttach bool `json:"canAttach"`
 	// Managed: the rules are sent to the network's devices (from its first
 	// save or attach on). Until then each keeps the block it was enrolled with.
-	Managed bool `json:"managed"`
+	Managed bool             `json:"managed"`
+	Devices []firewallDevice `json:"devices"`
 }
 
 func setResponse(s db.FirewallSet, withNetworks bool) firewallSetResponse {
@@ -111,20 +130,100 @@ func (h *FirewallHandler) GetNetworkFirewall(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "failed to read rule sets", http.StatusInternalServerError)
 		return
 	}
-	h.writeNetworkFirewall(w, http.StatusOK, f, sets, access, network.UserID == user.ID)
+	devices, err := h.devices(f, sets)
+	if err != nil {
+		http.Error(w, "failed to read devices", http.StatusInternalServerError)
+		return
+	}
+	h.writeNetworkFirewall(w, http.StatusOK, f, sets, devices, access, network.UserID == user.ID)
 }
 
-func (h *FirewallHandler) writeNetworkFirewall(w http.ResponseWriter, status int, f *db.NetworkFirewall, sets []db.FirewallSet, access authz.Access, owner bool) {
+func (h *FirewallHandler) writeNetworkFirewall(w http.ResponseWriter, status int, f *db.NetworkFirewall, sets []db.FirewallSet, devices []firewallDevice, access authz.Access, owner bool) {
 	resp := networkFirewallResponse{
 		Version: f.Version, Preset: f.Preset, Rules: f.Rules, UpdatedAt: f.UpdatedAt,
 		Sets: make([]firewallSetResponse, 0, len(sets)), CanEdit: access.CanAdmin(), CanAttach: owner,
-		Managed: f.Managed,
+		Managed: f.Managed, Devices: devices,
 	}
 	for _, s := range sets {
 		resp.Sets = append(resp.Sets, setResponse(s, false))
 	}
 	w.Header().Set("ETag", etag(f.Version))
 	writeJSONStatus(w, status, resp)
+}
+
+// devices: for each node of the network, the fingerprint of the policy it
+// gets from the heartbeat (the same fwpolicy.Resolve) and its last report.
+func (h *FirewallHandler) devices(f *db.NetworkFirewall, sets []db.FirewallSet) ([]firewallDevice, error) {
+	out := []firewallDevice{}
+	if h.Nodes == nil {
+		return out, nil
+	}
+	nodes, err := h.Nodes.ListForNetwork(f.NetworkID)
+	if err != nil {
+		return nil, err
+	}
+	reports, err := h.Firewall.Reports(f.NetworkID)
+	if err != nil {
+		return nil, err
+	}
+	rules := append([]fwpolicy.Rule(nil), f.Rules...)
+	for _, s := range sets {
+		rules = append(rules, s.Rules...)
+	}
+	addrs := nodeAddrs(nodes)
+	for _, n := range nodes {
+		d := firewallDevice{NodeID: n.ID}
+		if f.Managed {
+			d.Expected = fwpolicy.Resolve(f.Preset, rules, n.ID, addrs).Fingerprint
+		}
+		if r, ok := reports[n.ID]; ok {
+			d.Fingerprint, d.Error, d.ReportedAt = r.Fingerprint, r.Error, r.ReportedAt
+		}
+		out = append(out, d)
+	}
+	return out, nil
+}
+
+// nodeAddrs maps each node to its mesh address; one not enrolled yet has none.
+func nodeAddrs(nodes []*db.Node) map[string]netip.Addr {
+	out := make(map[string]netip.Addr, len(nodes))
+	for _, n := range nodes {
+		if p, err := netip.ParsePrefix(n.NebulaIP); err == nil {
+			out[n.ID] = p.Addr()
+		} else if a, err := netip.ParseAddr(n.NebulaIP); err == nil {
+			out[n.ID] = a
+		}
+	}
+	return out
+}
+
+// maxReportError: the longest reason for a refusal that is stored, in
+// characters.
+const maxReportError = 300
+
+// cleanReport checks a device's report: a fingerprint is empty or 64
+// lowercase hex characters, and the reason is cut to maxReportError
+// characters, with control characters and invalid UTF-8 made spaces.
+func cleanReport(a fwpolicy.Ack) (fwpolicy.Ack, bool) {
+	if a.Fingerprint != "" {
+		if len(a.Fingerprint) != 64 || strings.Trim(a.Fingerprint, "0123456789abcdef") != "" {
+			return a, false
+		}
+	}
+	var b strings.Builder
+	n := 0
+	for _, r := range a.Error {
+		if n == maxReportError {
+			break
+		}
+		if r == utf8.RuneError || unicode.IsControl(r) {
+			r = ' '
+		}
+		b.WriteRune(r)
+		n++
+	}
+	a.Error = b.String()
+	return a, true
 }
 
 // UpdateNetworkFirewall replaces a network's preset and own rules.
@@ -182,7 +281,13 @@ func (h *FirewallHandler) UpdateNetworkFirewall(w http.ResponseWriter, r *http.R
 		http.Error(w, "failed to read rule sets", http.StatusInternalServerError)
 		return
 	}
-	h.writeNetworkFirewall(w, http.StatusOK, f, sets, access, network.UserID == user.ID)
+	// The change is stored: a failed read of the devices leaves them out of
+	// the answer rather than report the save as failed.
+	devices, err := h.devices(f, sets)
+	if err != nil {
+		log.Printf("[firewall] network %s: devices: %v", networkID, err)
+	}
+	h.writeNetworkFirewall(w, http.StatusOK, f, sets, devices, access, network.UserID == user.ID)
 }
 
 // ListFirewallSets returns the caller's rule sets.

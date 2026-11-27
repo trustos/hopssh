@@ -904,3 +904,28 @@ panics) and returns its rule hash, and `Control.FirewallRuleHash()`.
 passes, after it learned to delete the `.orig` that Apple's `patch` keeps when
 a hunk lands at an offset (in one of the two orders; the files are the same).
 `make test-race` green, and the two tests, build and vet in the Linux VM.
+
+22:15 to 23:30, **firewall rules, phase 2: the devices apply them**
+([[concepts/firewall-rules]], "Built"). The heartbeat answer of a managed
+network carries the device's policy (`fwpolicy.Resolve`, its fingerprint
+`Delivered.Sum`); the agent checks it (`Delivered.Check`: preset, ports,
+sources inside the network, the fingerprint), renders its own block, has
+Nebula build it (`CheckFirewall`), reloads in place only when the rule hash
+differs, checks the hash, and writes `nebula.yaml`. Its next heartbeat says
+what it runs; the server keeps one report per device (`node_firewall`,
+migration 012) and the Firewall tab shows each device as applied, pending,
+refused or without a report. A beat ends applied, refused (not tried again
+on that Nebula) or later (a start in progress, a reload over 5 s, a file
+changed since Nebula loaded it). Found by reading: when only the backup
+`nebula.yaml.bak` failed, the old rules were reloaded although the file had
+the new ones; now that is applied. Tests: `TestE2E_FirewallDelivery` in
+`internal/api` (real server) and in `internal/client` (two real peers, 35 s
+under `-race`), `TestManagedFirewall`, `TestRecordReport`,
+`TestE2E_FirewallApplied` in `cmd/agent` (real server and agent process,
+131 s), and the tab's `npm test` (11). 21 bugs planted, all caught; one only
+after the test was fixed ([[concepts/e2e-tests]], "Firewall rules on the
+devices"). Green on the Mac (vet, and the tests of `internal/api`, `db`,
+`fwpolicy`, `client`, `cmd/agent`, `mesh`, `authz`) and in the Linux VM as a
+user and as root, where `TestE2E_FirewallApplied` ran in kernel TUN mode
+(134 s) and the client's test skips the read-only directory. Not run on
+Windows. Known gaps in [[open-questions]].

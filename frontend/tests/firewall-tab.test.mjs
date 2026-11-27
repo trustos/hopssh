@@ -28,7 +28,7 @@ const toast = { error: (m) => globalThis.__t.toasts.push(m), success: () => {} }
 const onMount = () => {};
 ${script}
 export const tab = {
-	load, save, attach, detach, editSet, saveSet, deleteSet, nodeLabel, unknownInSet,
+	load, save, attach, detach, editSet, saveSet, deleteSet, nodeLabel, unknownInSet, deviceStatus,
 	get: () => ({ preset, rules: $state.snapshot(rules), dirty, editing: $state.snapshot(editing), policy: $state.snapshot(policy) }),
 	setPreset: (v) => { preset = v; },
 	addRule: (r) => { rules.push(r); },
@@ -54,7 +54,10 @@ const clone = (x) => structuredClone(x);
 // A fake server: one network at version 1 with web (s1) attached; db (s2) is
 // attached to another network and names a device of it.
 function fakeServer() {
-	const net = { version: 1, preset: 'all', rules: [], canEdit: true, canAttach: true, sets: [] };
+	// managed and devices: from the first save or attach on, the server sends
+	// the rules and shows what each device reported.
+	const net = { version: 1, preset: 'all', rules: [], canEdit: true, canAttach: true, sets: [], managed: false, devices: [] };
+	const manage = () => Object.assign(net, { managed: true, devices: [{ nodeId: 'box', expected: 'f1' }] });
 	const sets = new Map([
 		['s1', { id: 's1', name: 'web', version: 1, rules: [{ proto: 'tcp', port: '80' }], networkIds: ['net1'] }],
 		['s2', { id: 's2', name: 'db', version: 1, rules: [{ proto: 'tcp', port: '5432', targetNodeId: 'other' }], networkIds: ['netA'] }]
@@ -66,9 +69,13 @@ function fakeServer() {
 		update: async (_id, version, preset, rules) => {
 			if (version !== net.version) throw new ApiError(412, 'the rules were changed in the meantime: reload and try again');
 			Object.assign(net, { version: net.version + 1, preset, rules: clone(rules) });
+			manage();
 			return view();
 		},
-		attach: async (_id, setId) => void sets.get(setId).networkIds.push('net1'),
+		attach: async (_id, setId) => {
+			sets.get(setId).networkIds.push('net1');
+			manage();
+		},
 		detach: async (_id, setId) => {
 			const s = sets.get(setId);
 			s.networkIds = s.networkIds.filter((n) => n !== 'net1');
@@ -183,6 +190,34 @@ const tests = {
 		assert.equal(tab.nodeLabel('other', 'Any device', tab.unknownInSet('s2')), 'not a device of this network');
 		assert.equal(tab.nodeLabel('gone', 'Any device', tab.unknownInSet('s1')), 'deleted device');
 		assert.equal(tab.nodeLabel(undefined, 'Any device', tab.unknownInSet('s1')), 'Any device');
+	},
+	async 'an attach with an unsaved change shows the devices it now sends rules to'() {
+		const { tab } = await open();
+		draft(tab);
+		tab.pick('s2');
+		await tab.attach();
+		assertDraft(tab, 'after attach');
+		const { managed, devices } = tab.get().policy;
+		assert.equal(managed, true, 'the network reads as not managed after its first attach');
+		assert.deepEqual(devices, [{ nodeId: 'box', expected: 'f1' }]);
+	},
+	async 'what each device runs'() {
+		const { tab } = await open();
+		const at = 1764280000;
+		for (const [d, label, detail] of [
+			[{ nodeId: 'a', expected: 'f2' }, 'No report', /v0\.11\.31 or older/],
+			[{ nodeId: 'a', expected: 'f2', fingerprint: 'f2', reportedAt: at }, 'Applied', /^$/],
+			// It runs what it should, whatever it refused before.
+			[{ nodeId: 'a', expected: 'f2', fingerprint: 'f2', error: 'old', reportedAt: at }, 'Applied', /^$/],
+			[{ nodeId: 'a', expected: 'f2', fingerprint: 'f1', reportedAt: at }, 'Pending', /earlier version.*next heartbeat/],
+			[{ nodeId: 'a', expected: 'f2', reportedAt: at }, 'Pending', /got when it joined.*next heartbeat/],
+			[{ nodeId: 'a', expected: 'f2', fingerprint: 'f1', error: 'Nebula refuses it: bad', reportedAt: at }, 'Refused', /^Nebula refuses it: bad\. It runs an earlier version/],
+			[{ nodeId: 'a', expected: 'f2', error: 'preset', reportedAt: at }, 'Refused', /got when it joined/]
+		]) {
+			const s = tab.deviceStatus(d);
+			assert.equal(s.label, label, JSON.stringify(d));
+			assert.match(s.detail, detail, JSON.stringify(d));
+		}
 	},
 	async 'a successful save shows what was saved'() {
 		const { tab, server } = await open();

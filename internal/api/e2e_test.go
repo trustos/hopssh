@@ -1471,6 +1471,21 @@ func TestE2E_DeleteNetwork(t *testing.T) {
 	var set struct{ ID string }
 	h.owner.Want(201, "POST", "/api/firewall/sets", M{"name": "web"}, &set)
 	h.owner.Want(204, "PUT", h.url("/firewall/sets/%s", set.ID), nil, nil)
+	a := h.s.Anonymous()
+	a.Token = box.AgentToken
+	a.Want(200, "POST", "/api/heartbeat", M{"nodeId": box.NodeID, "firewall": M{"fingerprint": "", "error": "refused"}}, nil)
+	reports := func() int {
+		pair, _ := h.s.DB()
+		defer pair.Close()
+		var n int
+		if err := pair.ReadDB.QueryRow(`SELECT COUNT(*) FROM node_firewall WHERE node_id = ?`, box.NodeID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if reports() != 1 {
+		t.Fatal("the box's firewall report was not stored")
+	}
 	e2etest.Within(t, 15*time.Second, "events in the database", func() bool { return count(h, "network_events") > 0 })
 
 	h.owner.Want(204, "DELETE", h.url(""), nil, nil)
@@ -1478,9 +1493,10 @@ func TestE2E_DeleteNetwork(t *testing.T) {
 	for _, c := range []*e2etest.Client{h.owner, h.admin, h.member} {
 		c.Want(404, "GET", h.url(""), nil, nil)
 	}
-	a := h.s.Anonymous()
-	a.Token = box.AgentToken
 	a.Want(401, "POST", "/api/renew", M{"nodeId": box.NodeID}, nil)
+	if n := reports(); n != 0 {
+		t.Errorf("%d firewall reports of the network's devices left", n)
+	}
 	time.Sleep(3 * time.Second) // buffered events of the deletion
 	for _, table := range []string{"nodes", "dns_records", "network_members", "network_invites", "network_events", "network_firewall", "network_firewall_sets"} {
 		if n := count(h, table); n != 0 {

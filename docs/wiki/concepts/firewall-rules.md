@@ -7,6 +7,9 @@ sources:
   - internal/client/enroll.go
   - internal/client/cli_join.go
   - internal/client/keepalive.go
+  - internal/client/firewall_apply.go
+  - internal/fwpolicy/delivery.go
+  - internal/api/firewall.go
   - internal/client/serverset.go
   - internal/api/renew.go
   - internal/api/networks.go
@@ -23,7 +26,7 @@ sources:
 - The server sends the policy in the heartbeat answer. The agent writes its own `firewall:` block and loads it with Nebula's in-place reload, so tunnels stay up.
 - Whatever the server sends, the agent keeps the rules that hopssh itself needs.
 - A switch on the device ("block incoming") can only narrow access.
-- Built so far (2026-11-27, not released): golden tests of every block (P0), and a firewall preset per network that the agent reads once, at enrollment. New networks allow every protocol between agents, older ones keep TCP only. The rest is not built. The research and two reviews are in [raw/firewall-rules](../raw/firewall-rules/).
+- Built so far (2026-11-27, not released): golden tests of every block (P0); a firewall preset per network that the agent reads at enrollment (new networks allow every protocol between agents, older ones keep TCP only); the Firewall tab with rules and shared rule sets (P1); and delivery (P2): a managed network's heartbeat answer carries each device's policy, the agent applies it in place and reports what it runs, and the tab shows it per device. The device switch and "who can reach" (P3) are not built. The research and two reviews are in [raw/firewall-rules](../raw/firewall-rules/).
 
 ## Today
 
@@ -31,12 +34,11 @@ sources:
   - `tcp`: TCP on every port from cert group `node`, TCP 41820 from `admin`, ICMP. Every network created before migration 009 has it, and so does an answer without the field (a server before 009) or with a value the agent does not know.
   - `all`: the same with every protocol from `node`, and `inbound_action: drop` written out. Networks created from 009 on get it (the column's default; `NetworkStore.Create` does not name it).
   - Agents before this change ignore the field and write `tcp`.
-- **Nothing changes the block later.** `ensureP2PConfig` and the other writers keep it as it is (`TestFirewall_WritersKeepIt`). A changed preset or rule reaches a device only if it enrolls again. Moving existing networks is a separate decision (item 4 of the plan, later).
+- **Only a managed network changes the block later** (P2, below). Otherwise `ensureP2PConfig` and the other writers keep it as it is (`TestFirewall_WritersKeepIt`). A network that nobody saved rules for or attached a set to sends nothing, and each device keeps the block it got at enrollment. Moving existing networks without that is a separate decision (item 4 of the plan, later).
 - **Clients and the lighthouse.** `hop client join` allows ICMP and, since 2026-11-27, TCP 41820 from `node` inbound (`clientNebulaConfig`, see item 8). It reads no preset. The control plane's lighthouse allows everything (`internal/mesh/network_manager.go:539-547`).
 - **Groups.** Every agent cert has the group `node` (`internal/api/renew.go:137`, `enroll.go:180`, `device.go:191`, `bundles.go:80`). Only the control plane's cert has `admin` (`networks.go:101`). No group is stored in the database. The `admin` rule on 41820 adds nothing, because `node` already covers every TCP port and the control plane is in `node` too.
 - **Ports are bounded** (2026-11-27). Nebula keeps an entry for every port of a range, for every rule: one rule for 1-65535 took 50 MB on each device, a hundred of them 1.7 GB, a hundred of 1-4096 108 MB (measured on the Mac with vendored Nebula). The ports of a network's own rules and its attached sets together are at most `fwpolicy.MaxPorts` (4096, about 3 MB). The server checks this on a save, on a set's change in every network it is attached to, and on an attach. "any" is one entry.
-- **No way to change a running firewall.** The heartbeat answer carries peers and routes. The renewal answer carries three relay and punch settings. A route change closes and restarts Nebula (`routes.go:63`).
-- **Nebula's in-place reload is never used.** Nebula has `config.ReloadConfigString`, and its firewall callback (`vendor/.../interface.go:462-510`) keeps the conntrack table. An open flow is checked again on its next packet and cut only if no rule allows it any more. hopssh keeps no `*config.C` after start (`internal/client/nebula.go:67,129`), so nothing calls the reload.
+- **Changing a running firewall** (P2). The heartbeat answer carries peers, routes and, for a managed network, `firewall`. A route change still closes and restarts Nebula (`routes.go:63`); a firewall change does not. The agent keeps the `*config.C` it started Nebula with (`loadNebulaConfig`, `internal/client/nebula.go`) and calls `ReloadConfigString` on it. Nebula's firewall callback (`vendor/.../interface.go`) keeps the conntrack table: an open flow is checked again on its next packet and cut only if no rule allows it any more.
 - **System install vs in-app.** The firewall applies in both modes, before a packet reaches the device. The mode decides what there is to reach. With a system install (kernel TUN) every host service is reachable: sshd, Screen Sharing, anything on TCP. In-app (userspace) only the agent's own listeners are.
 
 ## What the others do
@@ -94,10 +96,24 @@ All five configure rules in a web UI. NetBird is the closest match: self-hosted,
    - With `startMu.TryLock`: a beat that meets a start skips, and the next beat tries again.
    - With a 5 s deadline, as `runWithTimeout` of Phase DD.
 7. **Then the file.** Only after the reload is `nebula.yaml` written, under `lockNebulaYAML`. If the write fails, the previous text is loaded again, so the file and the running rules agree.
-8. **Ack.** The next heartbeat carries `firewall: {fingerprint, error}`: the fingerprint it runs (empty for its enrollment block), or why it refused. The tab shows each device as applied, pending, refused, or not enforced (an agent that sends no ack).
+8. **Ack.** The next heartbeat carries `firewall: {fingerprint, error}`: the fingerprint it runs (empty for its enrollment block), or why it refused. The tab shows each device as applied, pending, refused, or "no report" (an agent of v0.11.31 or older, or one not online since).
    - The same fingerprint and the same text again: nothing is done.
+   - The server keeps one report per node (`node_firewall`, migration 012), with the time it was first made; a report that is not one (a fingerprint that is not 64 lower-case hex) is ignored, and the heartbeat still answers. A reason is cut to 300 characters, control characters become spaces.
 9. It never falls back to close-and-start with an unchecked file: that would leave no mesh at all.
 10. **The swap.** Nebula swapped `f.firewall` with a plain pointer write while the packet threads read it (finding 6 below). Patch `firewall-swap` (2026-11-27) makes it an `atomic.Pointer` and adds `Control.CheckFirewall` / `Control.FirewallRuleHash` for points 4 and 8. `TestFirewallSwapIsSafeToRead` failed 5 of 5 under `-race` without it, and passed 30 of 30 with it; `TestCheckFirewall` pins the silent reload of point 4. A packet may still take the drop action from one firewall and the reject flag from the next; both are valid.
+
+**Built (2026-11-27, not released).** Server: `fwpolicy.Resolve`, `Delivered.Sum`, `Delivered.Check` (`internal/fwpolicy/delivery.go`), the heartbeat field and the reports (`internal/api/renew.go`, `internal/db/firewall.go`), the devices in the firewall answer (`internal/api/firewall.go`). Agent: `applyFirewall` in `internal/client/firewall_apply.go`, in the order of points 3 to 8. Each beat ends in one of three:
+- **applied**: running and in the file; the report is the policy's fingerprint;
+- **refused** (a check, Nebula's builder, a write of `nebula.yaml` that failed, after which the rules it ran are reloaded again): nothing changes; the report is the fingerprint it runs and the reason; the same policy is not tried again until it changes or Nebula restarts;
+- **later** (a start in progress, a reload over 5 s, `nebula.yaml` changed since the last load): nothing changes and the report stays; the next beat tries again.
+
+When only the backup (`nebula.yaml.bak`) can't be written, the file and Nebula both have the policy: applied, with a line in the log.
+
+`CheckFirewall` before the reload and the rule hash after it are defence in depth: no policy that passes `Delivered.Check` was found that Nebula's builder refuses, so no test fails without them.
+
+Tests: `TestE2E_FirewallDelivery` in `internal/api` (the real server: who gets which rules, sets, reports, a deleted source) and in `internal/client` (two real Nebula peers: an added rule opens within one beat, a removed one stops a new and an open flow, three refusals leave `nebula.yaml` byte for byte, a start in progress and a changed file wait, a write that fails gives the old rules back, a backup that fails does not, the tunnel keeps its index, the keepalive still reaches the device), `TestManagedFirewall`, `TestE2E_FirewallApplied` in `cmd/agent` (the real server and an agent process: a saved rule reaches the device's `nebula.yaml` and its report reads applied), and `frontend/tests/firewall-tab.test.mjs` for the tab's statuses.
+
+Known gap: the fingerprint an agent runs is kept in memory. After a restart of the agent it reports "" for a policy it refuses until one is applied again, although its file may still hold an earlier managed policy. The next policy it accepts (the same one included: the rule hash matches and nothing is reloaded) makes it known again.
 
 **What a reload does to open flows** (spike, two userspace peers, 2026-11-27): a removed rule stops an open flow at its next packet, silently (no reset), and the tunnel stays (same indexes, no handshake). When the rule comes back, the old flow stays dead and a new connection works. Identical text changes nothing.
 
@@ -118,12 +134,12 @@ The server could already run commands on every agent through 41820, so a policy 
 | Phase | What | Gate |
 |---|---|---|
 | P0 (done 2026-11-27) | golden tests of every block written so far; no change in behaviour | `internal/client/firewall_golden_test.go`: each block in `testdata/firewall/` parses with Nebula's own parser and allows what the test pins; today's agent and client templates and a round-tripped production file give the newest; no rewrite by the agent changes the firewall |
-| P1 | table, `GET`/`PUT`, audit, tab with the three choices and the rule table | `TestE2E_Access`, `TestE2E_History` |
-| P2 | heartbeat field, validation, in-place reload, ack | E2E with two real Nebula peers: a removed rule stops new and open flows within one heartbeat; ICMP keeps its tunnel with no new handshake; a rejected policy leaves the file byte for byte and tunnels up; under `-race` |
+| P1 (done 2026-11-27) | table, `GET`/`PUT`, audit, tab with the three choices and the rule table | `TestE2E_Access`, `TestE2E_History`, `TestE2E_Firewall` |
+| P2 (done 2026-11-27) | heartbeat field, validation, in-place reload, ack | `TestE2E_FirewallDelivery` (server, and two real Nebula peers): a removed rule stops new and open flows within one heartbeat; the tunnel keeps its index, no new handshake; a rejected policy leaves the file byte for byte and the rules it ran; under `-race` |
 | P3 | device switch, "who can reach" | E2E from the CLI and the local API |
 | later | tags and roles in certs, a "renew now" field, outbound rules, export as a file, clients on a heartbeat | — |
 
-`internal/e2etest/peer.go` fixes each test peer's firewall to allow all and keeps no config, so P2 needs that harness extended first.
+`internal/e2etest/peer.go` still fixes each test peer's firewall to allow all. P2's two-peer test uses `firewallMesh` of `internal/client` instead, with the heartbeat answered by the test (`e2eMesh.onHeartbeat`).
 
 ## Found on the way (not about rules, true today)
 

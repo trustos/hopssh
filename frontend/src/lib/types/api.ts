@@ -133,6 +133,20 @@ export interface NetworkFirewallResponse {
 	/** The rules are sent to the network's devices: from its first save or
 	 *  attach on. Until then each keeps the block it was enrolled with. */
 	managed: boolean;
+	devices: FirewallDevice[];
+}
+
+/** What a device should run and what it last said it runs. */
+export interface FirewallDevice {
+	nodeId: string;
+	/** Fingerprint of the rules it should run; absent while not managed. */
+	expected?: string;
+	/** Fingerprint of the rules it runs; absent for those it was enrolled with. */
+	fingerprint?: string;
+	/** Why it refused the rules it was sent. */
+	error?: string;
+	/** Unix seconds: when it first said this. Absent: it never reported. */
+	reportedAt?: number;
 }
 
 export interface CreateNodeResponse {

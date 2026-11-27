@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/trustos/hopssh/internal/fwpolicy"
@@ -75,6 +76,18 @@ type FirewallSet struct {
 type FirewallStore struct {
 	rdb *sql.DB
 	wdb *sql.DB
+	// reports: the last report stored per node ID (fwpolicy.Ack), so that
+	// a heartbeat that repeats it costs no write.
+	reports sync.Map
+}
+
+// NodeReport is what a device last said about its network's policy
+// (migration 012): the fingerprint it runs and, when it refused the last
+// one, why. ReportedAt is when it first said so.
+type NodeReport struct {
+	Fingerprint string
+	Error       string
+	ReportedAt  int64
 }
 
 func NewFirewallStore(p *DBPair) *FirewallStore {
@@ -355,6 +368,72 @@ func (s *FirewallStore) AttachedSets(networkID string) ([]FirewallSet, error) {
 		return nil, err
 	}
 	return scanSets(rows)
+}
+
+// Policy returns what reaches a network's devices: its preset and the union
+// of its own rules and those of every attached set, and whether it is
+// managed. Only a managed network's policy is sent to its devices. A network
+// that does not exist is sql.ErrNoRows.
+func (s *FirewallStore) Policy(networkID string) (preset string, rules []fwpolicy.Rule, managed bool, err error) {
+	f, err := s.NetworkFirewall(networkID)
+	if err != nil {
+		return "", nil, false, err
+	}
+	if f == nil {
+		return "", nil, false, sql.ErrNoRows
+	}
+	sets, err := s.AttachedSets(networkID)
+	if err != nil {
+		return "", nil, false, err
+	}
+	rules = append(rules, f.Rules...)
+	for _, set := range sets {
+		rules = append(rules, set.Rules...)
+	}
+	return f.Preset, rules, f.Managed, nil
+}
+
+// RecordReport stores a device's report when it differs from the one stored
+// last. The time stays that of the first report of a fingerprint and error.
+func (s *FirewallStore) RecordReport(nodeID string, a fwpolicy.Ack) error {
+	if last, ok := s.reports.Load(nodeID); ok && last.(fwpolicy.Ack) == a {
+		return nil
+	}
+	_, err := s.wdb.Exec(`
+		INSERT INTO node_firewall (node_id, fingerprint, error, reported_at) VALUES (?, ?, ?, ?)
+		ON CONFLICT(node_id) DO UPDATE SET fingerprint = excluded.fingerprint, error = excluded.error,
+			reported_at = excluded.reported_at
+		WHERE node_firewall.fingerprint != excluded.fingerprint OR node_firewall.error != excluded.error`,
+		nodeID, a.Fingerprint, a.Error, time.Now().Unix())
+	if err != nil {
+		return err
+	}
+	s.reports.Store(nodeID, a)
+	return nil
+}
+
+// Reports returns the last report of each device of a network that made
+// one, by node ID.
+func (s *FirewallStore) Reports(networkID string) (map[string]NodeReport, error) {
+	rows, err := s.rdb.Query(`
+		SELECT f.node_id, f.fingerprint, f.error, f.reported_at
+		FROM node_firewall f JOIN nodes n ON n.id = f.node_id WHERE n.network_id = ?`, networkID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]NodeReport{}
+	for rows.Next() {
+		var (
+			id string
+			r  NodeReport
+		)
+		if err := rows.Scan(&id, &r.Fingerprint, &r.Error, &r.ReportedAt); err != nil {
+			return nil, err
+		}
+		out[id] = r
+	}
+	return out, rows.Err()
 }
 
 // checkNodes refuses rules that name a node outside the network, among the

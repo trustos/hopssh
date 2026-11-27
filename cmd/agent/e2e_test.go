@@ -886,3 +886,67 @@ func TestE2E_FirewallPreset(t *testing.T) {
 		})
 	}
 }
+
+// TestE2E_FirewallApplied: phase 2 of docs/wiki/concepts/firewall-rules.md
+// across the real processes. Rules saved in the dashboard reach the agent in
+// a heartbeat answer, and it applies them in place in the mode it runs in
+// (kernel TUN as root, as in the Linux VM). The control plane still reaches
+// it, and its next heartbeat reports the rules, which the dashboard shows.
+// Up to two heartbeats: about two minutes.
+func TestE2E_FirewallApplied(t *testing.T) {
+	s := e2etest.Start(t)
+	owner := s.Register("owner")
+	n := owner.CreateNetwork("home")
+	a := newAgent(t)
+	id := a.enroll(s, owner, n.ID, "home")
+	waitHealthy(t, time.Minute, owner, n.ID, id)
+
+	fw := "/api/networks/" + n.ID + "/firewall"
+	owner.With("If-Match", `"0"`).Want(http.StatusOK, "PUT", fw, M{"preset": "ping", "rules": []M{
+		{"proto": "tcp", "port": "7000", "targetNodeId": id},
+	}}, nil)
+
+	inFile := func() bool {
+		var cfg struct {
+			Firewall struct {
+				Inbound []struct {
+					Port   any
+					Proto  string
+					Groups []string
+				}
+			}
+		}
+		if err := yaml.Unmarshal([]byte(a.read("home", "nebula.yaml")), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range cfg.Firewall.Inbound {
+			if fmt.Sprint(r.Port) == "7000" && r.Proto == "tcp" && len(r.Groups) == 1 && r.Groups[0] == "node" {
+				return true
+			}
+		}
+		return false
+	}
+	e2etest.Within(t, 90*time.Second, "the rule in the agent's nebula.yaml", inFile)
+
+	type device struct {
+		NodeID, Expected, Fingerprint, Error string
+		ReportedAt                           int64
+	}
+	var last device
+	e2etest.Within(t, 90*time.Second, "the dashboard to show the rules applied", func() bool {
+		var p struct{ Devices []device }
+		owner.Want(http.StatusOK, "GET", fw, nil, &p)
+		for _, d := range p.Devices {
+			if d.NodeID == id {
+				last = d
+			}
+		}
+		return last.ReportedAt != 0 && last.Expected != "" && last.Fingerprint == last.Expected && last.Error == ""
+	})
+	if !healthy(owner, n.ID, id) {
+		t.Error("the control plane no longer reaches the agent under the rules")
+	}
+	if log := a.log.String(); !strings.Contains(log, "[firewall home] runs policy") || strings.Contains(log, "refused policy") || strings.Contains(log, "waits for the next heartbeat") {
+		t.Errorf("the agent's log about the policy:\n%s", a.log.Tail(40))
+	}
+}

@@ -25,6 +25,7 @@ import (
 
 	"github.com/slackhq/nebula/cert"
 	"github.com/trustos/hopssh/internal/buildinfo"
+	"github.com/trustos/hopssh/internal/fwpolicy"
 	"github.com/trustos/hopssh/internal/nebulacfg"
 	"gopkg.in/yaml.v3"
 )
@@ -193,6 +194,10 @@ func sendHeartbeat(inst *meshInstance) error {
 			reqBody["selfEndpointLifetimesSec"] = lifetimes
 		}
 	}
+	// What the firewall policy of the last answer became (firewall_apply.go).
+	if a := inst.firewallAck(); a != nil {
+		reqBody["firewall"] = a
+	}
 	reqBodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return err
@@ -272,6 +277,10 @@ func sendHeartbeat(inst *meshInstance) error {
 		// `tun.unsafe_routes` in nebula.yaml. Backwards-compatible:
 		// older server builds omit; agent leaves existing routes alone.
 		Routes []string `json:"routes,omitempty"`
+		// Firewall is the policy of a managed network for this node
+		// (phase 2 of docs/wiki/concepts/firewall-rules.md). Absent: the
+		// node keeps the firewall it runs.
+		Firewall *fwpolicy.Delivered `json:"firewall"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
 		if len(body.PeerEndpoints) > 0 {
@@ -287,6 +296,7 @@ func sendHeartbeat(inst *meshInstance) error {
 		// a Nebula reload only when the route list actually changed.
 		// No-op when both old and new lists are empty.
 		applyRoutesUpdate(inst, body.Routes)
+		applyFirewall(inst, body.Firewall)
 		// Persist networkId on first successful heartbeat (or refresh
 		// if the registry value drifted — defensive). Idempotent for
 		// stable enrollments; SetNetworkID returns nil with no write

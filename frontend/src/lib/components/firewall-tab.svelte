@@ -13,6 +13,7 @@
 	import { toast } from 'svelte-sonner';
 	import { firewall as fwApi, ApiError } from '$lib/api/client';
 	import type {
+		FirewallDevice,
 		FirewallPreset,
 		FirewallRule,
 		FirewallSetResponse,
@@ -115,7 +116,8 @@
 		try {
 			const p = await fwApi.get(networkId);
 			if (keepDraft && policy && dirty) {
-				policy = { ...policy, sets: p.sets, canEdit: p.canEdit, canAttach: p.canAttach };
+				const { sets, canEdit, canAttach, managed, devices } = p;
+				policy = { ...policy, sets, canEdit, canAttach, managed, devices };
 			} else {
 				apply(p);
 			}
@@ -219,6 +221,24 @@
 
 	function attachedCount(id: string): number {
 		return mySets.find((s) => s.id === id)?.networkIds?.length ?? 0;
+	}
+
+	// What a device runs, from its last report (docs/wiki/concepts/firewall-rules.md,
+	// "Delivery and apply", point 8). A device that runs the rules it should
+	// is applied, whatever it refused before.
+	type DeviceStatus = { label: string; tone: 'ok' | 'wait' | 'bad'; detail: string };
+	function deviceStatus(d: FirewallDevice): DeviceStatus {
+		const runs = d.fingerprint ? 'an earlier version of the rules' : 'the rules it got when it joined';
+		if (!d.reportedAt)
+			return {
+				label: 'No report',
+				tone: 'wait',
+				detail:
+					'An agent of v0.11.31 or older sends none, and keeps the rules it got when it joined. A newer one reports at its next heartbeat.'
+			};
+		if (d.fingerprint === d.expected) return { label: 'Applied', tone: 'ok', detail: '' };
+		if (d.error) return { label: 'Refused', tone: 'bad', detail: `${d.error}. It runs ${runs}.` };
+		return { label: 'Pending', tone: 'wait', detail: `It runs ${runs}, and takes these at its next heartbeat.` };
 	}
 </script>
 
@@ -330,10 +350,16 @@
 	<div class="space-y-6">
 		<Alert.Root>
 			<Alert.Description>
-				Devices don't apply these rules yet: they are stored and checked now, and a later update of
-				hopssh sends them to devices. A change of preset applies only to devices that join from now
-				on, on agents newer than v0.11.31. Whatever is chosen, hopssh keeps its own management
-				connection and ping.
+				{#if policy.managed}
+					Devices apply a change at their next heartbeat; a connection that a removed rule allowed
+					stops. Agents of v0.11.31 and older don't apply them: they keep the rules they got when
+					they joined.
+				{:else}
+					These rules are not sent to devices yet: each keeps the rules it got when it joined. The
+					first save, or the first rule set attached, sends them to every device, and from then on
+					each change.
+				{/if}
+				Whatever is chosen, hopssh keeps its own management connection and ping.
 			</Alert.Description>
 		</Alert.Root>
 
@@ -380,6 +406,46 @@
 				<p class="text-xs text-muted-foreground">Only the owner and admins change these rules.</p>
 			{/if}
 		</section>
+
+		{#if policy.managed}
+			<section class="space-y-2">
+				<div class="flex items-center justify-between gap-2">
+					<h3 class="text-sm font-medium">On the devices</h3>
+					<Button size="xs" variant="outline" onclick={() => load(true)}>Refresh</Button>
+				</div>
+				<div class="overflow-x-auto rounded-lg border">
+					<table class="w-full text-sm">
+						<thead>
+							<tr class="border-b text-left text-xs text-muted-foreground">
+								<th class="px-4 py-2 font-medium">Device</th>
+								<th class="px-4 py-2 font-medium">Rules</th>
+								<th class="px-4 py-2 font-medium">Since</th>
+								<th class="px-4 py-2 font-medium"></th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each policy.devices as d (d.nodeId)}
+								{@const s = deviceStatus(d)}
+								<tr class="border-b last:border-0">
+									<td class="px-4 py-2">{nodeLabel(d.nodeId, '', `device ${d.nodeId.slice(0, 8)}`)}</td>
+									<td class="px-4 py-2">
+										<Badge
+											variant={s.tone === 'ok' ? 'default' : s.tone === 'bad' ? 'destructive' : 'outline'}
+										>
+											{s.label}
+										</Badge>
+									</td>
+									<td class="px-4 py-2 whitespace-nowrap text-muted-foreground">
+										{d.reportedAt ? new Date(d.reportedAt * 1000).toLocaleString() : ''}
+									</td>
+									<td class="px-4 py-2 text-xs text-muted-foreground">{s.detail}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			</section>
+		{/if}
 
 		<section class="space-y-2">
 			<h3 class="text-sm font-medium">Shared rule sets</h3>

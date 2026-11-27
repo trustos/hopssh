@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/trustos/hopssh/internal/db"
+	"github.com/trustos/hopssh/internal/fwpolicy"
 	"github.com/trustos/hopssh/internal/mesh"
 	"github.com/trustos/hopssh/internal/nebulacfg"
 	"github.com/trustos/hopssh/internal/pki"
@@ -60,6 +61,10 @@ type RenewHandler struct {
 	EventHub       *EventHub
 	Events         *db.NetworkEventStore
 	NetworkManager *mesh.NetworkManager
+	// Firewall: the heartbeat answer of a managed network carries the
+	// policy for the device that asked, and its report is stored (phase 2
+	// of docs/wiki/concepts/firewall-rules.md). Nil: neither.
+	Firewall *db.FirewallStore
 
 	// selfEndpointCache holds each agent's most-recent self-reported
 	// reachable endpoints (populated from heartbeat body.SelfEndpoints).
@@ -241,6 +246,9 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		// omit it.
 		OS   string `json:"os,omitempty"`
 		Arch string `json:"arch,omitempty"`
+		// Firewall: what the agent runs of the policy it got from the
+		// answer before (phase 2). Absent on agents that don't apply rules.
+		Firewall *fwpolicy.Ack `json:"firewall,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NodeID == "" {
 		http.Error(w, "nodeId is required", http.StatusBadRequest)
@@ -293,6 +301,16 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	// each time.
 	if (body.OS != "" && body.OS != node.OS) || (body.Arch != "" && body.Arch != node.Arch) {
 		_ = h.Nodes.SetPlatform(node.ID, body.OS, body.Arch)
+	}
+
+	// A report that is not one is dropped, and the beat still answers: a
+	// bug in the agent's report must not take the device offline.
+	if h.Firewall != nil && body.Firewall != nil {
+		if a, ok := cleanReport(*body.Firewall); ok {
+			if err := h.Firewall.RecordReport(node.ID, a); err != nil {
+				log.Printf("[heartbeat] node %s: firewall report: %v", node.ID, err)
+			}
+		}
 	}
 
 	// Phase G: cache agent's self-reported endpoints. Layer 1 (v0.10.27):
@@ -358,7 +376,7 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	// the agent can't reach the UDP lighthouse (e.g. carrier-filtered
 	// cellular to Oracle Cloud). Mirrors Tailscale's control-plane-
 	// distributes-peer-endpoints model.
-	peers, _ := h.Nodes.ListForNetwork(node.NetworkID)
+	peers, peersErr := h.Nodes.ListForNetwork(node.NetworkID)
 	var peerIPs []string
 	var relayIPs []string
 	peerEndpoints := map[string][]string{}
@@ -494,6 +512,18 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 			out = append(out, r.Route)
 		}
 		resp["routes"] = out
+	}
+
+	// Phase 2: the policy for this device, when the network is managed. On
+	// a failed read it is left out, and the agent keeps what it runs: a
+	// policy built from a partial list of nodes would drop their rules.
+	if h.Firewall != nil && peersErr == nil {
+		preset, rules, managed, err := h.Firewall.Policy(node.NetworkID)
+		if err != nil {
+			log.Printf("[heartbeat] node %s: firewall policy: %v", node.ID, err)
+		} else if managed {
+			resp["firewall"] = fwpolicy.Resolve(preset, rules, node.ID, nodeAddrs(peers))
+		}
 	}
 
 	writeJSON(w, resp)

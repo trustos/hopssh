@@ -58,8 +58,8 @@ Move closed items to a "Resolved" section at the bottom rather than deleting —
 
 ## 2026-11-27 — firewall rules, phase 1: what is left
 
-- **Devices don't apply the rules yet.** Phase 1 stores, checks and audits them; phase 2 sends them in the heartbeat and reloads Nebula's firewall ([[decisions/firewall-rule-sets]]). The tab says so.
-- **A preset reaches only devices that join from now on, with an agent newer than v0.11.31.** Released agents ignore it and write `tcp`. Phase 2 makes it apply to every device.
+- **(Done 2026-11-27 in phase 2, not released.)** ~~Devices don't apply the rules yet.~~ A managed network's devices apply them at their next heartbeat ([[concepts/firewall-rules]]).
+- **A preset reaches only devices with an agent newer than v0.11.31.** Released agents ignore it and keep the block they wrote at enrollment (`tcp`). Since phase 2 a newer agent in a managed network applies the preset and the rules; in a network nobody managed, the preset still reaches only devices that join.
 - **A rule set that names a device works only in that device's network**, so such a set can be attached to one network only (an attach elsewhere is refused with 400). The editor offers only the devices of the network it was opened from.
 - **The tab was not tried as a plain member** in a browser; `TestE2E_Firewall` checks what a member may do.
 - **`swagger/` has not been regenerated since April 2026** (no Makefile target, `swag` not installed): it lacks the firewall routes and much else.
@@ -74,10 +74,21 @@ Read in vendored Nebula v1.11.2 for phase 2 (design and review: [raw/firewall-p2
 - **Nebula accepts some wrong rules without a word.** It takes port 0 as "any", never checks groups, host or CA names against anything, and ignores a port on an ICMP rule. The agent's own check is the gate, not Nebula.
 - **A SIGHUP reloads every network from its file.** Each `nebula.Main` calls `CatchHUP` (`vendor/.../main.go:121`). A SIGHUP therefore no longer ends a foreground agent, and every instance re-reads its `nebula.yaml`. This is harmless while the file is what was loaded. Phase 2 keeps it that way: the file is written only after a successful reload, and the old text goes back on any failure. Nothing in hopssh sends a SIGHUP. Not changed.
 - **Subnet routes and the router's firewall.** A rule without `local_cidr` covers only the node's own mesh address while `default_local_cidr_any` is false. Traffic to a subnet a node routes (its cert's unsafe networks) may then be dropped by that node's own firewall. Not checked. Phase 2 renders the same block as today plus the rules, so it changes nothing here.
-- **Upstream v1.12.0 changes the signature of `RegisterReloadCallback`** (survey). Phase 2 counts its reloads with a wrapper of its own, so the upgrade does not touch it.
+- **Upstream v1.12.0 changes the signature of `RegisterReloadCallback`** (survey). Phase 2 registers no callback: it compares `Control.FirewallRuleHash` after the reload with what `CheckFirewall` built, so the upgrade does not touch it.
 - **The config's getters take no lock** (`config.go:304`); `ReloadConfigString` replaces `c.Settings` under `reloadLock` only (`config.go:175,381`). The callbacks run under that lock, so they are safe. A goroutine that reads the config outside a callback while a reload runs would race. None was found by reading; the two-peer E2E test of phase 2 runs under `-race` with reloads to show it.
 - **With more than one routine the conntrack cache skips the recheck.** `firewall.conntrack.routine_cache_timeout` defaults to 100 ms when `routines > 1` (0, off, with one routine, which is what hopssh runs). A cached flow is not checked against a new rules version until its entry ages out, so a removed rule takes up to 100 ms longer there. Nothing to do while hopssh runs one routine.
 - **Patch `firewall-swap` done 2026-11-27** (the plain pointer write of finding 6 in [[concepts/firewall-rules]]): an `atomic.Pointer`, plus `Control.CheckFirewall` and `Control.FirewallRuleHash`.
+
+## 2026-11-27 — firewall rules, phase 2: what is left
+
+Built and tested ([[concepts/firewall-rules]], "Built"); not released.
+
+- **After a restart the agent does not know which policy its file holds** until it applies one: a policy it refuses first is reported with fingerprint "" (the enrollment block), although the file may hold an earlier managed one. The server sends the same policy on every beat, so the next accepted one fixes the report. Storing the fingerprint beside `nebula.yaml` would close it.
+- **Every device reaches every other's agent API on TCP 41820, whatever the policy.** The keepalive needs it (a refused dial counts as alive), and the bearer token is the only gate on what is served there. A probe that needs no open port would let a policy close it.
+- **A reload runs every callback, the PKI one too.** The agent refuses when `nebula.yaml` changed since the last load, but it does not compare the cert files: a reload between a renewal's write of the cert and its restart of Nebula loads the new cert in place (same network and curve, so Nebula accepts it). Thought harmless, not tested.
+- **The devices table was not tried in a browser**, only its script (`npm test`). Not run on Windows.
+- **`internal/e2etest/peer.go` still allows all.** The peer of the process tests runs no firewall of its own, so `cmd/agent`'s `TestE2E_FirewallApplied` (real server, real agent process) checks the device's file, its report and that it stays reachable, but no traffic that a rule opens or closes; the two-peer test in `internal/client` does that.
+- **A refused policy is not tried again on the same Nebula**, a write that failed for a moment included (a full disk). The report says why; a change of the policy or a restart of the network tries it again. Trying every beat would reload twice a minute, and each reload stops flows the new rules don't allow.
 
 ## 2026-11-27 — audit log: what is left
 

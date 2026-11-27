@@ -59,22 +59,38 @@ type meshService interface {
 type userspaceMeshService struct {
 	svc  *service.Service
 	ctrl *nebula.Control // kept so NebulaControl() can expose peer state
+	conf *loadedConfig
+}
+
+// loadNebulaConfig reads a nebula.yaml into the config Nebula is started
+// with, and keeps it with its text so the firewall can be reloaded in place
+// later (firewall_apply.go).
+func loadNebulaConfig(configPath string) (*loadedConfig, error) {
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil, fmt.Errorf("load nebula config %s: %w", configPath, err)
+	}
+	cfg := new(config.C)
+	if err := cfg.LoadString(string(raw)); err != nil {
+		return nil, fmt.Errorf("load nebula config %s: %w", configPath, err)
+	}
+	return &loadedConfig{cfg: cfg, text: string(raw)}, nil
 }
 
 // startNebula starts an embedded Nebula instance in userspace mode.
 // The agent joins the mesh as a regular node (not lighthouse).
 func startNebula(configPath string) (*userspaceMeshService, error) {
-	var cfg config.C
-	if err := cfg.Load(configPath); err != nil {
-		return nil, fmt.Errorf("load nebula config %s: %w", configPath, err)
+	conf, err := loadNebulaConfig(configPath)
+	if err != nil {
+		return nil, err
 	}
 
-	logger, err := nebulacfg.Logger(&cfg)
+	logger, err := nebulacfg.Logger(conf.cfg)
 	if err != nil {
 		return nil, fmt.Errorf("nebula logging config: %w", err)
 	}
 
-	ctrl, err := nebula.Main(&cfg, false, "hop-agent", logger, overlay.NewUserDeviceFromConfig)
+	ctrl, err := nebula.Main(conf.cfg, false, "hop-agent", logger, overlay.NewUserDeviceFromConfig)
 	if err != nil {
 		return nil, fmt.Errorf("start nebula: %w", err)
 	}
@@ -84,8 +100,10 @@ func startNebula(configPath string) (*userspaceMeshService, error) {
 		return nil, fmt.Errorf("create nebula service: %w", err)
 	}
 
-	return &userspaceMeshService{svc: svc, ctrl: ctrl}, nil
+	return &userspaceMeshService{svc: svc, ctrl: ctrl, conf: conf}, nil
 }
+
+func (u *userspaceMeshService) loaded() *loadedConfig { return u.conf }
 
 // Listen creates a TCP listener on the Nebula mesh's userspace network stack.
 func (u *userspaceMeshService) Listen(network, address string) (net.Listener, error) {
@@ -121,22 +139,23 @@ type kernelTunMeshService struct {
 	ctrl    *nebula.Control
 	meshIP  string
 	devName string // OS interface name (e.g. "utun10", "hop-home")
+	conf    *loadedConfig
 }
 
 // startNebulaKernelTun starts Nebula with a kernel TUN device.
 // This creates a real network interface with the mesh IP assigned.
 func startNebulaKernelTun(configPath string) (*kernelTunMeshService, error) {
-	var cfg config.C
-	if err := cfg.Load(configPath); err != nil {
-		return nil, fmt.Errorf("load nebula config %s: %w", configPath, err)
+	conf, err := loadNebulaConfig(configPath)
+	if err != nil {
+		return nil, err
 	}
 
-	logger, err := nebulacfg.Logger(&cfg)
+	logger, err := nebulacfg.Logger(conf.cfg)
 	if err != nil {
 		return nil, fmt.Errorf("nebula logging config: %w", err)
 	}
 
-	ctrl, err := nebula.Main(&cfg, false, "hop-agent", logger, overlay.NewDeviceFromConfig)
+	ctrl, err := nebula.Main(conf.cfg, false, "hop-agent", logger, overlay.NewDeviceFromConfig)
 	if err != nil {
 		return nil, fmt.Errorf("start nebula (kernel TUN): %w", err)
 	}
@@ -159,8 +178,10 @@ func startNebulaKernelTun(configPath string) (*kernelTunMeshService, error) {
 	} else {
 		log.Printf("[agent] kernel TUN interface created (mesh IP: %s, name: %s)", meshIP, devName)
 	}
-	return &kernelTunMeshService{ctrl: ctrl, meshIP: meshIP, devName: devName}, nil
+	return &kernelTunMeshService{ctrl: ctrl, meshIP: meshIP, devName: devName, conf: conf}, nil
 }
+
+func (k *kernelTunMeshService) loaded() *loadedConfig { return k.conf }
 
 // Listen creates a TCP listener on the OS network stack bound to the mesh IP.
 func (k *kernelTunMeshService) Listen(network, address string) (net.Listener, error) {

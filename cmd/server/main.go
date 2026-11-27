@@ -206,7 +206,8 @@ func main() {
 		Audit:          audit,
 	}
 
-	renewH := &api.RenewHandler{Networks: networks, Nodes: nodes, DNSRecords: dnsRecords, NetworkManager: netMgr}
+	firewall := db.NewFirewallStore(database)
+	renewH := &api.RenewHandler{Networks: networks, Nodes: nodes, DNSRecords: dnsRecords, NetworkManager: netMgr, Firewall: firewall}
 	dnsH := &api.DNSHandler{Networks: networks, DNSRecords: dnsRecords, Members: members, NetworkManager: netMgr, Audit: audit}
 
 	auditH := &api.AuditHandler{Audit: audit, Networks: networks, Members: members}
@@ -233,7 +234,7 @@ func main() {
 	renewH.Events = networkEvents
 
 	clipboardH := api.NewClipboardHandler(nodes, eventsH.Hub)
-	firewallH := &api.FirewallHandler{Networks: networks, Members: members, Firewall: db.NewFirewallStore(database), Audit: audit}
+	firewallH := &api.FirewallHandler{Networks: networks, Members: members, Nodes: nodes, Firewall: firewall, Audit: audit}
 	router := api.NewRouter(users, sessions, authH, oauthH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH, eventsH, netEventsH, clipboardH, firewallH)
 
 	// Clean up expired sessions periodically with graceful shutdown.

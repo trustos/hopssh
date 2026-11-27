@@ -48,6 +48,9 @@ type e2eMesh struct {
 	server  *httptest.Server
 	onRenew atomic.Pointer[func(nodeID string) int] // HTTP status to answer with
 	addrs   map[string]netip.Prefix                 // by node ID
+	// onHeartbeat gets each heartbeat's body and returns the answer; unset,
+	// the answer is "{}".
+	onHeartbeat atomic.Pointer[func(body map[string]any) any]
 }
 
 func newE2EMesh(t *testing.T) *e2eMesh {
@@ -115,6 +118,12 @@ func goroutineStackFor(stacks, want string) string {
 }
 
 func (m *e2eMesh) serve(w http.ResponseWriter, r *http.Request) {
+	if fn := m.onHeartbeat.Load(); fn != nil && r.URL.Path == "/api/heartbeat" {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		json.NewEncoder(w).Encode((*fn)(body))
+		return
+	}
 	if r.URL.Path != "/api/renew" {
 		w.Write([]byte("{}"))
 		return

@@ -42,17 +42,29 @@ func TestE2E_KeepaliveReachesClient(t *testing.T) {
 // address.
 func firewallPair(t *testing.T, blockA, blockB string) (*meshInstance, string) {
 	t.Helper()
-	m := newE2EMesh(t)
+	_, a, _, ipB := firewallMesh(t, blockA, blockB, nil)
+	return a, ipB
+}
+
+// firewallMesh is firewallPair with the mesh and b's instance; before is
+// set up on the mesh before the network starts.
+func firewallMesh(t *testing.T, blockA, blockB string, before func(*e2eMesh)) (m *e2eMesh, a, b *meshInstance, ipB string) {
+	t.Helper()
+	m = newE2EMesh(t)
 	portA, portB := freeUDPPort(t), freeUDPPort(t)
 	ipA, ipB := e2eSubnet+"6", e2eSubnet+"7"
 	m.enroll("a", ipA, portA, time.Hour, map[string][]string{ipB: {localUDP(portB)}})
 	m.enroll("b", ipB, portB, time.Hour, map[string][]string{ipA: {localUDP(portA)}})
 	replaceFirewallSection(t, filepath.Join(m.dir, "a", "nebula.yaml"), blockA)
 	replaceFirewallSection(t, filepath.Join(m.dir, "b", "nebula.yaml"), blockB)
+	if before != nil {
+		before(m)
+	}
 	if err := m.c.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	a := m.c.instances.get("a")
+	a = m.c.instances.get("a")
+	b = m.c.instances.get("b")
 	// Any packet opens the tunnel, whether b's firewall lets it in or not.
 	within(t, 20*time.Second, "a's tunnel to b", func() bool {
 		_ = udpReaches(t, a, ipB+":9")
@@ -67,7 +79,7 @@ func firewallPair(t *testing.T, blockA, blockB string) (*meshInstance, string) {
 		}
 		return false
 	})
-	return a, ipB
+	return m, a, b, ipB
 }
 
 // udpReaches sends one datagram over the mesh to a port where nothing
