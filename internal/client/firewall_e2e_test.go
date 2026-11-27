@@ -87,8 +87,12 @@ func udpReaches(t *testing.T, inst *meshInstance, target string) bool {
 		t.Fatalf("dial %s: %v", target, err)
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(time.Second))
-	for i := 0; i < 2; i++ { // the first read can lose the error to the wakeup
+	// A read does not wake for the ICMP error; the next write returns it. So
+	// each try has its own deadline: with one for both, an answer that came
+	// after the first read began (half a second under -race) left the second
+	// write to fail on the deadline instead.
+	for i := 0; i < 2; i++ {
+		_ = conn.SetDeadline(time.Now().Add(time.Second))
 		if _, err := conn.Write([]byte("x")); err != nil {
 			return strings.Contains(err.Error(), "refused")
 		}
