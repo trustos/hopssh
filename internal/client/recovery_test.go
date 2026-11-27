@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -967,6 +969,25 @@ func TestSendHeartbeat_StatusMapping(t *testing.T) {
 			t.Errorf("err = %v", err)
 		}
 	})
+}
+
+// TestSendHeartbeat_ReportsItsOwnMachine: the node row keeps whatever
+// enrollment guessed, and an enrollment guesses — scripts/install.sh says
+// "linux" whatever it runs on. The heartbeat is the only place the
+// machine's real OS and CPU ever arrive, so a Windows node enrolled by
+// that script stays listed as Linux forever if this field is dropped.
+func TestSendHeartbeat_ReportsItsOwnMachine(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&body)
+	}))
+	defer srv.Close()
+	if err := sendHeartbeat(newHTTPTestInstance(t, srv.URL)); err != nil {
+		t.Fatal(err)
+	}
+	if body["os"] != runtime.GOOS || body["arch"] != detectArch() {
+		t.Errorf("heartbeat reports %v/%v, this machine is %s/%s", body["os"], body["arch"], runtime.GOOS, detectArch())
+	}
 }
 
 // --- status surface ---------------------------------------------------------

@@ -217,6 +217,7 @@ jobs:
   # Tracking gaps in docs/wiki/decisions/client-windows-linux-architecture.md.
   build-windows:
     name: Build Windows ${{ matrix.tauri_arch }} MSI + NSIS (informational)
+    needs: preflight
     continue-on-error: true
     runs-on: windows-latest
     strategy:
@@ -332,6 +333,7 @@ jobs:
   # GitHub-hosted (ubuntu-22.04-arm); free for public repos.
   build-linux:
     name: Build Linux ${{ matrix.tauri_arch }} .deb + .rpm + AppImage (informational)
+    needs: preflight
     continue-on-error: true
     runs-on: ${{ matrix.runner }}
     strategy:

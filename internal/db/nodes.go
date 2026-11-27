@@ -615,6 +615,24 @@ func (s *NodeStore) SetClientType(nodeID, clientType string) error {
 	return err
 }
 
+// SetPlatform records the OS and CPU the agent reports about its own
+// machine. Enrollment only guesses — the token body said "linux" for
+// every machine until 72f2165, and the device flow falls back to the
+// server's own OS — so the heartbeat is where the truth arrives, and
+// a node that enrolled wrong is corrected by its next beat. An empty
+// value leaves that column alone: an old agent omits the field, and "no
+// opinion" must not erase what a newer one reported.
+func (s *NodeStore) SetPlatform(nodeID, os, arch string) error {
+	if os == "" && arch == "" {
+		return nil
+	}
+	_, err := s.wdb.Exec(
+		`UPDATE nodes SET os = COALESCE(NULLIF(?, ''), os), arch = COALESCE(NULLIF(?, ''), arch) WHERE id = ?`,
+		os, arch, nodeID,
+	)
+	return err
+}
+
 func (s *NodeStore) Delete(id string) error {
 	q := dbsqlc.New(WrapDB(s.wdb))
 	return q.DeleteNode(context.Background(), id)

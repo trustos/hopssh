@@ -89,7 +89,7 @@ Nebula's own end-to-end tests (`e2e/`, on the Mac, v1.10.3 and v1.11.2) with all
 
 Known to be wrong, checked by a test that will say when it is no longer so (`KnownGap`):
 
-- **UDP between devices does not get through.** Our own mesh firewall allows TCP and ICMP only (`TestUDPBetweenDevices`). mosh, QUIC, WireGuard and Screen Sharing's media need it. Whether to allow it is a policy decision.
+- **UDP between devices does not get through** (`TestUDPBetweenDevices`). mosh, QUIC, WireGuard and Screen Sharing's media need it, while every TCP port between nodes is already open. What the three firewall writers allow, and the decision to make: [[../open-questions]] "UDP between devices is blocked by our own firewall".
 - **A network without UDP has no way out** (`TestNoUDP`). Tailscale has a relay on TCP 443 for that.
 - **Big packets get lost** on a line that takes less than 1480 bytes and does not say so (`TestSmallPackets/told_false`). Small ones get through, so a login works and a listing hangs. Our TUN MTU of 1420 needs 1480 on the way; 1280 broke Screen Sharing (see CLAUDE.md, "TunMTU"). Looking for the MTU per path (DPLPMTUD) was never built.
 
@@ -142,3 +142,7 @@ Four of the 47 were done again: one had been planted so that it changed nothing 
 ## Backlinks
 
 - [[e2e-tests]], [[macos-udp-send]], [[../open-questions]]
+
+## The host must be idle
+
+The lab VM shares this Mac's cores. With a load average of 31 on 18 cores (a game and two other VMs) `TestLimitedLine/5ms` failed in every run, with the binaries of the commit that added it too: tunnel 4 to 9 Mbit/s against 13 to 16 at a load of 5. Check `uptime` before a run and note it with the numbers.

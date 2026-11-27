@@ -64,9 +64,12 @@ func TestUserspaceCloseHelper(t *testing.T) {
 		time.Sleep(2 * time.Millisecond)
 		svc.Close()
 		close(stop)
-		if port := m.c.enrolls.Get("home").ListenPort; udpPortHeld(port) {
-			t.Fatalf("port %d still held after close %d", port, i)
-		}
+		// The port is free again. Nebula's close gives its readers a second
+		// each before closing the socket, so this is a wait and not a glance:
+		// on a loaded runner the reader can still be in its syscall when
+		// Close returns. An orphan never frees it, so the teeth stay.
+		port := m.c.enrolls.Get("home").ListenPort
+		within(t, 10*time.Second, "the UDP port to be released", func() bool { return !udpPortHeld(port) })
 	}
 	// Without vendor patch 29 every close leaves a netstack behind, with a
 	// goroutine per CPU; each certificate renewal closes one.

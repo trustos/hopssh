@@ -393,6 +393,7 @@ func (c *Client) Join(user *Client, networkID, role string) {
 // Node is one entry of the node list.
 type Node struct {
 	ID, Hostname, NebulaIP, NodeType, Status string
+	OS, Arch                                 string
 	LastSeenAt                               *int64
 	PeersDirect, PeersRelayed                *int64
 	Capabilities                             []string

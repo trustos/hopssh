@@ -348,11 +348,16 @@ func enrollDeviceFlow(endpoint string) {
 	log.Fatal("Device code expired. Run `hop-agent enroll` again.")
 }
 
+// tokenEnrollBody is what enrollWithToken posts to /api/enroll.
+func tokenEnrollBody(token, hostname string) string {
+	return fmt.Sprintf(`{"token":%q,"hostname":%q,"os":%q,"arch":%q}`,
+		token, hostname, runtime.GOOS, detectArch())
+}
+
 // enrollWithToken uses a pre-generated enrollment token.
 func enrollWithToken(token, endpoint string) {
 	hostname, _ := os.Hostname()
-	reqBody := fmt.Sprintf(`{"token":%q,"hostname":%q,"os":"linux","arch":"%s"}`,
-		token, hostname, detectArch())
+	reqBody := tokenEnrollBody(token, hostname)
 
 	resp, err := http.Post(endpoint+"/api/enroll", "application/json",
 		strings.NewReader(reqBody))

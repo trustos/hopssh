@@ -2,10 +2,11 @@
 type: concept
 title: Loss on a limited line (what the retransmits of a short upload are, and why we don't prevent them)
 status: current
-last_compiled: 2026-11-26
+last_compiled: 2026-11-27
 sources:
   - internal/netlab/limited_linux_test.go
   - internal/netlab/wire_linux_test.go
+  - cmd/hop-field/record.go
 ---
 
 # Loss on a limited line
@@ -106,6 +107,48 @@ Being the slowest part ourselves: measure what the line delivers (the answers to
 
 Not built. What it would remove is a burst of retransmits in the first two or three seconds of a large transfer, which TCP repairs by itself and which the same transfer has without any VPN. An SSH session, a terminal, a screen share never send enough at once to see it.
 
+## Idle loss, by place (40 hours, both Macs)
+
+`hop-field` (pull request 3) ran on both Macs from 2026-11-25 to 2026-11-27: 2384 records on the mini, 2229 on the MBP, one a minute, five pings per network per minute. This is the idle path, no transfer running.
+
+| who | where it was | minutes | pings answered | lost |
+|---|---|---|---|---|
+| mini | home, to `home` | 2851 | 14252 / 14254 | 0.014 % |
+| mini | home, to `work` | 2851 | 14253 / 14254 | 0.007 % |
+| MBP | office (`172.17.132.9`) | 1513 | 7454 / 7515 to `home` | **0.812 %** |
+| MBP | office (`172.17.132.9`) | 1513 | 7514 / 7525 to `work` | 0.146 % |
+| MBP | office (`172.17.132.91`) | 596 | 2960 / 2965 to `home` | 0.169 % |
+| MBP | office (`172.17.132.91`) | 596 | 2968 / 2975 to `work` | 0.235 % |
+| MBP | phone's hotspot (`172.20.10.2`) | 120 | 600 / 600, both networks | **0.000 %** |
+
+Home to home is clean; the phone's hotspot is clean (no sample lost at all, though 120 minutes is a small one); the office is not, and it is the managed Mac with the filters of [[concepts/defender-filter-on-the-mbp]] on it. It is not even: 25 of the MBP's 45 lossy minutes fall in one hour, 15:54 to 17:02 on 2026-11-26.
+
+**It follows the network, not the machine or the moment.** The two Macs run two tunnels at once, `home` and `work`, and in the worst hour both were up and both direct. In 15:40 to 17:15 on 2026-11-26 (86 minutes with data):
+
+| pinger | network | answered |
+|---|---|---|
+| MBP (office) to mini | `home` | 391 / 430 — **9.07 %** |
+| MBP (office) to mini | `work` | 430 / 430 |
+| mini (home) to MBP | `home` | 390 / 430 — **9.30 %** |
+| mini (home) to MBP | `work` | 430 / 435 |
+
+Over the whole 40 hours the same split holds: `home` 0.59 % (MBP side) and 0.63 % (mini side), `work` 0.16 % and 0.09 %. So "the office network loses 0.8 %" is not the finding — one of the two tunnels loses six times what the other does, in both directions, for hours at a time, while the other is nearly clean.
+
+It is not the port number either. `home` runs to `46.10.240.91:4242` on the mini and `31.13.216.222:4244` on the MBP; `work` to `:4243` and `:4242`. Port 4242 is in a lossy flow at one end and a clean one at the other. What the two lossy flows share is the network.
+
+**It is not a queue.** In the lossy minutes the median round trip on `home` was 25.4 ms, against 25.8 ms in the clean ones. A packet is dropped and the next one goes through at full speed, so nothing waited anywhere — which rules out the shape of loss this page is otherwise about.
+
+**Nothing of ours moved while it happened.** In those minutes Nebula logged no dead tunnel, no roam, no failed handshake; the path stayed direct, and the round trip swung 9 to 58 ms minute to minute on the same path.
+
+**It comes and goes.** On 2026-11-27, from the same office, 1200 pings on `home` and 1200 on `work` at 20 a second: 0 % lost on both. So it is not a standing rule of that network, and a single clean test proves nothing either way.
+
+**Not pinned.** What is left between the two machines and the office edge: the office network can treat one flow differently from another (it inspects and polices per flow, [[concepts/defender-filter-on-the-mbp]]), and our own per-instance code could too. The lab does not show it — `vm-linux` and `vm-win11` carry `vmtest` and `vmtest2` at once, 40 rounds of 25 pings on each network, alternating: 1000 of 1000 answered on both. What would settle it is a count at the wire during a lossy stretch: if the packets reach the interface and the ping still does not answer, the drop is ours; if the wire carries fewer than we sent, it is the network. `hop-field` would have to start a capture when it sees a lossy minute — not built.
+
+**Two things that looked like faults and were not:**
+
+- The mini's agent restarted 38 times in 40 hours, about hourly. They are my own `make dev-deploy` runs: the script ends with `launchctl kickstart -k system/com.hopssh.agent` (scripts/dev-deploy.sh:104). The burst at 12:05 to 12:13 local was one deploy at 10:07:39 UTC that failed on the laptop and was retried. A restart of the agent costs the other side 5 to 10 s of silence, which is the MBP's 11:28 to 11:30 loss.
+- The recorder's `log` lines are only the ten kinds its filter keeps, so "nothing in the log" is weak evidence that nothing happened. Before reading a quiet record as a quiet agent, check the filter in `cmd/hop-field/record.go`.
+
 ## How to measure it again
 
 - Per second: `iperf3 -c <mesh address> -t 8 -J`, then `intervals[].streams[0]` (`retransmits`, `snd_cwnd`).
@@ -113,3 +156,4 @@ Not built. What it would remove is a burst of retransmits in the first two or th
 - Before a run on a phone's hotspot: `route -n get default` (is it really the hotspot), `nettop -P -L 1` (is anything else sending).
 - `networkQuality` does not show in `netstat -s -p tcp`: it does not use the kernel's TCP.
 - TCP between the Macs does not use ECN (`netstat -s -p tcp | grep -i ecn`: all 0), so marking instead of dropping is not an option there.
+- Idle loss over hours: `hop-field record` on both ends (`cmd/hop-field/record.go`), then count `pingSent` against `pingGot` per minute and group by the record's `localIp`, so a lossy stretch is tied to where that machine was.

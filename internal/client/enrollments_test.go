@@ -2,7 +2,6 @@ package client
 
 import (
 	"encoding/json"
-	"math/rand"
 	"net"
 	"os"
 	"path/filepath"
@@ -174,14 +173,7 @@ func TestEnrollmentRegistry_FileFormat(t *testing.T) {
 // hop-agent on this machine may hold it, and so may the tests of cmd/agent.
 func freeUDPPorts(t *testing.T) int {
 	t.Helper()
-	for i := 0; i < 100; i++ {
-		base := 20000 + rand.Intn(10000) // below the ports the OS hands out
-		if udpPortAvailable(base) && udpPortAvailable(base+1) && udpPortAvailable(base+2) {
-			return base
-		}
-	}
-	t.Fatal("no three free UDP ports in a row")
-	return 0
+	return reserveUDPPorts(t, 3)
 }
 
 func TestEnrollmentRegistry_NextAvailableListenPort_Empty(t *testing.T) {

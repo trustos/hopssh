@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"runtime/pprof"
 	"strings"
 	"sync"
@@ -152,6 +153,13 @@ func sendHeartbeat(inst *meshInstance) error {
 	reqBody := map[string]any{
 		"nodeId":       inst.nodeID(),
 		"agentVersion": buildinfo.Version, // "vX.Y.Z" (tagged) or "vX.Y.Z-N-gSHORTSHA(-dirty)" (dev)
+		// The machine's own OS and arch, from the runtime running this
+		// code. The node row keeps what enrollment wrote, and
+		// enrollment guesses: the token body said "linux" for every
+		// machine until 72f2165, which is not in a release yet. This is
+		// where the truth arrives, and where an old node is corrected.
+		"os":   runtime.GOOS,
+		"arch": detectArch(),
 	}
 	// ClientType is build-baked (-X main.clientType=...) so the dashboard
 	// can show "Desktop" vs "CLI" provenance per node. Skip when empty
@@ -629,6 +637,38 @@ func renewalTime(notBefore, notAfter time.Time, seed string) time.Time {
 	return notBefore.Add(life/2 + time.Duration(frac*float64(life/10)))
 }
 
+// writeCertPair puts a renewed cert and key on disk as one pair.
+//
+// certInstallMu keeps two overlapping renewals from leaving one's cert next to
+// the other's key. startMu is the other half of that, and the half that was
+// missing: connect holds it while Nebula opens node.crt and node.key one after
+// the other, and the renewal loop is already running by then. A renewal that
+// lands in that window leaves Nebula with the new cert and the old key, and it
+// refuses to start at all — "private key is not a pair with public key in
+// nebula cert" — so the network comes up on the OS stack and Nebula only
+// arrives on the retry two seconds later. The window is open on every start of
+// a machine that was off for more than half a cert's life, which is 12 h of
+// the 24 h we issue; neither Mac in the fleet has logged it, so it is a race
+// that is common to hit, not one that has been seen.
+//
+// A crash between the two writes is still caught by certStartProblem
+// ("mismatched") on the next start; this closes the window where nothing
+// crashed and a read simply happened in the middle.
+func (inst *meshInstance) writeCertPair(certPEM, keyPEM string) error {
+	inst.startMu.Lock()
+	defer inst.startMu.Unlock()
+
+	certPath := filepath.Join(inst.dir(), "node.crt")
+	if err := atomicWrite(certPath, []byte(certPEM), 0644); err != nil {
+		return fmt.Errorf("write cert: %w", err)
+	}
+	keyPath := filepath.Join(inst.dir(), "node.key")
+	if err := atomicWrite(keyPath, []byte(keyPEM), 0600); err != nil {
+		return fmt.Errorf("write key: %w", err)
+	}
+	return nil
+}
+
 // renewCert calls the control plane's /api/renew endpoint to get a fresh
 // cert, installs it, and hot-reloads Nebula onto it.
 func renewCert(inst *meshInstance) error {
@@ -704,20 +744,11 @@ func fetchAndInstallCert(inst *meshInstance) error {
 		return fmt.Errorf("empty cert or key in response")
 	}
 
-	// Write new cert atomically (temp file + rename) to prevent partial reads.
-	// The lock keeps two overlapping renewals from leaving one's cert next
-	// to the other's key; a crash between the two writes is caught by
-	// certStartProblem ("mismatched") on the next start.
-	certPath := filepath.Join(inst.dir(), "node.crt")
-	keyPath := filepath.Join(inst.dir(), "node.key")
 	certInstallMu.Lock()
 	defer certInstallMu.Unlock()
 
-	if err := atomicWrite(certPath, []byte(renewResp.NodeCert), 0644); err != nil {
-		return fmt.Errorf("write cert: %w", err)
-	}
-	if err := atomicWrite(keyPath, []byte(renewResp.NodeKey), 0600); err != nil {
-		return fmt.Errorf("write key: %w", err)
+	if err := inst.writeCertPair(renewResp.NodeCert, renewResp.NodeKey); err != nil {
+		return err
 	}
 
 	// Apply server-pushed Nebula config if present.
@@ -1221,6 +1252,11 @@ func reloadNebula(inst *meshInstance) {
 		newSvc, err := startMeshFn(configPath, tunMode)
 		if err != nil {
 			log.Printf("[renew %s] Nebula cold start failed even after cert renewal: %v", inst.name(), err)
+			// The same safety net the hot path has. Without it the next
+			// chance is the next renewal, about 13 h later on the 24 h
+			// certs, for a failure that is usually the UDP port still
+			// held by the start that failed at boot.
+			scheduleRetryReload(inst, configPath, tunMode)
 			return
 		}
 
@@ -1232,9 +1268,9 @@ func reloadNebula(inst *meshInstance) {
 
 		log.Printf("[renew %s] Nebula started after cert renewal (mode: %s)", inst.name(), tunMode)
 
-		// Configure DNS (kernel TUN mode only).
+		// Configure DNS (kernel TUN mode only), beside the rest as in connect.
 		if tunMode == "kernel" {
-			inst.configureSplitDNS()
+			go inst.configureSplitDNS()
 		}
 
 		// Warm tunnels so Screen Sharing HP mode works immediately.
@@ -1329,8 +1365,11 @@ func reloadNebula(inst *meshInstance) {
 }
 
 // startNebulaByMode dispatches to kernel-TUN or userspace start based
-// on tunMode. Centralizes the dispatch so retry-with-backoff calls the
-// same path as the initial start.
+// on tunMode, and nothing else: it does not fall back to userspace when
+// a kernel start fails. The reload paths (hot swap and retry-with-backoff)
+// use it, so a reload that cannot get the TUN device fails and is retried
+// in the same mode. connect and reloadNebula's cold start use startMeshFn,
+// which does fall back.
 //
 // Indirected via startNebulaByModeFn so tests can substitute a fake
 // without standing up a real Nebula process.

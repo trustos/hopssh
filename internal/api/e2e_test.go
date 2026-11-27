@@ -727,6 +727,32 @@ func TestE2E_RenewAndHeartbeat(t *testing.T) {
 	}
 }
 
+// TestE2E_HeartbeatCorrectsPlatform: only enrollment ever wrote a node's OS,
+// and enrollment guesses — scripts/install.sh posts "linux" whatever machine
+// it runs on. A Windows node enrolled that way is listed with the Linux icon
+// forever. The heartbeat carries the agent's own runtime, and that is where
+// the row learns the truth. A beat from an agent that has no opinion
+// (v0.11.30 and older, which omit the fields) must not erase it again.
+func TestE2E_HeartbeatCorrectsPlatform(t *testing.T) {
+	h := newHousehold(t)
+	box := h.owner.Enroll(h.net.ID, "box") // the harness enrolls as linux/arm64
+	agent := h.s.Anonymous()
+	agent.Token = box.AgentToken
+	beat := func(body M) { agent.Want(200, "POST", "/api/heartbeat", body, nil) }
+
+	beat(M{"nodeId": box.NodeID, "os": "windows", "arch": "amd64"})
+	e2etest.Within(t, 20*time.Second, "the heartbeat to correct the machine", func() bool {
+		n := h.member.Nodes(h.net.ID)[box.NodeID]
+		return n.OS == "windows" && n.Arch == "amd64"
+	})
+
+	beat(M{"nodeId": box.NodeID})
+	time.Sleep(2 * time.Second)
+	if n := h.member.Nodes(h.net.ID)[box.NodeID]; n.OS != "windows" || n.Arch != "amd64" {
+		t.Errorf("a beat without os/arch undid it: os %q, arch %q", n.OS, n.Arch)
+	}
+}
+
 // TestE2E_RateLimits: many machines behind one address renew without being
 // refused, and guessing passwords from that address doesn't take them down.
 // (Up to v0.11.26 they shared the login limiter: 10 per minute.)

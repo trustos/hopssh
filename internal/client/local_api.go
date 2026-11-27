@@ -69,6 +69,17 @@ func (s *localAPIServer) instances() *instanceRegistry { return s.client.instanc
 // Both files used to live in cmd/agent (one package); now they share
 // internal/client and use the events.go canonical declarations.
 
+// announceLocalAPI tells a parent process where the local API is and with
+// which token. Only into a pipe: the desktop app starts the agent with one
+// and reads this line. The system service's stdout is its log, which every
+// local user can read; there the app takes the token from the mirror files.
+func announceLocalAPI(out *os.File, addr, token string) {
+	if fi, err := out.Stat(); err != nil || fi.Mode()&os.ModeNamedPipe == 0 {
+		return
+	}
+	fmt.Fprintf(out, "%s%s:%s\n", localAPIReadyPrefix, addr, token)
+}
+
 // StartLocalAPI wires up the loopback HTTP API on 127.0.0.1:0, generates
 // a fresh bearer token, persists it, prints HOPSSH_LOCAL_API:<addr>:<token>
 // to stdout, and serves until ctx is cancelled. Non-fatal — returns the
@@ -133,7 +144,7 @@ func StartLocalAPI(ctx context.Context, c *Client) error {
 	}
 
 	addr := ln.Addr().String()
-	fmt.Fprintf(os.Stdout, "%s%s:%s\n", localAPIReadyPrefix, addr, token)
+	announceLocalAPI(os.Stdout, addr, token)
 	log.Printf("[local-api] listening on %s (token: %s..., file: %s)", addr, token[:8], tokenPath)
 
 	// When running as the system-mode agent (launchd-spawned with

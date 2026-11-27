@@ -233,6 +233,14 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		// we MUST stop dialing the old address once its lease is gone.
 		// Optional; old agents omit it.
 		SelfEndpointLifetimesSec []int `json:"selfEndpointLifetimesSec,omitempty"`
+		// The machine's own OS and arch, from the agent's runtime
+		// (v0.11.31). Enrollment is the only other writer, and the
+		// token path posted a literal "linux" until 72f2165 — which is
+		// not in any release yet — so this is where an installed
+		// machine's row learns what it really is. Optional; old agents
+		// omit it.
+		OS   string `json:"os,omitempty"`
+		Arch string `json:"arch,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NodeID == "" {
 		http.Error(w, "nodeId is required", http.StatusBadRequest)
@@ -273,6 +281,18 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	// regenerating the sqlc heartbeat query.
 	if body.ClientType != nil {
 		_ = h.Nodes.SetClientType(node.ID, strings.TrimSpace(*body.ClientType))
+	}
+
+	// Same out-of-band path for the machine's OS and arch. The row keeps
+	// whatever enrollment wrote and nothing else ever corrects it, and
+	// enrollment guesses: the token body used to say "linux" for every
+	// machine, and the device flow falls back to this server's own OS.
+	// So this is where a Windows node stops being listed as "linux".
+	// Checked against the row first: this handler runs every 30s per
+	// node, and the beat itself is buffered precisely to avoid a write
+	// each time.
+	if (body.OS != "" && body.OS != node.OS) || (body.Arch != "" && body.Arch != node.Arch) {
+		_ = h.Nodes.SetPlatform(node.ID, body.OS, body.Arch)
 	}
 
 	// Phase G: cache agent's self-reported endpoints. Layer 1 (v0.10.27):

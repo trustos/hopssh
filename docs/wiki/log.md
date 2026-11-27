@@ -305,3 +305,168 @@ Pages touched: concepts/defender-filter-on-the-mbp (rewritten), incidents/2026-1
 Pages touched: incidents/2026-11-26-mbp-send-stuck-in-kernel, open-questions, index.
 
 22:12 to 22:40, Linux: the whole lab on the tip. All pass but `TestLimitedLine/5ms` (8 of 8 runs, with and without the new loop; passed at 16:00). Filed in open-questions. CI on PR 6 green on `75f5c50`, macOS and Ubuntu.
+
+23:27, fleet: 24 minutes after the start of v0.11.30 both Macs have 0 lines of `send-watch`, `Flush failed`, `CRITICAL`, `WATCHDOG`, panic, rebind and failed heartbeats; pings MBP to mini 20 of 20 on both networks. The orphan node of the mini in `member-test` was deleted in the dashboard.
+
+23:30 to 00:10, Windows 11 ARM64 in UTM, agent v0.11.30 against this tree's server on the host's bridge address (commands through `utmctl exec`, files through `utmctl file`). Works: token enrollment, service, tunnel, name lookup, restart. Found and fixed on `fix/windows-vm-findings`:
+
+- `enrollWithToken` sent `"os":"linux"` on every system (`TestTokenEnrollBody_ReportsThisSystem`).
+- The line `HOPSSH_LOCAL_API:<addr>:<token>` went to stdout, which for the system service is its log: `/var/log/hop-agent.log` is readable by everyone on the Macs, `hop-agent.log` by `Users` on Windows. With the token a local user can enroll the root agent into a network of their own and open a terminal as root. Now only into a pipe, which is what the desktop app gives the agent it starts (`TestAnnounceLocalAPI_*`). The Go tests read it through a pipe already; `clients/desktop/scripts/smoke-test.sh` was changed to.
+- The split-DNS setup ran before the watcher, the path loop, the mesh listener and the local API. On Windows it starts PowerShell twice; in the VM they came 98 s after "mesh connected" on two starts, 5 s with the setup beside the rest. No test: the tests run in userspace mode, where there is no DNS setup.
+
+Pages touched: open-questions.
+
+00:15 to 00:25, the Ubuntu 26.10 VM joined as second device (no root there: userspace mode, started by hand). Windows to Linux: direct handshake from the Windows VM's own address, ping 4 of 4, lookup by name. Through the server: health and exec on both, a terminal on both (ConPTY on Windows: prompt, a command and its output came back). Forced renewal: Linux at once, Windows 9 s, both reachable after. The Linux agent's log has no token line (the fix).
+
+Pages touched: open-questions.
+
+01:00, the Ubuntu VM again, now as root with the service: kernel TUN `hop-hop`, split-DNS (the resolved drop-in fallback fired, as on 24.04 and 25.10), ping and lookup by name both ways. Restart: the Windows peer answers after 2 s. Forced renewal: at once, no "busy" or "in use". Stopped for 40 s: "sleep/wake detected (tick gap 40s)", peer answers 2 s after. No token line in the journal.
+
+Pages touched: open-questions.
+
+01:05 to 01:15, lab: `TestLimitedLine/5ms` three times on the tip and three times with the binaries of `bf557ea`: fails with both. The host's load average was 31 on 18 cores. Filed in open-questions; the test is unchanged.
+
+Pages touched: open-questions.
+
+01:55, lab: with the host idle `TestLimitedLine/5ms` passes three of three (13.0 to 14.0 against 16.1 to 16.3 Mbit/s). It was the host's load.
+
+02:05 to 02:25, the one Windows line left unexplained: `Failed to write to log, write /dev/stderr: The handle is invalid.`, once per start. It is logrus's own complaint, not ours. The port mapper logs with logrus (`internal/portmap/portmap.go:54`), and logrus took `os.Stderr` when the process started; a Windows service has no console handles, so the write fails. Every `portmap:` line was lost, and the log got the complaint instead. Fix on `fix/windows-vm-findings`: `routeStandardLog` points the standard logrus logger at wherever the standard log writes when the line is written, so it follows the service's redirect (`TestStandardLogrus_LandsInTheAgentLog`, `TestStandardLogrus_FollowsTheLogWhenItMoves`; red before the fix, green after). In the VM with the new binary: the `portmap: no protocol available` line is in `C:\ProgramData\hopssh\hop-agent.log`, and no failed-write line after that start (the start two minutes earlier, old binary, still had one). Nebula's own lines were already fine: `nebulacfg.Logger` sets its writer.
+
+Pages touched: open-questions.
+
+02:30 to 02:40, two networks at once on the two VMs. A second network `vmtest2` (domain `.lab`) on the private server, both VMs enrolled into it. Windows: both interfaces up (`hop-hop` 10.42.1.3 on 4242, `hop-lab` 10.42.2.2 on 4243), each network with its own DNS forwarder on its own loopback (`127.53.0.1:53` → 15300, `127.53.0.2:53` → 15301) — a query for `.lab` sent to `.hop`'s forwarder is refused, which is that design, not a fault; NRPT sends each domain to its own. Traffic passes both ways on both networks, and a restart of the service brings both back within 6 s. Linux: the second enrollment did **not** come up at all — `installAgentSystemd` ran `systemctl start`, which does nothing to a unit that is already running, so the new network waited for a reboot. macOS (`bootstrap` after `bootout`) and Windows (stop + start) already restart what is running. Fix: `serviceStartCmd(active)` asks with `systemctl is-active --quiet` and restarts then (`TestServiceStartCmd_RestartsARunningService`, `TestInstallAgentSystemd_RestartsWhatIsRunning`; the tripwire fails on the old installer). With the fixed binary in the VM, `hop-agent install` with the service running brought `lab` up in the same minute (interface, listener, path loop, split-DNS) and both networks passed traffic both ways. Seen once and not explained: `[dns hop] WARNING: failed to cleanup DNS for .hop: remove NRPT rule: exit status 0xc0000409` — the PowerShell that removes the rules died; the next start re-registers them.
+
+Pages touched: open-questions.
+
+02:40 to 03:05, the two VMs again: a change of network and sleep, both of which had never run on Windows. Windows: an address change on the adapter (`netsh interface ip set address`) — `network change detected, rebinding Nebula` at 02:54:54, both networks rebound within 2 s, the tunnel to the Linux VM answering again 4 s later, about 5 s of pings lost. Sleep: the process frozen with `NtSuspendProcess` for 40.4 s (the VM has no sleep states, and this is the SIGSTOP equivalent the log already prescribes) — `sleep/wake detected (tick gap 44s)`, rebind, an out-of-cycle heartbeat, on both networks; pings were lost exactly during the freeze and 0 % after the resume. Linux: an address change recovered in about 4 s the same way. Do not use `netsh interface set interface "Ethernet" admin=disable` in that guest: the adapter never comes back and the guest agent dies with it; only `utmctl stop` + `utmctl start` recovers, and the address change tests the same path.
+
+03:05 to 03:35, CI on this branch, two red jobs, and the same question twice: a UDP port "still held" after a close. What the logs actually said: `race (ubuntu-latest)` died with `hop: network "home" did not shut down and still holds UDP port 35997 after 1s — exiting (75)`, which is `restartInstance`'s own escalation (`recovery.go:219`) killing the test binary; `build` failed inside `TestUserspaceClose_DoesNotExit` at cycle **0** of 10, on port 54695. Both ports are in the ephemeral range, and both tests ask once, at one instant. Measured in the Ubuntu VM: 300 real start/close cycles of userspace Nebula, with four goroutines hammering the hostmap so the reader is always in its syscall — the port was still held **0 of 300**, and `/proc/net/udp` showed no socket left. The patch's give-up warning (`udp reader did not exit`) appears in no CI log, so the readers exited and the closed socket was gone. What was left holding the port, then: another socket. `go test ./...` runs packages in parallel, `cmd/agent` and `internal/e2etest` bind UDP ports too, and Nebula sets `SO_REUSEPORT` on Linux (`vendor/…/udp/udp_linux.go:46`), so a second instance binds a port that is already taken and neither one fails. The sibling helper `freeUDPPorts` already knew this and picks "below the ports the OS hands out"; `freeUDPPort` asked the kernel instead. Fix: one helper `reserveUDPPorts` for both, from the 20000–29999 band, and no port handed out twice in one test binary (`TestFreeUDPPort_NotFromTheEphemeralRange` is red on the old helper — it returned 63223 — and green on the new). Both assertions also stop glancing: `within(t, 10s, …)` waits for the port to be free and for the reconnected network to be live, and says how long it took. Nebula's close gives each reader a second before closing the socket, so "free" is a wait, not an instant. 20 of 20 and 15 of 15 on Linux after, and the whole `internal/client` package green there. **Still open:** the other failure in the same run, `TestE2E_DisconnectDuringRenewal` at `recovery_e2e_test.go:284` — `reconnect: err <nil>, live false`, so `Connect` returned no error and 100 ms later the instance was not live. `Connect` returns as soon as `startInstance` succeeds; something closed it in that window, most likely a renewal that was already in flight when the network was disconnected. Not reproduced (15 runs on Linux, 8 under `-race` here); the wait now covers it, and the mechanism is unfixed.
+
+Pages touched: open-questions.
+
+03:40 to 04:05, the last Windows path never run: self-update. The VM's agent was replaced with one built from this tree and stamped `v0.11.28`, the private server on the Mac reports `v0.11.30`, and `hop-agent update` on the VM did the whole thing: `Update available: v0.11.28 -> v0.11.30`, download from `/download/hop-agent-windows-arm64.exe`, SHA-256 verified, the running `C:\hop\hop-agent.exe` renamed to `.old` (Windows allows that, not an overwrite), the new binary placed, `sc stop` + `sc start`. `version` then says `v0.11.30`, the service is RUNNING, and both meshes are back: 0 % loss Windows→Linux and Linux→Windows on both networks, 1-3 ms. One thing to know: the `.old` (24 MB) was still there after the update — `cleanupOldBinary` runs at the start of `runServe` and its error is discarded, and the SCM can still hold the image of a service it just stopped. The next start removed it. So the leftover is one cycle, not permanent, and nothing tells you about it.
+
+04:40 to 05:05, the flake that was not in the product. `TestE2E_DisconnectDuringRenewal` failed 9 times in 10 on the Mac at the line that glances at `live()` after `Connect`. The failure text was the answer all along: `TempDir RemoveAll cleanup: lstat …/home/node.crt: directory not empty`. `t.TempDir` removes the instance directory when the test ends, and a renewal POST already on its way still writes `node.crt` and `node.key` after `Stop` cancels its loop — the removal and the write race, and the test died in teardown, not in the assertion. The wait for `live()` that an earlier session added made the test quiet without fixing anything, and it hid the real question. Fix in the harness: `newE2EMesh`'s own cleanup calls `Stop` and then waits for the last `runCertRenewal` frame to leave the goroutine stacks (30 s, and it prints the stacks if one stays), so the directory is empty before `TempDir` removes it. The assertion is a glance again, so a reconnect that comes back wrong is still a failure. 10 of 10 green on the Mac. The `live false` from CI on 2026-11-27 00:36 stays unfound: 15 Linux runs and 8 under `-race` here, no reproduction. The only mechanism found that could produce it is a reload closing the running Nebula before starting the new one (the v0.10.33 ordering), which leaves `control()` nil for up to 2 s of port-free wait plus the start — but nothing in that test fires a renewal within 100 ms of `Connect` (the loop's first check is one 60 s tick in), so it stays a guess and is not claimed as the cause. The test now waits out a swap of that size (live within 5 s) and checks it is still live 3 s later: the glance passed 10 of 10 here, so the wait costs nothing, and a reconnect that never comes back or comes back and dies now fails instead of passing.
+
+05:05 to 05:25, and the pair race that failure had been circling. Nebula opens `node.crt` and then `node.key` (`vendor/github.com/slackhq/nebula/pki.go:307`, `:320`) and refuses the combination with `ErrBadPrivKey` if they do not belong together. The renewal loop is already running while `connect` holds `startMu` and Nebula reads, so a renewal landing in that window left the new cert next to the old key: `Could not load client cert … private key is not a pair with public key in nebula cert`, the whole start fails, and the network falls to the OS stack with Nebula only on the retry. `certInstallMu` only ordered renewals against each other. Fix: `writeCertPair` takes `inst.startMu` for both writes; both writers (the renewal loop and the pre-start `fetchAndInstallCert`) go through it, and the only other `node.crt` writes are enrollment-time, into a directory with no instance. Tripwire `renew_pair_test.go::TestRenewalWaitsForTheStartToReadThePair`: red 3 of 3 without the lock, green 3 of 3 with it. Neither Mac in the fleet has logged a "not a pair" line, so the window is common to hit, not one that has been seen.
+
+05:25 to 05:40, three small things. (1) `reloadNebula`'s cold branch — no Nebula running, which is what a failed boot start leaves — logged the failure and returned, while the hot swap schedules retry-with-backoff. The next chance was the next renewal, about 13 h later on the 24 h certs, for a failure that is usually the UDP port still held by the start that failed at boot. Now both branches call `scheduleRetryReload` (`TestReloadNebula_I6_ColdStartFailureIsRetried`: red with the call removed, green 10 of 10 with it). The retry starts in the TUN mode it was asked for (`startNebulaByMode` has no userspace fallback, unlike `connect` and the cold start) — left as it is, and the comment that claimed otherwise corrected. (2) The mini's 10 log lines containing "429" are coincidental substrings: Nebula's handshake indexes, `.429` timestamps, `ticks: 4291`. No HTTP 429 anywhere in its log, so the agent limiter (600/min) is not being hit. (3) `govulncheck ./cmd/server ./cmd/agent` on v0.11.30 found one thing: **GO-2026-6278** (GHSA-w67g-5rqw-f597, CVSS 6.9) — gorilla/websocket picks WebSocket frame **mask keys with `math/rand`**, so a peer on the path can predict the mask and inject frame content. We use gorilla on both sides: the browser terminal and event stream in, and the control plane dialing an agent's shell out (`internal/api/proxy.go:271`, `:938`). `v1.5.3` is the newest tag and still has it — that tag's note is "Reverts to v1.5.0", which undid the v1.5.2 fix — and the fix is on master only (`d67f41855da4`, "Use crypto/rand for mask key"), so the fixed version is the pseudo-version the vuln DB names. Pinned there on `deps/gorilla-mask-key` (PR 9): build, vet, `TestE2E` in `internal/api`, `-short` for `internal/api` + `internal/client` + `cmd/agent`, `make vendor` (all 10 patches apply) and `make test-race` green, `govulncheck` clean. The behaviour changes in the 14 commits between were checked against our code: a request with no `Upgrade` header now gets 426 from `Upgrade()` instead of 400, but our handlers answer that case first, so `internal/api/e2e_test.go:153` still sees 400; a client that offered subprotocols and got none now fails the handshake, and we offer none anywhere.
+
+Pages touched: cert-renewal, open-questions.
+
+05:40 to 06:00, PR 9 (the pinned gorilla/websocket) on the path it guards, not only under `go test`. The browser terminal is the only place we use gorilla inbound, so the pinned build was driven through the real thing: the private server on the Mac (built from `deps/gorilla-mask-key`), the Windows VM's agent, and a dependency-free probe (`$S/vm/wsprobe.py`) that sends the real `Upgrade` request with the dashboard's session bearer token, checks `Sec-WebSocket-Accept` against the SHA-1 of its own key, then hand-rolls masked client frames. Result: `HTTP/1.1 101`, accept correct, 10 text frames, and a real PTY round-trip — the probe typed `echo PIN$(echo CHECK)_OK` once the agent's banner arrived and read back `PINCHECK_OK`, which is what the shell printed, not what was typed. That last detail is the lesson: the first version of the probe asserted a marker that was also in the command it typed, so terminal echo alone made it pass. Assert a marker the shell has to produce.
+
+06:00 to 06:25, why the Windows VM was listed with the Linux icon, and what now fixes it. Only enrollment ever wrote `nodes.os` and `nodes.arch`, and the token path guessed: `internal/client/enroll.go` posted a literal `"os":"linux"` in the token-enroll body (the device flow already used `runtime.GOOS`), and the server stores `body.OS` as given — it never substitutes its own. `scripts/install.sh` pipes the token to `hop-agent enroll --token-stdin`, so every machine installed that way was listed as Linux, whatever it was. `RecordHeartbeat` (`internal/db/nodes.go`) never touches those columns, so a wrong value is permanent. The agent-side fix (`72f2165`) is on `fix/windows-vm-findings` only — it is **not in v0.11.30 or any tag**, so released agents still enroll wrong. What corrects them is this: the heartbeat body now carries `runtime.GOOS` and `detectArch()`, and the handler writes them through `NodeStore.SetPlatform` when they differ from the row (the beat is every 30 s per node, and this handler is deliberately write-free otherwise). `COALESCE(NULLIF(?, ''), ?)` because an agent before v0.11.31 omits the fields — no opinion must not erase what a newer agent reported. Tests, red before the fix: `TestSendHeartbeat_ReportsItsOwnMachine` (the body had no `os`), `TestE2E_HeartbeatCorrectsPlatform` (against the real server: a node enrolled as linux/arm64 is windows/amd64 one beat later, and a beat without the fields leaves it). On the real machines: the Windows VM's row on `vmtest` went `os=linux` → `os=windows arch=arm64` within one heartbeat of the new binary, its fresh enrollment on a third network reported `windows/arm64` at once (that agent is built from this branch, so it proves `72f2165`, not a release), and the Linux VM's rows stayed `linux` — the correction is not a blanket overwrite.
+
+06:25, one Windows swap gotcha for the next dev-deploy: `Stop-Service hop-agent` and then `Copy-Item` over `C:\hop\hop-agent.exe` fails with "being used by another process" even though the service reports STOPPED — the SCM still holds the image of the service it just stopped. The rename-then-copy that self-update already uses (`hop-agent.exe` → `.old`, which Windows allows for a running image) is what works; `cleanupOldBinary` removes the `.old` on the next start.
+
+Pages touched: log, concepts/e2e-tests.
+
+07:00 to 07:40, the fleet on the fixed code, and what our firewall really opens.
+(1) **Production is on everything that was broken.** The Nomad job runs
+`ghcr.io/trustos/hopssh:v0.11.30` and sets `HOPSSH_NODE_PRUNE_AGE_HOURS = "0"`, so
+the control plane no longer deletes a node for being quiet (cause L). Both Macs run
+agent v0.11.30. The renewal deadline is now a countdown to a fixed instant, read
+live on the mini: `due in 20m21s`, then `19m21s`, `18m21s`, `13m21s` (cause E). A
+watcher is waiting for the mini's `home` renewal to land so the reload can be seen
+in the log, not only scheduled.
+(2) **The office loss is not "the office network".** In the worst hour `home` lost
+9 % in both directions between the two Macs while `work` between the same two lost
+nothing; over 40 hours 0.59/0.63 % against 0.16/0.09 %. Corrected in
+[[concepts/loss-on-a-limited-line]] and reopened in [[open-questions]]. The lab pair
+(two networks on the same two VMs, 1000 pings each) is clean, so it is not our
+two-network plumbing either. What would settle it is a packet count on the wire
+during a lossy minute; the run that does it (5 pings a minute per network for 40
+minutes, counting pings, wire packets and the agent's unfiltered log together) was
+refused by the permission classifier on the office Mac and needs the user's OK.
+(3) **The UDP rule protects nothing the TCP rule has not already given away.** Read
+off the live `nebula.yaml` on the mini: inbound is TCP on every port from the `node`
+group, TCP 41820 from `admin`, and ICMP — no UDP. `hop client join` allows inbound
+ICMP only, so a joined client accepts nothing from the mesh. The control plane's own
+lighthouse allows all three protocols. So opening UDP between nodes costs no
+exposure that all-TCP does not already allow; firewall rules (roadmap #13) are the
+thing that would actually restrict anything.
+(4) `govulncheck ./...` on this branch: one reachable finding, the gorilla/websocket
+one that PR 9 pins. Nothing else.
+
+07:43, the renewal seen in production, and the release gate for v0.11.31.
+(1) **A renewal on the mini, end to end, in the log.** `home`, agent v0.11.30,
+kernel TUN: `07:42:06 cert OK, renewal due in 21s` → `07:43:06 cert needs renewal
+NOW (past half its life)` → `attempting renewal POST` → `stopping Nebula mesh
+connection (kernel TUN)` → `Nebula interface is active interface=utun6
+networks=[10.42.1.2/24] udpAddr=0.0.0.0:4242` → `Nebula restarted with new
+certificate (mode: kernel)` → `HTTP server restarted on new Nebula mesh listener`
+→ `certificate renewed successfully` → `network-change watcher started`. No
+"address already in use", no retry line, no CRITICAL, no watchdog trip. That is
+cause E (a fixed renewal instant, counted down in the log) and the close-before-
+start reload of v0.10.33 working on a real machine, not only in a test.
+(2) **`TestE2E_Upgrade` against the released binaries: PASS (140.18 s).** Built
+v0.11.30's `hop-server` and `hop-agent` from `refs/tags/v0.11.30` in a worktree
+(`go mod vendor` + `make patch-vendor`), with `PortmapEnabled = false` in the old
+tree so an old agent cannot touch the router of the machine running it. Old server
++ old agent enroll, then the new ones take over, then two forced renewals and a
+ping. Helper: `$S/field/build-old.sh`.
+(3) **`make preflight` green on `fix/windows-vm-findings`** (vet, `go test -short
+./...`, and `-race` over `internal/mesh`, `internal/client` and the vendored
+nebula + nebula/udp). Remaining release item: the same tests on Linux (rule 13).
+
+08:20, the client's tests as root on Linux, and the release gate.
+(1) **Five path tests fail as root on real Linux and pass as an ordinary user on
+the same machine** (and on the Mac): `TestE2E_NewTunnelStays`,
+`TestE2E_StartsWhereBothHear`, `TestE2E_MeetOnTheLAN`,
+`TestE2E_QuestionMovesNobody`, `TestE2E_NoAnswerToADeniedAddress`. Their numbers
+were the ones that look like a path bug: `still sent to 127.0.0.1:9 after
+1.000354208s`, `no tunnel to 10.42.1.2 in 3s`, `first answer after 1.02s, want
+under 0.8s`. Nothing of ours is wrong: `readTunMode` upgrades a network to kernel
+TUN whenever the process is root, so the harness asked for userspace (`tun:
+{user: true}`, a `tun-mode` file saying userspace) and quietly got a real TUN
+device, while every peer in these tests lives on a 127.0.0.x address, which only
+the userspace netstack answers. Found only because rule 13 was followed and the
+package was run as root on Linux for the first time.
+(2) **Fix:** `tunUpgradeAllowed` in `internal/client/nebula.go` (a variable;
+production is `isPrivileged`), used by `readTunMode` and `currentTunMode`;
+`newE2EMesh` refuses the upgrade for its own process. Tripwire
+`TestE2E_RootStaysInUserspace`, which fails if the harness ever starts a kernel
+device. Green in the Ubuntu VM as root: the five pass again (5.60, 5.61, 12.08,
+11.13, 19.62 s) and the tripwire passes (5.51 s).
+(3) **A start failure took the whole package's results with it.** In
+`TestE2E_NewTunnelStays` the `tunnel()` helper dereferenced the hostmap entry
+without checking; when there was no tunnel it panicked, and a panic in a test
+binary stops every test after it, so the run reported one crash instead of the
+five failures that were there. `tunnel()` now fails its own test.
+(4) **The release gate had holes; now it is what a laptop runs.** `make
+test-race` (the only `-race` run over the Nebula code we patch) was in no release
+path, the kernel-TUN test (which found V, W and X) was in none either, and
+`release-desktop.yml` built shipped Windows and Linux binaries in jobs that waited
+for nothing. `release.yml`'s test job now runs `make preflight` plus the
+kernel-TUN test as root in a fresh network namespace, and all three desktop build
+jobs need `preflight`. Tripwire: `internal/cigate/workflow_test.go`, red with 4
+findings before the workflows changed, green after.
+(5) **What `-race` over the vendored Nebula actually runs.** `go mod vendor`
+carries no upstream test files, so the only tests in those packages are the ones
+our patches add: `hostinfo_remote_race_test.go`, `remote_list_relays_race_test.go`
+and the hostmap/control testers in the root package, and in `nebula/udp` only
+`udp_darwin_batch_test.go` and `udp_darwin_listenout_pipeline_test.go`. On Linux
+and Windows the `nebula/udp` argument therefore compiles and runs nothing — the
+batched UDP and TUN code is tested on a Mac only, as CLAUDE.md already says.
+
+09:05, the client package as root on Linux, end to end.
+(1) After the userspace pin, `internal/client` as root on the Ubuntu VM is
+green: 1089.91 s, 3 skips, no failure. The kernel-TUN close test as root in a
+fresh network namespace passes there too (2.30 s) — the pair CI's release gate
+now runs.
+(2) **One tripwire could only ever pass on the machine that built it.**
+`TestInstallAgentSystemd_RestartsWhatIsRunning` found `service.go` with
+`runtime.Caller(0)`, which returns the path as the compiler saw it; run from the
+VM it read `/Users/tenev/…/service.go` and failed. It was the only source scan in
+the repo written that way — the other 27 use a path relative to the package,
+which is also why they failed loudly (not silently) when I first copied the test
+binary to the VM without its tree. Now relative like the rest. A scan that reads
+a source file must name it relative to the package, or it tests the build
+machine, not the test machine.
+(3) **`internal/api` and `cmd/agent` cannot be run as root in that VM**: their
+end-to-end tests build `hop-server` and `hop-agent` themselves (`go build
+./cmd/server`), and the VM has no Go. They ran as root in the podman
+`golang:1.26` container instead (no `/dev/net/tun` there, so the agent stays in
+userspace). Running them as root on a machine with a real TUN device needs a Go
+toolchain in the VM — not installed, because that is a download.

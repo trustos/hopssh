@@ -371,3 +371,42 @@ func TestReloadNebula_I5_FailsThenRetryRecovers(t *testing.T) {
 		t.Error("old svc was not closed during reload sequence")
 	}
 }
+
+// I6: a cold start that fails is retried too. reloadNebula's cold branch
+// (inst.svc == nil) is the only chance the renewal loop gives a network
+// whose Nebula never came up — e.g. the UDP port still held by the start
+// that failed at boot. The hot path schedules a retry-with-backoff when
+// its start fails; the cold branch used to just log and return, so the
+// next chance was the next renewal, about 13 h later on the 24 h certs.
+func TestReloadNebula_I6_ColdStartFailureIsRetried(t *testing.T) {
+	inst := withTestInstance(t, "userspace", 0)
+
+	var coldTries int32
+	prevCold := startMeshFn
+	startMeshFn = func(_, _ string) (meshService, error) {
+		if atomic.AddInt32(&coldTries, 1) == 1 {
+			return nil, errors.New("address already in use")
+		}
+		return newFakeMeshService("cold"), nil
+	}
+	defer func() { startMeshFn = prevCold }()
+
+	cleanup := withSubstitutes(
+		func(_, _ string) (meshService, error) { return newFakeMeshService("retry"), nil },
+		func(_ int, _ time.Duration) {},
+		[]time.Duration{20 * time.Millisecond},
+	)
+	defer cleanup()
+
+	reloadNebula(inst)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if inst.currentSvc() != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Errorf("no Nebula on the instance 2s after the cold start failed: retry-reload never ran "+
+		"(startMeshFn calls: %d, want 1 failure and then a retry)", atomic.LoadInt32(&coldTries))
+}
