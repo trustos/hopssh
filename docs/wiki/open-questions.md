@@ -95,7 +95,7 @@ Each has a `KnownGap` in the test named, which fails once the gap is closed, so 
 | An outsider gets 403 instead of 404 on admin routes, so they can tell which network IDs exist (9 routes) | `TestE2E_Access` |
 | A member who opens an invite uses it up for the person it was meant for | `TestE2E_Invites` |
 | Removing a member leaves no audit trace. Nor do `StopPortForward`, `DeleteNetwork`, invite create/delete and `JoinNetwork` (read in the code, not pinned) | `TestE2E_History` |
-| Every renewal ends the open sessions of an in-app network | `TestE2E_Lifecycle` |
+| Every renewal ends the open sessions of an in-app network (not a system install: with kernel TUN the session lives on, asserted when the test runs as root) | `TestE2E_Lifecycle` |
 | Any member runs commands on every node; the audit log doesn't say which command | `TestE2E_MemberShell` |
 | What a device copies (up to 8 KB) is sent to every open dashboard of the network, where nothing uses it | `TestE2E_Clipboard` |
 | A clip of 198 to 256 KB is refused: the limit for the request body forgets that the content is base64 | `TestE2E_Clipboard` |
@@ -111,6 +111,18 @@ Proven in [[concepts/netlab]] (`TestUDPBetweenDevices`, pinned), and read off th
 So the UDP line buys nothing that the TCP line does not already give away: any node can already reach any TCP port on any other. It costs mosh, QUIC, WireGuard and Screen Sharing's media, and there is no user-facing control to open it again — firewall rules are roadmap #13, not built. Tailscale's default ACL permits every protocol between nodes. Nothing in the code or the docs says who chose this; it is unchanged since the first agent commit (2026-06-05).
 
 **Decide:** allow UDP for all, per network, or with the firewall rules of the roadmap. The change itself is one line; existing agents need their `nebula.yaml` rewritten (`ensureP2PConfig` rewrites what it owns on every boot, so it can heal the rest).
+
+**What the others do** (read 2026-11-27 from their own docs):
+
+| | Default between nodes | How a rule is written |
+|---|---|---|
+| Tailscale | everything: "in the absence of an `acls` section … Tailscale applies the default allow all policy" ([acls](https://tailscale.com/kb/1018/acls)) | `src` → `dst:port`; "Without a protocol, the access rule applies to all TCP and UDP traffic", and ICMP is allowed whenever any traffic is ([policy file](https://tailscale.com/docs/reference/syntax/policy-file)) |
+| ZeroTier | everything: "By default, flow rules are disabled and all traffic is allowed across the network"; only non-IP Ethernet types are dropped ([rules](https://docs.zerotier.com/rules)) | flow rules, can match `ipprotocol udp` |
+| Nebula / Defined Networking | nothing: "deny all for all inbound and outbound traffic" until a rule allows it ([firewall](https://nebula.defined.net/docs/config/firewall/)); their Managed Nebula: "Inbound traffic is denied by default; rules allow by role and tag" ([defined.net](https://www.defined.net/)) | `port`, `proto` (`any`, `tcp`, `udp`, `icmp`), groups/host/cidr |
+
+Defined Networking was founded in 2020 by Nebula's creators (Ryan Huber, Nate Brown) "to focus on Nebula development"; Slack "continues to be a primary sponsor" ([nebula docs](https://nebula.defined.net/)). Not confirmed from a page: whether Tailscale's userspace SOCKS5 proxy carries UDP.
+
+Two facts of ours that bound the decision: (1) in userspace mode (a non-root agent, `hop client join`) only the agent's own API listens on the mesh, so no host program is reachable over TCP *or* UDP; the rule matters for system installs (kernel TUN) only. (2) Nebula's conntrack lets a UDP *reply* in, so an app whose two ends both send first can half-work today; what is blocked is UDP that the other side starts (a mosh server, a DNS server, a game server, QUIC to a node).
 
 ## 2026-11-24 — what Tailscale has and the lab shows that we don't
 

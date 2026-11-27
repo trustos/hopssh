@@ -470,3 +470,25 @@ end-to-end tests build `hop-server` and `hop-agent` themselves (`go build
 `golang:1.26` container instead (no `/dev/net/tun` there, so the agent stays in
 userspace). Running them as root on a machine with a real TUN device needs a Go
 toolchain in the VM — not installed, because that is a download.
+
+09:40 to 10:00, v0.11.31, and the agent's end-to-end tests as root with a real TUN device.
+(1) **Released.** `make release` ran the full gate first (cmd/agent 266.5 s,
+internal/api 403.6 s, internal/client 217.6 s, `-race` green) and tagged
+v0.11.31 from merge commit `554c290`. Release and Release Desktop green; the
+image `ghcr.io/trustos/hopssh:v0.11.31` is pushed; production moved to it in
+`oci_nomad_cluster` `7c0b0d1` (`HOPSSH_NODE_PRUNE_AGE_HOURS = "0"` kept).
+(2) **Go 1.27.4 in the Ubuntu VM** (user's OK), so the agent and server tests now
+run there as root with `/dev/net/tun`. `internal/api` end to end: ok, 140.7 s.
+`cmd/agent`: one test failed, `TestE2E_Lifecycle`, twice, for one reason: the
+agent is a separate process, so the userspace pin of 08:20 does not reach it, and
+as root it moves itself to a kernel TUN device as an installed service does.
+Then the "both in userspace" check failed, and the known gap "every renewal ends
+all open sessions of an in-app network" reported **FIXED** — with kernel TUN the
+kernel holds the agent's end of the TCP session and a renewal replaces only
+Nebula, so the shell lives on. That is the product working; the gap is
+userspace only. The test now expects the mode the agent picks (`agentTunMode`:
+root means kernel) and, in kernel mode, asserts as an ordinary test that the
+shell survives the renewal. Green as root in the VM (97.3 s) and as a user on the
+Mac (110.2 s, the gap still reported there). Planted on the Mac (mode forced to
+kernel): fails at the status line and at "the open shell is dead after the
+renewal of a kernel-TUN network", the two places it should.

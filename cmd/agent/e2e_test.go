@@ -29,8 +29,21 @@ import (
 )
 
 // End-to-end tests: the real hop-server and real agents, each in its own
-// process, over a real Nebula mesh on this machine. Agents run unprivileged,
-// i.e. in "in-app" (userspace) mode. Skipped with -short.
+// process, over a real Nebula mesh on this machine. Agents run as the user who
+// runs the tests: unprivileged that is "in-app" (userspace) mode, as root the
+// agent moves itself to a kernel TUN device, as an installed service does (see
+// agentTunMode). Skipped with -short.
+
+// agentTunMode is the mode an agent started by these tests runs in. The agent
+// decides by itself (internal/client readTunMode): root means kernel TUN.
+// Before this, a root run (the Linux VM, 2026-11-27) failed TestE2E_Lifecycle
+// twice for that reason alone.
+func agentTunMode() string {
+	if os.Getuid() == 0 {
+		return "kernel"
+	}
+	return "userspace"
+}
 
 // TestMain turns this test binary into an agent when a test starts it as one.
 func TestMain(m *testing.M) {
@@ -260,8 +273,8 @@ func TestE2E_Lifecycle(t *testing.T) {
 		nodes := owner.Nodes(n.ID)
 		return nodes[aID].Status == "online" && nodes[bID].Status == "online"
 	})
-	if sa, sb := a.status("home"), b.status("home"); !sa.Connected || !sb.Connected || sa.TunMode != "userspace" || sa.ListenPort == sb.ListenPort {
-		t.Errorf("status: %+v and %+v, want both connected in userspace mode on different ports", sa, sb)
+	if sa, sb := a.status("home"), b.status("home"); !sa.Connected || !sb.Connected || sa.TunMode != agentTunMode() || sb.TunMode != agentTunMode() || sa.ListenPort == sb.ListenPort {
+		t.Errorf("status: %+v and %+v, want both connected in %s mode on different ports", sa, sb, agentTunMode())
 	}
 
 	t.Run("exec", func(t *testing.T) {
@@ -435,11 +448,24 @@ func TestE2E_Lifecycle(t *testing.T) {
 			t.Error("the certificate on disk did not change")
 		}
 		waitHealthy(t, 30*time.Second, owner, n.ID, aID)
-		e2etest.KnownGap(t, "every certificate renewal (about every 12h) ends all open sessions of an in-app network", func(g *e2etest.Gap) {
-			if out := typeIn(ws, "echo after=$((6*7))\n", "after=42"); !strings.Contains(out, "after=42") {
-				g.Errorf("the open shell is dead after the renewal")
+		after := func() bool {
+			out := typeIn(ws, "echo after=$((6*7))\n", "after=42")
+			return strings.Contains(out, "after=42")
+		}
+		if agentTunMode() == "kernel" {
+			// The kernel holds the agent's end of the session, and the
+			// renewal replaces only Nebula: the shell lives on. Seen as root
+			// in the Linux VM, where the known gap below reported FIXED.
+			if !after() {
+				t.Error("the open shell is dead after the renewal of a kernel-TUN network")
 			}
-		})
+		} else {
+			e2etest.KnownGap(t, "every certificate renewal (about every 12h) ends all open sessions of an in-app network", func(g *e2etest.Gap) {
+				if !after() {
+					g.Errorf("the open shell is dead after the renewal")
+				}
+			})
+		}
 		a.want(http.StatusTooManyRequests, "POST", "/local/renew", M{"enrollment": "home"}, nil)
 	})
 
