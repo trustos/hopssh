@@ -55,6 +55,13 @@ func newE2EMesh(t *testing.T) *e2eMesh {
 	if testing.Short() {
 		t.Skip("real Nebula")
 	}
+	// Every peer in these tests lives on a loopback address, which only the
+	// userspace netstack serves; the agent would upgrade to a real TUN device
+	// because the test process is root. Pin what enroll() wrote (see
+	// tunUpgradeAllowed).
+	prev := tunUpgradeAllowed
+	tunUpgradeAllowed = func() bool { return false }
+	t.Cleanup(func() { tunUpgradeAllowed = prev })
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -276,6 +283,27 @@ func within(t *testing.T, d time.Duration, what string, cond func() bool) {
 		}
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+// TestE2E_RootStaysInUserspace is the tripwire for the pin in newE2EMesh. Run
+// as root (CI runs the package as root, and the kernel-TUN test must be root),
+// an unpinned harness starts a real TUN device instead of the userspace one its
+// 127.0.0.1 peers need: on Linux five path tests failed as root and passed as
+// an ordinary user, which is how this was found (docs/wiki/log.md, 2026-11-27).
+// As an ordinary user it passes either way; it is here for the root run.
+func TestE2E_RootStaysInUserspace(t *testing.T) {
+	m := newE2EMesh(t)
+	m.enroll("a", e2eSubnet+"6", freeUDPPort(t), 0, nil)
+	if err := m.c.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	inst := m.c.instances.get("a")
+	if inst == nil {
+		t.Fatal("no live instance")
+	}
+	if mode := currentTunMode(inst); mode != "userspace" {
+		t.Errorf("tun mode %q at uid %d: enroll() wrote userspace, so this test would drive a data plane its peers on 127.0.0.1 cannot reach", mode, os.Getuid())
+	}
 }
 
 // TestE2E_LongOffMachineRecovers is the 2026-11 MacBook: two networks, both

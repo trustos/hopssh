@@ -316,7 +316,13 @@ func TestE2E_NewTunnelStays(t *testing.T) {
 	w.start(w.good)
 	within(t, 20*time.Second, "a to reach b", w.talk)
 	tunnel := func() uint32 {
-		return w.m.c.instances.get("a").control().GetHostInfoByVpnAddr(netip.MustParseAddr(w.ipB), false).LocalIndex
+		h := w.m.c.instances.get("a").control().GetHostInfoByVpnAddr(netip.MustParseAddr(w.ipB), false)
+		if h == nil {
+			// No hostmap entry at all: a panic here would stop the whole
+			// package, so every test after this one would report nothing.
+			w.t.Fatal("a has no tunnel to b")
+		}
+		return h.LocalIndex
 	}
 	old := tunnel()
 	for start := time.Now(); time.Since(start) < 3*time.Second; time.Sleep(50 * time.Millisecond) {

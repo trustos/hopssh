@@ -514,6 +514,15 @@ func readMeshSubnetFromCert(nebulaConfigPath string) (netip.Prefix, error) {
 	return networks[0], nil
 }
 
+// tunUpgradeAllowed is whether this process may move a network from userspace
+// to kernel TUN. Production: whenever we are root. The end-to-end path tests
+// put their peers on loopback addresses, which only the userspace netstack
+// serves, so they refuse the upgrade: as root (CI, and the kernel-TUN run) five
+// of them failed on Linux and passed as an ordinary user, because the harness
+// asked for userspace and quietly got a real TUN device instead. Pinned by
+// TestE2E_RootStaysInUserspace.
+var tunUpgradeAllowed = isPrivileged
+
 // readTunMode determines the TUN mode for the current run.
 // Auto-upgrades to kernel mode when running as root, even if enrollment
 // happened as non-root. Kernel TUN uses a real OS network interface (utun)
@@ -522,7 +531,7 @@ func readMeshSubnetFromCert(nebulaConfigPath string) (netip.Prefix, error) {
 func readTunMode(inst *meshInstance) string {
 	data, err := os.ReadFile(filepath.Join(inst.dir(), "tun-mode"))
 	if err != nil {
-		if isPrivileged() {
+		if tunUpgradeAllowed() {
 			return "kernel"
 		}
 		return "userspace"
@@ -534,7 +543,7 @@ func readTunMode(inst *meshInstance) string {
 	// switch to kernel mode for better performance. This handles the common case
 	// where the agent was enrolled as a regular user but later installed as a
 	// root system service.
-	if mode == "userspace" && isPrivileged() {
+	if mode == "userspace" && tunUpgradeAllowed() {
 		log.Printf("[agent %s] upgrading to kernel TUN mode (running as root)", inst.name())
 		upgradeTunMode(inst)
 		return "kernel"
@@ -556,13 +565,13 @@ func readTunMode(inst *meshInstance) string {
 func currentTunMode(inst *meshInstance) string {
 	data, err := os.ReadFile(filepath.Join(inst.dir(), "tun-mode"))
 	if err != nil {
-		if isPrivileged() {
+		if tunUpgradeAllowed() {
 			return "kernel"
 		}
 		return "userspace"
 	}
 	mode := strings.TrimSpace(string(data))
-	if mode == "userspace" && isPrivileged() {
+	if mode == "userspace" && tunUpgradeAllowed() {
 		return "kernel"
 	}
 	if mode == "kernel" {

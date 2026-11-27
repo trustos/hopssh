@@ -409,3 +409,43 @@ ping. Helper: `$S/field/build-old.sh`.
 (3) **`make preflight` green on `fix/windows-vm-findings`** (vet, `go test -short
 ./...`, and `-race` over `internal/mesh`, `internal/client` and the vendored
 nebula + nebula/udp). Remaining release item: the same tests on Linux (rule 13).
+
+08:20, the client's tests as root on Linux, and the release gate.
+(1) **Five path tests fail as root on real Linux and pass as an ordinary user on
+the same machine** (and on the Mac): `TestE2E_NewTunnelStays`,
+`TestE2E_StartsWhereBothHear`, `TestE2E_MeetOnTheLAN`,
+`TestE2E_QuestionMovesNobody`, `TestE2E_NoAnswerToADeniedAddress`. Their numbers
+were the ones that look like a path bug: `still sent to 127.0.0.1:9 after
+1.000354208s`, `no tunnel to 10.42.1.2 in 3s`, `first answer after 1.02s, want
+under 0.8s`. Nothing of ours is wrong: `readTunMode` upgrades a network to kernel
+TUN whenever the process is root, so the harness asked for userspace (`tun:
+{user: true}`, a `tun-mode` file saying userspace) and quietly got a real TUN
+device, while every peer in these tests lives on a 127.0.0.x address, which only
+the userspace netstack answers. Found only because rule 13 was followed and the
+package was run as root on Linux for the first time.
+(2) **Fix:** `tunUpgradeAllowed` in `internal/client/nebula.go` (a variable;
+production is `isPrivileged`), used by `readTunMode` and `currentTunMode`;
+`newE2EMesh` refuses the upgrade for its own process. Tripwire
+`TestE2E_RootStaysInUserspace`, which fails if the harness ever starts a kernel
+device. Green in the Ubuntu VM as root: the five pass again (5.60, 5.61, 12.08,
+11.13, 19.62 s) and the tripwire passes (5.51 s).
+(3) **A start failure took the whole package's results with it.** In
+`TestE2E_NewTunnelStays` the `tunnel()` helper dereferenced the hostmap entry
+without checking; when there was no tunnel it panicked, and a panic in a test
+binary stops every test after it, so the run reported one crash instead of the
+five failures that were there. `tunnel()` now fails its own test.
+(4) **The release gate had holes; now it is what a laptop runs.** `make
+test-race` (the only `-race` run over the Nebula code we patch) was in no release
+path, the kernel-TUN test (which found V, W and X) was in none either, and
+`release-desktop.yml` built shipped Windows and Linux binaries in jobs that waited
+for nothing. `release.yml`'s test job now runs `make preflight` plus the
+kernel-TUN test as root in a fresh network namespace, and all three desktop build
+jobs need `preflight`. Tripwire: `internal/cigate/workflow_test.go`, red with 4
+findings before the workflows changed, green after.
+(5) **What `-race` over the vendored Nebula actually runs.** `go mod vendor`
+carries no upstream test files, so the only tests in those packages are the ones
+our patches add: `hostinfo_remote_race_test.go`, `remote_list_relays_race_test.go`
+and the hostmap/control testers in the root package, and in `nebula/udp` only
+`udp_darwin_batch_test.go` and `udp_darwin_listenout_pipeline_test.go`. On Linux
+and Windows the `nebula/udp` argument therefore compiles and runs nothing — the
+batched UDP and TUN code is tested on a Mac only, as CLAUDE.md already says.
