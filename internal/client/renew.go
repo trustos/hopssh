@@ -797,6 +797,8 @@ func applyNebulaConfigUpdate(inst *meshInstance, update *nebulaConfigUpdate) err
 	}
 
 	configPath := filepath.Join(inst.dir(), "nebula.yaml")
+	unlock := lockNebulaYAML(configPath)
+	defer unlock()
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
@@ -810,7 +812,7 @@ func applyNebulaConfigUpdate(inst *meshInstance, update *nebulaConfigUpdate) err
 		return nil
 	}
 
-	if err := atomicWrite(configPath, out, 0644); err != nil {
+	if err := writeNebulaYAML(configPath, out); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 	log.Printf("[renew] nebula config updated from server")
@@ -911,6 +913,8 @@ func yamlMap(cfg map[string]interface{}, key string) map[string]interface{} {
 //   where the yaml still references the pre-migration paths)
 func ensureP2PConfig(inst *meshInstance) {
 	configPath := filepath.Join(inst.dir(), "nebula.yaml")
+	unlock := lockNebulaYAML(configPath)
+	defer unlock()
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return
@@ -1134,7 +1138,7 @@ func ensureP2PConfig(inst *meshInstance) {
 		return
 	}
 
-	if err := atomicWrite(configPath, out, 0644); err != nil {
+	if err := writeNebulaYAML(configPath, out); err != nil {
 		log.Printf("[agent] WARNING: failed to update P2P config: %v", err)
 		return
 	}
@@ -1214,12 +1218,32 @@ func addJitter(d time.Duration) time.Duration {
 }
 
 // atomicWrite writes data to a temp file then renames it to the target path.
+// Each call has its own temp file, so two writers of one path can't write
+// into each other's, and the data is synced before the rename, so a crash
+// leaves the old file or the new one, not an empty one.
 func atomicWrite(path string, data []byte, mode os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmp := f.Name()
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Chmod(mode)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
 }
 
 // reloadNebula restarts the embedded Nebula instance to pick up new certs.

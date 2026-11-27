@@ -482,3 +482,26 @@ func TestWatcherSleepWakeDetection_15sThreshold(t *testing.T) {
 		})
 	}
 }
+
+// TestUpgradeTunMode_KeepsRoutes: moving to kernel TUN changes the device,
+// not the routes. routes.json says they were applied, so a dropped
+// unsafe_routes would never be written again.
+func TestUpgradeTunMode_KeepsRoutes(t *testing.T) {
+	dir := t.TempDir()
+	inst := testInstance(t, "home", dir)
+	os.WriteFile(filepath.Join(dir, "nebula.yaml"), []byte(writersTestYAML), 0644)
+	os.WriteFile(filepath.Join(dir, "tun-mode"), []byte("userspace"), 0644)
+	if err := rewriteNebulaUnsafeRoutes(inst, []string{"10.9.0.0/16"}); err != nil {
+		t.Fatal(err)
+	}
+
+	upgradeTunMode(inst)
+
+	tun, _ := readYAMLMap(t, filepath.Join(dir, "nebula.yaml"))["tun"].(map[string]any)
+	if tun["unsafe_routes"] == nil {
+		t.Errorf("unsafe_routes dropped by the move to kernel TUN: tun=%v", tun)
+	}
+	if _, ok := tun["user"]; ok || tun["dev"] != "utun" {
+		t.Errorf("not moved to kernel TUN: tun=%v", tun)
+	}
+}

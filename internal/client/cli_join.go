@@ -224,7 +224,13 @@ firewall:
 		nebulacfg.HandshakeTryInterval,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay)
 
-	writeFileSecure(filepath.Join(clientDir, "nebula.yaml"), []byte(nebulaConfig), 0644)
+	cfgPath := filepath.Join(clientDir, "nebula.yaml")
+	unlock := lockNebulaYAML(cfgPath)
+	werr := writeNebulaYAML(cfgPath, []byte(nebulaConfig))
+	unlock()
+	if werr != nil {
+		log.Fatalf("Failed to write %s: %v", cfgPath, werr)
+	}
 }
 
 func getHostname() string {

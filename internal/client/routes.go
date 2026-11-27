@@ -47,13 +47,14 @@ func applyRoutesUpdate(inst *meshInstance, fresh []string) {
 	if routesEqual(cleaned, prior) {
 		return
 	}
-	if err := persistRoutes(inst, cleaned); err != nil {
-		log.Printf("[routes %s] WARNING: persist failed: %v", inst.name(), err)
-		return
-	}
+	// nebula.yaml first: routes.json is what the next heartbeat compares
+	// against, so saving it first would make a failed rewrite permanent.
 	if err := rewriteNebulaUnsafeRoutes(inst, cleaned); err != nil {
 		log.Printf("[routes %s] WARNING: nebula.yaml rewrite failed: %v", inst.name(), err)
 		return
+	}
+	if err := persistRoutes(inst, cleaned); err != nil {
+		log.Printf("[routes %s] WARNING: persist failed: %v", inst.name(), err)
 	}
 	log.Printf("[routes %s] applied %d route(s); reloading Nebula", inst.name(), len(cleaned))
 	// reloadNebula closes the running svc + spawns a new one with
@@ -144,6 +145,8 @@ func persistRoutes(inst *meshInstance, routes []string) error {
 // those today but the array-of-objects shape leaves room for it.)
 func rewriteNebulaUnsafeRoutes(inst *meshInstance, routes []string) error {
 	cfgPath := filepath.Join(inst.dir(), "nebula.yaml")
+	unlock := lockNebulaYAML(cfgPath)
+	defer unlock()
 	raw, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return err
@@ -170,5 +173,5 @@ func rewriteNebulaUnsafeRoutes(inst *meshInstance, routes []string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(cfgPath, out, 0644)
+	return writeNebulaYAML(cfgPath, out)
 }

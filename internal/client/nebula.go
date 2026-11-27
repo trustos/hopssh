@@ -593,6 +593,8 @@ func upgradeTunMode(inst *meshInstance) {
 
 	// Update nebula.yaml: replace tun section only.
 	configPath := filepath.Join(dir, "nebula.yaml")
+	unlock := lockNebulaYAML(configPath)
+	defer unlock()
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return
@@ -603,18 +605,20 @@ func upgradeTunMode(inst *meshInstance) {
 		return
 	}
 
-	// Only update the tun section — preserve everything else.
-	cfg["tun"] = map[string]interface{}{
-		"dev": "utun",
-		"mtu": nebulacfg.TunMTU,
-	}
+	// Only the device changes: unsafe_routes and the rest of the tun section
+	// stay (TestUpgradeTunMode_KeepsRoutes).
+	tun := yamlMap(cfg, "tun")
+	delete(tun, "user")
+	tun["dev"] = "utun"
+	tun["mtu"] = nebulacfg.TunMTU
+	cfg["tun"] = tun
 
 	out, err := yaml.Marshal(cfg)
 	if err != nil {
 		return
 	}
 
-	if err := atomicWrite(configPath, out, 0644); err != nil {
+	if err := writeNebulaYAML(configPath, out); err != nil {
 		log.Printf("[agent] WARNING: failed to update nebula.yaml for kernel TUN: %v", err)
 	}
 }

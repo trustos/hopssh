@@ -686,7 +686,13 @@ firewall:
 		tunConfig,
 		agentAPIPort)
 
-	writeFileSecure(filepath.Join(enrollDir, "nebula.yaml"), []byte(nebulaConfig), 0644)
+	cfgPath := filepath.Join(enrollDir, "nebula.yaml")
+	unlock := lockNebulaYAML(cfgPath)
+	werr := writeNebulaYAML(cfgPath, []byte(nebulaConfig))
+	unlock()
+	if werr != nil {
+		log.Fatalf("Failed to write %s: %v", cfgPath, werr)
+	}
 
 	// Persist TUN mode so serve knows which mode to use.
 	writeFileSecure(filepath.Join(enrollDir, "tun-mode"), []byte(tunMode), 0644)

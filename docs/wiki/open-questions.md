@@ -238,7 +238,7 @@ The agent's own update now refuses when the checksums can't be fetched, read or 
 ## 2026-11-23 — agent loose ends
 
 - In-app mode: `warmTunnel`, `warmPeersFromHeartbeat` and `probePeersOnce` dial through the OS, so they never reach the mesh.
-- A lost `nebula.yaml` is never regenerated, and some writers use a non-atomic `os.WriteFile`.
+- A lost `nebula.yaml` is never regenerated, and some writers use a non-atomic `os.WriteFile`. (2026-11-27: every writer now locks the file and writes it atomically, and a missing or damaged file is restored from `nebula.yaml.bak` before the network starts. Still open: with no whole backup either, nothing regenerates it and the network stays down until the device enrolls again.)
 - `renew.go` (heartbeat `networkId` path) loads and saves its own copy of the enrollment registry: a concurrent save can be lost.
 - An agent started with a cert past half its life restarts Nebula right after starting it.
 - The error "another hop-agent on this device is using the network port" is shown for our own orphans too.

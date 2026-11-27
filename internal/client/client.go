@@ -259,9 +259,10 @@ func (c *Client) startInstance(ctx context.Context, inst *meshInstance) error {
 		log.Printf("[agent %s] cert auto-renewal + heartbeat + watchdogs enabled (endpoint: %s)", inst.name(), inst.endpoint())
 	}
 
-	// If nebula.yaml is missing (rare — should only happen if enrollment is
-	// corrupt), the network stays down and serves nothing. Renewal might
-	// recover it.
+	// A damaged nebula.yaml is replaced by its backup. If it is still
+	// missing (rare — should only happen if enrollment is corrupt), the
+	// network stays down and serves nothing.
+	repairNebulaYAML(inst.name(), cfgPath)
 	if _, err := os.Stat(cfgPath); err != nil {
 		log.Printf("[agent %s] no Nebula config at %s, network stays down", inst.name(), cfgPath)
 		return nil

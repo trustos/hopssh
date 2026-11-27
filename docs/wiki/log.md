@@ -563,3 +563,26 @@ the old code (an admin got 404); a planted bug without the admin check was caugh
 by both `TestE2E_Access` (member got 201) and the source scan. Loose ends filed in
 `open-questions.md`.
 
+16:40 to 17:30, **one lock for every writer of `nebula.yaml`** (step 3 of the
+plan). Seven functions write the file; each now holds `lockNebulaYAML` from its
+read to its write and writes with `writeNebulaYAML`, which also keeps
+`nebula.yaml.bak`. `startInstance` restores a missing, empty, unparseable or
+cut-short file from a whole backup (`repairNebulaYAML`; "cut short" is a missing
+top-level key, since `yaml.Marshal` writes them in alphabetical order).
+`atomicWrite` now uses a temp file of its own (`os.CreateTemp`) and syncs it
+before the rename. `applyRoutesUpdate` saves `routes.json` only after the
+rewrite worked; before, one failed rewrite made the routes count as applied for
+good. Red on the old code: the renewal and routes writers run at once lost a
+change in 281 to 300 of 300 rounds (4 runs; 224 to 234 on Linux, whose `/tmp` is
+tmpfs), and 8 writers of one path saw 208 to 219 of 320 `atomicWrite`s fail.
+Planted bugs, each caught for the stated reason: no repair call (Nebula got an
+empty file), the routes writer without the lock (the race test and the source
+scan, which names the function), one fixed temp name (176 of 320 writes failed),
+routes saved first (routes never reached the file). On the way: **`upgradeTunMode`
+replaced the whole `tun` section** when a user-mode agent was installed as root,
+which dropped `unsafe_routes`; `routes.json` said they were applied, so they were
+never written again. Fixed to change only the device
+(`TestUpgradeTunMode_KeepsRoutes`, red first). Also: rsync from macOS copies
+AppleDouble `._*` files (426 in the VM's copy); Go's build skips them, a test
+that globs `*.go` does not. Sync with `--exclude='._*'`; the source scan now skips
+what the build skips.
