@@ -106,7 +106,11 @@ Clipboard, seen while writing `TestE2E_Clipboard`, not pinned: `since` has secon
 
 ## 2026-11-24 — UDP between devices is blocked by our own firewall: allow it? (P)
 
-Proven in [[concepts/netlab]] (`TestUDPBetweenDevices`, pinned): `writeNebulaConfig` allows inbound TCP and ICMP between nodes, nothing else. mosh, QUIC, WireGuard and Screen Sharing's media cannot work between peers. **Decide:** allow UDP for all, per network, or with the firewall rules of the roadmap. The change itself is one line; existing agents need their `nebula.yaml` rewritten.
+Proven in [[concepts/netlab]] (`TestUDPBetweenDevices`, pinned), and read off the live config on the mini (2026-11-27): the agent allows inbound **TCP on every port** from the `node` group, TCP 41820 from `admin`, and ICMP — no UDP (`internal/client/enroll.go:654`). `hop client join` allows inbound ICMP only, so a client accepts nothing at all from the mesh (`internal/client/cli_join.go:206`). The control plane's own lighthouse allows everything (`internal/mesh/network_manager.go:538`).
+
+So the UDP line buys nothing that the TCP line does not already give away: any node can already reach any TCP port on any other. It costs mosh, QUIC, WireGuard and Screen Sharing's media, and there is no user-facing control to open it again — firewall rules are roadmap #13, not built. Tailscale's default ACL permits every protocol between nodes. Nothing in the code or the docs says who chose this; it is unchanged since the first agent commit (2026-06-05).
+
+**Decide:** allow UDP for all, per network, or with the firewall rules of the roadmap. The change itself is one line; existing agents need their `nebula.yaml` rewritten (`ensureP2PConfig` rewrites what it owns on every boot, so it can heal the rest).
 
 ## 2026-11-24 — what Tailscale has and the lab shows that we don't
 
