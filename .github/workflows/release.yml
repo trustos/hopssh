@@ -53,11 +53,19 @@ jobs:
       - name: Build frontend
         run: make frontend-embed
 
-      - name: Vet
-        run: make vet
+      # What a laptop runs before `make release`, so the tag cannot ship what a
+      # local gate would refuse: vet, the tests (the end-to-end ones included),
+      # and -race over the packages we patch, which ./... does not cover.
+      - name: Preflight
+        run: make preflight
 
-      - name: Test
-        run: make test
+      # The kernel-TUN close test needs root, so it is not in `make test`; it is
+      # what found V, W and X (CLAUDE.md, "Certs on every network expired").
+      - name: Test kernel TUN (root, in its own network namespace)
+        run: |
+          go test -mod=vendor -c -o /tmp/client.test ./internal/client
+          sudo unshare -n sh -c 'ip link set lo up && /tmp/client.test -test.run KernelTun -test.v' | tee /tmp/tun.log
+          grep -q '^--- PASS: TestKernelTunClose' /tmp/tun.log
 
   build:
     needs: [frontend, test]
