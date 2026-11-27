@@ -388,3 +388,24 @@ exposure that all-TCP does not already allow; firewall rules (roadmap #13) are t
 thing that would actually restrict anything.
 (4) `govulncheck ./...` on this branch: one reachable finding, the gorilla/websocket
 one that PR 9 pins. Nothing else.
+
+07:43, the renewal seen in production, and the release gate for v0.11.31.
+(1) **A renewal on the mini, end to end, in the log.** `home`, agent v0.11.30,
+kernel TUN: `07:42:06 cert OK, renewal due in 21s` → `07:43:06 cert needs renewal
+NOW (past half its life)` → `attempting renewal POST` → `stopping Nebula mesh
+connection (kernel TUN)` → `Nebula interface is active interface=utun6
+networks=[10.42.1.2/24] udpAddr=0.0.0.0:4242` → `Nebula restarted with new
+certificate (mode: kernel)` → `HTTP server restarted on new Nebula mesh listener`
+→ `certificate renewed successfully` → `network-change watcher started`. No
+"address already in use", no retry line, no CRITICAL, no watchdog trip. That is
+cause E (a fixed renewal instant, counted down in the log) and the close-before-
+start reload of v0.10.33 working on a real machine, not only in a test.
+(2) **`TestE2E_Upgrade` against the released binaries: PASS (140.18 s).** Built
+v0.11.30's `hop-server` and `hop-agent` from `refs/tags/v0.11.30` in a worktree
+(`go mod vendor` + `make patch-vendor`), with `PortmapEnabled = false` in the old
+tree so an old agent cannot touch the router of the machine running it. Old server
++ old agent enroll, then the new ones take over, then two forced renewals and a
+ping. Helper: `$S/field/build-old.sh`.
+(3) **`make preflight` green on `fix/windows-vm-findings`** (vet, `go test -short
+./...`, and `-race` over `internal/mesh`, `internal/client` and the vendored
+nebula + nebula/udp). Remaining release item: the same tests on Linux (rule 13).
