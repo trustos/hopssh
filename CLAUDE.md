@@ -278,7 +278,7 @@ make release BUMP=minor   # minor bump (v0.1.1 → v0.2.0)
 1. `make release` — tags + pushes → CI builds Docker image + binaries
 2. Update `oci_nomad_cluster/jobs/hopssh.nomad.hcl` with new tag → commit + push
 3. GH runner deploys the new image via Nomad on Oracle Cloud (arm64)
-4. Agents self-update from the control plane
+4. Agents do **not** update by themselves: each machine needs `sudo hop-agent update`, which downloads from the control plane, checks the SHA-256 and restarts the service. Nothing runs it automatically (the heartbeat only reports the version; the dashboard shows drift in amber; the desktop app shows a banner). Verified 2026-11-27.
 
 **Dev deploy** (local testing only):
 ```bash
