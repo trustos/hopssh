@@ -49,7 +49,10 @@ type firewallDevice struct {
 	Expected    string `json:"expected,omitempty"`
 	Fingerprint string `json:"fingerprint,omitempty"`
 	Error       string `json:"error,omitempty"`
-	ReportedAt  int64  `json:"reportedAt,omitempty"`
+	// Blocked: the device's own switch "Block incoming" is on, so it lets
+	// in only what hopssh always keeps, whatever the rules say.
+	Blocked    bool  `json:"blocked,omitempty"`
+	ReportedAt int64 `json:"reportedAt,omitempty"`
 }
 
 type firewallSetResponse struct {
@@ -177,7 +180,7 @@ func (h *FirewallHandler) devices(f *db.NetworkFirewall, sets []db.FirewallSet) 
 			d.Expected = fwpolicy.Resolve(f.Preset, rules, n.ID, addrs).Fingerprint
 		}
 		if r, ok := reports[n.ID]; ok {
-			d.Fingerprint, d.Error, d.ReportedAt = r.Fingerprint, r.Error, r.ReportedAt
+			d.Fingerprint, d.Error, d.Blocked, d.ReportedAt = r.Fingerprint, r.Error, r.Blocked, r.ReportedAt
 		}
 		out = append(out, d)
 	}

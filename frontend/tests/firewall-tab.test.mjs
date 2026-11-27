@@ -212,7 +212,12 @@ const tests = {
 			[{ nodeId: 'a', expected: 'f2', fingerprint: 'f1', reportedAt: at }, 'Pending', /earlier version.*next heartbeat/],
 			[{ nodeId: 'a', expected: 'f2', reportedAt: at }, 'Pending', /got when it joined.*next heartbeat/],
 			[{ nodeId: 'a', expected: 'f2', fingerprint: 'f1', error: 'Nebula refuses it: bad', reportedAt: at }, 'Refused', /^Nebula refuses it: bad\. It runs an earlier version/],
-			[{ nodeId: 'a', expected: 'f2', error: 'preset', reportedAt: at }, 'Refused', /got when it joined/]
+			[{ nodeId: 'a', expected: 'f2', error: 'preset', reportedAt: at }, 'Refused', /got when it joined/],
+			// Its own switch: only what hopssh needs gets in, whatever the rules.
+			[{ nodeId: 'a', expected: 'f2', fingerprint: 'f2', blocked: true, reportedAt: at }, 'Blocks incoming', /only what hopssh needs.*has these rules.*switched off/],
+			[{ nodeId: 'a', expected: 'f2', fingerprint: 'f1', blocked: true, reportedAt: at }, 'Blocks incoming', /only what hopssh needs.*next heartbeat.*switched off/],
+			[{ nodeId: 'a', expected: 'f2', blocked: true, reportedAt: at }, 'Blocks incoming', /next heartbeat/],
+			[{ nodeId: 'a', expected: 'f2', fingerprint: 'f1', error: 'bad', blocked: true, reportedAt: at }, 'Refused', /^bad\. It runs an earlier version.*It also blocks incoming/]
 		]) {
 			const s = tab.deviceStatus(d);
 			assert.equal(s.label, label, JSON.stringify(d));

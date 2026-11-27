@@ -950,3 +950,120 @@ func TestE2E_FirewallApplied(t *testing.T) {
 		t.Errorf("the agent's log about the policy:\n%s", a.log.Tail(40))
 	}
 }
+
+// cli runs a hop-agent command against a's config dir, as a user would, and
+// returns its exit code and output.
+func (a *agent) cli(args ...string) (int, string) {
+	a.t.Helper()
+	cmd := exec.Command(a.bin, append(args, "--config-dir", filepath.Join(a.dir, "config"))...)
+	cmd.Env = []string{"HOP_E2E_AGENT=1", "PATH=" + os.Getenv("PATH"), "HOME=" + a.dir, "TMPDIR=" + a.dir}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if e, ok := err.(*exec.ExitError); ok {
+			return e.ExitCode(), string(out)
+		}
+		a.t.Fatalf("hop-agent %v: %v", args, err)
+	}
+	return 0, string(out)
+}
+
+// TestE2E_BlockIncoming: phase 3 of docs/wiki/concepts/firewall-rules.md
+// with real processes. `hop-agent block-incoming on` goes to the running
+// agent, which blocks at once; the control plane still reaches it, the
+// dashboard says it is blocked, and so does it after a restart of the
+// agent. `off` brings the network's rules back.
+func TestE2E_BlockIncoming(t *testing.T) {
+	s := e2etest.Start(t)
+	owner := s.Register("owner")
+	n := owner.CreateNetwork("home")
+	a := newAgent(t)
+	id := a.enroll(s, owner, n.ID, "home")
+	waitHealthy(t, time.Minute, owner, n.ID, id)
+	owner.With("If-Match", `"0"`).Want(http.StatusOK, "PUT", "/api/networks/"+n.ID+"/firewall", M{"preset": "ping", "rules": []M{
+		{"proto": "tcp", "port": "7000", "targetNodeId": id},
+	}}, nil)
+
+	type device struct {
+		Expected, Fingerprint, Error string
+		Blocked                      bool
+		ReportedAt                   int64
+	}
+	reach := func() device {
+		var p struct{ Device device }
+		owner.Want(http.StatusOK, "GET", nodePath(n.ID, id)+"/firewall", nil, &p)
+		return p.Device
+	}
+	rule := func() bool { return strings.Contains(a.read("home", "nebula.yaml"), "7000") }
+	// The policy comes with a heartbeat answer, the report with the next.
+	e2etest.Within(t, 90*time.Second, "the rule in the agent's nebula.yaml", rule)
+	e2etest.Within(t, 90*time.Second, "the dashboard to show the rules applied", func() bool {
+		d := reach()
+		return d.Expected != "" && d.Fingerprint == d.Expected && !d.Blocked
+	})
+	switchSays := func(want bool) {
+		t.Helper()
+		var out struct {
+			Enrollments []struct {
+				Name          string
+				BlockIncoming bool
+			}
+		}
+		a.want(http.StatusOK, "GET", "/local/status", nil, &out)
+		for _, e := range out.Enrollments {
+			if e.Name == "home" && e.BlockIncoming != want {
+				t.Errorf("/local/status says blockIncoming %v; want %v", e.BlockIncoming, want)
+			}
+		}
+	}
+
+	code, out := a.cli("block-incoming", "on")
+	if code != 0 || !strings.Contains(out, "home: incoming from other devices is blocked") {
+		t.Fatalf("block-incoming on: exit %d\n%s", code, out)
+	}
+	e2etest.Within(t, 30*time.Second, "the dashboard to show the device blocks incoming", func() bool { return reach().Blocked })
+	switchSays(true)
+	if !healthy(owner, n.ID, id) {
+		t.Error("the control plane no longer reaches the agent that blocks incoming")
+	}
+	if !rule() {
+		t.Error("blocking incoming took the network's rule out of nebula.yaml")
+	}
+
+	// A restart of the agent: still blocked, and the dashboard still says so.
+	a.stop()
+	a.run()
+	waitHealthy(t, time.Minute, owner, n.ID, id)
+	switchSays(true)
+	time.Sleep(2 * time.Second) // the first heartbeats after the start
+	if d := reach(); !d.Blocked {
+		t.Errorf("after a restart of the agent the dashboard says %+v; it blocks incoming", d)
+	}
+
+	code, out = a.cli("block-incoming", "off", "--network", "home")
+	if code != 0 || !strings.Contains(out, "home: the network's rules apply again") {
+		t.Fatalf("block-incoming off: exit %d\n%s", code, out)
+	}
+	e2etest.Within(t, 30*time.Second, "the dashboard to show the device no longer blocks", func() bool { return !reach().Blocked })
+	// Switched off this soon after the restart, the agent had not checked the
+	// policy again yet: it reports the fingerprint with the next heartbeat.
+	e2etest.Within(t, 90*time.Second, "the dashboard to show the rules applied again", func() bool {
+		d := reach()
+		return !d.Blocked && d.Fingerprint == d.Expected
+	})
+	switchSays(false)
+	if !healthy(owner, n.ID, id) {
+		t.Error("the control plane does not reach the agent after the switch went off")
+	}
+
+	// What it refuses.
+	if code, out := a.cli("block-incoming", "maybe"); code != 2 || !strings.Contains(out, "Usage: hop-agent block-incoming on|off") {
+		t.Errorf("block-incoming maybe: exit %d\n%s", code, out)
+	}
+	if code, out := a.cli("block-incoming", "on", "--network", "nope"); code != 1 || !strings.Contains(out, "enrollment not found") {
+		t.Errorf("block-incoming on --network nope: exit %d\n%s", code, out)
+	}
+	a.stop()
+	if code, out := a.cli("block-incoming", "on"); code != 1 || !strings.Contains(out, "the agent is not running") {
+		t.Errorf("block-incoming with the agent stopped: exit %d\n%s", code, out)
+	}
+}

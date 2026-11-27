@@ -246,9 +246,15 @@ const ifMatch = (version: number) => ({ 'If-Match': `"${version}"` });
 type FirewallRule = import('$lib/types/api').FirewallRule;
 type NetworkFirewallResponse = import('$lib/types/api').NetworkFirewallResponse;
 type FirewallSetResponse = import('$lib/types/api').FirewallSetResponse;
+type NodeFirewallResponse = import('$lib/types/api').NodeFirewallResponse;
 export const firewall = {
 	get: (networkId: string) =>
 		request<NetworkFirewallResponse>('GET', `/api/networks/${e(networkId)}/firewall`),
+	node: (networkId: string, nodeId: string) =>
+		request<NodeFirewallResponse>(
+			'GET',
+			`/api/networks/${e(networkId)}/nodes/${e(nodeId)}/firewall`
+		),
 	update: (networkId: string, version: number, preset: string, rules: FirewallRule[]) =>
 		request<NetworkFirewallResponse>(
 			'PUT',

@@ -77,6 +77,9 @@ func main() {
 		case "leave":
 			client.RunLeave(os.Args[2:])
 			return
+		case "block-incoming":
+			client.RunBlockIncoming(os.Args[2:])
+			return
 		case "client":
 			client.RunClientJoin(os.Args[2:])
 			return

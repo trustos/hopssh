@@ -253,6 +253,7 @@ func NewRouter(
 		// Firewall rules of a network, and the rule sets its owner shares
 		// between networks (docs/wiki/decisions/firewall-rule-sets.md).
 		r.With(wt).Get("/api/networks/{networkID}/firewall", firewallH.GetNetworkFirewall)
+		r.With(wt).Get("/api/networks/{networkID}/nodes/{nodeID}/firewall", firewallH.GetNodeFirewall)
 		r.With(wt).Put("/api/networks/{networkID}/firewall", firewallH.UpdateNetworkFirewall)
 		r.With(wt).Put("/api/networks/{networkID}/firewall/sets/{setID}", firewallH.AttachFirewallSet)
 		r.With(wt).Delete("/api/networks/{networkID}/firewall/sets/{setID}", firewallH.DetachFirewallSet)

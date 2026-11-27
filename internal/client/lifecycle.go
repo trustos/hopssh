@@ -1,9 +1,9 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -56,8 +56,17 @@ func warmPeersFromHeartbeat(inst *meshInstance, endpoint string) {
 		return
 	}
 
-	reqBody := fmt.Sprintf(`{"nodeId":%q}`, strings.TrimSpace(string(nodeID)))
-	req, err := http.NewRequest("POST", endpoint+"/api/heartbeat", strings.NewReader(reqBody))
+	hb := map[string]any{"nodeId": strings.TrimSpace(string(nodeID))}
+	// The firewall report as in every heartbeat: the server takes one without
+	// it to mean the device does not block incoming (firewall_block.go).
+	if a := inst.firewallAck(); a != nil {
+		hb["firewall"] = a
+	}
+	reqBody, err := json.Marshal(hb)
+	if err != nil {
+		return
+	}
+	req, err := http.NewRequest("POST", endpoint+"/api/heartbeat", bytes.NewReader(reqBody))
 	if err != nil {
 		return
 	}

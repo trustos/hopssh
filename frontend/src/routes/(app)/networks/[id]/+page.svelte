@@ -24,6 +24,7 @@
 	import ActivityTable from '$lib/components/activity-table.svelte';
 	import OsIcon from '$lib/components/os-icon.svelte';
 	import FirewallTab from '$lib/components/firewall-tab.svelte';
+	import NodeReach from '$lib/components/node-reach.svelte';
 
 	const termStore = getTerminals();
 	const serverInfo = getServerInfo();
@@ -228,6 +229,12 @@
 		const nodes = network?.nodes ?? [];
 		const match = nodes.find(n => (n.nebulaIP ?? '').split('/')[0] === vpnAddr);
 		return match?.dnsName || match?.hostname || '';
+	}
+
+	// A source node in "Who can reach this device".
+	function reachNodeName(nodeId: string): string {
+		const match = (network?.nodes ?? []).find((n) => n.id === nodeId);
+		return match?.dnsName || match?.hostname || `device ${nodeId.slice(0, 8)}`;
 	}
 
 	const networkId = $derived(page.params.id!);
@@ -870,7 +877,7 @@
 						<Table.Body>
 							{#each visibleNodes as node}
 								{@const isExpanded = expandedNodes.has(node.id)}
-								{@const canExpand = node.nodeType !== 'lighthouse' && (node.peers?.length ?? 0) > 0}
+								{@const canExpand = node.nodeType !== 'lighthouse' && node.status !== 'pending'}
 								<tr class="border-b last:border-0 hover:bg-accent/50">
 									<td class="px-4 py-3">
 										<div class="flex items-center gap-2" title={node.status === 'pending' ? 'Waiting for agent enrollment. Run the enroll command on your device.' : ''}>
@@ -878,8 +885,8 @@
 												<button
 													onclick={() => toggleExpand(node.id)}
 													class="text-muted-foreground hover:text-foreground transition-transform duration-150 {isExpanded ? 'rotate-90' : ''}"
-													aria-label={isExpanded ? 'Hide peers' : 'Show peers'}
-													title={isExpanded ? 'Hide peers' : `Show peers (${node.peers?.length ?? 0})`}
+													aria-label={isExpanded ? 'Hide details' : 'Show peers and who can reach it'}
+													title={isExpanded ? 'Hide details' : `Show peers (${node.peers?.length ?? 0}) and who can reach it`}
 												>
 													<svg class="h-3 w-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
 												</button>
@@ -1064,14 +1071,15 @@
 										</div>
 									</td>
 								</tr>
-								<!-- Per-peer drill-down: expanded on chevron click above. -->
+								<!-- Per-peer drill-down and who can reach it: expanded on chevron click above. -->
 								{#if isExpanded && canExpand}
 									<tr class="bg-muted/30">
 										<td colspan={nodeRowSpan} class="px-6 py-3">
+											{#if (node.peers?.length ?? 0) > 0}
 											<div class="mb-2 text-xs font-medium uppercase tracking-wider text-muted-foreground">
 												Peers ({node.peers?.length ?? 0})
 											</div>
-											<div class="rounded border overflow-x-auto">
+											<div class="mb-4 rounded border overflow-x-auto">
 												<Table.Root class="text-xs">
 													<Table.Header>
 														<Table.Row class="bg-background/50">
@@ -1114,6 +1122,8 @@
 													</Table.Body>
 												</Table.Root>
 											</div>
+											{/if}
+											<NodeReach {networkId} nodeId={node.id} nodeName={reachNodeName} />
 										</td>
 									</tr>
 								{/if}

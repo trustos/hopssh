@@ -79,14 +79,19 @@ type FirewallStore struct {
 	// reports: the last report stored per node ID (fwpolicy.Ack), so that
 	// a heartbeat that repeats it costs no write.
 	reports sync.Map
+	// unblocked: node IDs that NoReport found without a stored report that
+	// says blocked, so that the next heartbeats without one cost no write.
+	unblocked sync.Map
 }
 
 // NodeReport is what a device last said about its network's policy
 // (migration 012): the fingerprint it runs and, when it refused the last
-// one, why. ReportedAt is when it first said so.
+// one, why; Blocked when its own switch "Block incoming" is on. ReportedAt
+// is when it first said so.
 type NodeReport struct {
 	Fingerprint string
 	Error       string
+	Blocked     bool
 	ReportedAt  int64
 }
 
@@ -394,17 +399,19 @@ func (s *FirewallStore) Policy(networkID string) (preset string, rules []fwpolic
 }
 
 // RecordReport stores a device's report when it differs from the one stored
-// last. The time stays that of the first report of a fingerprint and error.
+// last. The time stays that of the first report of a fingerprint, error and
+// switch.
 func (s *FirewallStore) RecordReport(nodeID string, a fwpolicy.Ack) error {
 	if last, ok := s.reports.Load(nodeID); ok && last.(fwpolicy.Ack) == a {
 		return nil
 	}
 	_, err := s.wdb.Exec(`
-		INSERT INTO node_firewall (node_id, fingerprint, error, reported_at) VALUES (?, ?, ?, ?)
+		INSERT INTO node_firewall (node_id, fingerprint, error, blocked, reported_at) VALUES (?, ?, ?, ?, ?)
 		ON CONFLICT(node_id) DO UPDATE SET fingerprint = excluded.fingerprint, error = excluded.error,
-			reported_at = excluded.reported_at
-		WHERE node_firewall.fingerprint != excluded.fingerprint OR node_firewall.error != excluded.error`,
-		nodeID, a.Fingerprint, a.Error, time.Now().Unix())
+			blocked = excluded.blocked, reported_at = excluded.reported_at
+		WHERE node_firewall.fingerprint != excluded.fingerprint OR node_firewall.error != excluded.error
+			OR node_firewall.blocked != excluded.blocked`,
+		nodeID, a.Fingerprint, a.Error, a.Blocked, time.Now().Unix())
 	if err != nil {
 		return err
 	}
@@ -412,11 +419,34 @@ func (s *FirewallStore) RecordReport(nodeID string, a fwpolicy.Ack) error {
 	return nil
 }
 
+// NoReport is for a heartbeat without a report. A device whose switch
+// "Block incoming" is on always sends one, so its switch is off now: a
+// stored report that says blocked no longer does.
+func (s *FirewallStore) NoReport(nodeID string) error {
+	if last, ok := s.reports.Load(nodeID); ok {
+		a := last.(fwpolicy.Ack)
+		if !a.Blocked {
+			return nil
+		}
+		a.Blocked = false
+		return s.RecordReport(nodeID, a)
+	}
+	if _, ok := s.unblocked.Load(nodeID); ok {
+		return nil
+	}
+	if _, err := s.wdb.Exec(`UPDATE node_firewall SET blocked = 0, reported_at = ? WHERE node_id = ? AND blocked != 0`,
+		time.Now().Unix(), nodeID); err != nil {
+		return err
+	}
+	s.unblocked.Store(nodeID, true)
+	return nil
+}
+
 // Reports returns the last report of each device of a network that made
 // one, by node ID.
 func (s *FirewallStore) Reports(networkID string) (map[string]NodeReport, error) {
 	rows, err := s.rdb.Query(`
-		SELECT f.node_id, f.fingerprint, f.error, f.reported_at
+		SELECT f.node_id, f.fingerprint, f.error, f.blocked, f.reported_at
 		FROM node_firewall f JOIN nodes n ON n.id = f.node_id WHERE n.network_id = ?`, networkID)
 	if err != nil {
 		return nil, err
@@ -428,7 +458,7 @@ func (s *FirewallStore) Reports(networkID string) (map[string]NodeReport, error)
 			id string
 			r  NodeReport
 		)
-		if err := rows.Scan(&id, &r.Fingerprint, &r.Error, &r.ReportedAt); err != nil {
+		if err := rows.Scan(&id, &r.Fingerprint, &r.Error, &r.Blocked, &r.ReportedAt); err != nil {
 			return nil, err
 		}
 		out[id] = r

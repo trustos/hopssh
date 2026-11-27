@@ -26,7 +26,7 @@ sources:
 - The server sends the policy in the heartbeat answer. The agent writes its own `firewall:` block and loads it with Nebula's in-place reload, so tunnels stay up.
 - Whatever the server sends, the agent keeps the rules that hopssh itself needs.
 - A switch on the device ("block incoming") can only narrow access.
-- Built so far (2026-11-27, not released): golden tests of every block (P0); a firewall preset per network that the agent reads at enrollment (new networks allow every protocol between agents, older ones keep TCP only); the Firewall tab with rules and shared rule sets (P1); and delivery (P2): a managed network's heartbeat answer carries each device's policy, the agent applies it in place and reports what it runs, and the tab shows it per device. The device switch and "who can reach" (P3) are not built. The research and two reviews are in [raw/firewall-rules](../raw/firewall-rules/).
+- Built so far (2026-11-27, not released): golden tests of every block (P0); a firewall preset per network that the agent reads at enrollment (new networks allow every protocol between agents, older ones keep TCP only); the Firewall tab with rules and shared rule sets (P1); and delivery (P2): a managed network's heartbeat answer carries each device's policy, the agent applies it in place and reports what it runs, and the tab shows it per device. P3 (2026-11-28) adds the device switch "Block incoming" and the "Who can reach this device" list. The research and two reviews are in [raw/firewall-rules](../raw/firewall-rules/).
 
 ## Today
 
@@ -129,6 +129,20 @@ The server could already run commands on every agent through 41820, so a policy 
 - A switch "Block incoming from other devices", per network, in the desktop app and the CLI. It keeps the invariants above, so the owner can still manage the device.
 - A read-only "Who can reach this device" list in the dashboard's node view, with the rule behind each line.
 
+**Built (2026-11-28, not released).**
+- **The switch** is the file `block-incoming` in the enrollment's directory (`internal/client/firewall_block.go`). Missing means off; one that can't be looked at counts as on. `hop-agent block-incoming on|off [--network <name>]` (`cli_block.go`), the desktop app's Settings → Networks → "Block incoming", and `POST /local/block-incoming` set it. The CLI finds the running agent through `local-api-addr` (0600) and its token file.
+- **While it is on**, Nebula runs the "ping" preset without rules: what the agent always keeps. `nebula.yaml` keeps the network's policy. `loadNebulaConfig` puts the blocked section in place at every start, and a policy that comes meanwhile goes to the file only. Turning the switch on or off saves first, then reloads in place with the checks of P2, so no tunnel and no terminal session ends. A network that isn't running gets it at its next start.
+- **The report.** While the switch is on, every heartbeat carries `firewall: {fingerprint, error, blocked}`, also before any policy came. The server takes a heartbeat without a report to mean off (`FirewallStore.NoReport`), so an agent of v0.11.31 or older never shows as blocked. **Every heartbeat an agent sends must carry the report.** The one sent at start-up (`warmPeersFromHeartbeat`) didn't. For one beat after every restart the dashboard said "not blocked". The real-process test found it (2026-11-28); the client test's `silent` counter pins it.
+- **Who can reach it.** `GET /api/networks/{id}/nodes/{nodeId}/firewall` needs the view right. It returns lines, each with its origin: always, preset, network or set. They are the rules `fwpolicy.Reaching` gives that device, so a deleted source is left out as in the policy. The dashboard shows them in a node's expanded row (`node-reach.svelte`; the logic is in `frontend/src/lib/firewall-reach.ts`). For a device that blocks incoming, everything but hopssh's own lines is struck through. The Firewall tab shows such a device as "Blocks incoming".
+- **Tests:**
+  - `TestE2E_BlockIncoming` in `internal/client`, with two real Nebula peers: on, with its own heartbeat at once; a policy that comes while on; a restart; switched off while `nebula.yaml` has a rule Nebula refuses (the switch is off, Nebula keeps blocking, and the report says blocked: it follows what Nebula runs, not the file); off; switched on while down; requests it refuses; and no heartbeat that says off while it is on.
+  - `TestE2E_BlockIncoming` in `cmd/agent`, with the real server and an agent process driven by the CLI.
+  - `TestE2E_FirewallReach` in `internal/api`.
+  - `frontend/tests/firewall-reach.test.mjs`, and the tab's test.
+- **Accepted:**
+  - A rule "from X" with no target shows on X's own list, although X never reaches itself over the network.
+  - Right after a restart the agent reports fingerprint "" until its first beat has checked the policy again.
+
 **Phases, red test first in each:**
 
 | Phase | What | Gate |
@@ -136,7 +150,7 @@ The server could already run commands on every agent through 41820, so a policy 
 | P0 (done 2026-11-27) | golden tests of every block written so far; no change in behaviour | `internal/client/firewall_golden_test.go`: each block in `testdata/firewall/` parses with Nebula's own parser and allows what the test pins; today's agent and client templates and a round-tripped production file give the newest; no rewrite by the agent changes the firewall |
 | P1 (done 2026-11-27) | table, `GET`/`PUT`, audit, tab with the three choices and the rule table | `TestE2E_Access`, `TestE2E_History`, `TestE2E_Firewall` |
 | P2 (done 2026-11-27) | heartbeat field, validation, in-place reload, ack | `TestE2E_FirewallDelivery` (server, and two real Nebula peers): a removed rule stops new and open flows within one heartbeat; the tunnel keeps its index, no new handshake; a rejected policy leaves the file byte for byte and the rules it ran; under `-race` |
-| P3 | device switch, "who can reach" | E2E from the CLI and the local API |
+| P3 (done 2026-11-28) | device switch, "who can reach" | `TestE2E_BlockIncoming` (two real Nebula peers through the local API; the real server and an agent process through the CLI), `TestE2E_FirewallReach` |
 | later | tags and roles in certs, a "renew now" field, outbound rules, export as a file, clients on a heartbeat | — |
 
 `internal/e2etest/peer.go` still fixes each test peer's firewall to allow all. P2's two-peer test uses `firewallMesh` of `internal/client` instead, with the heartbeat answered by the test (`e2eMesh.onHeartbeat`).

@@ -16,6 +16,7 @@ type fwDevice struct {
 	Expected    string
 	Fingerprint string
 	Error       string
+	Blocked     bool
 	ReportedAt  int64
 }
 

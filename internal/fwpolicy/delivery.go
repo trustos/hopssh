@@ -33,28 +33,42 @@ type DeliveredRule struct {
 
 // Ack is what a device reports in its next heartbeat: the fingerprint of
 // the policy it runs (empty for the block it was enrolled with) and, when it
-// refused the last one it got, why.
+// refused the last one it got, why. Blocked: the device's own switch "Block
+// incoming" is on (phase 3), so it lets in only what hopssh always keeps;
+// the policy waits in its nebula.yaml until the switch goes off.
 type Ack struct {
 	Fingerprint string `json:"fingerprint"`
 	Error       string `json:"error,omitempty"`
+	Blocked     bool   `json:"blocked,omitempty"`
 }
 
-// Resolve builds the policy for device nodeID. addrs maps each node of the
+// Reaching returns the rules that reach device nodeID, in their order: those
+// whose target is every device or nodeID. addrs maps each node of the
 // network to its mesh address; a rule whose source node has none (deleted,
 // or not enrolled yet) is left out, as it matches nothing.
-func Resolve(preset string, rules []Rule, nodeID string, addrs map[string]netip.Addr) Delivered {
-	out := []DeliveredRule{}
+func Reaching(rules []Rule, nodeID string, addrs map[string]netip.Addr) []Rule {
+	out := []Rule{}
 	for _, r := range rules {
 		if r.TargetNodeID != "" && r.TargetNodeID != nodeID {
 			continue
 		}
-		d := DeliveredRule{Proto: r.Proto, Port: r.Port}
 		if r.SourceNodeID != "" {
-			a, ok := addrs[r.SourceNodeID]
-			if !ok || !a.IsValid() {
+			if a, ok := addrs[r.SourceNodeID]; !ok || !a.IsValid() {
 				continue
 			}
-			d.Source = a.String()
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// Resolve builds the policy for device nodeID from the rules Reaching it.
+func Resolve(preset string, rules []Rule, nodeID string, addrs map[string]netip.Addr) Delivered {
+	out := []DeliveredRule{}
+	for _, r := range Reaching(rules, nodeID, addrs) {
+		d := DeliveredRule{Proto: r.Proto, Port: r.Port}
+		if r.SourceNodeID != "" {
+			d.Source = addrs[r.SourceNodeID].String()
 		}
 		out = append(out, d)
 	}

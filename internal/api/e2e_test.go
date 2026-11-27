@@ -191,6 +191,7 @@ func TestE2E_Access(t *testing.T) {
 		// Firewall rules. 428: no If-Match (TestE2E_Firewall sends it). A rule
 		// set is its owner's alone; attaching is for the network's owner.
 		{route: "GET /api/networks/{networkID}/firewall", path: at(h.url("/firewall")), want: "200 200 200 404 401"},
+		{route: "GET /api/networks/{networkID}/nodes/{nodeID}/firewall", path: node("/firewall"), want: "200 200 200 404 401"},
 		{route: "PUT /api/networks/{networkID}/firewall", path: at(h.url("/firewall")), body: M{"preset": "all", "rules": []any{}}, want: "428 428 403 404 401"},
 		{route: "GET /api/firewall/sets", path: at("/api/firewall/sets"), want: "200 200 200 200 401"},
 		{route: "POST /api/firewall/sets", path: at("/api/firewall/sets"), body: func() any { names++; return M{"name": fmt.Sprint("s", names)} }, want: "201 201 201 201 401"},

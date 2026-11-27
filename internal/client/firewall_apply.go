@@ -29,17 +29,25 @@ import (
 const firewallReloadLimit = 5 * time.Second
 
 // loadedConfig is the config a Nebula was started with and the text it was
-// last loaded from. Only an in-place reload changes them.
+// last loaded from, and whether that text has the firewall of a device that
+// blocks incoming (firewall_block.go). Only an in-place reload changes them.
 type loadedConfig struct {
-	cfg  *config.C
-	mu   sync.Mutex
-	text string
+	cfg     *config.C
+	mu      sync.Mutex
+	text    string
+	blocked bool
 }
 
 func (l *loadedConfig) loadedText() string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.text
+}
+
+func (l *loadedConfig) isBlocked() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.blocked
 }
 
 // inPlaceConfig is a mesh service whose config can be reloaded in place.
@@ -63,14 +71,27 @@ type firewallState struct {
 	ack *fwpolicy.Ack
 }
 
-// firewallAck is the report the next heartbeat carries, or nil.
+// firewallAck is the report the next heartbeat carries, or nil. Blocked is
+// what the running Nebula has (with none running, what its start will
+// have); a device that blocks incoming reports so before any policy came,
+// so a heartbeat without a report says it does not block.
 func (i *meshInstance) firewallAck() *fwpolicy.Ack {
+	blocked := false
+	if ip, ok := i.liveSvc().(inPlaceConfig); ok && ip.loaded() != nil {
+		blocked = ip.loaded().isBlocked()
+	} else {
+		blocked = incomingBlocked(i.dir())
+	}
 	i.firewall.mu.Lock()
 	defer i.firewall.mu.Unlock()
-	if i.firewall.ack == nil {
+	if i.firewall.ack == nil && !blocked {
 		return nil
 	}
-	a := *i.firewall.ack
+	a := fwpolicy.Ack{Fingerprint: i.firewall.running}
+	if i.firewall.ack != nil {
+		a = *i.firewall.ack
+	}
+	a.Blocked = blocked
 	return &a
 }
 
@@ -152,15 +173,16 @@ func applyFirewallOn(inst *meshInstance, svc meshService, d fwpolicy.Delivered) 
 		return firewallRefused, err
 	}
 
-	// A start in progress replaces svc; this beat leaves it alone.
+	// A start in progress replaces svc, and another apply or the switch
+	// "Block incoming" is changing it; this beat leaves it alone.
 	if !inst.startMu.TryLock() {
-		return firewallLater, errors.New("the network is starting")
+		return firewallLater, errors.New("the network is starting or changing its firewall")
 	}
 	defer inst.startMu.Unlock()
 	unlock := lockNebulaYAML(path)
 	defer unlock()
 
-	before := conf.loadedText()
+	before, wasBlocked := conf.loadedText(), conf.isBlocked()
 	running, err := parseNebulaYAML([]byte(before))
 	if err != nil {
 		return firewallRefused, fmt.Errorf("the config Nebula runs: %w", err)
@@ -190,8 +212,24 @@ func applyFirewallOn(inst *meshInstance, svc meshService, d fwpolicy.Delivered) 
 	if err != nil {
 		return firewallRefused, fmt.Errorf("Nebula refuses it: %w", err)
 	}
-	if ctrl.FirewallRuleHash() != want {
-		if err := reloadInPlace(inst, conf, string(text)); err != nil {
+	// The device's own switch wins (firewall_block.go): Nebula keeps what
+	// hopssh always keeps, and the file gets the policy for later.
+	blocked := incomingBlocked(inst.dir())
+	if blocked {
+		if running["firewall"], err = blockedFirewall(); err != nil {
+			return firewallRefused, err
+		}
+		b, err := yaml.Marshal(running)
+		if err != nil {
+			return firewallRefused, err
+		}
+		text = b
+		if want, err = ctrl.CheckFirewall(string(text)); err != nil {
+			return firewallRefused, fmt.Errorf("Nebula refuses the blocked firewall: %w", err)
+		}
+	}
+	if ctrl.FirewallRuleHash() != want || conf.isBlocked() != blocked {
+		if err := reloadInPlace(inst, conf, string(text), blocked); err != nil {
 			return firewallLater, err
 		}
 		if got := ctrl.FirewallRuleHash(); got != want {
@@ -215,7 +253,7 @@ func applyFirewallOn(inst *meshInstance, svc meshService, d fwpolicy.Delivered) 
 	if err != nil {
 		// The running rules go back to the file's, so the two agree, and a
 		// restart brings no surprise.
-		if rerr := reloadInPlace(inst, conf, before); rerr != nil {
+		if rerr := reloadInPlace(inst, conf, before, wasBlocked); rerr != nil {
 			log.Printf("[firewall %s] CRITICAL: nebula.yaml was not written and the old rules are not back (%v); a restart loads the file's", inst.name(), rerr)
 		}
 		return firewallRefused, fmt.Errorf("write nebula.yaml: %w", err)
@@ -223,16 +261,18 @@ func applyFirewallOn(inst *meshInstance, svc meshService, d fwpolicy.Delivered) 
 	return firewallApplied, nil
 }
 
-// reloadInPlace reloads conf from text, within firewallReloadLimit. A reload
-// that takes longer goes on alone; its text is recorded when it finishes.
-func reloadInPlace(inst *meshInstance, conf *loadedConfig, text string) error {
+// reloadInPlace reloads conf from text, within firewallReloadLimit; blocked
+// says whether text has the firewall of a device that blocks incoming. A
+// reload that takes longer goes on alone; its text is recorded when it
+// finishes.
+func reloadInPlace(inst *meshInstance, conf *loadedConfig, text string, blocked bool) error {
 	done := make(chan struct{})
 	var err error
 	runWithTimeout(inst.name(), "firewall reload", firewallReloadLimit, func() {
 		err = conf.cfg.ReloadConfigString(text)
 		if err == nil {
 			conf.mu.Lock()
-			conf.text = text
+			conf.text, conf.blocked = text, blocked
 			conf.mu.Unlock()
 		}
 		close(done)

@@ -929,3 +929,39 @@ devices"). Green on the Mac (vet, and the tests of `internal/api`, `db`,
 user and as root, where `TestE2E_FirewallApplied` ran in kernel TUN mode
 (134 s) and the client's test skips the read-only directory. Not run on
 Windows. Known gaps in [[open-questions]].
+
+## 2026-11-28 — firewall rules, phase 3: the device switch "Block incoming" and "who can reach"
+
+23:30 to 01:30, **phase 3 built** ([[concepts/firewall-rules]], "On the
+device"). Each network on a device has a switch "Block incoming from other
+devices": the file `block-incoming` in the enrollment's directory, set by
+`hop-agent block-incoming on|off --network <name>`, by the desktop app
+(Settings, per network) or by `POST /local/block-incoming`. While it is on,
+Nebula runs what hopssh always keeps (TCP 41820 from `admin` and from every
+node, ICMP) and nothing else; `nebula.yaml` keeps the network's rules, and
+a policy from the heartbeat still goes there, so switching off brings them
+back. Applied at once by an in-place reload (no new handshake), and by
+every start. The heartbeat's report says `blocked`, from what Nebula runs;
+the Firewall tab shows the device as blocking incoming, and a new list on
+the device's row, "Who can reach this device", shows what the network's
+rules, its sets and hopssh let in (`GET
+/api/networks/{id}/nodes/{nodeId}/firewall`, `fwpolicy.Reaching`), struck
+through while the device blocks. Found by the real-process test
+(`cmd/agent`'s `TestE2E_BlockIncoming`): the heartbeat an agent sends at
+start-up (`warmPeersFromHeartbeat`) carried no report, so for one beat after
+every restart the dashboard said "not blocked". Every heartbeat now carries
+it; the client test counts beats that don't. The tab and the list were
+checked in a browser against a test server with three devices (one
+blocking, one without a report). 24 bugs planted (17 in Go, 7 in the
+dashboard's script); 22 caught at first, the other two after two checks
+were added ([[concepts/e2e-tests]], "Firewall rules: the device switch").
+Green on the Mac (vet, and the tests of `internal/api`, `db`, `fwpolicy`,
+`client`, `cmd/agent`, `mesh`, `authz`; `cmd/agent` alone took 731 s, so a
+gate needs `-timeout 30m` as the Makefile has it: the default 10 minutes
+killed it twice) and in the Linux VM as a user and as root. The first root
+run looked green but was not: `internal/api` took 0.8 s and `cmd/agent`
+1.8 s, because every real-server test skipped (UDP 42001 was in use while
+they started, and outside CI the harness skips then). Run again with `-v`
+they ran (`cmd/agent` 632 s, `internal/api` 325 s; only `TestE2E_Upgrade`
+skipped, which needs `HOP_E2E_OLD`). Read a gate's times, not only its
+`ok`. Not run on Windows. Open points in [[open-questions]].

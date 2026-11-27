@@ -1,7 +1,7 @@
 ---
 type: decision
 title: Firewall rules — a policy per network plus rule sets the owner shares
-status: accepted (2026-11-27); P1 (stored, edited, audited) built, P2 (agents apply them) next
+status: accepted (2026-11-27); built (not released): P1 (stored, edited, audited), P2 (agents apply them), P3 (the device switch, "who can reach")
 last_compiled: 2026-11-27
 sources:
   - internal/authz/authz.go

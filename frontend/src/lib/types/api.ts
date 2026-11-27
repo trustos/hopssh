@@ -145,8 +145,37 @@ export interface FirewallDevice {
 	fingerprint?: string;
 	/** Why it refused the rules it was sent. */
 	error?: string;
+	/** Its own switch "Block incoming" is on: it lets in only what hopssh
+	 *  always keeps, whatever the rules say. */
+	blocked?: boolean;
 	/** Unix seconds: when it first said this. Absent: it never reported. */
 	reportedAt?: number;
+}
+
+/** One thing that may reach a device: a protocol and port from a source.
+ *  origin: "always" (what hopssh keeps on every device), "preset", "network"
+ *  (a rule of the network) or "set" (a rule of the attached set setName).
+ *  from: "control" (the control plane: web terminal, health), "network"
+ *  (every device of the network), "node" (sourceNodeId) or "any". */
+export interface ReachLine {
+	origin: 'always' | 'preset' | 'network' | 'set';
+	setId?: string;
+	setName?: string;
+	proto: string;
+	port: string;
+	from: 'control' | 'network' | 'node' | 'any';
+	sourceNodeId?: string;
+	description?: string;
+}
+
+/** Who can reach one device (GET /api/networks/{id}/nodes/{nodeId}/firewall). */
+export interface NodeFirewallResponse {
+	/** As in NetworkFirewallResponse. While false the device runs the block it
+	 *  was enrolled with, and lines are those of the preset today. */
+	managed: boolean;
+	preset: FirewallPreset;
+	lines: ReachLine[];
+	device: FirewallDevice;
 }
 
 export interface CreateNodeResponse {

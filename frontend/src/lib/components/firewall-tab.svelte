@@ -225,10 +225,16 @@
 
 	// What a device runs, from its last report (docs/wiki/concepts/firewall-rules.md,
 	// "Delivery and apply", point 8). A device that runs the rules it should
-	// is applied, whatever it refused before.
+	// is applied, whatever it refused before. One whose own switch "Block
+	// incoming" is on keeps these rules for when it is switched off.
 	type DeviceStatus = { label: string; tone: 'ok' | 'wait' | 'bad'; detail: string };
 	function deviceStatus(d: FirewallDevice): DeviceStatus {
 		const runs = d.fingerprint ? 'an earlier version of the rules' : 'the rules it got when it joined';
+		const blocked = (then: string): DeviceStatus => ({
+			label: 'Blocks incoming',
+			tone: 'wait',
+			detail: `Switched on at the device: only what hopssh needs gets in. ${then}`
+		});
 		if (!d.reportedAt)
 			return {
 				label: 'No report',
@@ -236,8 +242,17 @@
 				detail:
 					'An agent of v0.11.31 or older sends none, and keeps the rules it got when it joined. A newer one reports at its next heartbeat.'
 			};
-		if (d.fingerprint === d.expected) return { label: 'Applied', tone: 'ok', detail: '' };
-		if (d.error) return { label: 'Refused', tone: 'bad', detail: `${d.error}. It runs ${runs}.` };
+		if (d.fingerprint === d.expected)
+			return d.blocked
+				? blocked('It has these rules, and runs them once it is switched off.')
+				: { label: 'Applied', tone: 'ok', detail: '' };
+		if (d.error)
+			return {
+				label: 'Refused',
+				tone: 'bad',
+				detail: `${d.error}. It runs ${runs}.${d.blocked ? ' It also blocks incoming.' : ''}`
+			};
+		if (d.blocked) return blocked('It takes these at its next heartbeat, and runs them once it is switched off.');
 		return { label: 'Pending', tone: 'wait', detail: `It runs ${runs}, and takes these at its next heartbeat.` };
 	}
 </script>

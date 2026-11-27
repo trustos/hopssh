@@ -151,6 +151,11 @@ export interface EnrollmentStatus {
   // by default; flipped via local.setClipboardSync(). Toggle takes
   // effect on the next agent restart in v1.
   clipboardSync?: boolean;
+  // The switch "Block incoming from other devices": while on, other
+  // devices of the network can't open connections to this one, whatever
+  // the network's rules say; hopssh's own connection and ping still get
+  // in. Flipped via local.setBlockIncoming(), applied at once.
+  blockIncoming?: boolean;
 }
 
 export interface ParallelInstall {
@@ -277,6 +282,14 @@ export const local = {
     request<{ enrollment: string; clipboardSync: boolean; restartRequired: boolean }>(
       'POST',
       '/local/clipboard-sync',
+      { enrollment: enrollmentName, enabled }
+    ),
+  // applied is false when the network is not running (its next start
+  // has it) or could not take it now; error then says why.
+  setBlockIncoming: (enrollmentName: string, enabled: boolean) =>
+    request<{ enrollment: string; blockIncoming: boolean; applied: boolean; error?: string }>(
+      'POST',
+      '/local/block-incoming',
       { enrollment: enrollmentName, enabled }
     )
   // NOTE: a `local.forceRenew(name)` method existed briefly in

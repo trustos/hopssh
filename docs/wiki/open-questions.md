@@ -4,6 +4,13 @@ Cross-cutting unresolved items. Acts as a handoff state machine across sessions:
 
 Per-incident open items live on the incident page itself (`## Open` section). This file is for items that span multiple pages or that don't have a natural home yet.
 
+## 2026-11-28 — after the device switch "Block incoming" (phase 3 of firewall rules, not released)
+
+- **No report means "not blocked".** The server takes a heartbeat without a firewall report to mean the switch is off (`FirewallStore.NoReport`), so that an agent of v0.11.31 or older, which never blocks, never shows as blocked. The other side of this: any new code that sends a heartbeat must carry `firewallAck()`, or the dashboard says "not blocked" for that beat (it happened with the start-up heartbeat, fixed 2026-11-28). Only two senders exist today (`sendHeartbeat`, `warmPeersFromHeartbeat`).
+- **The local API's start-up log line shows the first 8 hex characters of its token** (`internal/client/local_api.go:139`). For the system service that log is `/var/log/hop-agent.log`, which everyone can read. That is 32 of its 256 bits. It is not enough to use the token, but nothing needs it either. Drop it, or log the file's path only.
+- **The desktop toggle has no test of its own.** `user_facing_copy_has_no_protocol_jargon` reads its text, and the agent side is tested, but nothing runs Settings.svelte. The desktop app has no component runner.
+- **Not run on Windows**, like P2.
+
 ## 2026-11-26 — lab: `TestLimitedLine/5ms` fails in the evening, passed in the afternoon
 
 **2026-11-27 01:10: not a change of ours.** The agent and server built from `bf557ea` (the commit that added the test; the lab's code is unchanged since) fail the same way now: tunnel 3.9 to 5.9, beside 9.3 to 15.7 Mbit/s, six of six. The current code in the same half hour: 5.4 to 8.7 against 13.0 to 16.0. What was different: the Mac that hosts the lab VM had a load average of 31 on 18 cores (a game, two UTM VMs); inside the lab VM the load was 0.5. A queue of 5 ms holds about eight packets, so a tunnel whose process is held up for a moment and then sends what has gathered overflows it; the kernel's own connection beside it is not held up. **Resolved 01:55:** with the game closed (it had also run the evening before, when the test first failed) and the load at 5 it passes three of three: tunnel 13.0 to 14.0, beside 16.1 to 16.3 Mbit/s. Run `scripts/netlab.sh -test.run 'TestLimitedLine/5ms' -test.count 3` with `uptime` below 5 before reading anything into this test, and note the load with every lab number.

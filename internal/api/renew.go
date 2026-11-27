@@ -311,6 +311,10 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 				log.Printf("[heartbeat] node %s: firewall report: %v", node.ID, err)
 			}
 		}
+	} else if h.Firewall != nil {
+		if err := h.Firewall.NoReport(node.ID); err != nil {
+			log.Printf("[heartbeat] node %s: firewall report: %v", node.ID, err)
+		}
 	}
 
 	// Phase G: cache agent's self-reported endpoints. Layer 1 (v0.10.27):
