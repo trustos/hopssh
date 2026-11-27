@@ -72,8 +72,39 @@ func newE2EMesh(t *testing.T) *e2eMesh {
 
 	m.c, m.dir = newTestClientForBootResilience(t)
 	m.c.recoveryBackoff = []time.Duration{200 * time.Millisecond}
-	t.Cleanup(func() { _ = m.c.Stop() })
+	// Stop cancels the renewal loop, but a POST already on its way still
+	// writes node.crt and node.key, and a reload still running starts and
+	// stops a Nebula. t.TempDir removes m.dir when the test ends, and it
+	// fails with "directory not empty" if that write lands in the moment
+	// between. Cleanups run in reverse order, so this runs before that
+	// removal; it stops the client itself first, because waiting for a loop
+	// that nothing has cancelled would just burn the timeout.
+	t.Cleanup(func() {
+		_ = m.c.Stop()
+		stacks := ""
+		for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			buf := make([]byte, 8<<20)
+			stacks = string(buf[:runtime.Stack(buf, true)])
+			if !strings.Contains(stacks, "/internal/client.runCertRenewal(") {
+				return
+			}
+		}
+		m.t.Errorf("a renewal loop is still running 30s after Stop:\n%s", goroutineStackFor(stacks, "/internal/client.runCertRenewal("))
+	})
 	return m
+}
+
+// goroutineStackFor returns the stack of each goroutine whose text contains
+// want. Test-only: it answers "where is the loop that Stop did not stop?"
+// without a debugger.
+func goroutineStackFor(stacks, want string) string {
+	var out []string
+	for _, g := range strings.Split(stacks, "\ngoroutine ") {
+		if strings.Contains(g, want) {
+			out = append(out, "goroutine "+g)
+		}
+	}
+	return strings.Join(out, "\n\n")
 }
 
 func (m *e2eMesh) serve(w http.ResponseWriter, r *http.Request) {
@@ -335,10 +366,15 @@ func TestE2E_DisconnectDuringRenewal(t *testing.T) {
 	if err := m.c.Connect(context.Background(), "home"); err != nil {
 		t.Fatalf("reconnect: %v", err)
 	}
-	// The instance is up. A renewal that was in flight when the network was
-	// disconnected can still close the fresh instance behind Connect's back;
-	// the recovery loop brings it back, so this waits rather than glances.
-	within(t, 10*time.Second, "the reconnected network to be live", func() bool { return m.live("home") })
+	// Connect returns with the instance up, not merely scheduled: it started
+	// Nebula itself before returning, so this is a glance. An earlier run of
+	// this test failed 9 times in 10 here and a wait was added; the failures
+	// were really t.TempDir removing the instance dir under a renewal still
+	// in flight, and the wait only made the test quiet. Glance again, so a
+	// reconnect that comes back wrong is still a failure.
+	if !m.live("home") {
+		t.Error("the reconnected network is not live although Connect returned nil")
+	}
 }
 
 // TestE2E_KeepaliveOnUserspaceNetwork: two "in-app" networks on one machine

@@ -629,6 +629,37 @@ func renewalTime(notBefore, notAfter time.Time, seed string) time.Time {
 	return notBefore.Add(life/2 + time.Duration(frac*float64(life/10)))
 }
 
+// writeCertPair puts a renewed cert and key on disk as one pair.
+//
+// certInstallMu keeps two overlapping renewals from leaving one's cert next to
+// the other's key. startMu is the other half of that, and the half that was
+// missing: connect holds it while Nebula opens node.crt and node.key one after
+// the other, and the renewal loop is already running by then. A renewal that
+// lands in that window leaves Nebula with the new cert and the old key, and it
+// refuses to start at all — "private key is not a pair with public key in
+// nebula cert" — so the network comes up on the OS stack and Nebula only
+// arrives on the retry two seconds later. That is not a corner: it is every
+// machine that was off for more than half a cert's life, which is 12 h of the
+// 24 h we issue.
+//
+// A crash between the two writes is still caught by certStartProblem
+// ("mismatched") on the next start; this closes the window where nothing
+// crashed and a read simply happened in the middle.
+func (inst *meshInstance) writeCertPair(certPEM, keyPEM string) error {
+	inst.startMu.Lock()
+	defer inst.startMu.Unlock()
+
+	certPath := filepath.Join(inst.dir(), "node.crt")
+	if err := atomicWrite(certPath, []byte(certPEM), 0644); err != nil {
+		return fmt.Errorf("write cert: %w", err)
+	}
+	keyPath := filepath.Join(inst.dir(), "node.key")
+	if err := atomicWrite(keyPath, []byte(keyPEM), 0600); err != nil {
+		return fmt.Errorf("write key: %w", err)
+	}
+	return nil
+}
+
 // renewCert calls the control plane's /api/renew endpoint to get a fresh
 // cert, installs it, and hot-reloads Nebula onto it.
 func renewCert(inst *meshInstance) error {
@@ -704,20 +735,11 @@ func fetchAndInstallCert(inst *meshInstance) error {
 		return fmt.Errorf("empty cert or key in response")
 	}
 
-	// Write new cert atomically (temp file + rename) to prevent partial reads.
-	// The lock keeps two overlapping renewals from leaving one's cert next
-	// to the other's key; a crash between the two writes is caught by
-	// certStartProblem ("mismatched") on the next start.
-	certPath := filepath.Join(inst.dir(), "node.crt")
-	keyPath := filepath.Join(inst.dir(), "node.key")
 	certInstallMu.Lock()
 	defer certInstallMu.Unlock()
 
-	if err := atomicWrite(certPath, []byte(renewResp.NodeCert), 0644); err != nil {
-		return fmt.Errorf("write cert: %w", err)
-	}
-	if err := atomicWrite(keyPath, []byte(renewResp.NodeKey), 0600); err != nil {
-		return fmt.Errorf("write key: %w", err)
+	if err := inst.writeCertPair(renewResp.NodeCert, renewResp.NodeKey); err != nil {
+		return err
 	}
 
 	// Apply server-pushed Nebula config if present.
