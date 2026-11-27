@@ -1249,7 +1249,7 @@
 										</Badge>
 									</td>
 									<td class="px-4 py-3 text-right">
-										{#if record.source === 'custom'}
+										{#if record.source === 'custom' && isAdmin}
 											<button
 												onclick={() => deleteDNS(record.id)}
 												class="rounded px-2 py-1 text-xs text-destructive hover:bg-destructive/10"

@@ -103,8 +103,8 @@ func assertCanEnrollNodeAtHandler(t *testing.T, file, marker string) {
 // whole page render "network not found" for invited members. The fix
 // follows the same membership-aware predicate pattern as F3, except
 // using CheckAccess.CanView() (read paths use CanView, enrollment-write
-// paths use CanEnrollNode). DNS *mutations* (Create, Delete) intentionally
-// stay owner-only — see TestD3_DNSCreateDelete_StayOwnerOnly below.
+// paths use CanEnrollNode). DNS *mutations* (Create, Delete) need the owner
+// or an admin member — see TestD3_DNSCreateDelete_AdminOnly below.
 func TestD3_ListDNSRecords_PermitsMembers(t *testing.T) {
 	src, err := os.ReadFile("dns.go")
 	if err != nil {
@@ -145,37 +145,44 @@ func TestD3_ListDNSRecords_PermitsMembers(t *testing.T) {
 	}
 }
 
-// TestD3_DNSCreateDelete_StayOwnerOnly: DNS mutations are privileged
-// operational changes (DNS naming is per-network policy; members
-// shouldn't be able to clobber the admin's records). Owner-only is
-// the correct policy and must NOT widen.
-func TestD3_DNSCreateDelete_StayOwnerOnly(t *testing.T) {
+// TestD3_DNSCreateDelete_AdminOnly: DNS mutations are the network's policy.
+// The owner and admin members may make them; a plain member may not. Both
+// handlers go through requireAdmin, which must check CanView (404 to
+// outsiders) before CanAdmin (403 to members). TestE2E_Access checks the
+// answers; this keeps a later edit from widening the gate to CanEnrollNode.
+func TestD3_DNSCreateDelete_AdminOnly(t *testing.T) {
 	src, err := os.ReadFile("dns.go")
 	if err != nil {
 		t.Fatalf("read dns.go: %v", err)
 	}
 	body := string(src)
-	for _, marker := range []string{
-		"func (h *DNSHandler) CreateDNSRecord(",
-		"func (h *DNSHandler) DeleteDNSRecord(",
-	} {
+	fn := func(marker string) string {
 		idx := strings.Index(body, marker)
 		if idx < 0 {
-			// Not all handlers are present in every revision; skip
-			// silently for handlers that don't exist.
-			continue
+			t.Fatalf("%q not found in dns.go", marker)
 		}
 		end := strings.Index(body[idx:], "\n}\n")
 		if end < 0 {
 			t.Fatalf("end of %q not found", marker)
 		}
-		handler := body[idx : idx+end]
-		if !strings.Contains(handler, "authz.CanAccessNetwork(") {
-			t.Errorf("%s must use authz.CanAccessNetwork (owner-only) — DNS mutations are privileged", marker)
+		return body[idx : idx+end]
+	}
+	for _, marker := range []string{
+		"func (h *DNSHandler) CreateDNSRecord(",
+		"func (h *DNSHandler) DeleteDNSRecord(",
+	} {
+		handler := fn(marker)
+		if !strings.Contains(handler, "h.requireAdmin(") {
+			t.Errorf("%s must call h.requireAdmin before changing records", marker)
 		}
 		if strings.Contains(handler, "authz.CanEnrollNode(") {
 			t.Errorf("%s must NOT use CanEnrollNode — would let members write DNS records", marker)
 		}
+	}
+	gate := fn("func (h *DNSHandler) requireAdmin(")
+	view, admin := strings.Index(gate, ".CanView()"), strings.Index(gate, ".CanAdmin()")
+	if !strings.Contains(gate, "authz.CheckAccess(") || view < 0 || admin < 0 || view > admin {
+		t.Error("requireAdmin must call authz.CheckAccess, then .CanView() (404), then .CanAdmin() (403)")
 	}
 }
 

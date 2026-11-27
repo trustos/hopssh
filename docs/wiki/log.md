@@ -546,3 +546,20 @@ writer of `nebula.yaml` (`listenport.go:73`); a Nebula reload callback cannot
 return an error, so validation has to build a scratch firewall first; "new
 networks only" needs no heartbeat field, a network column sent at enrollment is
 enough. Corrected in `concepts/firewall-rules.md`.
+
+16:10 to 16:40, the first small fixes of the approved plan, each red on the old
+code first. (1) **A full network answers 409 with a JSON error**, not 500, on all
+four ways to add a node (`allocNodeIP` in `internal/api/enroll.go`;
+`TestE2E_NetworkFull` failed on all four before). The agent's local API already
+turns a 409's `error` into the message the user sees
+(`TestDeviceFlowPoll_NetworkFull`). (2) **The debug listener binds 127.0.0.1**:
+with `--token` and no enrollment it served exec, shell and upload on `[::]:41820`
+(`TestE2E_DebugListenerLoopback` in `cmd/agent`, red on the old code). (3) The
+heartbeat comment says 60 s; `HeartbeatInterval` is marked unused. (4) **DNS
+create and delete accept the owner and admin members**, plain members get 403,
+outsiders 404 (`requireAdmin` in `internal/api/dns.go`); the dashboard shows
+Delete to admins only (it showed it to every member). `TestE2E_Access` was red on
+the old code (an admin got 404); a planted bug without the admin check was caught
+by both `TestE2E_Access` (member got 201) and the source scan. Loose ends filed in
+`open-questions.md`.
+

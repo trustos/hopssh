@@ -56,6 +56,15 @@ Move closed items to a "Resolved" section at the bottom rather than deleting —
 
 ## Open
 
+## 2026-11-27 — loose ends seen while fixing the API and the debug listener
+
+- **A full network uses up the device code.** The device flow takes the address in `Poll`, after `ClaimAuthorized` has consumed the code (`internal/api/device.go`). The 409 now says the network is full, but the user has to start the device flow again. Same shape as "`Enroll` and device `Poll` use up the token before the 409 check" in the API gaps below.
+- **The CLI's device flow hides every error.** `internal/client/enroll.go:309-348` keeps polling on anything but 200 and 403 until the code expires, so `hop-agent enroll` shows "network is full" (or any 409/500) only as a timeout ten minutes later. The desktop app and the dashboard show the message.
+- **The debug listener stays up after an enrollment.** `startUnscopedOSListener` keeps `s.bare` until shutdown. Since 2026-11-27 it is on 127.0.0.1 and starts only with `--token`/`--token-file`, which no installer passes, so it no longer blocks a mesh listener on `<mesh IP>:41820`. Shutting it down when the first network comes up is the clean end.
+- **`Config.UserAgent` is read by nothing** (`internal/client/api.go:34`), like `HeartbeatInterval`. Set by `cmd/agent`; not removed because the mobile binding may set it.
+
+Source / context: `docs/wiki/log.md` 2026-11-27, `concepts/firewall-rules.md` "Found on the way".
+
 ## 2026-11-27 — `TestE2E_Proxy`: a request hangs when both ends start a tunnel at once
 
 In one of two full runs of `go test ./...` on the Mac (14:14), the 30th health check of `TestE2E_Proxy` (`internal/api/e2e_test.go:1548`) got the route timeout (503 after 30 s); the 29 before it took about 1 ms. Alone it passed 45 of 45 (5, then 40 in a loop); in 35 of those 40 both ends had started a tunnel at once and none had a dead tunnel, so two tunnels alone do not cause it — the full run's load (three packages of end-to-end tests at once) is part of it. Neither fix of the day is on its path (fake agent, first node, nothing deleted).

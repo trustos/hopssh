@@ -164,15 +164,16 @@ func TestE2E_Access(t *testing.T) {
 		{route: "GET /api/device/verify/{code}", path: func() string { return "/api/device/verify/" + userCode() }, want: "200 200 200 200 401"},
 		{route: "POST /api/device/authorize", path: at("/api/device/authorize"), body: func() any { return M{"userCode": userCode(), "networkId": h.net.ID} }, want: "200 200 200 404 401"},
 
-		// Owner only: an invited admin gets 404, and the dashboard offers it.
 		{route: "GET /api/networks/{networkID}/dns", path: at(h.url("/dns")), want: "200 200 200 404 401"},
-		{route: "POST /api/networks/{networkID}/dns", path: at(h.url("/dns")), body: func() any { names++; return M{"name": fmt.Sprint("r", names), "nebulaIP": "10.42.1.9"} }, want: "201 404 404 404 401"},
+		{route: "POST /api/networks/{networkID}/dns", path: at(h.url("/dns")), body: func() any { names++; return M{"name": fmt.Sprint("r", names), "nebulaIP": "10.42.1.9"} }, want: "201 201 403 404 401"},
 		{route: "DELETE /api/networks/{networkID}/dns/{recordID}", path: func() string {
 			names++
 			var rec struct{ ID string }
 			h.owner.Want(201, "POST", h.url("/dns"), M{"name": fmt.Sprint("r", names), "nebulaIP": "10.42.1.9"}, &rec)
 			return h.url("/dns/%s", rec.ID)
-		}, want: "204 404 404 404 401"},
+		}, want: "204 204 403 404 401"},
+
+		// Owner only: an invited admin gets 404, and the dashboard offers it.
 		{route: "POST /api/networks/{networkID}/bundles", path: at(h.url("/bundles")), want: "201 404 404 404 401"},
 
 		{route: "GET /api/networks/{networkID}/members", path: at(h.url("/members")), want: "200 200 200 404 401"},
