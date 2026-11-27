@@ -449,3 +449,24 @@ and the hostmap/control testers in the root package, and in `nebula/udp` only
 `udp_darwin_batch_test.go` and `udp_darwin_listenout_pipeline_test.go`. On Linux
 and Windows the `nebula/udp` argument therefore compiles and runs nothing — the
 batched UDP and TUN code is tested on a Mac only, as CLAUDE.md already says.
+
+09:05, the client package as root on Linux, end to end.
+(1) After the userspace pin, `internal/client` as root on the Ubuntu VM is
+green: 1089.91 s, 3 skips, no failure. The kernel-TUN close test as root in a
+fresh network namespace passes there too (2.30 s) — the pair CI's release gate
+now runs.
+(2) **One tripwire could only ever pass on the machine that built it.**
+`TestInstallAgentSystemd_RestartsWhatIsRunning` found `service.go` with
+`runtime.Caller(0)`, which returns the path as the compiler saw it; run from the
+VM it read `/Users/tenev/…/service.go` and failed. It was the only source scan in
+the repo written that way — the other 27 use a path relative to the package,
+which is also why they failed loudly (not silently) when I first copied the test
+binary to the VM without its tree. Now relative like the rest. A scan that reads
+a source file must name it relative to the package, or it tests the build
+machine, not the test machine.
+(3) **`internal/api` and `cmd/agent` cannot be run as root in that VM**: their
+end-to-end tests build `hop-server` and `hop-agent` themselves (`go build
+./cmd/server`), and the VM has no Go. They ran as root in the podman
+`golang:1.26` container instead (no `/dev/net/tun` there, so the agent stays in
+userspace). Running them as root on a machine with a real TUN device needs a Go
+toolchain in the VM — not installed, because that is a download.

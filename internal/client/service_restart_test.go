@@ -2,8 +2,6 @@ package client
 
 import (
 	"os"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 )
@@ -31,11 +29,13 @@ func TestServiceStartCmd_RestartsARunningService(t *testing.T) {
 // The installer must ask whether the unit is running and use the answer; a
 // plain `systemctl start` in its place is the bug.
 func TestInstallAgentSystemd_RestartsWhatIsRunning(t *testing.T) {
-	_, thisFile, _, _ := runtime.Caller(0)
-	src := filepath.Join(filepath.Dir(thisFile), "service.go")
-	b, err := os.ReadFile(src)
+	// Relative, like every other source scan in this package: runtime.Caller
+	// gives the path as the compiler saw it, so a test binary built on one
+	// machine could never read the file on another. It failed the first time we
+	// ran this package as root on Linux (docs/wiki/log.md, 2026-11-27).
+	b, err := os.ReadFile("service.go")
 	if err != nil {
-		t.Fatalf("read %s: %v", src, err)
+		t.Fatalf("read service.go: %v", err)
 	}
 	body := func() string {
 		i := strings.Index(string(b), "func installAgentSystemd() {")
