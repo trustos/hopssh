@@ -1244,6 +1244,11 @@ func reloadNebula(inst *meshInstance) {
 		newSvc, err := startMeshFn(configPath, tunMode)
 		if err != nil {
 			log.Printf("[renew %s] Nebula cold start failed even after cert renewal: %v", inst.name(), err)
+			// The same safety net the hot path has. Without it the next
+			// chance is the next renewal, about 13 h later on the 24 h
+			// certs, for a failure that is usually the UDP port still
+			// held by the start that failed at boot.
+			scheduleRetryReload(inst, configPath, tunMode)
 			return
 		}
 
@@ -1352,8 +1357,11 @@ func reloadNebula(inst *meshInstance) {
 }
 
 // startNebulaByMode dispatches to kernel-TUN or userspace start based
-// on tunMode. Centralizes the dispatch so retry-with-backoff calls the
-// same path as the initial start.
+// on tunMode, and nothing else: it does not fall back to userspace when
+// a kernel start fails. The reload paths (hot swap and retry-with-backoff)
+// use it, so a reload that cannot get the TUN device fails and is retried
+// in the same mode. connect and reloadNebula's cold start use startMeshFn,
+// which does fall back.
 //
 // Indirected via startNebulaByModeFn so tests can substitute a fake
 // without standing up a real Nebula process.
