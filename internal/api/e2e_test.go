@@ -1218,6 +1218,39 @@ func TestE2E_AddressNotReused(t *testing.T) {
 	}
 }
 
+// TestE2E_NetworkFull: when a network has no address left, every way of
+// adding a node says so with 409, not as a server error.
+func TestE2E_NetworkFull(t *testing.T) {
+	h := newHousehold(t)
+	prefix := h.net.Subnet[:strings.LastIndex(h.net.Subnet, ".")]
+	h.s.Exec(`INSERT INTO released_node_ips (network_id, nebula_ip, released_at)
+		WITH RECURSIVE o(n) AS (SELECT 2 UNION ALL SELECT n + 1 FROM o WHERE n < 254)
+		SELECT ?, printf('%s.%d/24', ?, n), unixepoch() FROM o`, h.net.ID, prefix)
+
+	// The device flow takes the address when the device polls, after the
+	// user has approved it.
+	var dc struct{ DeviceCode, UserCode string }
+	h.s.Anonymous().Want(200, "POST", "/api/device/code", nil, &dc)
+	h.owner.Want(200, "POST", "/api/device/authorize", M{"userCode": dc.UserCode, "networkId": h.net.ID}, nil)
+	for _, c := range []struct {
+		who          *e2etest.Client
+		method, path string
+		body         any
+	}{
+		{h.owner, "POST", h.url("/nodes"), M{}},
+		{h.owner, "POST", h.url("/join"), M{"hostname": "laptop"}},
+		{h.owner, "POST", h.url("/bundles"), nil},
+		{h.s.Anonymous(), "POST", "/api/device/poll", M{"deviceCode": dc.DeviceCode, "hostname": "laptop"}},
+	} {
+		s, body := c.who.Do(c.method, c.path, c.body)
+		var e struct{ Error string }
+		json.Unmarshal(body, &e)
+		if s != 409 || !strings.Contains(e.Error, "no free mesh address") {
+			t.Errorf("%s %s on a full network: HTTP %d %s, want 409 with a JSON error", c.method, c.path, s, strings.TrimSpace(string(body)))
+		}
+	}
+}
+
 // TestE2E_Capabilities: what an admin switches off on a node is off at once,
 // for the owner too.
 func TestE2E_Capabilities(t *testing.T) {

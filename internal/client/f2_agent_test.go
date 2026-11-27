@@ -145,3 +145,30 @@ func TestRegistry_CAFingerprints_DedupAndSort(t *testing.T) {
 		}
 	}
 }
+
+// A 409 for a full network carries only "error". The desktop app must show
+// that message, not the "already enrolled" text of the other 409.
+func TestDeviceFlowPoll_NetworkFull(t *testing.T) {
+	cpane := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"error": `network "home" is full: no free mesh address in this network`,
+		})
+	}))
+	defer cpane.Close()
+	_, h, _ := newTestLocalAPIServer(t, func(string) error { return nil }, nil)
+
+	deviceFlowMu.Lock()
+	activeDeviceFlow["dc-full"] = &deviceFlowState{deviceCode: "dc-full", endpoint: cpane.URL,
+		expiresAt: time.Now().Add(time.Minute), interval: 5 * time.Second, name: "home"}
+	deviceFlowMu.Unlock()
+	t.Cleanup(func() { deviceFlowMu.Lock(); delete(activeDeviceFlow, "dc-full"); deviceFlowMu.Unlock() })
+
+	rec, _ := authedReq(t, h, "POST", "/local/enroll/device-flow/poll", []byte(`{"deviceCode":"dc-full"}`))
+	var got enrollDeviceFlowPollResp
+	_ = json.Unmarshal(rec.Body.Bytes(), &got)
+	if got.Status != "error" || !strings.Contains(got.Message, "is full") || strings.Contains(got.Message, "already enrolled") {
+		t.Errorf("poll on a full network: HTTP %d %s", rec.Code, rec.Body.String())
+	}
+}

@@ -49,14 +49,8 @@ func (h *BundleHandler) CreateBundle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Allocate node.
-	nextIndex, err := h.Nodes.NextNodeIndex(networkID)
-	if err != nil {
-		http.Error(w, "failed to allocate node IP: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	nextIP, err := pki.NodeAddress(network.NebulaSubnet, nextIndex)
-	if err != nil {
-		http.Error(w, "failed to allocate node IP: "+err.Error(), http.StatusInternalServerError)
+	nextIP, ok := allocNodeIP(w, h.Nodes, network)
+	if !ok {
 		return
 	}
 

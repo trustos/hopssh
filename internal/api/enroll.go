@@ -4,9 +4,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -63,15 +65,8 @@ func (h *EnrollHandler) CreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Find the next available Nebula IP using MAX to avoid collisions after deletes.
-	nextIndex, err := h.Nodes.NextNodeIndex(networkID)
-	if err != nil {
-		http.Error(w, "failed to determine next node IP: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	nextIP, err := pki.NodeAddress(network.NebulaSubnet, nextIndex)
-	if err != nil {
-		http.Error(w, "failed to allocate node IP: "+err.Error(), http.StatusInternalServerError)
+	nextIP, ok := allocNodeIP(w, h.Nodes, network)
+	if !ok {
 		return
 	}
 
@@ -278,14 +273,8 @@ func (h *EnrollHandler) JoinNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nextIndex, err := h.Nodes.NextNodeIndex(networkID)
-	if err != nil {
-		http.Error(w, "failed to allocate IP: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	nextIP, err := pki.NodeAddress(network.NebulaSubnet, nextIndex)
-	if err != nil {
-		http.Error(w, "failed to allocate IP: "+err.Error(), http.StatusInternalServerError)
+	nextIP, ok := allocNodeIP(w, h.Nodes, network)
+	if !ok {
 		return
 	}
 
@@ -360,3 +349,26 @@ func generateToken() string {
 	return hex.EncodeToString(b)
 }
 
+// allocNodeIP gives the next mesh address of a network, or answers the
+// request itself. A full network is a 409 with a JSON "error": the shape
+// agents already read for a 409 (internal/client/local_api.go), so the user
+// sees this message and not a server error.
+func allocNodeIP(w http.ResponseWriter, nodes *db.NodeStore, network *db.Network) (netip.Prefix, bool) {
+	index, err := nodes.NextNodeIndex(network.ID)
+	if errors.Is(err, db.ErrNetworkFull) {
+		writeJSONStatus(w, http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf("network %q is full: %v", network.Name, err),
+		})
+		return netip.Prefix{}, false
+	}
+	if err != nil {
+		http.Error(w, "failed to allocate node IP: "+err.Error(), http.StatusInternalServerError)
+		return netip.Prefix{}, false
+	}
+	ip, err := pki.NodeAddress(network.NebulaSubnet, index)
+	if err != nil {
+		http.Error(w, "failed to allocate node IP: "+err.Error(), http.StatusInternalServerError)
+		return netip.Prefix{}, false
+	}
+	return ip, true
+}

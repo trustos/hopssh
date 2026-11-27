@@ -160,14 +160,8 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Allocate node IP.
-	nextIndex, err := h.Nodes.NextNodeIndex(*dc.NetworkID)
-	if err != nil {
-		http.Error(w, "failed to allocate node IP: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	nextIP, err := pki.NodeAddress(network.NebulaSubnet, nextIndex)
-	if err != nil {
-		http.Error(w, "failed to allocate node IP: "+err.Error(), http.StatusInternalServerError)
+	nextIP, ok := allocNodeIP(w, h.Nodes, network)
+	if !ok {
 		return
 	}
 
