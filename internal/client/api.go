@@ -107,6 +107,7 @@ func NewClient(cfg Config) (*Client, error) {
 	// scope to the caller's chosen path. Keeping the var for now to
 	// minimise the M2 diff; M3+ can consolidate.
 	configDir = cfg.ConfigDir
+	routeStandardLog()
 	reg, err := loadEnrollmentRegistry(cfg.ConfigDir)
 	if err != nil {
 		return nil, err
