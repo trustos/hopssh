@@ -154,9 +154,10 @@ func sendHeartbeat(inst *meshInstance) error {
 		"nodeId":       inst.nodeID(),
 		"agentVersion": buildinfo.Version, // "vX.Y.Z" (tagged) or "vX.Y.Z-N-gSHORTSHA(-dirty)" (dev)
 		// The machine's own OS and arch, from the runtime running this
-		// code. The node row keeps what enrollment claimed, and an
-		// enrollment guesses: the install script says "linux" whatever
-		// it runs on. This is where the truth arrives.
+		// code. The node row keeps what enrollment wrote, and
+		// enrollment guesses: the token body said "linux" for every
+		// machine until 72f2165, which is not in a release yet. This is
+		// where the truth arrives, and where an old node is corrected.
 		"os":   runtime.GOOS,
 		"arch": detectArch(),
 	}

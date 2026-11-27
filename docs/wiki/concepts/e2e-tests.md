@@ -67,6 +67,7 @@ Fixes in the tree (letters as in [[../incidents/2026-11-18-mbp-all-certs-expired
 | U no data race in the agent | `TestE2E_Lifecycle` with `-race` (two of its three fields: by reading only) |
 | V a closed network frees its UDP port (Linux, patch 31) | `TestUserspaceClose_DoesNotExit`, `TestReapIdleInstances`, `TestE2E_Lifecycle`, `TestE2E_LongOffMachineRecovers`, `TestE2E_DeleteNetwork`, run on Linux |
 | W, X a closed system-wide network frees its device, and programs don't inherit it (patches 31, 32) | `TestKernelTunClose_ReleasesDeviceAndPort` (Linux as root; X on macOS: nothing) |
+| a node's OS and CPU are corrected by its heartbeat, not only by enrollment | `TestSendHeartbeat_ReportsItsOwnMachine`, `TestE2E_HeartbeatCorrectsPlatform` |
 
 Improvements that are only proposed:
 
