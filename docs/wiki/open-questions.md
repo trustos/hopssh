@@ -142,6 +142,7 @@ From an audit of the tests against the ways a certificate or a path can fail. Co
 ## 2026-11-25 — two short silences on both networks at once (field recorder)
 
 `hop-field` (pull request 3) ran 4 hours between the two Macs: always connected, always direct, 599 of 600 probe answers per minute. Twice the probe was silent on `home` and `work` in the same instant (1.0 s at 17:38:30, 3.4 s at 18:04:11), no session lost, nothing in either agent's log. *Likely* the line under the mesh; not proven. A probe that runs beside it outside the mesh would tell.
+**Closed 2026-11-27:** it is the line, and it is the office network. The recorder ran 40 hours on both Macs: home to home 0.007 to 0.014 % of pings lost, the phone's hotspot 0 of 1200, the office 0.15 to 0.81 %, in bursts (25 of the MBP's 45 lossy minutes in one hour). Nebula logged no dead tunnel, no roam and no failed handshake in those minutes, and the path stayed direct. Table and what the quiet log does and does not prove: [[concepts/loss-on-a-limited-line]], "Idle loss, by place".
 
 ## 2026-11-25 — a router that comes back is sometimes noticed late (`TestRouterReboot`, 1 of 12)
 
