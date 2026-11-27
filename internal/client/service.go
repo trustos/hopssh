@@ -150,6 +150,17 @@ func RunAgentInstall(args []string) {
 	}
 }
 
+// serviceStartCmd brings the service up after an install. A unit that is
+// already running is restarted: an enroll that adds a network writes it to
+// disk, and only a new process reads it. `systemctl start` on a running unit
+// does nothing, so a second network stayed down until the next reboot.
+func serviceStartCmd(active bool) []string {
+	if active {
+		return []string{"systemctl", "restart", agentServiceName}
+	}
+	return []string{"systemctl", "start", agentServiceName}
+}
+
 func installAgentSystemd() {
 	if _, err := exec.LookPath("systemctl"); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: systemctl not found. Is systemd available?\n")
@@ -163,10 +174,11 @@ func installAgentSystemd() {
 		os.Exit(1)
 	}
 
+	active := exec.Command("systemctl", "is-active", "--quiet", agentServiceName).Run() == nil
 	cmds := [][]string{
 		{"systemctl", "daemon-reload"},
 		{"systemctl", "enable", agentServiceName},
-		{"systemctl", "start", agentServiceName},
+		serviceStartCmd(active),
 	}
 	for _, c := range cmds {
 		if out, err := exec.Command(c[0], c[1:]...).CombinedOutput(); err != nil {
