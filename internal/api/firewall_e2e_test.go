@@ -22,10 +22,12 @@ type fwSet struct {
 
 type fwPolicy struct {
 	Version            int64
+	UpdatedAt          int64
 	Preset             string
 	Rules              []fwpolicy.Rule
 	Sets               []fwSet
 	CanEdit, CanAttach bool
+	Managed            bool
 }
 
 func version(v int64) string { return fmt.Sprintf(`"%d"`, v) }
@@ -60,7 +62,7 @@ func TestE2E_Firewall(t *testing.T) {
 	}
 
 	// A new network: version 0, preset all, nothing of its own.
-	if p := get(h.member); p.Version != 0 || p.Preset != "all" || len(p.Rules) != 0 || len(p.Sets) != 0 || p.CanEdit || p.CanAttach {
+	if p := get(h.member); p.Version != 0 || p.Preset != "all" || len(p.Rules) != 0 || len(p.Sets) != 0 || p.CanEdit || p.CanAttach || p.Managed {
 		t.Fatalf("new network, as a member: %+v", p)
 	}
 	if p := get(h.admin); !p.CanEdit || p.CanAttach {
@@ -86,7 +88,7 @@ func TestE2E_Firewall(t *testing.T) {
 	h.owner.With("If-Match", version(1)).Want(412, "PUT", fw, change, nil)
 	var p fwPolicy
 	h.admin.With("If-Match", version(0)).Want(200, "PUT", fw, change, &p)
-	if p.Version != 1 || p.Preset != "ping" || !reflect.DeepEqual(p.Rules, ssh) {
+	if p.Version != 1 || p.Preset != "ping" || !reflect.DeepEqual(p.Rules, ssh) || !p.Managed {
 		t.Errorf("after the admin's change: %+v", p)
 	}
 	h.owner.With("If-Match", version(0)).Want(412, "PUT", fw, M{"preset": "all", "rules": []any{}}, nil)
@@ -190,7 +192,23 @@ func TestE2E_Firewall(t *testing.T) {
 	h.owner.Want(404, "PUT", attach(h.net.ID, "no-such-set"), nil, nil)
 	h.owner.Want(204, "PUT", attach(h.net.ID, web.ID), nil, nil)
 	h.owner.Want(204, "PUT", attach(h.net.ID, web.ID), nil, nil) // again: nothing changes
+	// The devices of a network get its rules once it is managed: from its
+	// first save or attach on, for good. Until then each keeps the block it
+	// was enrolled with, so nothing is widened that no one chose.
+	labFW := "/api/networks/" + lab.ID + "/firewall"
+	labPolicy := func() fwPolicy {
+		t.Helper()
+		var p fwPolicy
+		h.owner.Want(200, "GET", labFW, nil, &p)
+		return p
+	}
+	if p := labPolicy(); p.Managed || p.Version != 0 {
+		t.Errorf("a network nothing was saved or attached to: %+v, want not managed at version 0", p)
+	}
 	h.owner.Want(204, "PUT", attach(lab.ID, web.ID), nil, nil)
+	if p := labPolicy(); !p.Managed || p.Version != 0 || len(p.Rules) != 0 || p.UpdatedAt != 0 {
+		t.Errorf("after an attach: %+v, want managed, at version 0 with no rules of its own", p)
+	}
 	p = get(h.member)
 	if p.Version != cur || len(p.Sets) != 1 || p.Sets[0].ID != web.ID || len(p.Sets[0].NetworkIDs) != 0 {
 		t.Errorf("after attaching, as a member: %+v (the version stays; other networks are not shown)", p)
@@ -244,6 +262,9 @@ func TestE2E_Firewall(t *testing.T) {
 	h.owner.Want(204, "DELETE", attach(h.net.ID, web.ID), nil, nil) // again: nothing to do
 	h.owner.Want(409, "DELETE", setURL(web.ID), nil, nil)           // still in lab
 	h.owner.Want(204, "DELETE", attach(lab.ID, web.ID), nil, nil)
+	if p := labPolicy(); !p.Managed || len(p.Sets) != 0 {
+		t.Errorf("after the last set is detached: %+v, want still managed", p)
+	}
 	h.owner.Want(204, "DELETE", setURL(web.ID), nil, nil)
 	h.owner.Want(404, "DELETE", setURL(web.ID), nil, nil)
 
@@ -278,4 +299,39 @@ func TestE2E_Firewall(t *testing.T) {
 	if e.Firewall != "ping" {
 		t.Errorf("a new enrollment got preset %q, want ping", e.Firewall)
 	}
+
+	// A device gets its network's rules and the attached sets together, and
+	// Nebula keeps an entry per port of a range, so the ports they cover are
+	// bounded together (fwpolicy.MaxPorts), on every change that adds some.
+	wide := h.owner.CreateNetwork("wide")
+	wideFW := "/api/networks/" + wide.ID + "/firewall"
+	span := func(n int) []M { return []M{{"proto": "tcp", "port": fmt.Sprintf("1-%d", n)}} }
+	h.owner.With("If-Match", version(0)).Want(200, "PUT", wideFW, M{"preset": "all", "rules": span(3000)}, nil)
+	var half, more fwSet
+	h.owner.Want(201, "POST", "/api/firewall/sets", M{"name": "half", "rules": span(1000)}, &half)
+	h.owner.Want(201, "POST", "/api/firewall/sets", M{"name": "more", "rules": span(100)}, &more)
+	h.owner.Want(204, "PUT", attach(wide.ID, half.ID), nil, nil) // 4000
+	for what, req := range map[string]func() (int, []byte){
+		"attaching a set": func() (int, []byte) { return h.owner.Do("PUT", attach(wide.ID, more.ID), nil) },
+		"widening an attached set": func() (int, []byte) {
+			return h.owner.With("If-Match", version(1)).Do("PUT", setURL(half.ID), M{"name": "half", "rules": span(1200)})
+		},
+		"widening the network's rules": func() (int, []byte) {
+			return h.owner.With("If-Match", version(1)).Do("PUT", wideFW, M{"preset": "all", "rules": span(3100)})
+		},
+	} {
+		if status, b := req(); status != 400 || !strings.Contains(string(b), "ports") {
+			t.Errorf("%s past %d ports: HTTP %d %s, want 400 about ports", what, fwpolicy.MaxPorts, status, b)
+		}
+	}
+	var wp fwPolicy
+	h.owner.Want(200, "GET", wideFW, nil, &wp)
+	if wp.Version != 1 || len(wp.Sets) != 1 {
+		t.Errorf("after refused changes: version %d with %d sets, want 1 with 1", wp.Version, len(wp.Sets))
+	}
+	// Up to the bound is accepted; a set's old rules and a set attached
+	// again are not counted twice.
+	h.owner.With("If-Match", version(1)).Want(200, "PUT", setURL(half.ID), M{"name": "half", "rules": span(1096)}, nil)
+	h.owner.Want(204, "PUT", attach(wide.ID, half.ID), nil, nil)
+	h.owner.With("If-Match", version(1)).Want(200, "PUT", wideFW, M{"preset": "all", "rules": span(3000)}, nil)
 }

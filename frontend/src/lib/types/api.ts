@@ -130,6 +130,9 @@ export interface NetworkFirewallResponse {
 	canEdit: boolean;
 	/** Only the network's owner, with their own sets. */
 	canAttach: boolean;
+	/** The rules are sent to the network's devices: from its first save or
+	 *  attach on. Until then each keeps the block it was enrolled with. */
+	managed: boolean;
 }
 
 export interface CreateNodeResponse {

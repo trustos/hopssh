@@ -36,6 +36,12 @@ const (
 	MaxDescription = 200 // characters
 	MaxSetName     = 64  // characters
 	maxNodeID      = 64
+	// MaxPorts bounds the ports that the rules reaching one device cover
+	// together (Ports): a network's own rules and its attached sets. Nebula
+	// keeps an entry of about 800 bytes per port of a range, per rule
+	// (measured 2026-11-27: 50 MB for one rule of 1-65535, 1.7 GB for a
+	// hundred), on every device, twice during a reload. 4096 is about 3 MB.
+	MaxPorts = 4096
 )
 
 // Rule allows traffic into agents. An empty SourceNodeID is any node of the
@@ -89,7 +95,37 @@ func ValidateRules(rules []Rule) error {
 			return fmt.Errorf("rule %d: %w", i+1, err)
 		}
 	}
+	return CheckPorts(Ports(rules))
+}
+
+// CheckPorts refuses a count of ports (Ports) above MaxPorts.
+func CheckPorts(n int) error {
+	if n > MaxPorts {
+		return fmt.Errorf("the rules cover %d ports, more than %d; a rule for every port is port \"any\"", n, MaxPorts)
+	}
 	return nil
+}
+
+// Ports counts the entries Nebula keeps for valid rules: one for "any", a
+// port or an icmp rule, M-N+1 for a range N-M. Rules on the same port count
+// once each, since each is kept on its own.
+func Ports(rules []Rule) int {
+	n := 0
+	for _, r := range rules {
+		lo, hi, isRange := strings.Cut(r.Port, "-")
+		if !isRange {
+			n++
+			continue
+		}
+		a, errA := port(lo)
+		b, errB := port(hi)
+		if errA != nil || errB != nil || a > b {
+			n++
+			continue
+		}
+		n += b - a + 1
+	}
+	return n
 }
 
 // ValidateSetName checks the name of a rule set.

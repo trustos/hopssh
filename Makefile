@@ -2,7 +2,7 @@
 -include .env
 export
 
-.PHONY: all setup vendor patch-vendor build build-all build-linux vet test test-race preflight netlab \
+.PHONY: all setup vendor patch-vendor patch-check build build-all build-linux vet test test-race preflight netlab \
        generate clean clean-vendor clean-stuck-dumps frontend frontend-embed \
        run dev release wifi-snapshot \
        desktop-build desktop-app desktop-dev desktop-smoke desktop-clean
@@ -43,6 +43,11 @@ patch-vendor:
 		fi; \
 	done
 	@echo "==> Done."
+
+# Check the patches against a pristine vendor tree: each applies alone, in
+# either order they give the same files, and vendor/ is what they make.
+patch-check:
+	@scripts/patch-check.sh
 
 # Build Go binaries.
 build:
@@ -107,7 +112,7 @@ test-race:
 	go test -mod=vendor -race -timeout 30m $(RACE_PKGS)
 
 # What has to pass before a release.
-preflight: vet test test-race
+preflight: patch-check vet test test-race
 
 # Run the network lab: the real server and agents behind simulated routers.
 # Needs root on Linux, or the podman VM on a Mac. ARGS go to the test binary.

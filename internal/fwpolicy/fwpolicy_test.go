@@ -85,6 +85,52 @@ func TestValidateRules(t *testing.T) {
 	}
 }
 
+// Nebula keeps one entry per port of a range on every device the rules
+// reach: one rule for 1-65535 took 50 MB, a hundred of them 1.7 GB
+// (measured 2026-11-27). "any" is one entry.
+func TestValidateRules_Ports(t *testing.T) {
+	for _, rules := range [][]Rule{
+		{{Proto: "tcp", Port: fmt.Sprintf("1-%d", MaxPorts)}},
+		{{Proto: "tcp", Port: "1-2048"}, {Proto: "udp", Port: "1-2048"}},
+		{{Proto: "tcp", Port: "any"}, {Proto: "udp", Port: "any"}, {Proto: "any", Port: "any"}, {Proto: "icmp", Port: "any"}},
+	} {
+		if err := ValidateRules(rules); err != nil {
+			t.Errorf("%+v: %v", rules, err)
+		}
+	}
+	for _, rules := range [][]Rule{
+		{{Proto: "tcp", Port: "1-65535"}},
+		{{Proto: "tcp", Port: fmt.Sprintf("1-%d", MaxPorts+1)}},
+		{{Proto: "tcp", Port: "1-2048"}, {Proto: "udp", Port: "1-2048"}, {Proto: "tcp", Port: "22"}},
+	} {
+		err := ValidateRules(rules)
+		if err == nil {
+			t.Errorf("%+v: accepted", rules)
+		} else if !strings.Contains(err.Error(), `"any"`) {
+			t.Errorf("%+v: %q does not point to \"any\"", rules, err)
+		}
+	}
+}
+
+func TestPorts(t *testing.T) {
+	for _, tc := range []struct {
+		rules []Rule
+		want  int
+	}{
+		{nil, 0},
+		{[]Rule{{Proto: "tcp", Port: "any"}}, 1},
+		{[]Rule{{Proto: "icmp", Port: "any"}}, 1},
+		{[]Rule{{Proto: "tcp", Port: "22"}}, 1},
+		{[]Rule{{Proto: "tcp", Port: "80-80"}}, 1},
+		{[]Rule{{Proto: "udp", Port: "5000-5010"}}, 11},
+		{[]Rule{{Proto: "tcp", Port: "1-65535"}, {Proto: "tcp", Port: "22"}}, 65536},
+	} {
+		if got := Ports(tc.rules); got != tc.want {
+			t.Errorf("Ports(%+v) = %d, want %d", tc.rules, got, tc.want)
+		}
+	}
+}
+
 func TestValidateSetName(t *testing.T) {
 	for _, name := range []string{"web", "Home servers", strings.Repeat("é", MaxSetName)} {
 		if err := ValidateSetName(name); err != nil {

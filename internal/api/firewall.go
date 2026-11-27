@@ -53,6 +53,9 @@ type networkFirewallResponse struct {
 	// attach and detach sets (owner).
 	CanEdit   bool `json:"canEdit"`
 	CanAttach bool `json:"canAttach"`
+	// Managed: the rules are sent to the network's devices (from its first
+	// save or attach on). Until then each keeps the block it was enrolled with.
+	Managed bool `json:"managed"`
 }
 
 func setResponse(s db.FirewallSet, withNetworks bool) firewallSetResponse {
@@ -115,6 +118,7 @@ func (h *FirewallHandler) writeNetworkFirewall(w http.ResponseWriter, status int
 	resp := networkFirewallResponse{
 		Version: f.Version, Preset: f.Preset, Rules: f.Rules, UpdatedAt: f.UpdatedAt,
 		Sets: make([]firewallSetResponse, 0, len(sets)), CanEdit: access.CanAdmin(), CanAttach: owner,
+		Managed: f.Managed,
 	}
 	for _, s := range sets {
 		resp.Sets = append(resp.Sets, setResponse(s, false))
@@ -433,14 +437,17 @@ func (h *FirewallHandler) DetachFirewallSet(w http.ResponseWriter, r *http.Reque
 // storeError answers the request for an error of the firewall store and
 // reports whether there was none.
 func (h *FirewallHandler) storeError(w http.ResponseWriter, err error) bool {
-	var unknown *db.UnknownNodesError
+	var (
+		unknown *db.UnknownNodesError
+		wide    *db.TooManyPortsError
+	)
 	switch {
 	case err == nil:
 		return true
 	case errors.Is(err, db.ErrStaleVersion):
 		// RFC 9110 13.1.1: a false If-Match is answered with 412.
 		http.Error(w, err.Error()+": reload and try again", http.StatusPreconditionFailed)
-	case errors.As(err, &unknown):
+	case errors.As(err, &unknown), errors.As(err, &wide):
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	case errors.Is(err, sql.ErrNoRows):
 		http.Error(w, "not found", http.StatusNotFound)

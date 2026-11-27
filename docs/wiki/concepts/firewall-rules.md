@@ -34,6 +34,7 @@ sources:
 - **Nothing changes the block later.** `ensureP2PConfig` and the other writers keep it as it is (`TestFirewall_WritersKeepIt`). A changed preset or rule reaches a device only if it enrolls again. Moving existing networks is a separate decision (item 4 of the plan, later).
 - **Clients and the lighthouse.** `hop client join` allows ICMP and, since 2026-11-27, TCP 41820 from `node` inbound (`clientNebulaConfig`, see item 8). It reads no preset. The control plane's lighthouse allows everything (`internal/mesh/network_manager.go:539-547`).
 - **Groups.** Every agent cert has the group `node` (`internal/api/renew.go:137`, `enroll.go:180`, `device.go:191`, `bundles.go:80`). Only the control plane's cert has `admin` (`networks.go:101`). No group is stored in the database. The `admin` rule on 41820 adds nothing, because `node` already covers every TCP port and the control plane is in `node` too.
+- **Ports are bounded** (2026-11-27). Nebula keeps an entry for every port of a range, for every rule: one rule for 1-65535 took 50 MB on each device, a hundred of them 1.7 GB, a hundred of 1-4096 108 MB (measured on the Mac with vendored Nebula). The ports of a network's own rules and its attached sets together are at most `fwpolicy.MaxPorts` (4096, about 3 MB). The server checks this on a save, on a set's change in every network it is attached to, and on an attach. "any" is one entry.
 - **No way to change a running firewall.** The heartbeat answer carries peers and routes. The renewal answer carries three relay and punch settings. A route change closes and restarts Nebula (`routes.go:63`).
 - **Nebula's in-place reload is never used.** Nebula has `config.ReloadConfigString`, and its firewall callback (`vendor/.../interface.go:462-510`) keeps the conntrack table. An open flow is checked again on its next packet and cut only if no rule allows it any more. hopssh keeps no `*config.C` after start (`internal/client/nebula.go:67,129`), so nothing calls the reload.
 - **System install vs in-app.** The firewall applies in both modes, before a packet reaches the device. The mode decides what there is to reach. With a system install (kernel TUN) every host service is reachable: sshd, Screen Sharing, anything on TCP. In-app (userspace) only the agent's own listeners are.
@@ -73,15 +74,30 @@ All five configure rules in a web UI. NetBird is the closest match: self-hosted,
 - Every `PUT` is audited with the old and new version.
 - `TestE2E_Access` must get rows for it, or it fails.
 
-**Delivery and apply.**
-1. The heartbeat answer gets `firewall: {version, rules}` when a row exists, like `routes` (`internal/api/renew.go:491-496`).
-   - Old agents ignore the field. The tab must show such nodes as "not enforced, agent too old", not as "pending".
-2. The server resolves node IDs to addresses, and the agent checks them.
-3. The agent validates the policy itself before it touches anything. `ReloadConfigString` does not do it: a rule Nebula rejects (`proto: foo`) only logs an error, the call returns nil and the old rules stay (spike, 2026-11-27). Group names are not checked by Nebula at all. A patch cannot simply make `reloadFirewall` return its error: reload callbacks return nothing (`vendor/.../interface.go:441-445`), and the only error `ReloadConfigString` returns comes from parsing (`config/config.go:175-195`). So: build a scratch `NewFirewallFromConfig` from the new text first and refuse on its error, plus our own check of groups and ports.
-4. It builds the new text from what is running, with only `firewall:` replaced, and calls `ReloadConfigString` on the same `*config.C` that was passed to `nebula.Main` (today none is kept: a field on the mesh service, read under the lock `setSvc` uses, so a late reload never runs on a closed instance). The reload runs every callback, not only the firewall's: the PKI one re-reads the cert files from disk each time, and anything else written to `nebula.yaml` since the last load (routes, relay and punch settings) is applied too.
-5. Only after success does it rename the new file over `nebula.yaml`.
-6. On failure, the running rules and the file stay as they were, and the next heartbeat reports the error.
-7. It never falls back to close-and-start with an unchecked file: that would leave no mesh at all.
+**Delivery and apply** (phase 2, decided 2026-11-27; two designs and two reviews in [raw/firewall-p2](../raw/firewall-p2/design-review-2026-11-27.md)).
+
+1. **Which networks.** The heartbeat answer carries `firewall` only for a managed network: one with a `network_firewall` row. A save in the tab creates the row, and so does attaching a rule set (at version 0; the versions of [[../decisions/firewall-rule-sets]] don't change). The API says it as `managed`; in place since 2026-11-27, pinned by `TestE2E_Firewall`. A network without a row sends nothing, and each device keeps the block it got at enrollment.
+   - So a device changes only after its owner or an admin saved the tab or attached a set, never because its agent was updated. Agents up to v0.11.31 wrote `tcp` whatever the preset, and an `all` network would otherwise widen them on the first beat.
+   - Once managed, always managed: after the last set is detached, the preset goes out with no rules.
+   - Old agents ignore the field.
+2. **What.** Resolved for each node: `{fingerprint, preset, rules: [{proto, port, source}]}`.
+   - Only rules whose target is empty or this node go out.
+   - `source` is the source node's mesh address, or empty for any node.
+   - A rule naming a deleted node is left out: it matches nothing, and the address may go to another node later.
+   - The fingerprint is SHA-256 of preset and rules.
+3. **The agent checks before it touches anything.** The preset must be known, each rule's proto and port must pass `fwpolicy`, a source must be empty or an address of its own network, and `fwpolicy.Ports` must be at most `MaxPorts`.
+   - It renders its own template for the preset (`agentFirewallYAML`) plus one entry per rule: `group: node` or `cidr: <source>/32`, never `admin`.
+   - No text from the server goes into the file, so what the agent always keeps (below) is always there.
+4. **Nebula's own builder.** It replaces only the `firewall:` block of the text it last loaded. It builds a candidate with `NewFirewallFromConfig` through a new `Control.CheckFirewall`, under `recover`, and refuses on any error. `ReloadConfigString` would not report one: a rule Nebula rejects (`proto: foo`) only logs, the call returns nil and the old rules stay (spike, 2026-11-27). Reload callbacks return nothing (`vendor/.../interface.go:441-445`).
+5. **Drift.** If the file outside `firewall:` differs from the text last loaded, the agent refuses and waits for the next start. A reload runs every callback, not only the firewall's: the PKI one re-reads the cert from disk, and routes, relay and punch settings written since the last load would be applied too.
+6. **Reload.** `ReloadConfigString` runs on the `*config.C` that was passed to `nebula.Main`. It is kept on the mesh service and read under the lock `setSvc` uses, so a late reload never runs on a closed instance.
+   - With `startMu.TryLock`: a beat that meets a start skips, and the next beat tries again.
+   - With a 5 s deadline, as `runWithTimeout` of Phase DD.
+7. **Then the file.** Only after the reload is `nebula.yaml` written, under `lockNebulaYAML`. If the write fails, the previous text is loaded again, so the file and the running rules agree.
+8. **Ack.** The next heartbeat carries `firewall: {fingerprint, error}`: the fingerprint it runs (empty for its enrollment block), or why it refused. The tab shows each device as applied, pending, refused, or not enforced (an agent that sends no ack).
+   - The same fingerprint and the same text again: nothing is done.
+9. It never falls back to close-and-start with an unchecked file: that would leave no mesh at all.
+10. **The swap.** Nebula swaps `f.firewall` with a plain pointer write (`interface.go:502`) while the packet threads read it (finding 6 below). Patch `firewall-swap` makes it an `atomic.Pointer`, with a `-race` test that is red without it. A packet may still take the drop action from one firewall and the reject flag from the next; both are valid.
 
 **What a reload does to open flows** (spike, two userspace peers, 2026-11-27): a removed rule stops an open flow at its next packet, silently (no reset), and the tunnel stays (same indexes, no handshake). When the rule comes back, the old flow stays dead and a new connection works. Identical text changes nothing.
 

@@ -32,8 +32,20 @@ func (e *UnknownNodesError) Error() string {
 	return fmt.Sprintf("not a device of this network: %s", strings.Join(e.IDs, ", "))
 }
 
+// TooManyPortsError: with the change, the rules that reach the network's
+// devices (its own and its attached sets) would cover more ports than
+// fwpolicy.MaxPorts.
+type TooManyPortsError struct {
+	NetworkID string
+	Ports     int
+}
+
+func (e *TooManyPortsError) Error() string {
+	return fmt.Sprintf("network %s with its rule sets: %v", e.NetworkID, fwpolicy.CheckPorts(e.Ports))
+}
+
 // NetworkFirewall is a network's preset and its own rules. Version 0 means
-// nothing was ever stored: the preset of the network and no rules.
+// its own rules were never stored: the preset of the network and no rules.
 type NetworkFirewall struct {
 	NetworkID string
 	Preset    string
@@ -41,6 +53,10 @@ type NetworkFirewall struct {
 	Version   int64
 	UpdatedAt int64
 	UpdatedBy *string
+	// Managed: the network has a row, written by its first save or attach
+	// and never removed. Only a managed network's rules are sent to its
+	// devices; the others keep the block they were enrolled with.
+	Managed bool
 }
 
 // FirewallSet is a rule set a user owns and attaches to their networks.
@@ -85,9 +101,9 @@ func networkFirewall(q querier, networkID string) (*NetworkFirewall, error) {
 		updatedAt sql.NullInt64
 	)
 	err := q.QueryRow(`
-		SELECT n.firewall_preset, f.rules, f.version, f.updated_at, f.updated_by
+		SELECT n.firewall_preset, f.rules, f.version, f.updated_at, f.updated_by, f.network_id IS NOT NULL
 		FROM networks n LEFT JOIN network_firewall f ON f.network_id = n.id
-		WHERE n.id = ?`, networkID).Scan(&f.Preset, &rules, &version, &updatedAt, &f.UpdatedBy)
+		WHERE n.id = ?`, networkID).Scan(&f.Preset, &rules, &version, &updatedAt, &f.UpdatedBy, &f.Managed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -128,6 +144,9 @@ func (s *FirewallStore) UpdateNetworkFirewall(networkID string, ifVersion int64,
 	if err := checkNodes(tx, networkID, rules, before.Rules); err != nil {
 		return nil, nil, err
 	}
+	if err := checkPorts(tx, networkID, true, "", rules); err != nil {
+		return nil, nil, err
+	}
 	now := time.Now().Unix()
 	if _, err := tx.Exec(`UPDATE networks SET firewall_preset = ? WHERE id = ?`, preset, networkID); err != nil {
 		return nil, nil, err
@@ -146,7 +165,7 @@ func (s *FirewallStore) UpdateNetworkFirewall(networkID string, ifVersion int64,
 	if rules == nil {
 		rules = []fwpolicy.Rule{}
 	}
-	return before, &NetworkFirewall{NetworkID: networkID, Preset: preset, Rules: rules, Version: ifVersion + 1, UpdatedAt: now, UpdatedBy: &userID}, nil
+	return before, &NetworkFirewall{NetworkID: networkID, Preset: preset, Rules: rules, Version: ifVersion + 1, UpdatedAt: now, UpdatedBy: &userID, Managed: true}, nil
 }
 
 // ListSets returns the user's rule sets, each with the networks it is
@@ -242,6 +261,9 @@ func (s *FirewallStore) UpdateSet(id, userID string, ifVersion int64, name strin
 		if err := checkNodes(tx, n, rules, old); err != nil {
 			return nil, err
 		}
+		if err := checkPorts(tx, n, false, id, rules); err != nil {
+			return nil, err
+		}
 	}
 	now := time.Now().Unix()
 	if _, err := tx.Exec(`UPDATE firewall_sets SET name = ?, rules = ?, version = ?, updated_at = ? WHERE id = ?`,
@@ -277,7 +299,8 @@ func (s *FirewallStore) DeleteSet(id, userID string) (bool, error) {
 }
 
 // AttachSet attaches a set to a network, if every node its rules name is a
-// node of that network. Reports whether it was attached before. The caller
+// node of that network, and makes the network managed (a row at version 0
+// when it has none). Reports whether it was attached before. The caller
 // checks that the user owns both.
 func (s *FirewallStore) AttachSet(networkID, setID string) (bool, error) {
 	tx, err := s.wdb.Begin()
@@ -294,6 +317,13 @@ func (s *FirewallStore) AttachSet(networkID, setID string) (bool, error) {
 		return false, err
 	}
 	if err := checkNodes(tx, networkID, rules, nil); err != nil {
+		return false, err
+	}
+	if err := checkPorts(tx, networkID, false, setID, rules); err != nil {
+		return false, err
+	}
+	if _, err := tx.Exec(`INSERT INTO network_firewall (network_id, rules, version, updated_at) VALUES (?, '[]', 0, 0)
+		ON CONFLICT DO NOTHING`, networkID); err != nil {
 		return false, err
 	}
 	res, err := tx.Exec(`INSERT INTO network_firewall_sets (network_id, set_id, attached_at) VALUES (?, ?, ?)
@@ -351,6 +381,51 @@ func checkNodes(q querier, networkID string, rules, old []fwpolicy.Rule) error {
 	}
 	if len(missing) > 0 {
 		return &UnknownNodesError{NetworkID: networkID, IDs: missing}
+	}
+	return nil
+}
+
+// checkPorts refuses a change after which the rules reaching the network's
+// devices would cover more than fwpolicy.MaxPorts ports. The changed rules
+// replace the network's own (ownChanged) or those of the set setID, which
+// may or may not be attached yet.
+func checkPorts(q querier, networkID string, ownChanged bool, setID string, rules []fwpolicy.Rule) error {
+	n := fwpolicy.Ports(rules)
+	if !ownChanged {
+		var text sql.NullString
+		err := q.QueryRow(`SELECT rules FROM network_firewall WHERE network_id = ?`, networkID).Scan(&text)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		own, err := decodeRules(text.String)
+		if err != nil {
+			return err
+		}
+		n += fwpolicy.Ports(own)
+	}
+	rows, err := q.Query(`
+		SELECT s.rules FROM firewall_sets s JOIN network_firewall_sets a ON a.set_id = s.id
+		WHERE a.network_id = ? AND s.id != ?`, networkID, setID)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var text string
+		if err := rows.Scan(&text); err != nil {
+			return err
+		}
+		set, err := decodeRules(text)
+		if err != nil {
+			return err
+		}
+		n += fwpolicy.Ports(set)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if fwpolicy.CheckPorts(n) != nil {
+		return &TooManyPortsError{NetworkID: networkID, Ports: n}
 	}
 	return nil
 }

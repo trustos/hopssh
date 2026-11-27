@@ -837,3 +837,52 @@ the tests catch them. Three showed only the known-gap notes of
 `TestE2E_Access`; the line that failed was behind them. The planting script
 now calls a plant that does not compile BROKEN, and leaves the known-gap
 notes out. Details: [[concepts/e2e-tests]], "Firewall rules".
+
+21:00 to 21:42, **phase 2 designed; ports of a range bounded first.** Two
+designs of how a device applies the rules, ranked by two judges
+(`raw/firewall-p2/design-review-2026-11-27.md`; the code map beside it); the
+chosen one is in [[concepts/firewall-rules]], "Delivery and apply", and what it
+found in Nebula is in [[open-questions]]. While checking it, measured on the
+vendored Nebula (v1.11.2): **Nebula keeps an entry of about 800 bytes per port
+of a range, per rule.** One rule for TCP 1-65535 took 50 MB and 70 ms to build;
+ten from ten /32 sources 226 MB; a hundred 1.7 GB and 4.4 s. The same hundred
+over 1-4096 take 108 MB, over 1-40 1 MB. Phase 1 accepted all of it, so a
+network's rules could have run every device of the network out of memory once
+phase 2 sends them (twice during a reload, old and new). Now the ports the
+rules reaching a device cover together — the network's own rules and every
+attached set — are at most `fwpolicy.MaxPorts` (4096, about 3 MB), checked on
+every change that adds rules: the network's rules, a set's change (in every
+network it is in) and an attach; refused with 400 saying that a rule for every
+port is port "any". `TestValidateRules_Ports`, `TestPorts` and the "wide"
+section of `TestE2E_Firewall` were red before it. 9 bugs planted, all caught,
+each by the line about it: a change of the network's rules, of a set or an
+attach not counted; a set's old rules counted beside its new ones; the
+network's own rules left out of a set change; a range counted as one port;
+the bound off by one; one list not checked; the refusal answered 500.
+
+21:43 to 21:51, **a network is managed from its first save or attach on.**
+Phase 2 sends a network's rules to its devices only once someone chose them:
+a network with a `network_firewall` row. A save wrote one; an attach did not,
+so a network with only attached sets would never have reached its devices.
+An attach now stores an empty row at version 0 (updated at 0, by nobody), the
+versions don't change, and a detach of the last set leaves the row, since a
+device that applied a set's rules must get the preset back, not keep them.
+The answer says `managed`. `TestE2E_Firewall` was red before it at three
+lines (a save, an attach, the last detach). 6 bugs planted, all caught, each
+for its reason: an attach that writes no row, resets a saved network's
+version, or stamps the rules as updated; the flag never read; a detach that
+ends it; the flag left out of the answer.
+
+**`make patch-check`** (`scripts/patch-check.sh`, 10 s): against a pristine
+vendor tree built offline from the module cache (`go mod vendor -o`), each
+patch applies alone, all apply in order and in reverse order with no fuzz and
+give the same files, and the pristine tree with them is all of `vendor/`. The
+firewall swap of phase 2 has to touch `interface.go` (in `read-loop.patch`)
+and `outside.go` (in `paths.patch`), so the rule "no file is in two patches"
+became "hunks and the lines around them are apart, and patch-check passes"
+(`patches/README.md`). Planted: a patch that repeats a hunk of
+`read-loop.patch` (fails in order and in reverse order, and the two orders
+differ), a line added to `outside.go` (touched by a patch) and to `cert.go`
+(touched by none) in `vendor/` (both fail). It passes on the 11 patches here
+and in the Linux VM with GNU patch 2.8 (given a pristine copy, as the VM has
+no module cache). In `make preflight` and CI's build job.

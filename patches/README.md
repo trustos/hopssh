@@ -2,7 +2,7 @@
 
 Applied on top of `slackhq/nebula` **v1.11.2**, and of `gvisor.dev/gvisor` **v0.0.0-20240423190808-9d7a357edefe** (the TCP/IP stack of Nebula's userspace service, at the version Nebula brings), by `make patch-vendor` (or `make vendor`, which vendors first).
 
-- Each patch is one theme, and no file is in two patches, so they apply in any order and one can be dropped without touching the others.
+- Each patch is one theme, and they apply in any order: one can be dropped without touching the others. A file may be in two patches when their hunks and the lines around them are apart. `make patch-check` shows it: against a pristine tree from the module cache (offline), each patch applies alone, all apply in order and in reverse order with no fuzz and give the same files, and `vendor/` is what they make. It fails on a patch that needs another, and on a hand edit in `vendor/`.
 - `make patch-vendor` stops at a patch that does not apply. Until November 2026 it carried on in silence, and one patch (the old 12) was in no build for months.
 - `go mod vendor` removes them all. Always run `make patch-vendor` after it.
 - `vendor/` is gitignored, except `nebula/control.go` and `nebula/overlay/tun_darwin.go`, which are tracked in their patched form.
@@ -39,7 +39,7 @@ Applied on top of `slackhq/nebula` **v1.11.2**, and of `gvisor.dev/gvisor` **v0.
 ## What to run after touching them
 
 ```bash
-make vendor && go build -mod=vendor ./... && go vet -mod=vendor ./...
+make vendor && make patch-check && go build -mod=vendor ./... && go vet -mod=vendor ./...
 ```
 
 ```bash

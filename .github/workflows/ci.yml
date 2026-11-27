@@ -28,6 +28,9 @@ jobs:
       - name: Vendor dependencies + apply patches
         run: make setup
 
+      - name: Check the patches (each alone, either order, vendor/ as they make it)
+        run: make patch-check
+
       - name: Build frontend
         run: make frontend-embed
 

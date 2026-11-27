@@ -66,6 +66,16 @@ Move closed items to a "Resolved" section at the bottom rather than deleting —
 
 Source / context: `docs/wiki/log.md` 2026-11-27 20:07 to 20:55.
 
+## 2026-11-27 — firewall rules, phase 2: found in the design
+
+Read in vendored Nebula v1.11.2 for phase 2 (design and review: [raw/firewall-p2/design-review-2026-11-27.md](raw/firewall-p2/design-review-2026-11-27.md)).
+
+- **Some firewall text crashes Nebula instead of being refused.** `groups: []`, `groups:` with nothing after it, and a group that is not a string panic in `convertRule` (`vendor/.../firewall.go:979-990`). So do `conntrack.udp_timeout: 0s`, or any other timeout of 0 or less (`NewTimerWheel`, `timeout.go:83`). A reload of such text would end the agent. The agent writes only its own template, so it never sends this text. It still has to build the candidate under `recover`. Upstream v1.12.0 fixes the groups crash (#1912) and the timeout crash (#1984), according to the survey (not verified).
+- **Nebula accepts some wrong rules without a word.** It takes port 0 as "any", never checks groups, host or CA names against anything, and ignores a port on an ICMP rule. The agent's own check is the gate, not Nebula.
+- **A SIGHUP reloads every network from its file.** Each `nebula.Main` calls `CatchHUP` (`vendor/.../main.go:121`). A SIGHUP therefore no longer ends a foreground agent, and every instance re-reads its `nebula.yaml`. This is harmless while the file is what was loaded. Phase 2 keeps it that way: the file is written only after a successful reload, and the old text goes back on any failure. Nothing in hopssh sends a SIGHUP. Not changed.
+- **Subnet routes and the router's firewall.** A rule without `local_cidr` covers only the node's own mesh address while `default_local_cidr_any` is false. Traffic to a subnet a node routes (its cert's unsafe networks) may then be dropped by that node's own firewall. Not checked. Phase 2 renders the same block as today plus the rules, so it changes nothing here.
+- **Upstream v1.12.0 changes the signature of `RegisterReloadCallback`** (survey). Phase 2 counts its reloads with a wrapper of its own, so the upgrade does not touch it.
+
 ## 2026-11-27 — audit log: what is left
 
 - **A removed member's credentials keep working for minutes.** An enrollment token (10 min), a bundle URL (15 min) or a device code they approved still brings a node into the network after they are removed, and the entry names them. `Enroll`, `Poll` and `DownloadBundle` check no membership. Proposed: refuse them when the creator is no longer the owner or a member. Needs a yes; it changes what a token does.
