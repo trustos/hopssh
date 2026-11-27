@@ -6,7 +6,7 @@ require (
 	github.com/creack/pty v1.1.24
 	github.com/go-chi/chi/v5 v5.5.0
 	github.com/google/uuid v1.6.0
-	github.com/gorilla/websocket v1.5.3
+	github.com/gorilla/websocket v1.5.4-0.20240701034025-d67f41855da4
 	github.com/miekg/dns v1.1.72
 	github.com/quic-go/quic-go v0.65.0
 	github.com/sirupsen/logrus v1.9.4
