@@ -9,7 +9,7 @@ FROM dns_records WHERE network_id = ? ORDER BY name;
 SELECT id, network_id, name, nebula_ip, created_at
 FROM dns_records WHERE id = ? AND network_id = ?;
 
--- name: DeleteDNSRecord :exec
+-- name: DeleteDNSRecord :execrows
 DELETE FROM dns_records WHERE id = ? AND network_id = ?;
 
 -- name: DeleteDNSRecordsForNetwork :exec

@@ -4,9 +4,11 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -30,6 +32,7 @@ type EnrollHandler struct {
 	LighthouseHost string // public IP/host for Nebula lighthouse UDP (separate from HTTP endpoint)
 	EventHub       *EventHub
 	Events         *db.NetworkEventStore
+	Audit          *db.AuditStore
 }
 
 // CreateNode generates an enrollment token and returns the install command.
@@ -63,15 +66,8 @@ func (h *EnrollHandler) CreateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Find the next available Nebula IP using MAX to avoid collisions after deletes.
-	nextIndex, err := h.Nodes.NextNodeIndex(networkID)
-	if err != nil {
-		http.Error(w, "failed to determine next node IP: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	nextIP, err := pki.NodeAddress(network.NebulaSubnet, nextIndex)
-	if err != nil {
-		http.Error(w, "failed to allocate node IP: "+err.Error(), http.StatusInternalServerError)
+	nextIP, ok := allocNodeIP(w, h.Nodes, network)
+	if !ok {
 		return
 	}
 
@@ -87,6 +83,7 @@ func (h *EnrollHandler) CreateNode(w http.ResponseWriter, r *http.Request) {
 		EnrollmentToken:     &enrollToken,
 		EnrollmentExpiresAt: &enrollExpiry,
 		Status:              "pending",
+		CreatedBy:           user.ID,
 	}
 	if err := h.Nodes.Create(node); err != nil {
 		if db.IsUniqueViolation(err) {
@@ -96,6 +93,7 @@ func (h *EnrollHandler) CreateNode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create node: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	logAudit(h.Audit, user.ID, "node.create", networkID, node.ID, nil)
 
 	writeJSONStatus(w, http.StatusCreated, map[string]interface{}{
 		"nodeId":          node.ID,
@@ -145,6 +143,11 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 	network, err := h.Networks.Get(node.NetworkID)
 	if err != nil || network == nil {
 		http.Error(w, "network not found", http.StatusInternalServerError)
+		return
+	}
+	firewallPreset, err := h.Networks.FirewallPreset(network.ID)
+	if err != nil {
+		http.Error(w, "failed to read the network", http.StatusInternalServerError)
 		return
 	}
 
@@ -210,6 +213,14 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		details := jsonDetails(map[string]any{"hostname": body.Hostname})
 		h.Events.Record(node.NetworkID, "node.enrolled", &targetID, nil, details)
 	}
+	// The machine has no session: the entry names who made the token. A
+	// token from before migration 010 has no creator and gets no entry.
+	if creator, err := h.Nodes.CreatedBy(node.ID); err != nil {
+		log.Printf("[enroll] audit: creator of %s: %v", node.ID, err)
+	} else if creator != "" {
+		logAudit(h.Audit, creator, "node.enroll", node.NetworkID, node.ID,
+			map[string]any{"hostname": body.Hostname, "via": "token", "ip": captureAgentIP(r)})
+	}
 
 	// Compute lighthouse VPN IP and port for agent's static_host_map.
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
@@ -228,6 +239,7 @@ func (h *EnrollHandler) Enroll(w http.ResponseWriter, r *http.Request) {
 		"nebulaIP":       node.NebulaIP,
 		"lighthousePort": lighthousePort,
 		"dnsDomain":      network.DNSDomain,
+		"firewall":       firewallPreset,
 	}
 	if h.LighthouseHost != "" {
 		resp["lighthouseHost"] = h.LighthouseHost
@@ -278,14 +290,8 @@ func (h *EnrollHandler) JoinNetwork(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nextIndex, err := h.Nodes.NextNodeIndex(networkID)
-	if err != nil {
-		http.Error(w, "failed to allocate IP: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	nextIP, err := pki.NodeAddress(network.NebulaSubnet, nextIndex)
-	if err != nil {
-		http.Error(w, "failed to allocate IP: "+err.Error(), http.StatusInternalServerError)
+	nextIP, ok := allocNodeIP(w, h.Nodes, network)
+	if !ok {
 		return
 	}
 
@@ -302,6 +308,7 @@ func (h *EnrollHandler) JoinNetwork(w http.ResponseWriter, r *http.Request) {
 		AgentToken: agentToken,
 		NodeType:   "node",
 		Status:     "enrolled",
+		CreatedBy:  user.ID,
 	}
 	if err := h.Nodes.Create(node); err != nil {
 		http.Error(w, "failed to create node: "+err.Error(), http.StatusInternalServerError)
@@ -319,6 +326,8 @@ func (h *EnrollHandler) JoinNetwork(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to complete enrollment: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+
+	logAudit(h.Audit, user.ID, "node.join", networkID, nodeID, map[string]any{"hostname": body.Hostname})
 
 	dnsName := sanitizeDNSName(body.Hostname)
 	h.Nodes.UpdateDNSName(nodeID, dnsName)
@@ -360,3 +369,26 @@ func generateToken() string {
 	return hex.EncodeToString(b)
 }
 
+// allocNodeIP gives the next mesh address of a network, or answers the
+// request itself. A full network is a 409 with a JSON "error": the shape
+// agents already read for a 409 (internal/client/local_api.go), so the user
+// sees this message and not a server error.
+func allocNodeIP(w http.ResponseWriter, nodes *db.NodeStore, network *db.Network) (netip.Prefix, bool) {
+	index, err := nodes.NextNodeIndex(network.ID)
+	if errors.Is(err, db.ErrNetworkFull) {
+		writeJSONStatus(w, http.StatusConflict, map[string]string{
+			"error": fmt.Sprintf("network %q is full: %v", network.Name, err),
+		})
+		return netip.Prefix{}, false
+	}
+	if err != nil {
+		http.Error(w, "failed to allocate node IP: "+err.Error(), http.StatusInternalServerError)
+		return netip.Prefix{}, false
+	}
+	ip, err := pki.NodeAddress(network.NebulaSubnet, index)
+	if err != nil {
+		http.Error(w, "failed to allocate node IP: "+err.Error(), http.StatusInternalServerError)
+		return netip.Prefix{}, false
+	}
+	return ip, true
+}

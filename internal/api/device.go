@@ -28,6 +28,7 @@ type DeviceHandler struct {
 	LighthouseHost string
 	EventHub       *EventHub
 	Events         *db.NetworkEventStore
+	Audit          *db.AuditStore
 }
 
 // RequestCode is called by the agent to initiate the device flow.
@@ -136,6 +137,11 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "network not found", http.StatusInternalServerError)
 		return
 	}
+	firewallPreset, err := h.Networks.FirewallPreset(network.ID)
+	if err != nil {
+		http.Error(w, "failed to read the network", http.StatusInternalServerError)
+		return
+	}
 
 	// F2 conflict short-circuit (v0.10.85+): if the agent already has
 	// this network in its local registry, return 409 BEFORE creating
@@ -160,14 +166,8 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Allocate node IP.
-	nextIndex, err := h.Nodes.NextNodeIndex(*dc.NetworkID)
-	if err != nil {
-		http.Error(w, "failed to allocate node IP: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	nextIP, err := pki.NodeAddress(network.NebulaSubnet, nextIndex)
-	if err != nil {
-		http.Error(w, "failed to allocate node IP: "+err.Error(), http.StatusInternalServerError)
+	nextIP, ok := allocNodeIP(w, h.Nodes, network)
+	if !ok {
 		return
 	}
 
@@ -181,6 +181,9 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		AgentToken: agentToken,
 		NodeType:   "node",
 		Status:     "pending",
+	}
+	if dc.UserID != nil {
+		node.CreatedBy = *dc.UserID
 	}
 	if err := h.Nodes.Create(node); err != nil {
 		http.Error(w, "failed to create node: "+err.Error(), http.StatusInternalServerError)
@@ -220,6 +223,11 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		details := jsonDetails(map[string]any{"hostname": body.Hostname})
 		h.Events.Record(*dc.NetworkID, "node.enrolled", &targetID, nil, details)
 	}
+	// The machine has no session: the entry names who approved the code.
+	if node.CreatedBy != "" {
+		logAudit(h.Audit, node.CreatedBy, "node.enroll", *dc.NetworkID, nodeID,
+			map[string]any{"hostname": body.Hostname, "via": "device", "ip": captureAgentIP(r)})
+	}
 
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
 	lighthousePort := 0
@@ -237,6 +245,7 @@ func (h *DeviceHandler) Poll(w http.ResponseWriter, r *http.Request) {
 		"nebulaIP":       node.NebulaIP,
 		"lighthousePort": lighthousePort,
 		"dnsDomain":      network.DNSDomain,
+		"firewall":       firewallPreset,
 	}
 	if h.LighthouseHost != "" {
 		resp["lighthouseHost"] = h.LighthouseHost
@@ -290,6 +299,7 @@ func (h *DeviceHandler) Authorize(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	logAudit(h.Audit, user.ID, "device.authorize", body.NetworkID, "", nil)
 
 	writeJSON(w, map[string]string{"status": "authorized"})
 }

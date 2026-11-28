@@ -27,6 +27,7 @@ import (
 	"github.com/slackhq/nebula/cert"
 
 	"github.com/trustos/hopssh/internal/api"
+	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/e2etest"
 )
 
@@ -84,6 +85,7 @@ var publicRoutes = map[string]string{
 	"GET /download/SHA256SUMS":      "nothing to protect",
 	"GET /download/{binary}":        "nothing to protect",
 	"GET /download/desktop/{asset}": "nothing to protect",
+	"GET /swagger/doc.json":         "nothing to protect",
 	"GET /swagger/*":                "nothing to protect",
 }
 
@@ -117,6 +119,12 @@ func TestE2E_Access(t *testing.T) {
 		return h.url("/members/%s", memberID(h.owner, h.net.ID, u.ID))
 	}
 	names := 0
+	ownerSet := func() string {
+		names++
+		var set struct{ ID string }
+		h.owner.Want(201, "POST", "/api/firewall/sets", M{"name": fmt.Sprint("set", names)}, &set)
+		return set.ID
+	}
 	covered := map[string]bool{}
 
 	// want: the status for owner, admin, member, outsider and an anonymous
@@ -164,15 +172,16 @@ func TestE2E_Access(t *testing.T) {
 		{route: "GET /api/device/verify/{code}", path: func() string { return "/api/device/verify/" + userCode() }, want: "200 200 200 200 401"},
 		{route: "POST /api/device/authorize", path: at("/api/device/authorize"), body: func() any { return M{"userCode": userCode(), "networkId": h.net.ID} }, want: "200 200 200 404 401"},
 
-		// Owner only: an invited admin gets 404, and the dashboard offers it.
 		{route: "GET /api/networks/{networkID}/dns", path: at(h.url("/dns")), want: "200 200 200 404 401"},
-		{route: "POST /api/networks/{networkID}/dns", path: at(h.url("/dns")), body: func() any { names++; return M{"name": fmt.Sprint("r", names), "nebulaIP": "10.42.1.9"} }, want: "201 404 404 404 401"},
+		{route: "POST /api/networks/{networkID}/dns", path: at(h.url("/dns")), body: func() any { names++; return M{"name": fmt.Sprint("r", names), "nebulaIP": "10.42.1.9"} }, want: "201 201 403 404 401"},
 		{route: "DELETE /api/networks/{networkID}/dns/{recordID}", path: func() string {
 			names++
 			var rec struct{ ID string }
 			h.owner.Want(201, "POST", h.url("/dns"), M{"name": fmt.Sprint("r", names), "nebulaIP": "10.42.1.9"}, &rec)
 			return h.url("/dns/%s", rec.ID)
-		}, want: "204 404 404 404 401"},
+		}, want: "204 204 403 404 401"},
+
+		// Owner only: an invited admin gets 404, and the dashboard offers it.
 		{route: "POST /api/networks/{networkID}/bundles", path: at(h.url("/bundles")), want: "201 404 404 404 401"},
 
 		{route: "GET /api/networks/{networkID}/members", path: at(h.url("/members")), want: "200 200 200 404 401"},
@@ -180,6 +189,18 @@ func TestE2E_Access(t *testing.T) {
 		{route: "GET /api/networks/{networkID}/invites", path: at(h.url("/invites")), want: "200 200 403 404 401", gap: "200 200 403 403 401"},
 		{route: "POST /api/networks/{networkID}/invites", path: at(h.url("/invites")), body: M{}, want: "201 201 403 404 401", gap: "201 201 403 403 401"},
 		{route: "DELETE /api/networks/{networkID}/invites/{inviteID}", path: func() string { id, _ := invite(); return h.url("/invites/%s", id) }, want: "204 204 403 404 401", gap: "204 204 403 403 401"},
+
+		// Firewall rules. 428: no If-Match (TestE2E_Firewall sends it). A rule
+		// set is its owner's alone; attaching is for the network's owner.
+		{route: "GET /api/networks/{networkID}/firewall", path: at(h.url("/firewall")), want: "200 200 200 404 401"},
+		{route: "GET /api/networks/{networkID}/nodes/{nodeID}/firewall", path: node("/firewall"), want: "200 200 200 404 401"},
+		{route: "PUT /api/networks/{networkID}/firewall", path: at(h.url("/firewall")), body: M{"preset": "all", "rules": []any{}}, want: "428 428 403 404 401"},
+		{route: "GET /api/firewall/sets", path: at("/api/firewall/sets"), want: "200 200 200 200 401"},
+		{route: "POST /api/firewall/sets", path: at("/api/firewall/sets"), body: func() any { names++; return M{"name": fmt.Sprint("s", names)} }, want: "201 201 201 201 401"},
+		{route: "PUT /api/firewall/sets/{setID}", path: func() string { return "/api/firewall/sets/" + ownerSet() }, body: M{"name": "x"}, want: "428 404 404 404 401"},
+		{route: "DELETE /api/firewall/sets/{setID}", path: func() string { return "/api/firewall/sets/" + ownerSet() }, want: "204 404 404 404 401"},
+		{route: "PUT /api/networks/{networkID}/firewall/sets/{setID}", path: func() string { return h.url("/firewall/sets/%s", ownerSet()) }, want: "204 403 403 404 401"},
+		{route: "DELETE /api/networks/{networkID}/firewall/sets/{setID}", path: func() string { return h.url("/firewall/sets/%s", ownerSet()) }, want: "204 403 403 404 401"},
 
 		// Last: the outsider gets in, the owner deletes it, everyone signs out.
 		{route: "POST /api/invites/{code}/accept", path: func() string { _, code := invite(); return "/api/invites/" + code + "/accept" }, want: "409 409 409 201 401"},
@@ -226,7 +247,7 @@ func TestE2E_Access(t *testing.T) {
 func routerRoutes(t *testing.T) map[string]bool {
 	t.Helper()
 	r := api.NewRouter(nil, nil, &api.AuthHandler{}, nil, nil, nil, nil, nil, nil, &api.RenewHandler{},
-		nil, nil, nil, nil, nil, nil, nil, &api.ClipboardHandler{})
+		nil, nil, nil, nil, nil, nil, nil, &api.ClipboardHandler{}, nil)
 	routes := map[string]bool{}
 	err := chi.Walk(r, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		if strings.HasSuffix(route, "/proxy/{port}/*") {
@@ -763,11 +784,16 @@ func TestE2E_RateLimits(t *testing.T) {
 	for i := range 5 {
 		agents = append(agents, h.owner.Enroll(h.net.ID, fmt.Sprint("node", i)))
 	}
+	// A node holds at most db.MaxHeldCerts certs (TestE2E_Blocklist), so
+	// each renews in the first rounds only: 14 times in the two runs.
 	all := func(when string) {
 		t.Helper()
 		for round := range 20 {
 			for _, a := range agents {
 				for _, path := range []string{"/api/renew", "/api/heartbeat"} {
+					if path == "/api/renew" && round >= (db.MaxHeldCerts-2)/2 {
+						continue
+					}
 					if s, body := house.As(a.AgentToken).Do("POST", path, M{"nodeId": a.NodeID}); s != 200 {
 						t.Fatalf("%s, round %d: %s: HTTP %d %s", when, round, path, s, body)
 					}
@@ -1056,14 +1082,12 @@ func TestE2E_DNS(t *testing.T) {
 	}
 	want("farbox.hop", "")
 
-	// A deleted device's name must stop resolving: its address is handed to
-	// the next device that joins.
-	e2etest.KnownGap(t, "a deleted node's name keeps resolving", func(g *e2etest.Gap) {
-		h.owner.Want(204, "DELETE", h.url("/nodes/%s", box.NodeID), nil, nil)
-		if ips := resolve(t, h.net, "media-box.hop"); len(ips) != 0 {
-			g.Errorf("media-box.hop = %v", ips)
-		}
-	})
+	// A deleted device's name stops resolving at once, not at the next
+	// refresh of the network's names.
+	h.owner.Want(204, "DELETE", h.url("/nodes/%s", box.NodeID), nil, nil)
+	if ips := resolve(t, h.net, "media-box.hop"); len(ips) != 0 {
+		t.Errorf("a deleted node's name still resolves: media-box.hop = %v", ips)
+	}
 }
 
 // TestE2E_Bundles: the tarball with a private key is given out once, over
@@ -1142,6 +1166,69 @@ func TestE2E_Bundles(t *testing.T) {
 	}
 }
 
+// TestE2E_FirewallPreset: every answer that hands an agent its certificate
+// names the network's firewall preset, which the agent turns into its
+// firewall block: "all" for a network created now, "tcp" for one from before
+// migration 009. The client join answer has none; `hop client join` writes
+// its own block.
+func TestE2E_FirewallPreset(t *testing.T) {
+	h := newHousehold(t)
+	answers := func() map[string]string {
+		got := map[string]string{}
+		var e struct{ Firewall string }
+		_, token := h.owner.EnrollToken(h.net.ID)
+		h.s.Anonymous().Want(200, "POST", "/api/enroll", M{"token": token, "hostname": "box", "os": "linux", "arch": "arm64"}, &e)
+		got["token"] = e.Firewall
+
+		var c struct{ DeviceCode, UserCode string }
+		h.s.Anonymous().Want(200, "POST", "/api/device/code", M{"hostname": "laptop", "os": "darwin", "arch": "arm64"}, &c)
+		h.owner.Want(200, "POST", "/api/device/authorize", M{"userCode": c.UserCode, "networkId": h.net.ID}, nil)
+		e.Firewall = ""
+		h.s.Anonymous().Want(200, "POST", "/api/device/poll", M{"deviceCode": c.DeviceCode, "hostname": "laptop", "os": "darwin", "arch": "arm64"}, &e)
+		got["device flow"] = e.Firewall
+
+		var out struct{ BundleURL string }
+		h.owner.Want(201, "POST", h.url("/bundles"), nil, &out)
+		req, _ := http.NewRequest("GET", out.BundleURL, nil)
+		req.Header.Set("X-Forwarded-Proto", "https")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		gz, err := gzip.NewReader(resp.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for tr := tar.NewReader(gz); ; {
+			f, err := tr.Next()
+			if err != nil {
+				break
+			}
+			if strings.HasSuffix(f.Name, "config.json") {
+				e.Firewall = ""
+				if err := json.NewDecoder(tr).Decode(&e); err != nil {
+					t.Fatal(err)
+				}
+				got["bundle"] = e.Firewall
+			}
+		}
+		return got
+	}
+
+	for _, want := range []string{"all", "tcp"} {
+		if want == "tcp" {
+			h.s.Exec("UPDATE networks SET firewall_preset = 'tcp' WHERE id = ?", h.net.ID)
+		}
+		got := answers()
+		for _, flow := range []string{"token", "device flow", "bundle"} {
+			if got[flow] != want {
+				t.Errorf("%s answer of a network with preset %q names %q", flow, want, got[flow])
+			}
+		}
+	}
+}
+
 // TestE2E_Prune: the "clean up" button takes what it says, of this network
 // only, and never a node that is online.
 func TestE2E_Prune(t *testing.T) {
@@ -1189,6 +1276,65 @@ func TestE2E_Prune(t *testing.T) {
 	}
 	if _, ok := h.outsider.Nodes(far.ID)[theirs.NodeID]; !ok {
 		t.Error("another network's node was deleted")
+	}
+}
+
+// TestE2E_AddressNotReused: a deleted or pruned node's certificate is valid
+// for up to 24 h more, so its mesh address must not go to the next node.
+func TestE2E_AddressNotReused(t *testing.T) {
+	h := newHousehold(t)
+	h.owner.Enroll(h.net.ID, "first")
+	deleted := h.owner.Enroll(h.net.ID, "deleted")
+	h.owner.Want(204, "DELETE", h.url("/nodes/%s", deleted.NodeID), nil, nil)
+	if next := h.owner.Enroll(h.net.ID, "next"); next.NebulaIP == deleted.NebulaIP {
+		t.Errorf("after a delete the next node got %s, the deleted node's address", next.NebulaIP)
+	}
+
+	pruned := h.owner.Enroll(h.net.ID, "pruned")
+	monthAgo := time.Now().Add(-30 * 24 * time.Hour).Unix()
+	if n := h.s.Exec("UPDATE nodes SET last_seen_at = ?, status = 'offline' WHERE id = ?", monthAgo, pruned.NodeID); n != 1 {
+		t.Fatalf("%d rows updated", n)
+	}
+	var out struct{ DeletedCount int }
+	h.owner.Want(200, "POST", h.url("/nodes/prune"), M{"olderThanSeconds": 7 * 24 * 3600}, &out)
+	if out.DeletedCount != 1 {
+		t.Fatalf("prune deleted %d, want 1", out.DeletedCount)
+	}
+	if next := h.owner.Enroll(h.net.ID, "after-prune"); next.NebulaIP == pruned.NebulaIP {
+		t.Errorf("after a prune the next node got %s, the pruned node's address", next.NebulaIP)
+	}
+}
+
+// TestE2E_NetworkFull: when a network has no address left, every way of
+// adding a node says so with 409, not as a server error.
+func TestE2E_NetworkFull(t *testing.T) {
+	h := newHousehold(t)
+	prefix := h.net.Subnet[:strings.LastIndex(h.net.Subnet, ".")]
+	h.s.Exec(`INSERT INTO released_node_ips (network_id, nebula_ip, released_at)
+		WITH RECURSIVE o(n) AS (SELECT 2 UNION ALL SELECT n + 1 FROM o WHERE n < 254)
+		SELECT ?, printf('%s.%d/24', ?, n), unixepoch() FROM o`, h.net.ID, prefix)
+
+	// The device flow takes the address when the device polls, after the
+	// user has approved it.
+	var dc struct{ DeviceCode, UserCode string }
+	h.s.Anonymous().Want(200, "POST", "/api/device/code", nil, &dc)
+	h.owner.Want(200, "POST", "/api/device/authorize", M{"userCode": dc.UserCode, "networkId": h.net.ID}, nil)
+	for _, c := range []struct {
+		who          *e2etest.Client
+		method, path string
+		body         any
+	}{
+		{h.owner, "POST", h.url("/nodes"), M{}},
+		{h.owner, "POST", h.url("/join"), M{"hostname": "laptop"}},
+		{h.owner, "POST", h.url("/bundles"), nil},
+		{h.s.Anonymous(), "POST", "/api/device/poll", M{"deviceCode": dc.DeviceCode, "hostname": "laptop"}},
+	} {
+		s, body := c.who.Do(c.method, c.path, c.body)
+		var e struct{ Error string }
+		json.Unmarshal(body, &e)
+		if s != 409 || !strings.Contains(e.Error, "no free mesh address") {
+			t.Errorf("%s %s on a full network: HTTP %d %s, want 409 with a JSON error", c.method, c.path, s, strings.TrimSpace(string(body)))
+		}
 	}
 }
 
@@ -1313,13 +1459,7 @@ func TestE2E_History(t *testing.T) {
 		}
 		seen += string(msg)
 	}
-	e2etest.KnownGap(t, "removing a member leaves no trace in the audit log", func(g *e2etest.Gap) {
-		h.owner.Want(204, "DELETE", h.url("/members/%s", memberID(h.owner, h.net.ID, h.member.ID)), nil, nil)
-		time.Sleep(3 * time.Second)
-		if _, body := h.owner.Do("GET", h.url("/audit"), nil); !strings.Contains(string(body), "member") {
-			g.Errorf("no such entry")
-		}
-	})
+	// Removing a member, and the rest of what changes a network: TestE2E_Audit.
 }
 
 // TestE2E_DeleteNetwork: nothing of a deleted network is left, running or
@@ -1333,6 +1473,25 @@ func TestE2E_DeleteNetwork(t *testing.T) {
 	h.owner.Want(201, "POST", h.url("/invites"), M{}, nil)
 	h.owner.Want(201, "POST", h.url("/bundles"), nil, nil)
 	h.owner.Want(201, "POST", h.url("/nodes/%s/port-forwards", box.NodeID), M{"remotePort": 8080}, nil)
+	h.owner.With("If-Match", `"0"`).Want(200, "PUT", h.url("/firewall"), M{"preset": "ping", "rules": []any{}}, nil)
+	var set struct{ ID string }
+	h.owner.Want(201, "POST", "/api/firewall/sets", M{"name": "web"}, &set)
+	h.owner.Want(204, "PUT", h.url("/firewall/sets/%s", set.ID), nil, nil)
+	a := h.s.Anonymous()
+	a.Token = box.AgentToken
+	a.Want(200, "POST", "/api/heartbeat", M{"nodeId": box.NodeID, "firewall": M{"fingerprint": "", "error": "refused"}}, nil)
+	reports := func() int {
+		pair, _ := h.s.DB()
+		defer pair.Close()
+		var n int
+		if err := pair.ReadDB.QueryRow(`SELECT COUNT(*) FROM node_firewall WHERE node_id = ?`, box.NodeID).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if reports() != 1 {
+		t.Fatal("the box's firewall report was not stored")
+	}
 	e2etest.Within(t, 15*time.Second, "events in the database", func() bool { return count(h, "network_events") > 0 })
 
 	h.owner.Want(204, "DELETE", h.url(""), nil, nil)
@@ -1340,15 +1499,18 @@ func TestE2E_DeleteNetwork(t *testing.T) {
 	for _, c := range []*e2etest.Client{h.owner, h.admin, h.member} {
 		c.Want(404, "GET", h.url(""), nil, nil)
 	}
-	a := h.s.Anonymous()
-	a.Token = box.AgentToken
 	a.Want(401, "POST", "/api/renew", M{"nodeId": box.NodeID}, nil)
+	if n := reports(); n != 0 {
+		t.Errorf("%d firewall reports of the network's devices left", n)
+	}
 	time.Sleep(3 * time.Second) // buffered events of the deletion
-	for _, table := range []string{"nodes", "dns_records", "network_members", "network_invites", "network_events"} {
+	for _, table := range []string{"nodes", "dns_records", "network_members", "network_invites", "network_events", "network_firewall", "network_firewall_sets"} {
 		if n := count(h, table); n != 0 {
 			t.Errorf("%d rows of the network left in %s", n, table)
 		}
 	}
+	// The owner's rule set stays, attached nowhere.
+	h.owner.Want(204, "DELETE", "/api/firewall/sets/"+set.ID, nil, nil)
 	if n := h.s.Exec("UPDATE enrollment_bundles SET expires_at = expires_at"); n != 0 {
 		t.Errorf("%d bundles left", n)
 	}
@@ -1378,7 +1540,9 @@ func count(h household, table string) int {
 
 // TestE2E_ManyAgents: agents renew and report while users work in the
 // dashboard, and every request is answered. A renewal that meets a write must
-// wait for it: an agent takes 401 for "you were deleted".
+// wait for it: an agent takes 401 for "you were deleted". A node holds at
+// most db.MaxHeldCerts certs, its enrollment's among them; a renewal past
+// that is answered 429, after the same write of the node it rolls back.
 func TestE2E_ManyAgents(t *testing.T) {
 	h := newHousehold(t)
 	var agents []e2etest.Enrollment
@@ -1412,10 +1576,15 @@ func TestE2E_ManyAgents(t *testing.T) {
 	for _, a := range agents {
 		c := h.s.Anonymous()
 		c.Token = a.AgentToken
+		renewed := 0
 		loop(func(i int) {
 			if i%4 == 0 {
 				c.IP = h.s.Anonymous().IP
-				run(c, 200, "POST", "/api/renew", M{"nodeId": a.NodeID})
+				want := 200
+				if renewed++; renewed >= db.MaxHeldCerts {
+					want = 429
+				}
+				run(c, want, "POST", "/api/renew", M{"nodeId": a.NodeID})
 			} else {
 				run(c, 200, "POST", "/api/heartbeat", M{"nodeId": a.NodeID, "peersDirect": i})
 			}

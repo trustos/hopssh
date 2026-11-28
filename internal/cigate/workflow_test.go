@@ -77,3 +77,39 @@ func TestDesktopReleaseWaitsForPreflight(t *testing.T) {
 		}
 	}
 }
+
+// The code sqlc generates must match the migrations: CI and the release gate
+// check it. Migrations 008 to 013 went in without it (found 2026-11-28), and
+// the next `make generate` would have changed the types of two queries.
+func TestGeneratedDatabaseCodeIsChecked(t *testing.T) {
+	checkedInCIAndPreflight(t, "sqlc-check")
+}
+
+// The API docs in swagger/ (served at /swagger/) must match the handlers'
+// annotations. They were made last in April and had 15 of the 33 paths, none
+// of the firewall routes (found 2026-11-28).
+func TestGeneratedAPIDocsAreChecked(t *testing.T) {
+	checkedInCIAndPreflight(t, "swagger-check")
+}
+
+// checkedInCIAndPreflight fails unless CI's build job and make preflight both
+// run the make target.
+func checkedInCIAndPreflight(t *testing.T, target string) {
+	t.Helper()
+	if !strings.Contains(jobBody(t, "ci.yml", "build"), "make "+target) {
+		t.Errorf("ci.yml build job does not run make %s", target)
+	}
+	b, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(l, "preflight:") {
+			if !strings.Contains(l+" ", " "+target+" ") {
+				t.Errorf("make preflight does not run %s: %q", target, l)
+			}
+			return
+		}
+	}
+	t.Error("Makefile has no preflight target")
+}

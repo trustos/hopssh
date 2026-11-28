@@ -1,0 +1,28 @@
+# The firewall block hopssh wrote for agents enrolled from 791ac0b (2026-04-06) on:
+# cmd/agent/enroll.go at that commit; its %d is 41820. Do not edit: devices enrolled then
+# still run it, since nothing rewrites the firewall section.
+firewall:
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    # Control plane (admin group) can reach agent API
+    - port: 41820
+      proto: tcp
+      groups:
+        - admin
+    # Mesh users can reach all TCP ports (service exposure controlled by app layer)
+    - port: any
+      proto: tcp
+      groups:
+        - user
+    # Other agents can reach for P2P services
+    - port: any
+      proto: tcp
+      groups:
+        - agent
+    # ICMP for diagnostics
+    - port: any
+      proto: icmp
+      host: any

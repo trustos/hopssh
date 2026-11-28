@@ -83,6 +83,9 @@ type enrollResponse struct {
 	LighthousePort int    `json:"lighthousePort"`
 	LighthouseHost string `json:"lighthouseHost"`
 	DNSDomain      string `json:"dnsDomain"`
+	// Firewall is the network's firewall preset. Servers before migration
+	// 009 send none, which means firewallPresetTCP.
+	Firewall string `json:"firewall"`
 }
 
 // runEnroll handles the `hop-agent enroll` subcommand with 4 modes:
@@ -418,6 +421,7 @@ func enrollFromBundle(path, endpoint string) {
 		LighthouseHost string `json:"lighthouseHost"`
 		DNSDomain      string `json:"dnsDomain"`
 		Endpoint       string `json:"endpoint"`
+		Firewall       string `json:"firewall"`
 	}
 	if err := json.Unmarshal(configData, &bundleConfig); err != nil {
 		log.Fatalf("Failed to parse bundle config: %v", err)
@@ -478,7 +482,7 @@ func enrollFromBundle(path, endpoint string) {
 	// Bundle path only supports first enrollment (checked above), so
 	// always use the primary listen port.
 	bundleListenPort := nebulacfg.ListenPort
-	writeNebulaConfig(enrollDir, bundleConfig.ServerIP, serverHost, bundleConfig.LighthousePort, enrollTunMode, bundleListenPort)
+	writeNebulaConfig(enrollDir, bundleConfig.ServerIP, serverHost, bundleConfig.LighthousePort, enrollTunMode, bundleListenPort, bundleConfig.Firewall)
 	writeDNSConfig(enrollDir, bundleConfig.DNSDomain, serverHost, bundleConfig.LighthousePort)
 
 	if err := reg.Add(&Enrollment{
@@ -555,7 +559,7 @@ func installCerts(er *enrollResponse, endpoint string) {
 	// AND survive restarts with stable NAT mappings (port 0 = random,
 	// which breaks portmap and CGNAT outbound flow caching).
 	listenPort := reg.NextAvailableListenPort(nebulacfg.ListenPort)
-	writeNebulaConfig(enrollDir, er.ServerIP, serverHost, er.LighthousePort, enrollTunMode, listenPort)
+	writeNebulaConfig(enrollDir, er.ServerIP, serverHost, er.LighthousePort, enrollTunMode, listenPort, er.Firewall)
 	writeDNSConfig(enrollDir, er.DNSDomain, serverHost, er.LighthousePort)
 
 	if err := reg.Add(&Enrollment{
@@ -589,7 +593,100 @@ func meshIfaceName(enrollmentName string) string {
 	return prefix + enrollmentName[:max-len(prefix)]
 }
 
-func writeNebulaConfig(enrollDir, serverIP, serverHost string, lighthousePort int, tunMode string, listenPort int) {
+// Firewall presets of a network (networks.firewall_preset, migration 009).
+// Each names the inbound block an agent writes when it enrolls; nothing
+// rewrites it later.
+const (
+	// firewallPresetTCP: TCP on every port and ICMP from every node. Every
+	// network created before migration 009 has it, and an enrollment answer
+	// without a preset means it.
+	firewallPresetTCP = "tcp"
+	// firewallPresetAll: every protocol from every node.
+	firewallPresetAll = "all"
+	// firewallPresetPing: only what hopssh needs, the agent API from the
+	// control plane and from other nodes (their keepalive dials it), and
+	// ICMP. Rules add the rest (P2, docs/wiki/decisions/firewall-rule-sets.md).
+	firewallPresetPing = "ping"
+)
+
+// agentFirewallYAML is the firewall section an agent enrollment writes for
+// the preset. Each block ever written is pinned in testdata/firewall.
+func agentFirewallYAML(preset string) string {
+	switch preset {
+	case "", firewallPresetTCP:
+		return fmt.Sprintf(`firewall:
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    # Control plane (admin group) can reach agent API
+    - port: %d
+      proto: tcp
+      groups:
+        - admin
+    # All mesh nodes can reach each other
+    - port: any
+      proto: tcp
+      groups:
+        - node
+    # ICMP for diagnostics
+    - port: any
+      proto: icmp
+      host: any
+`, agentAPIPort)
+	case firewallPresetAll:
+		return fmt.Sprintf(`firewall:
+  inbound_action: drop
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    # Control plane (admin group) can reach agent API
+    - port: %d
+      proto: tcp
+      groups:
+        - admin
+    # All mesh nodes can reach each other, on every protocol
+    - port: any
+      proto: any
+      groups:
+        - node
+    # ICMP for diagnostics
+    - port: any
+      proto: icmp
+      host: any
+`, agentAPIPort)
+	case firewallPresetPing:
+		return fmt.Sprintf(`firewall:
+  inbound_action: drop
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    # Control plane (admin group) can reach agent API
+    - port: %d
+      proto: tcp
+      groups:
+        - admin
+    # Other nodes' keepalive reaches the agent API
+    - port: %d
+      proto: tcp
+      groups:
+        - node
+    # ICMP for diagnostics
+    - port: any
+      proto: icmp
+      host: any
+`, agentAPIPort, agentAPIPort)
+	}
+	log.Printf("  Warning: unknown firewall preset %q; writing the %q block", preset, firewallPresetTCP)
+	return agentFirewallYAML(firewallPresetTCP)
+}
+
+func writeNebulaConfig(enrollDir, serverIP, serverHost string, lighthousePort int, tunMode string, listenPort int, firewallPreset string) {
 	// Detect physical interface to prevent advertising overlay IPs.
 	physicalIface, err := nebulacfg.DetectPhysicalInterface(serverHost)
 	if err != nil {
@@ -653,27 +750,7 @@ punchy:
 tun:
 %s
 
-firewall:
-  outbound:
-    - port: any
-      proto: any
-      host: any
-  inbound:
-    # Control plane (admin group) can reach agent API
-    - port: %d
-      proto: tcp
-      groups:
-        - admin
-    # All mesh nodes can reach each other
-    - port: any
-      proto: tcp
-      groups:
-        - node
-    # ICMP for diagnostics
-    - port: any
-      proto: icmp
-      host: any
-`, enrollDir, enrollDir, enrollDir,
+%s`, enrollDir, enrollDir, enrollDir,
 		serverIP, serverHost, lighthousePort,
 		serverIP,
 		nebulacfg.LocalAllowListYAML(physicalIface),
@@ -685,9 +762,15 @@ firewall:
 		nebulacfg.HandshakeTryInterval,
 		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay,
 		tunConfig,
-		agentAPIPort)
+		agentFirewallYAML(firewallPreset))
 
-	writeFileSecure(filepath.Join(enrollDir, "nebula.yaml"), []byte(nebulaConfig), 0644)
+	cfgPath := filepath.Join(enrollDir, "nebula.yaml")
+	unlock := lockNebulaYAML(cfgPath)
+	werr := writeNebulaYAML(cfgPath, []byte(nebulaConfig))
+	unlock()
+	if werr != nil {
+		log.Fatalf("Failed to write %s: %v", cfgPath, werr)
+	}
 
 	// Persist TUN mode so serve knows which mode to use.
 	writeFileSecure(filepath.Join(enrollDir, "tun-mode"), []byte(tunMode), 0644)

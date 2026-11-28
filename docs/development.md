@@ -6,7 +6,8 @@
 - Node.js 20+ (`node --version`) — for frontend
 - `make` (pre-installed on macOS/Linux)
 - Optional: Docker (for containerized builds)
-- Optional: `sqlc` (for regenerating query code: `go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest`)
+- No sqlc install needed: `make generate` and `make sqlc-check` run sqlc v1.30.0 with `go run` (downloaded the first time; needs a C compiler)
+- No swag install needed either: `make swagger` and `make swagger-check` run it with `go run`
 
 ## First-Time Setup
 
@@ -327,13 +328,13 @@ curl -H "Authorization: Bearer <token>" \
 
 ### sqlc
 
-SQL queries live in `internal/db/queries/*.sql`. After editing, regenerate:
+SQL queries live in `internal/db/queries/*.sql`, the schema in `internal/db/migrations/`. After editing either, regenerate:
 
 ```bash
 make generate    # runs sqlc
 ```
 
-Generated code goes to `internal/db/dbsqlc/`. Never edit generated files.
+Generated code goes to `internal/db/dbsqlc/`. Never edit generated files. `make sqlc-check` fails when the generated code does not match the migrations and the queries; CI and `make preflight` run it. A migration counts too: 008 to 013 added tables and columns without regenerating, so the next `make generate` would have changed the return types of two queries.
 
 ## Docker
 
@@ -376,8 +377,8 @@ Key highlights:
 ## Swagger API Docs
 
 ```bash
-go install github.com/swaggo/swag/v2/cmd/swag@latest
-swag init -g cmd/server/main.go -o docs --parseDependency
+make swagger          # regenerates swagger/ from the handlers' annotations (swag v2.0.0-rc5, the version go.mod has)
+make swagger-check    # regenerates and fails if swagger/ differs from the last commit; CI and make preflight run it
 ```
 
-Access at: `http://localhost:9473/swagger/`
+Access at: `http://localhost:9473/swagger/`. Only handlers with an `@Router` annotation are in it. The server serves `doc.json` itself (`internal/api/router.go`): http-swagger reads swag v1's registry, and `swagger/` registers with swag v2. `TestE2E_APIDocs` checks that the server serves `swagger/swagger.json` as it is, operations and models included, and names no host (with one, "Try it out" calls that host instead of the server the page came from).

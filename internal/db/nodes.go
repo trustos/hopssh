@@ -50,6 +50,7 @@ type Node struct {
 	PeerState           *string // JSON array: [{vpnAddr, direct, remoteAddr, rttMs}, ...]; nil if never reported
 	AgentVersion        *string // self-reported hop-agent build (e.g. "v0.9.15"); nil for pre-v0.9.15 agents
 	ClientType          *string // "desktop" | "cli" | nil; build-baked at the agent, written once via SetClientType
+	CreatedBy           string  // user who brought the node in; written by Create, read by CreatedBy
 }
 
 // HasCapability checks if a node has a specific capability enabled.
@@ -198,8 +199,13 @@ func (s *NodeStore) Create(n *Node) error {
 		nodeType = "agent"
 	}
 
-	q := dbsqlc.New(WrapDB(s.wdb))
-	return q.InsertNode(context.Background(), dbsqlc.InsertNodeParams{
+	tx, err := s.wdb.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	q := dbsqlc.New(WrapTx(tx))
+	err = q.InsertNode(context.Background(), dbsqlc.InsertNodeParams{
 		ID:                  n.ID,
 		NetworkID:           n.NetworkID,
 		Hostname:            n.Hostname,
@@ -215,6 +221,30 @@ func (s *NodeStore) Create(n *Node) error {
 		DnsName:             n.DNSName,
 		Status:              n.Status,
 	})
+	if err != nil {
+		return err
+	}
+	if n.CreatedBy != "" {
+		if _, err := tx.Exec(`UPDATE nodes SET created_by = ? WHERE id = ?`, n.CreatedBy, n.ID); err != nil {
+			return fmt.Errorf("record creator: %w", err)
+		}
+	}
+	if len(n.NebulaCert) > 0 {
+		if err := recordCert(tx, n.ID, n.NebulaCert, time.Now()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// CreatedBy returns the user who brought the node in, "" if unknown.
+func (s *NodeStore) CreatedBy(id string) (string, error) {
+	var userID sql.NullString
+	err := s.rdb.QueryRow(`SELECT created_by FROM nodes WHERE id = ?`, id).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return userID.String, err
 }
 
 func (s *NodeStore) Get(id string) (*Node, error) {
@@ -404,29 +434,75 @@ func (s *NodeStore) CountNonPendingForNetwork(networkID string) (int, error) {
 	return int(count), err
 }
 
-// NextNodeIndex returns the next available host index for a network's subnet.
+// releasedIPQuarantine is how long a deleted node's address stays out of use
+// once the network is full: twice the 24 h a node certificate lives, for
+// clocks that are off.
+const releasedIPQuarantine = 48 * time.Hour
+
+// ErrNetworkFull: every address of the network's /24 is in use, or was
+// released too recently to give out again.
+var ErrNetworkFull = errors.New("no free mesh address in this network")
+
+// maxNodeOctet is the last address of a /24 a node can have (.1 is the
+// lighthouse, .255 the broadcast address).
+const maxNodeOctet = 254
+
+// NextNodeIndex returns the next available host index for a network's subnet
+// (pki.NodeAddress adds 2). It never goes below the highest address ever
+// used, deleted nodes included (released_node_ips): a deleted node's
+// certificate stays valid until it expires. Once the /24 is full it gives the
+// lowest address that is free and was released longer ago than
+// releasedIPQuarantine.
 // Uses the write DB to serialize with concurrent node creation (prevents IP collisions).
 func (s *NodeStore) NextNodeIndex(networkID string) (int, error) {
+	ctx := context.Background()
 	q := dbsqlc.New(WrapDB(s.wdb))
-	rows, err := q.ListNodeIPsForNetwork(context.Background(), networkID)
+	live, err := q.ListNodeIPsForNetwork(ctx, networkID)
 	if err != nil {
 		return 0, err
 	}
-
-	if len(rows) == 0 {
-		return 0, nil
-	}
-
-	maxOctet := 1
-	for _, ip := range rows {
+	held := map[int]bool{}
+	highest := 1
+	for _, ip := range live {
 		if ip != nil {
 			octet := parseLastOctet(*ip)
-			if octet > maxOctet {
-				maxOctet = octet
-			}
+			held[octet] = true
+			highest = max(highest, octet)
 		}
 	}
-	return maxOctet - 1, nil
+
+	rows, err := s.wdb.QueryContext(ctx,
+		`SELECT nebula_ip, released_at FROM released_node_ips WHERE network_id = ?`, networkID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	recent := time.Now().Add(-releasedIPQuarantine).Unix()
+	for rows.Next() {
+		var ip string
+		var at int64
+		if err := rows.Scan(&ip, &at); err != nil {
+			return 0, err
+		}
+		octet := parseLastOctet(ip)
+		highest = max(highest, octet)
+		if at > recent {
+			held[octet] = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+
+	if highest < maxNodeOctet {
+		return highest - 1, nil
+	}
+	for octet := 2; octet <= maxNodeOctet; octet++ {
+		if !held[octet] {
+			return octet - 2, nil
+		}
+	}
+	return 0, ErrNetworkFull
 }
 
 // parseLastOctet extracts the last octet from a CIDR like "10.42.1.3/24" → 3.
@@ -443,35 +519,58 @@ func parseLastOctet(cidr string) int {
 	return n
 }
 
-// CompleteEnrollment sets the node's cert/key after enrollment.
+// CompleteEnrollment sets the node's cert/key after enrollment and records
+// the cert (node_certs), in one transaction. ErrNodeGone when the node was
+// deleted meanwhile: the cert must not be handed out then.
 func (s *NodeStore) CompleteEnrollment(id string, cert, key []byte, hostname, os, arch string) error {
 	encKey, err := s.enc.EncryptBytes(key)
 	if err != nil {
 		return fmt.Errorf("encrypt node key: %w", err)
 	}
-	q := dbsqlc.New(WrapDB(s.wdb))
-	return q.CompleteEnrollment(context.Background(), dbsqlc.CompleteEnrollmentParams{
-		NebulaCert: cert,
-		NebulaKey:  encKey,
-		Hostname:   hostname,
-		Os:         os,
-		Arch:       arch,
-		ID:         id,
-	})
+	return s.writeCert(id, cert, `UPDATE nodes SET nebula_cert = ?, nebula_key = ?, hostname = ?, os = ?, arch = ?,
+		status = 'enrolled' WHERE id = ?`, cert, encKey, hostname, os, arch, id)
 }
 
-// UpdateCert replaces the node's Nebula certificate and key (for cert rotation).
+// UpdateCert replaces the node's Nebula certificate and key (for cert
+// rotation) and records the cert, in one transaction. ErrNodeGone when the
+// node was deleted meanwhile, ErrTooManyCerts when it holds MaxHeldCerts:
+// the cert must not be handed out then.
 func (s *NodeStore) UpdateCert(id string, cert, key []byte) error {
 	encKey, err := s.enc.EncryptBytes(key)
 	if err != nil {
 		return fmt.Errorf("encrypt node key: %w", err)
 	}
-	q := dbsqlc.New(WrapDB(s.wdb))
-	return q.UpdateNodeCert(context.Background(), dbsqlc.UpdateNodeCertParams{
-		NebulaCert: cert,
-		NebulaKey:  encKey,
-		ID:         id,
-	})
+	return s.writeCert(id, cert, `UPDATE nodes SET nebula_cert = ?, nebula_key = ? WHERE id = ?`, cert, encKey, id)
+}
+
+// writeCert runs update, which stores cert on node id, and records cert.
+// A cert the blocklist would not know is never stored: if the node is gone,
+// holds MaxHeldCerts, or the cert cannot be read, nothing is written.
+func (s *NodeStore) writeCert(id string, cert []byte, update string, args ...any) error {
+	tx, err := s.wdb.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(update, args...)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return ErrNodeGone
+	}
+	now := time.Now()
+	if held, err := heldCerts(tx, id, now); err != nil {
+		return err
+	} else if held >= MaxHeldCerts {
+		return ErrTooManyCerts
+	}
+	if err := recordCert(tx, id, cert, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *NodeStore) UpdateStatus(id, status string) error {

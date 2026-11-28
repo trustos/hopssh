@@ -25,6 +25,7 @@ type BundleHandler struct {
 	Bundles        *db.BundleStore
 	Endpoint       string
 	LighthouseHost string
+	Audit          *db.AuditStore
 }
 
 // CreateBundle generates a pre-enrolled node and a downloadable bundle.
@@ -49,14 +50,8 @@ func (h *BundleHandler) CreateBundle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Allocate node.
-	nextIndex, err := h.Nodes.NextNodeIndex(networkID)
-	if err != nil {
-		http.Error(w, "failed to allocate node IP: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	nextIP, err := pki.NodeAddress(network.NebulaSubnet, nextIndex)
-	if err != nil {
-		http.Error(w, "failed to allocate node IP: "+err.Error(), http.StatusInternalServerError)
+	nextIP, ok := allocNodeIP(w, h.Nodes, network)
+	if !ok {
 		return
 	}
 
@@ -69,6 +64,7 @@ func (h *BundleHandler) CreateBundle(w http.ResponseWriter, r *http.Request) {
 		NebulaIP:   nextIP.String(),
 		AgentToken: agentToken,
 		Status:     "pending",
+		CreatedBy:  user.ID,
 	}
 	if err := h.Nodes.Create(node); err != nil {
 		http.Error(w, "failed to create node: "+err.Error(), http.StatusInternalServerError)
@@ -94,6 +90,7 @@ func (h *BundleHandler) CreateBundle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create bundle: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	logAudit(h.Audit, user.ID, "bundle.create", networkID, nodeID, nil)
 
 	bundleURL := fmt.Sprintf("%s/api/bundles/%s", h.Endpoint, bundle.DownloadToken)
 
@@ -141,6 +138,17 @@ func (h *BundleHandler) DownloadBundle(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "network not found", http.StatusInternalServerError)
 		return
 	}
+	firewallPreset, err := h.Networks.FirewallPreset(network.ID)
+	if err != nil {
+		http.Error(w, "failed to read the network", http.StatusInternalServerError)
+		return
+	}
+	// Whoever has the URL fetches it: the entry names who made the bundle.
+	if creator, err := h.Nodes.CreatedBy(node.ID); err != nil {
+		log.Printf("[bundles] audit: creator of %s: %v", node.ID, err)
+	} else if creator != "" {
+		logAudit(h.Audit, creator, "bundle.download", node.NetworkID, node.ID, map[string]any{"ip": captureAgentIP(r)})
+	}
 
 	serverIP, _ := pki.ServerAddress(network.NebulaSubnet)
 	lighthousePort := 0
@@ -161,9 +169,10 @@ func (h *BundleHandler) DownloadBundle(w http.ResponseWriter, r *http.Request) {
   "nebulaIP": %q,
   "lighthousePort": %d,
   "dnsDomain": %q,
+  "firewall": %q,
   "endpoint": %q%s
 }
-`, node.ID, node.NetworkID, node.AgentToken, serverIP.Addr().String(), node.NebulaIP, lighthousePort, network.DNSDomain, h.Endpoint, lighthouseHostJSON)
+`, node.ID, node.NetworkID, node.AgentToken, serverIP.Addr().String(), node.NebulaIP, lighthousePort, network.DNSDomain, firewallPreset, h.Endpoint, lighthouseHostJSON)
 
 	// Write tarball.
 	w.Header().Set("Content-Type", "application/gzip")

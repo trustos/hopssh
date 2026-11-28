@@ -4,6 +4,41 @@ Cross-cutting unresolved items. Acts as a handoff state machine across sessions:
 
 Per-incident open items live on the incident page itself (`## Open` section). This file is for items that span multiple pages or that don't have a natural home yet.
 
+## 2026-11-28 — the API docs have only the annotated routes
+
+`swagger/` is made from `@Router` annotations, and 41 operations have one. `/api/heartbeat`, the members, invites and clipboard routes, among others, have none, so the page at `/swagger/` doesn't show them; nothing checks that a route is documented (`TestE2E_Access` checks only who may call it). **Decide:** annotate the rest and let a test compare the router with the docs, or say in the docs that they are partial. Also left as they were: `@version 0.1.0` and `@license.name Proprietary` in `cmd/server/main.go`.
+
+## 2026-11-28 — deleted devices blocked with `pki.blocklist` (item 14, not released): what is left
+
+- **Agents of v0.11.31 and older, and `hop client join` devices, get no list.** They accept a deleted device until its cert expires; only the lighthouse refuses it for them. Nothing to do but update the agents (`sudo hop-agent update`).
+- **The server's hourly prune does not refresh DNS** (`internal/db/status_sweeper.go:84`, only when `HOPSSH_NODE_PRUNE_AGE_HOURS` is set). The lighthouse catches the prune within 30 s, but a pruned node's name resolves until the next DNS refresh. The sweeper lives in `db` and can't call the network manager; it needs a callback.
+- **Certs of devices deleted before migration 013 are not known**, nor certs a node held before its current one at the time of the upgrade. Both are gone within 25 hours of the upgrade.
+- **A server whose clock runs ahead drops entries early**, by as much as it runs ahead. Devices check `until` against their own clock too.
+- **The agent bounds nothing in `peerEndpoints`** (`internal/client/renew.go`'s `injectPeerEndpoints`, `peer_cache.go`): it trusts its control plane. Since 2026-11-28 the server keeps at most 10 self-endpoints of a device per address family, each one a peer can send to (log); the lighthouse's part is bounded by Nebula. The peer cache sorts them as text, so after a restart the 10 per address family that Nebula takes are the lowest, not the server's order with the NAT-PMP mapping first. Low.
+- **Self-endpoints a device no longer has stay with its peers until they expire** (15 min, or half the NAT-PMP lease). The server clears them on a heartbeat with an empty or useless `selfEndpoints`, but the agent leaves the field out when it has nothing to report (`internal/client/renew.go`, `sendHeartbeat`), so a real agent never clears them. Low.
+- **`peerCanSendTo` lets a directed broadcast (192.168.1.255) and a NAT64 form (`64:ff9b::/96`) through**: it can't know a LAN's prefix, and a NAT64 address can be a real path. The agent sends neither. Low.
+- ~~**A peer gets a device's self-endpoints after what the lighthouse knows of it**~~ Fixed 2026-11-28: they come first (`mergePeerEndpoints`, `TestMergePeerEndpoints_SelfEndpointsFirst`). The peer's Nebula keeps the first 10 per family of the server's list (`ReplaceStaticHostMap`, owner the device) and asks the lighthouse itself besides, keeping that answer apart, so the lighthouse's part of the list is the copy it can lose. Not shown with a real lighthouse entry end to end: `TestE2E_SelfEndpoints`' devices run no Nebula.
+- **A device can make the server log a line on every heartbeat**: "self-endpoints dropped" and "firewall report" (`internal/api/renew.go`), at most 600 a minute by the agents' limiter, about 150 MB a day. Real agents trigger neither. Low.
+- **The DNS server of each network listens on `0.0.0.0`** (`internal/mesh/dns.go:88`) and answers anyone who reaches its port (15300-15400/udp is published in the Docker example): the names and mesh addresses of a network's devices. Bind it to the lighthouse's mesh address, or answer only queries from the mesh.
+- **The real-server tests skip without a word outside CI when UDP 42001 is in use** (`internal/e2etest/server.go`). Seen once, in the first root run in the VM for P3 (log 2026-11-28); a second run with `-v` had no skip, and what held the port is not known. A gate has to count skips (`-v`), not only read `ok`.
+- **A stolen cert of a device that was not deleted can't be revoked.** That needs a "revoke this certificate" action; a product decision of its own.
+- **An in-place reload that never returns blocks every later one until a restart**, on the device (firewall, "Block incoming", the list: `reloadInPlace`) as on the lighthouse. The price of one reload at a time (found in review: without it each beat queued one more reload behind the stuck one). No watchdog restarts on it; a renewal's restart does. On the lighthouse, `Close` waits for a refresh only up to its 10 s limit, so a reload that outlives it can still be running when the network closes.
+- **What has no test.** Taking the service only once the start lock is held (`takeBlocklist`): the race it closes is a restart between two lines, and nothing can time it. The check after the reload that the pool took the list only changes the log line ("refused" or "waits"): its plant can't fail; the beat after it retries either way, because the check before the reload looks at the pool. The lighthouse's guard for a reload still running, its 10 s limit and the 30 s refresher loop. The e2e check that b is refused counts any datagram that does not arrive.
+- **A lighthouse that starts reads the list before it registers its network** (`internal/mesh/network_manager.go`: the list at the start, the network in the map later), so a node deleted in between is let in until the next refresh, at most 30 s.
+- **A network with 4096 entries logs the cut and sends all of them on every heartbeat** (`internal/db/node_certs.go`, `internal/api/renew.go`): about 420 KB per beat per device. Not reached by anything real; a list that only grows when devices are deleted.
+- **The refresher reloads networks one after the other**, each under its `blockMu` and up to 10 s, so a hung reload delays the others by that much every 30 s.
+- **A firewall apply takes the service before the start lock** (`applyFirewall`, `internal/client/firewall_apply.go`), so a restart in between leaves it working on the old one: one heartbeat reports a policy as applied that the new Nebula does not run yet. The next answer with a policy applies it to the new one. Older than item 14; `takeBlocklist` takes the service under the lock, `applyFirewall` does not. Found in the review of the fixes, low.
+- **The lighthouse does not check that Nebula's CA pool took the list** (`internal/mesh/network_manager.go`, unlike the device's `CABlocklist` check). Only a reload that can't load the CA leaves the pool behind, and the lighthouse's CA is inline text that never changes, so that happens only once the CA expired, when the pool refuses every cert anyway. A log line that says more than it should, nothing else.
+- **A real-server test waits for every other package's real-server tests** when packages run together (`takeTurn`, `internal/e2etest/server.go`: one hop-server per machine, and whoever has the turn mostly keeps it). That was `TestE2E_Audit`'s 580 s as root, and 680 s as user on 2026-11-28: it waited from 06:33:50 to 06:45:09 (UTC), the moment `cmd/agent` (678 s) ended, then ran in a second; on the Mac `TestE2E_Lifecycle` waited instead (255 s). A package's time is therefore not its own. The wait gave up after 25 min whatever `go test -timeout` allowed; since 2026-11-28 it waits until a minute before that timeout ends the test binary (`turnDeadline`, `TestTurnDeadline`), so it fails only where the run would fail anyway. A run of all packages needs a `-timeout` longer than the sum of their real-server tests (about 25 min in the VM).
+- **Not run on Windows**, like P2 and P3.
+
+## 2026-11-28 — after the device switch "Block incoming" (phase 3 of firewall rules, not released)
+
+- **No report means "not blocked".** The server takes a heartbeat without a firewall report to mean the switch is off (`FirewallStore.NoReport`), so that an agent of v0.11.31 or older, which never blocks, never shows as blocked. The other side of this: any new code that sends a heartbeat must carry `firewallAck()`, or the dashboard says "not blocked" for that beat (it happened with the start-up heartbeat, fixed 2026-11-28). Only two senders exist today (`sendHeartbeat`, `warmPeersFromHeartbeat`).
+- **The local API's start-up log line shows the first 8 hex characters of its token** (`internal/client/local_api.go:139`). For the system service that log is `/var/log/hop-agent.log`, which everyone can read. That is 32 of its 256 bits. It is not enough to use the token, but nothing needs it either. Drop it, or log the file's path only.
+- **The desktop toggle has no test of its own.** `user_facing_copy_has_no_protocol_jargon` reads its text, and the agent side is tested, but nothing runs Settings.svelte. The desktop app has no component runner.
+- **Not run on Windows**, like P2.
+
 ## 2026-11-26 — lab: `TestLimitedLine/5ms` fails in the evening, passed in the afternoon
 
 **2026-11-27 01:10: not a change of ours.** The agent and server built from `bf557ea` (the commit that added the test; the lab's code is unchanged since) fail the same way now: tunnel 3.9 to 5.9, beside 9.3 to 15.7 Mbit/s, six of six. The current code in the same half hour: 5.4 to 8.7 against 13.0 to 16.0. What was different: the Mac that hosts the lab VM had a load average of 31 on 18 cores (a game, two UTM VMs); inside the lab VM the load was 0.5. A queue of 5 ms holds about eight packets, so a tunnel whose process is held up for a moment and then sends what has gathered overflows it; the kernel's own connection beside it is not held up. **Resolved 01:55:** with the game closed (it had also run the evening before, when the test first failed) and the load at 5 it passes three of three: tunnel 13.0 to 14.0, beside 16.1 to 16.3 Mbit/s. Run `scripts/netlab.sh -test.run 'TestLimitedLine/5ms' -test.count 3` with `uptime` below 5 before reading anything into this test, and note the load with every lab number.
@@ -56,6 +91,79 @@ Move closed items to a "Resolved" section at the bottom rather than deleting —
 
 ## Open
 
+## 2026-11-27 — firewall rules, phase 1: what is left
+
+- **(Done 2026-11-27 in phase 2, not released.)** ~~Devices don't apply the rules yet.~~ A managed network's devices apply them at their next heartbeat ([[concepts/firewall-rules]]).
+- **A preset reaches only devices with an agent newer than v0.11.31.** Released agents ignore it and keep the block they wrote at enrollment (`tcp`). Since phase 2 a newer agent in a managed network applies the preset and the rules; in a network nobody managed, the preset still reaches only devices that join.
+- **A rule set that names a device works only in that device's network**, so such a set can be attached to one network only (an attach elsewhere is refused with 400). The editor offers only the devices of the network it was opened from.
+- **The tab was not tried as a plain member** in a browser; `TestE2E_Firewall` checks what a member may do.
+- **`swagger/` has not been regenerated since April 2026** (no Makefile target, `swag` not installed): it lacks the firewall routes and much else.
+
+Source / context: `docs/wiki/log.md` 2026-11-27 20:07 to 20:55.
+
+## 2026-11-27 — firewall rules, phase 2: found in the design
+
+Read in vendored Nebula v1.11.2 for phase 2 (design and review: [raw/firewall-p2/design-review-2026-11-27.md](raw/firewall-p2/design-review-2026-11-27.md)).
+
+- **Some firewall text crashes Nebula instead of being refused.** `groups: []`, `groups:` with nothing after it, and a group that is not a string panic in `convertRule` (`vendor/.../firewall.go:979-990`). So do `conntrack.udp_timeout: 0s`, or any other timeout of 0 or less (`NewTimerWheel`, `timeout.go:83`). A reload of such text would end the agent. The agent writes only its own template, so it never sends this text. It still has to build the candidate under `recover`. Upstream v1.12.0 fixes the groups crash (#1912) and the timeout crash (#1984), according to the survey (not verified).
+- **Nebula accepts some wrong rules without a word.** It takes port 0 as "any", never checks groups, host or CA names against anything, and ignores a port on an ICMP rule. The agent's own check is the gate, not Nebula.
+- **A SIGHUP reloads every network from its file.** Each `nebula.Main` calls `CatchHUP` (`vendor/.../main.go:121`). A SIGHUP therefore no longer ends a foreground agent, and every instance re-reads its `nebula.yaml`. This is harmless while the file is what was loaded. Phase 2 keeps it that way: the file is written only after a successful reload, and the old text goes back on any failure. Nothing in hopssh sends a SIGHUP. Not changed.
+- **Subnet routes and the router's firewall.** A rule without `local_cidr` covers only the node's own mesh address while `default_local_cidr_any` is false. Traffic to a subnet a node routes (its cert's unsafe networks) may then be dropped by that node's own firewall. Not checked. Phase 2 renders the same block as today plus the rules, so it changes nothing here.
+- **Upstream v1.12.0 changes the signature of `RegisterReloadCallback`** (survey). Phase 2 registers no callback: it compares `Control.FirewallRuleHash` after the reload with what `CheckFirewall` built, so the upgrade does not touch it.
+- **The config's getters take no lock** (`config.go:304`); `ReloadConfigString` replaces `c.Settings` under `reloadLock` only (`config.go:175,381`). The callbacks run under that lock, so they are safe. A goroutine that reads the config outside a callback while a reload runs would race. None was found by reading; the two-peer E2E test of phase 2 runs under `-race` with reloads to show it.
+- **With more than one routine the conntrack cache skips the recheck.** `firewall.conntrack.routine_cache_timeout` defaults to 100 ms when `routines > 1` (0, off, with one routine, which is what hopssh runs). A cached flow is not checked against a new rules version until its entry ages out, so a removed rule takes up to 100 ms longer there. Nothing to do while hopssh runs one routine.
+- **Patch `firewall-swap` done 2026-11-27** (the plain pointer write of finding 6 in [[concepts/firewall-rules]]): an `atomic.Pointer`, plus `Control.CheckFirewall` and `Control.FirewallRuleHash`.
+
+## 2026-11-27 — firewall rules, phase 2: what is left
+
+Built and tested ([[concepts/firewall-rules]], "Built"); not released.
+
+- **After a restart the agent does not know which policy its file holds** until it applies one: a policy it refuses first is reported with fingerprint "" (the enrollment block), although the file may hold an earlier managed one. The server sends the same policy on every beat, so the next accepted one fixes the report. Storing the fingerprint beside `nebula.yaml` would close it.
+- **Every device reaches every other's agent API on TCP 41820, whatever the policy.** The keepalive needs it (a refused dial counts as alive), and the bearer token is the only gate on what is served there. A probe that needs no open port would let a policy close it.
+- **A reload runs every callback, the PKI one too.** The agent refuses when `nebula.yaml` changed since the last load, but it does not compare the cert files: a reload between a renewal's write of the cert and its restart of Nebula loads the new cert in place (same network and curve, so Nebula accepts it). Thought harmless, not tested.
+- **The devices table was not tried in a browser**, only its script (`npm test`). Not run on Windows.
+- **`internal/e2etest/peer.go` still allows all.** The peer of the process tests runs no firewall of its own, so `cmd/agent`'s `TestE2E_FirewallApplied` (real server, real agent process) checks the device's file, its report and that it stays reachable, but no traffic that a rule opens or closes; the two-peer test in `internal/client` does that.
+- **A refused policy is not tried again on the same Nebula**, a write that failed for a moment included (a full disk). The report says why; a change of the policy or a restart of the network tries it again. Trying every beat would reload twice a minute, and each reload stops flows the new rules don't allow.
+
+## 2026-11-27 — audit log: what is left
+
+- **A removed member's credentials keep working for minutes.** An enrollment token (10 min), a bundle URL (15 min) or a device code they approved still brings a node into the network after they are removed, and the entry names them. `Enroll`, `Poll` and `DownloadBundle` check no membership. Proposed: refuse them when the creator is no longer the owner or a member. Needs a yes; it changes what a token does.
+- **Failed logins write no entry.** Only the rate limiter sees them.
+- **Every member reads the network's audit log** (`CanView`), with the address a machine enrolled or fetched its bundle from. That address is `X-Forwarded-For` only with `--trusted-proxy`; whether production behind Traefik records the client's address was not checked.
+- **Two deletes of one network at once can both write `network.delete`** (`Networks.Delete` reports nothing). Owner only; a nit.
+- `internal/api/members.go` keeps a branch for `sql.ErrNoRows` from `Remove`, which no longer returns it.
+
+Source / context: `docs/wiki/raw/audit/coverage-2026-11-27.md`, `docs/wiki/log.md` 2026-11-27.
+
+## 2026-11-27 — loose ends seen while fixing the API and the debug listener
+
+- **A full network uses up the device code.** The device flow takes the address in `Poll`, after `ClaimAuthorized` has consumed the code (`internal/api/device.go`). The 409 now says the network is full, but the user has to start the device flow again. Same shape as "`Enroll` and device `Poll` use up the token before the 409 check" in the API gaps below.
+- **The CLI's device flow hides every error.** `internal/client/enroll.go:309-348` keeps polling on anything but 200 and 403 until the code expires, so `hop-agent enroll` shows "network is full" (or any 409/500) only as a timeout ten minutes later. The desktop app and the dashboard show the message.
+- **The debug listener stays up after an enrollment.** `startUnscopedOSListener` keeps `s.bare` until shutdown. Since 2026-11-27 it is on 127.0.0.1 and starts only with `--token`/`--token-file`, which no installer passes, so it no longer blocks a mesh listener on `<mesh IP>:41820`. Shutting it down when the first network comes up is the clean end.
+- **`Config.UserAgent` is read by nothing** (`internal/client/api.go:34`), like `HeartbeatInterval`. Set by `cmd/agent`; not removed because the mobile binding may set it.
+
+Source / context: `docs/wiki/log.md` 2026-11-27, `concepts/firewall-rules.md` "Found on the way".
+
+## 2026-11-27 — `hop client join` gives the device no way to use the mesh
+
+Read in the code while fixing the keepalive, not run. `runClientJoin` (`internal/client/cli_join.go`) starts Nebula with `tun: user: true` and nothing else: no listener, no SOCKS proxy, no port forward, no DNS. The device's programs can't reach the mesh, so the hint it prints ("Try: ping <hostname>") can't work. Every run also enrolls afresh: a new node and certificate each time, and the old node stays on the server. **Decide:** build it out as a client (kernel TUN as an installed service does, or a local proxy), or drop the command in favour of `hop-agent enroll`.
+
+Also: ~~existing networks keep the `tcp` preset; there is no way yet to move a network, or the devices already in it, to `all` (item 4 of the plan, later; [[concepts/firewall-rules]] "Decide").~~ (2026-11-28: the Firewall tab does it. Its owner or an admin picks "Everything" and saves; devices on an agent with P2 apply it at their next heartbeat, older agents and `hop client join` devices keep their block. `TestE2E_FirewallTCPNetworkToAll` in `internal/api` and `internal/client`.)
+
+## 2026-11-27 — `TestE2E_Proxy`: a request hangs for 30 s (resolved: TIME_WAIT in gVisor)
+
+**Resolved 17:55, not the two tunnels; the hypothesis below was wrong.** gVisor lets a new SYN reopen a connection in TIME_WAIT only when a listening socket is there (`handleTimeWaitSegments`). Nebula's userspace service accepts through gVisor's forwarder and has none, so the SYN and every retry (after 1, 3, 7, 15 s) were dropped until the TIME_WAIT ended 60 s later, and the server's 30 s route timeout answered 503. The server's proxy opens a connection per request (`DisableKeepAlives`) from a random port; the agent closes first and keeps the TIME_WAIT, so a run of requests meets one after a few hundred. One tunnel is enough. Shown 17:21 (load 3.8) with two peers in one process: when the listener closed first, 3 stalls in 776 connections and 3 in 364; when the dialer closed first, none in 25,760 and 26,469. Fixed by `patches/gvisor-time-wait.patch`, which hands such a SYN to the forwarder. `TestTimeWaitReopen` (internal/client, two bare gVisor stacks, the second connection from the same port) fails every time without it, with and without `-race`, and catches a half fix that lets only the resend after 1 s through. `TestE2E_ConnectAgainAfterTimeWait` (internal/client, through Nebula) failed 3 of 3 without it, at connections 251, 190 and 210, and again 3 of 3 at 55, 237 and 319 once its 800 ms bar was gone; it passed every run with it. `TestE2E_ProxyBackToBack` (internal/api, real server, 2000 health checks) failed 5 of 5 without it on the Mac, at checks 769 to 894 (503 after 30.0 s), and 5 of 5 in the Linux VM, at checks 169 to 1426; with it, it passed every run on both. Its first failures come later than the client test's odds say (about 280 on average), and on the Mac in a narrow band: not explained. In use, this hit the nodes whose listener is userspace: the desktop app's bundled agent and any agent in userspace TUN mode. With kernel TUN the agent's own OS stack takes such a SYN. The load of the full run was not needed: the server picks each port among 49,536, and `TestE2E_Proxy` opens about 65 connections to the node before the check that hung; that one of them meets an earlier one's TIME_WAIT has a chance of up to 4 % (65·64/2/49,536), which fits one failure in the 47 runs seen.
+
+**Review of the patch (17:56 to 18:03, 11 findings, each checked by a skeptic and then by me in the code).** Changed: a SYN+ACK no longer takes the new path, where it ended the TIME_WAIT for nothing (the forwarder refuses it); the bare-stack test above, so the patched path runs under `-race` (`make test-race`); the 800 ms bar of the Nebula test went, as one lost packet on a loaded machine made it fail, and the bare-stack test pins the first answer instead; corrected docs: where nothing listens any more the SYN gets an RST, the odds in the test's comment hold for a loop of 60 s. Left: a second copy of the SYN queued behind the first, which needs the stack about a second behind, gets an RST, as upstream answers any SYN queued at a closing endpoint (`patches/README.md`). **For the firewall work (item 17):** read in the code by the review, not run. Nebula's service listens without reserving its ports in gVisor, so about one outbound dial in 49,536 from a userspace agent uses local port 41820. The conntrack entry of that dial then lets the dialed peer open a connection back to the agent API from that port, whatever the inbound rules say, until conntrack forgets it (12 min). The bearer token still guards it, and today every preset lets nodes reach 41820 anyway. Once rules can shut a peer out, that is a way past them to an unauthenticated HTTP request.
+
+In one of two full runs of `go test ./...` on the Mac (14:14), the 30th health check of `TestE2E_Proxy` (`internal/api/e2e_test.go:1548`) got the route timeout (503 after 30 s); the 29 before it took about 1 ms. Alone it passed 45 of 45 (5, then 40 in a loop); in 35 of those 40 both ends had started a tunnel at once and none had a dead tunnel, so two tunnels alone do not cause it — the full run's load (three packages of end-to-end tests at once) is part of it. Neither fix of the day is on its path (fake agent, first node, nothing deleted).
+
+What the log shows: the fake agent started a tunnel to the lighthouse (agent index 3151938886, server 2348978550) and, 14 ms later, the control plane started one to the agent (server 2411564706, agent 2394334941), so both ends held two tunnels. 21 s after the hang began, both ends marked the agent-started tunnel dead in the same second (`tunnelCheck="map[method:active state:dead]"`); the control plane's tunnel lived until the test closed it. **Hypothesis (wrong, see above):** one end kept sending on the tunnel the other end no longer answered, and the request's packets went there.
+
+Seen in the same log, not a fault of the test: the real agents of the Linux and Windows VMs (192.168.64.6, .5) sent handshakes to the test lighthouse, because their own server had been on this Mac's port 42001.
+
+Source / context: `docs/wiki/log.md` 2026-11-27
+
 ## 2026-11-24 — v0.11.27: prove it on devices
 
 The server runs it, no device does. Open until then: a device renews at half its certificate's life and stays online for 24 h (E); an in-app network on a Mac and a system-wide one; a machine that was off for a week comes back (B, L). Steps 7 and 8 of [[runbooks/release-v0.11.27]].
@@ -90,12 +198,12 @@ Each has a `KnownGap` in the test named, which fails once the gap is closed, so 
 
 | Gap | Test |
 |---|---|
-| A deleted device can join the mesh until its cert expires (≤ 24 h): nothing distributes a blocklist | `TestE2E_DeletedPeer` |
-| A deleted node's name keeps resolving: `DeleteNode` doesn't call `RefreshDNS` | `TestE2E_DNS` |
+| *(closed 2026-11-28)* A deleted device could join the mesh until its cert expired (≤ 24 h): nothing distributed a blocklist. Now the lighthouse and every device refuse its certs ([[concepts/deleted-devices]]) | `TestE2E_DeletedPeer` (normal test now) |
+| *(closed 2026-11-28)* A deleted node's name kept resolving: `DeleteNode` didn't call `RefreshDNS`. Now a delete and the API's prune do | `TestE2E_DNS` (normal check now) |
 | An outsider gets 403 instead of 404 on admin routes, so they can tell which network IDs exist (9 routes) | `TestE2E_Access` |
 | A member who opens an invite uses it up for the person it was meant for | `TestE2E_Invites` |
-| Removing a member leaves no audit trace. Nor do `StopPortForward`, `DeleteNetwork`, invite create/delete and `JoinNetwork` (read in the code, not pinned) | `TestE2E_History` |
-| Every renewal ends the open sessions of an in-app network | `TestE2E_Lifecycle` |
+| *(closed 2026-11-27)* Removing a member left no audit trace, nor did 18 other routes (networks, enrollment, device approval, bundles, rename, capabilities, routes, stopped forwards, DNS, invites). Now each is logged with who, where and what, and a machine's enrollment or bundle download names the user who made its token or bundle (`nodes.created_by`, migration 010) | `TestE2E_Audit` (normal test now) |
+| Every renewal ends the open sessions of an in-app network (not a system install: with kernel TUN the session lives on, asserted when the test runs as root) | `TestE2E_Lifecycle` |
 | Any member runs commands on every node; the audit log doesn't say which command | `TestE2E_MemberShell` |
 | What a device copies (up to 8 KB) is sent to every open dashboard of the network, where nothing uses it | `TestE2E_Clipboard` |
 | A clip of 198 to 256 KB is refused: the limit for the request body forgets that the content is base64 | `TestE2E_Clipboard` |
@@ -106,11 +214,27 @@ Clipboard, seen while writing `TestE2E_Clipboard`, not pinned: `since` has secon
 
 ## 2026-11-24 — UDP between devices is blocked by our own firewall: allow it? (P)
 
+**Decided and built 2026-11-27 (not released):** networks created from migration 009 on allow every protocol between agents; older networks keep TCP only, and moving them is a later decision. Clients now also accept TCP 41820 from `node`, so the keepalive of agents reaches them. How, and the tests: [[concepts/firewall-rules]] ("Today", item 8). The text below is the question as it stood.
+
 Proven in [[concepts/netlab]] (`TestUDPBetweenDevices`, pinned), and read off the live config on the mini (2026-11-27): the agent allows inbound **TCP on every port** from the `node` group, TCP 41820 from `admin`, and ICMP — no UDP (`internal/client/enroll.go:654`). `hop client join` allows inbound ICMP only, so a client accepts nothing at all from the mesh (`internal/client/cli_join.go:206`). The control plane's own lighthouse allows everything (`internal/mesh/network_manager.go:538`).
 
-So the UDP line buys nothing that the TCP line does not already give away: any node can already reach any TCP port on any other. It costs mosh, QUIC, WireGuard and Screen Sharing's media, and there is no user-facing control to open it again — firewall rules are roadmap #13, not built. Tailscale's default ACL permits every protocol between nodes. Nothing in the code or the docs says who chose this; it is unchanged since the first agent commit (2026-06-05).
+So the UDP line buys nothing that the TCP line does not already give away: any node can already reach any TCP port on any other. It costs mosh, QUIC, WireGuard and Screen Sharing's media, and there is no user-facing control to open it again — firewall rules are roadmap #8, not built. How they could be set (dashboard tab, heartbeat, in-place reload) and what the others do: [[concepts/firewall-rules]] (proposed 2026-11-27). Tailscale's default ACL permits every protocol between nodes. Nothing in the code or the docs says who chose this; it is unchanged since the first agent commit (2026-06-05).
 
 **Decide:** allow UDP for all, per network, or with the firewall rules of the roadmap. The change itself is one line; existing agents need their `nebula.yaml` rewritten (`ensureP2PConfig` rewrites what it owns on every boot, so it can heal the rest).
+
+**Proposed 2026-11-27, waiting for the owner's yes:** new networks allow everything between agents, UDP included, as Tailscale, NetBird, Headscale and ZeroTier (rules off) do; clients stay ICMP-only inbound; the agent keeps TCP 41820 from `admin` and `node`, ICMP and `inbound_action: drop` whatever else changes. Shared rules later as an account-level library that networks attach (Defined's model), combined as a union of allows, not inheritance with override, which none of the products read has ([[concepts/firewall-rules]], "Decide").
+
+**What the others do** (read 2026-11-27 from their own docs):
+
+| | Default between nodes | How a rule is written |
+|---|---|---|
+| Tailscale | everything: "in the absence of an `acls` section … Tailscale applies the default allow all policy" ([acls](https://tailscale.com/kb/1018/acls)) | `src` → `dst:port`; "Without a protocol, the access rule applies to all TCP and UDP traffic", and ICMP is allowed whenever any traffic is ([policy file](https://tailscale.com/docs/reference/syntax/policy-file)) |
+| ZeroTier | everything: "By default, flow rules are disabled and all traffic is allowed across the network"; only non-IP Ethernet types are dropped ([rules](https://docs.zerotier.com/rules)) | flow rules, can match `ipprotocol udp` |
+| Nebula / Defined Networking | nothing: "deny all for all inbound and outbound traffic" until a rule allows it ([firewall](https://nebula.defined.net/docs/config/firewall/)); their Managed Nebula: "Inbound traffic is denied by default; rules allow by role and tag" ([defined.net](https://www.defined.net/)) | `port`, `proto` (`any`, `tcp`, `udp`, `icmp`), groups/host/cidr |
+
+Defined Networking was founded in 2020 by Nebula's creators (Ryan Huber, Nate Brown) "to focus on Nebula development"; Slack "continues to be a primary sponsor" ([nebula docs](https://nebula.defined.net/)). Not confirmed from a page: whether Tailscale's userspace SOCKS5 proxy carries UDP.
+
+Two facts of ours that bound the decision: (1) in userspace mode only the agent's own API listens on the mesh (a non-root agent), or nothing at all (`hop client join` starts no listener), so no host program is reachable over TCP *or* UDP; the rule matters for system installs (kernel TUN) only. (2) Nebula's conntrack lets a UDP *reply* in, so an app whose two ends both send first can half-work today; what is blocked is UDP that the other side starts (a mosh server, a DNS server, a game server, QUIC to a node).
 
 ## 2026-11-24 — what Tailscale has and the lab shows that we don't
 
@@ -205,7 +329,7 @@ The agent's own update now refuses when the checksums can't be fetched, read or 
 ## 2026-11-23 — agent loose ends
 
 - In-app mode: `warmTunnel`, `warmPeersFromHeartbeat` and `probePeersOnce` dial through the OS, so they never reach the mesh.
-- A lost `nebula.yaml` is never regenerated, and some writers use a non-atomic `os.WriteFile`.
+- A lost `nebula.yaml` is never regenerated, and some writers use a non-atomic `os.WriteFile`. (2026-11-27: every writer now locks the file and writes it atomically, and a missing or damaged file is restored from `nebula.yaml.bak` before the network starts. Still open: with no whole backup either, nothing regenerates it and the network stays down until the device enrolls again.)
 - `renew.go` (heartbeat `networkId` path) loads and saves its own copy of the enrollment registry: a concurrent save can be lost.
 - An agent started with a cert past half its life restarts Nebula right after starting it.
 - The error "another hop-agent on this device is using the network port" is shown for our own orphans too.

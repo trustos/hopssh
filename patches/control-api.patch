@@ -353,3 +353,70 @@ index bbd5ad4..1398b0f 100644
  func (lh *LightHouse) GetRelaysForMe() []netip.Addr {
  	return *lh.relaysForMe.Load()
  }
+diff --git a/github.com/slackhq/nebula/control_blocklist.go b/github.com/slackhq/nebula/control_blocklist.go
+new file mode 100644
+index 0000000..a147cea
+--- /dev/null
++++ b/github.com/slackhq/nebula/control_blocklist.go
+@@ -0,0 +1,9 @@
++package nebula
++
++// CABlocklist returns the fingerprints the CA pool in use refuses, sorted.
++// A reload that cannot load the CA (pki.ca unreadable, no valid CA in it)
++// keeps the old pool and only logs, so the pki.blocklist of a config
++// reloaded in place may not be in force; this says what is.
++func (c *Control) CABlocklist() []string {
++	return c.f.pki.GetCAPool().Blocklist()
++}
+diff --git a/github.com/slackhq/nebula/cert/ca_pool.go b/github.com/slackhq/nebula/cert/ca_pool.go
+index 966f78e..918e0ad 100644
+--- a/github.com/slackhq/nebula/cert/ca_pool.go
++++ b/github.com/slackhq/nebula/cert/ca_pool.go
+@@ -151,6 +151,16 @@ func (ncp *CAPool) IsBlocklisted(fingerprint string) bool {
+ 	return false
+ }
+ 
++// Blocklist returns the blocklisted fingerprints, sorted.
++func (ncp *CAPool) Blocklist() []string {
++	out := make([]string, 0, len(ncp.certBlocklist))
++	for fp := range ncp.certBlocklist {
++		out = append(out, fp)
++	}
++	slices.Sort(out)
++	return out
++}
++
+ // VerifyCertificate verifies the certificate is valid and is signed by a trusted CA in the pool.
+ // If the certificate is valid then the returned CachedCertificate can be used in subsequent verification attempts
+ // to increase performance.
+diff --git a/github.com/slackhq/nebula/cert/ca_pool_blocklist_test.go b/github.com/slackhq/nebula/cert/ca_pool_blocklist_test.go
+new file mode 100644
+index 0000000..eaf48da
+--- /dev/null
++++ b/github.com/slackhq/nebula/cert/ca_pool_blocklist_test.go
+@@ -0,0 +1,25 @@
++package cert
++
++import (
++	"slices"
++	"testing"
++)
++
++// TestCAPoolBlocklist: Blocklist is what BlocklistFingerprint added, sorted,
++// once each, and nothing after ResetCertBlocklist.
++func TestCAPoolBlocklist(t *testing.T) {
++	p := NewCAPool()
++	if got := p.Blocklist(); len(got) != 0 {
++		t.Errorf("a new pool: %v", got)
++	}
++	for _, fp := range []string{"b", "a", "b"} {
++		p.BlocklistFingerprint(fp)
++	}
++	if got := p.Blocklist(); !slices.Equal(got, []string{"a", "b"}) {
++		t.Errorf("got %v, want [a b]", got)
++	}
++	p.ResetCertBlocklist()
++	if got := p.Blocklist(); len(got) != 0 {
++		t.Errorf("after a reset: %v", got)
++	}
++}

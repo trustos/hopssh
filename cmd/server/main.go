@@ -35,7 +35,6 @@ import (
 //
 // @license.name  Proprietary
 //
-// @host      localhost:8080
 // @BasePath  /
 //
 // @securityDefinitions.apikey BearerAuth
@@ -138,6 +137,15 @@ func main() {
 	members := db.NewNetworkMemberStore(database)
 	invites := db.NewInviteStore(database)
 
+	// Certificates given out before migration 013 were not recorded, so a
+	// node deleted now would not be blocked (docs/wiki/concepts/
+	// deleted-devices.md). Before the lighthouses start, which read the list.
+	if n, err := nodes.RecordHeldCerts(); err != nil {
+		log.Printf("Record the nodes' certificates: %v", err)
+	} else if n > 0 {
+		log.Printf("Recorded the certificates of %d nodes", n)
+	}
+
 	// Initialize network manager (persistent per-network Nebula lighthouse+relay+DNS).
 	netMgr, err := mesh.NewNetworkManager(networks, nodes, dnsRecords)
 	if err != nil {
@@ -152,6 +160,10 @@ func main() {
 
 	// Mesh keepalive: dial online agents every 30s to keep NAT mappings alive.
 	netMgr.StartMeshKeepalive(reaperCtx, nodes, 30*time.Second)
+
+	// Lighthouses refuse the certificates of deleted nodes; this catches
+	// deletes the API did not report and drops entries that expired.
+	netMgr.StartBlocklistRefresher(reaperCtx, 30*time.Second)
 
 	fwdMgr := mesh.NewForwardManager(netMgr)
 	fwdMgr.StartIdleReaper(reaperCtx)
@@ -176,8 +188,8 @@ func main() {
 		Sessions: sessions,
 		Audit:    audit,
 	}
-	networkH := &api.NetworkHandler{Networks: networks, Nodes: nodes, Members: members, NetworkManager: netMgr, ForwardManager: fwdMgr}
-	enrollH := &api.EnrollHandler{Networks: networks, Nodes: nodes, Members: members, NetworkManager: netMgr, Endpoint: *endpoint, LighthouseHost: *lighthouseHost}
+	networkH := &api.NetworkHandler{Networks: networks, Nodes: nodes, Members: members, NetworkManager: netMgr, ForwardManager: fwdMgr, Audit: audit}
+	enrollH := &api.EnrollHandler{Networks: networks, Nodes: nodes, Members: members, NetworkManager: netMgr, Endpoint: *endpoint, LighthouseHost: *lighthouseHost, Audit: audit}
 	proxyH := &api.ProxyHandler{
 		NetworkManager: netMgr,
 		ForwardManager: fwdMgr,
@@ -195,6 +207,7 @@ func main() {
 		Members:        members,
 		NetworkManager: netMgr,
 		LighthouseHost: *lighthouseHost,
+		Audit:          audit,
 	}
 	bundleH := &api.BundleHandler{
 		Networks:       networks,
@@ -202,16 +215,18 @@ func main() {
 		Bundles:        bundles,
 		Endpoint:       *endpoint,
 		LighthouseHost: *lighthouseHost,
+		Audit:          audit,
 	}
 
-	renewH := &api.RenewHandler{Networks: networks, Nodes: nodes, DNSRecords: dnsRecords, NetworkManager: netMgr}
-	dnsH := &api.DNSHandler{Networks: networks, DNSRecords: dnsRecords, Members: members, NetworkManager: netMgr}
+	firewall := db.NewFirewallStore(database)
+	renewH := &api.RenewHandler{Networks: networks, Nodes: nodes, DNSRecords: dnsRecords, NetworkManager: netMgr, Firewall: firewall}
+	dnsH := &api.DNSHandler{Networks: networks, DNSRecords: dnsRecords, Members: members, NetworkManager: netMgr, Audit: audit}
 
 	auditH := &api.AuditHandler{Audit: audit, Networks: networks, Members: members}
 
 	distH := &api.DistributionHandler{Endpoint: *endpoint}
-	memberH := &api.MemberHandler{Networks: networks, Members: members, ProxyCache: proxyH}
-	inviteH := &api.InviteHandler{Networks: networks, Members: members, Invites: invites}
+	memberH := &api.MemberHandler{Networks: networks, Members: members, ProxyCache: proxyH, Audit: audit}
+	inviteH := &api.InviteHandler{Networks: networks, Members: members, Invites: invites, Audit: audit}
 
 	eventHub := api.NewEventHub()
 	eventsH := &api.EventsHandler{Networks: networks, Members: members, Hub: eventHub}
@@ -231,7 +246,8 @@ func main() {
 	renewH.Events = networkEvents
 
 	clipboardH := api.NewClipboardHandler(nodes, eventsH.Hub)
-	router := api.NewRouter(users, sessions, authH, oauthH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH, eventsH, netEventsH, clipboardH)
+	firewallH := &api.FirewallHandler{Networks: networks, Members: members, Nodes: nodes, Firewall: firewall, Audit: audit}
+	router := api.NewRouter(users, sessions, authH, oauthH, networkH, enrollH, proxyH, deviceH, bundleH, renewH, dnsH, auditH, distH, memberH, inviteH, eventsH, netEventsH, clipboardH, firewallH)
 
 	// Clean up expired sessions periodically with graceful shutdown.
 	stopCleanup := make(chan struct{})

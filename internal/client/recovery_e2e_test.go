@@ -48,6 +48,9 @@ type e2eMesh struct {
 	server  *httptest.Server
 	onRenew atomic.Pointer[func(nodeID string) int] // HTTP status to answer with
 	addrs   map[string]netip.Prefix                 // by node ID
+	// onHeartbeat gets each heartbeat's body and returns the answer; unset,
+	// the answer is "{}".
+	onHeartbeat atomic.Pointer[func(body map[string]any) any]
 }
 
 func newE2EMesh(t *testing.T) *e2eMesh {
@@ -115,6 +118,12 @@ func goroutineStackFor(stacks, want string) string {
 }
 
 func (m *e2eMesh) serve(w http.ResponseWriter, r *http.Request) {
+	if fn := m.onHeartbeat.Load(); fn != nil && r.URL.Path == "/api/heartbeat" {
+		var body map[string]any
+		json.NewDecoder(r.Body).Decode(&body)
+		json.NewEncoder(w).Encode((*fn)(body))
+		return
+	}
 	if r.URL.Path != "/api/renew" {
 		w.Write([]byte("{}"))
 		return
@@ -140,8 +149,10 @@ func (m *e2eMesh) issue(nodeID string, age time.Duration) (crt, key string) {
 		panic(err)
 	}
 	nb := time.Now().Add(-time.Minute - age)
+	// Group "node", as every cert the server issues has: the firewall blocks
+	// of enrollments allow by it.
 	tbs := &cert.TBSCertificate{Version: cert.Version1, Name: nodeID, PublicKey: pub, Curve: cert.Curve_CURVE25519,
-		Networks: []netip.Prefix{m.addrs[nodeID]}, NotBefore: nb, NotAfter: nb.Add(24 * time.Hour)}
+		Networks: []netip.Prefix{m.addrs[nodeID]}, Groups: []string{"node"}, NotBefore: nb, NotAfter: nb.Add(24 * time.Hour)}
 	c, err := tbs.Sign(m.ca, cert.Curve_CURVE25519, m.priv)
 	if err != nil {
 		panic(err)

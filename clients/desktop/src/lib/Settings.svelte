@@ -47,6 +47,32 @@
     }
   }
 
+  // ---- Per-network "Block incoming" switch. Saved by the agent and
+  //      applied at once to a running network; one that isn't running
+  //      has it at its next start. ----
+  let blockBusy = $state<string | null>(null);
+  let blockError = $state<string | null>(null);
+  let blockDone = $state<string | null>(null);
+
+  async function toggleBlockIncoming(name: string, current: boolean) {
+    blockBusy = name;
+    blockError = null;
+    blockDone = null;
+    try {
+      const r = await local.setBlockIncoming(name, !current);
+      const what = !current
+        ? `Other devices of ${name} can no longer connect to this one.`
+        : `Other devices of ${name} can connect to this one again, as the network's rules allow.`;
+      if (r.applied) blockDone = what;
+      else blockError = `Saved, not in effect yet: ${r.error ?? 'it applies at the next start'}.`;
+      await agent.refresh();
+    } catch (e: unknown) {
+      blockError = e instanceof Error ? e.message : String(e);
+    } finally {
+      blockBusy = null;
+    }
+  }
+
   // ---- Per-network "Leave" state (unchanged behavior) ----
   let leavingName = $state<string | null>(null);
   let leaveError = $state<string | null>(null);
@@ -639,6 +665,22 @@
                       <span>Clipboard sync</span>
                     {/if}
                   </button>
+                  <button
+                    class={e.blockIncoming
+                      ? 'inline-flex items-center gap-1 rounded-md border border-amber-700/60 bg-amber-950/40 px-1.5 py-0.5 text-amber-300 hover:border-amber-500'
+                      : 'inline-flex items-center gap-1 rounded-md border border-zinc-700 px-1.5 py-0.5 text-zinc-400 hover:border-zinc-500 hover:text-zinc-200'}
+                    onclick={() => toggleBlockIncoming(e.name, !!e.blockIncoming)}
+                    disabled={blockBusy === e.name}
+                    type="button"
+                    title="Other devices of this network can't open connections to this one, whatever the network's rules allow. hopssh's own connection and ping still get in, and connections this device opens work as usual. Takes effect at once."
+                  >
+                    {#if blockBusy === e.name}
+                      <span>…</span>
+                    {:else}
+                      <span class="text-[10px]">{e.blockIncoming ? '✓' : ''}</span>
+                      <span>Block incoming</span>
+                    {/if}
+                  </button>
                 </div>
               </div>
               {#if confirmingName === e.name}
@@ -691,6 +733,16 @@
     {#if clipboardDone}
       <div class="border-t border-zinc-800 px-4 py-2 text-xs text-emerald-400">
         {clipboardDone}
+      </div>
+    {/if}
+    {#if blockError}
+      <div class="border-t border-zinc-800 px-4 py-2 text-xs text-amber-400">
+        {blockError}
+      </div>
+    {/if}
+    {#if blockDone}
+      <div class="border-t border-zinc-800 px-4 py-2 text-xs text-emerald-400">
+        {blockDone}
       </div>
     {/if}
   </section>

@@ -133,7 +133,7 @@ func runWatcherWatchdog(ctx context.Context, inst *meshInstance) {
 
 // silentLoop is the first of the loops that has stamped nothing for longer than
 // the threshold. One that never stamped may simply not have started: bundled mode
-// before it attaches, OS-stack fallback, a slow Nebula bring-up.
+// before it attaches, Nebula that failed to start, a slow Nebula bring-up.
 func silentLoop(inst *meshInstance) (string, time.Duration) {
 	for _, l := range []struct {
 		name string

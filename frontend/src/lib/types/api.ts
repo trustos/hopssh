@@ -96,6 +96,88 @@ export interface NodeResponse {
 	clientType?: 'desktop' | 'cli';
 }
 
+/** Firewall (docs/wiki/decisions/firewall-rule-sets.md). Rules only allow. */
+export type FirewallPreset = 'all' | 'tcp' | 'ping';
+
+export interface FirewallRule {
+	proto: 'tcp' | 'udp' | 'icmp' | 'any';
+	/** "any", "N" or "N-M"; "any" for icmp. */
+	port: string;
+	/** Empty: any device of the network. */
+	sourceNodeId?: string;
+	/** Empty: every device. */
+	targetNodeId?: string;
+	description?: string;
+}
+
+export interface FirewallSetResponse {
+	id: string;
+	name: string;
+	version: number;
+	rules: FirewallRule[];
+	updatedAt: number;
+	/** Only in the owner's own list. */
+	networkIds?: string[];
+}
+
+export interface NetworkFirewallResponse {
+	version: number;
+	preset: FirewallPreset;
+	rules: FirewallRule[];
+	updatedAt?: number;
+	sets: FirewallSetResponse[];
+	/** Owner and admin members. */
+	canEdit: boolean;
+	/** Only the network's owner, with their own sets. */
+	canAttach: boolean;
+	/** The rules are sent to the network's devices: from its first save or
+	 *  attach on. Until then each keeps the block it was enrolled with. */
+	managed: boolean;
+	devices: FirewallDevice[];
+}
+
+/** What a device should run and what it last said it runs. */
+export interface FirewallDevice {
+	nodeId: string;
+	/** Fingerprint of the rules it should run; absent while not managed. */
+	expected?: string;
+	/** Fingerprint of the rules it runs; absent for those it was enrolled with. */
+	fingerprint?: string;
+	/** Why it refused the rules it was sent. */
+	error?: string;
+	/** Its own switch "Block incoming" is on: it lets in only what hopssh
+	 *  always keeps, whatever the rules say. */
+	blocked?: boolean;
+	/** Unix seconds: when it first said this. Absent: it never reported. */
+	reportedAt?: number;
+}
+
+/** One thing that may reach a device: a protocol and port from a source.
+ *  origin: "always" (what hopssh keeps on every device), "preset", "network"
+ *  (a rule of the network) or "set" (a rule of the attached set setName).
+ *  from: "control" (the control plane: web terminal, health), "network"
+ *  (every device of the network), "node" (sourceNodeId) or "any". */
+export interface ReachLine {
+	origin: 'always' | 'preset' | 'network' | 'set';
+	setId?: string;
+	setName?: string;
+	proto: string;
+	port: string;
+	from: 'control' | 'network' | 'node' | 'any';
+	sourceNodeId?: string;
+	description?: string;
+}
+
+/** Who can reach one device (GET /api/networks/{id}/nodes/{nodeId}/firewall). */
+export interface NodeFirewallResponse {
+	/** As in NetworkFirewallResponse. While false the device runs the block it
+	 *  was enrolled with, and lines are those of the preset today. */
+	managed: boolean;
+	preset: FirewallPreset;
+	lines: ReachLine[];
+	device: FirewallDevice;
+}
+
 export interface CreateNodeResponse {
 	nodeId: string;
 	enrollmentToken: string;

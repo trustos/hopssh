@@ -1,0 +1,16 @@
+# The firewall block hopssh wrote for agents enrolled from 80fdbaa (2026-04-06) on:
+# cmd/agent/enroll.go at that commit. Do not edit: devices enrolled then
+# still run it, since nothing rewrites the firewall section.
+firewall:
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    - port: any
+      proto: tcp
+      groups:
+        - server
+    - port: any
+      proto: icmp
+      host: any

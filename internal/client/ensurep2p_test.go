@@ -170,7 +170,7 @@ var wantRanges = []string{"192.168.0.0/16", "172.16.0.0/12", "10.0.0.0/8"}
 // so two machines of one LAN could stay on the way around through the router.
 func TestPreferredRanges_NewConfig(t *testing.T) {
 	dir := t.TempDir()
-	writeNebulaConfig(dir, "10.42.1.1", "127.0.0.1", 42001, "kernel", 4242)
+	writeNebulaConfig(dir, "10.42.1.1", "127.0.0.1", 42001, "kernel", 4242, firewallPresetTCP)
 	path := filepath.Join(dir, "nebula.yaml")
 	if got := preferredRanges(t, path); !slices.Equal(got, wantRanges) {
 		t.Errorf("enrollment wrote preferred ranges %v", got)

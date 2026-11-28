@@ -26,6 +26,7 @@ type DNSHandler struct {
 	DNSRecords     *db.DNSRecordStore
 	Members        *db.NetworkMemberStore
 	NetworkManager *mesh.NetworkManager
+	Audit          *db.AuditStore
 }
 
 // ListDNSRecords returns all DNS records for a network.
@@ -48,8 +49,8 @@ func (h *DNSHandler) ListDNSRecords(w http.ResponseWriter, r *http.Request) {
 
 	// v0.10.89 (F6): DNS records describing a network are READ-ONLY
 	// informational data — members of a network should be able to see
-	// them. DNS *mutations* (Create/Delete below) intentionally stay
-	// owner-only. Pre-fix this used CanAccessNetwork (owner-only),
+	// them. DNS *mutations* (Create/Delete below) need the owner or an
+	// admin member (requireAdmin). Pre-fix this used CanAccessNetwork (owner-only),
 	// which made the dashboard's network-detail page 404 for invited
 	// members because /api/networks/{id}/dns is fetched in onMount.
 	var membership *db.NetworkMember
@@ -102,9 +103,7 @@ func (h *DNSHandler) CreateDNSRecord(w http.ResponseWriter, r *http.Request) {
 	user := auth.UserFromContext(r.Context())
 	networkID := chi.URLParam(r, "networkID")
 
-	network, err := h.Networks.Get(networkID)
-	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
-		http.Error(w, "network not found", http.StatusNotFound)
+	if !h.requireAdmin(w, user, networkID) {
 		return
 	}
 
@@ -140,6 +139,7 @@ func (h *DNSHandler) CreateDNSRecord(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create DNS record: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
+	logAudit(h.Audit, user.ID, "dns.create", networkID, "", map[string]any{"recordId": id, "name": body.Name, "ip": body.NebulaIP})
 
 	// Refresh DNS server with new records.
 	if h.NetworkManager != nil {
@@ -166,15 +166,29 @@ func (h *DNSHandler) DeleteDNSRecord(w http.ResponseWriter, r *http.Request) {
 	networkID := chi.URLParam(r, "networkID")
 	recordID := chi.URLParam(r, "recordID")
 
-	network, err := h.Networks.Get(networkID)
-	if err != nil || network == nil || !authz.CanAccessNetwork(user, network) {
-		http.Error(w, "network not found", http.StatusNotFound)
+	if !h.requireAdmin(w, user, networkID) {
 		return
 	}
 
-	if err := h.DNSRecords.Delete(recordID, networkID); err != nil {
+	// Read it first: the entry says what was deleted. A record that does not
+	// exist is a 204 as before, with no entry; of two deletes at once only
+	// the one that deleted it writes one.
+	rec, err := h.DNSRecords.Get(recordID, networkID)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+	deleted, err := h.DNSRecords.Delete(recordID, networkID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if deleted {
+		details := map[string]any{"recordId": recordID}
+		if rec != nil {
+			details["name"], details["ip"] = rec.Name, rec.NebulaIP
+		}
+		logAudit(h.Audit, user.ID, "dns.delete", networkID, "", details)
 	}
 
 	// Refresh DNS server.
@@ -183,4 +197,30 @@ func (h *DNSHandler) DeleteDNSRecord(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// requireAdmin answers the request itself unless the user is the network's
+// owner or an admin member: 404 to anyone who cannot see the network, 403
+// to a plain member. DNS names are the network's policy, so a plain member
+// may read them but not change them.
+func (h *DNSHandler) requireAdmin(w http.ResponseWriter, user *db.UserProfile, networkID string) bool {
+	network, err := h.Networks.Get(networkID)
+	if err != nil || network == nil {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return false
+	}
+	var membership *db.NetworkMember
+	if h.Members != nil {
+		membership, _ = h.Members.GetMembership(networkID, user.ID)
+	}
+	access := authz.CheckAccess(user, network, membership)
+	if !access.CanView() {
+		http.Error(w, "network not found", http.StatusNotFound)
+		return false
+	}
+	if !access.CanAdmin() {
+		http.Error(w, "admin access required", http.StatusForbidden)
+		return false
+	}
+	return true
 }

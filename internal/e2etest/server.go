@@ -7,6 +7,7 @@ package e2etest
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -16,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +44,48 @@ type Server struct {
 	ips  atomic.Uint32
 }
 
+// binPrefix starts the name of the folder a test process builds hop-server
+// in, followed by the process's pid: nothing removes the folder when the
+// process ends, so the next build removes it (sweepBuilds).
+const binPrefix = "hop-e2e-bin-"
+
+// sweepBuilds removes the build folders in dir of test processes that have
+// ended. Until 2026-11-28 the folders stayed: 26 GB on a Mac, and a full
+// /tmp in the Linux VM. The folder of a living process stays, another
+// user's too, and so do the folders from before, named without a pid. It
+// reads dir rather than globbing it: a "[" in the temp path is a pattern
+// to filepath.Glob.
+func sweepBuilds(dir string) {
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		rest, ok := strings.CutPrefix(e.Name(), binPrefix)
+		if !ok {
+			continue
+		}
+		pid, _, _ := strings.Cut(rest, "-")
+		if n, err := strconv.Atoi(pid); err == nil && ended(n) {
+			os.RemoveAll(filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
+// ended says whether process pid has ended. Signal 0 tests for it on Unix,
+// where FindProcess never fails; a process this user may not signal
+// answers EPERM and is living. On Windows FindProcess opens the process:
+// OpenProcess answers ERROR_INVALID_PARAMETER (87) for a pid no process
+// has, and any other refusal, access denied above all, is a living
+// process. A process it can open is living too, as far as this goes:
+// Signal(0) is not supported there.
+func ended(pid int) bool {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return errors.Is(err, syscall.Errno(87))
+	}
+	defer p.Release()
+	err = p.Signal(syscall.Signal(0))
+	return errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH)
+}
+
 var (
 	buildOnce sync.Once
 	buildPath string
@@ -54,7 +98,9 @@ func build() (string, error) {
 	buildOnce.Do(func() {
 		_, file, _, _ := runtime.Caller(0)
 		root := filepath.Join(filepath.Dir(file), "..", "..")
-		dir, err := os.MkdirTemp("", "hop-e2e-bin")
+		tmp := os.TempDir()
+		sweepBuilds(tmp)
+		dir, err := os.MkdirTemp(tmp, fmt.Sprintf("%s%d-", binPrefix, os.Getpid()))
 		if err != nil {
 			buildErr = err
 			return
@@ -117,8 +163,9 @@ func takeTurn(t testing.TB) {
 	t.Helper()
 	const lock = "127.0.0.1:41999"
 	// Not shared fairly: whoever has it mostly gets it for their next test too,
-	// so this must outlast another package's whole run (8 minutes with -race).
-	deadline := time.Now().Add(25 * time.Minute)
+	// so a test may wait for another package's whole run (cmd/agent's alone
+	// takes 11 minutes in the Linux VM).
+	deadline := turnDeadline(t, time.Now())
 	for {
 		l, err := net.Listen("tcp", lock)
 		if err == nil {
@@ -139,6 +186,18 @@ func takeTurn(t testing.TB) {
 		t.Skipf("UDP 42001 is in use, is a hop-server running here? (%v)", err)
 	}
 	p.Close()
+}
+
+// turnDeadline is when takeTurn gives up waiting: a minute before go test's
+// -timeout ends the test binary, so the failure says why; an hour when there
+// is no timeout.
+func turnDeadline(t testing.TB, now time.Time) time.Time {
+	if d, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
+		if end, ok := d.Deadline(); ok {
+			return end.Add(-time.Minute)
+		}
+	}
+	return now.Add(time.Hour)
 }
 
 // Run starts the server process on the same data directory and address, and
@@ -281,6 +340,8 @@ type Client struct {
 	Token string // bearer token; "" for an anonymous caller
 	ID    string // user ID
 	Email string
+	// Header is sent with every request (With adds to it).
+	Header http.Header
 }
 
 // Anonymous returns a caller without a session, from an IP of its own so that
@@ -345,8 +406,11 @@ var httpClient = &http.Client{
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 }
 
-// Headers sets the caller's identity.
+// Headers sets c.Header and the caller's identity.
 func (c *Client) Headers(h http.Header) {
+	for k, v := range c.Header {
+		h[k] = append([]string(nil), v...)
+	}
 	h.Set("X-Forwarded-For", c.IP)
 	if c.Token != "" {
 		h.Set("Authorization", "Bearer "+c.Token)
@@ -438,6 +502,17 @@ func (c *Client) Enroll(networkID, hostname string) Enrollment {
 	anon.IP = fmt.Sprintf("198.19.%d.%d", rand.Intn(256), rand.Intn(256)) // a machine of its own
 	anon.Want(http.StatusOK, "POST", "/api/enroll", M{"token": token, "hostname": hostname, "os": "linux", "arch": "arm64"}, &e)
 	return e
+}
+
+// With is c sending one more header with every request.
+func (c *Client) With(key, value string) *Client {
+	w := *c
+	w.Header = c.Header.Clone()
+	if w.Header == nil {
+		w.Header = http.Header{}
+	}
+	w.Header.Set(key, value)
+	return &w
 }
 
 // As is c with another bearer token, as an agent of the household sends it.

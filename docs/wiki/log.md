@@ -470,3 +470,709 @@ end-to-end tests build `hop-server` and `hop-agent` themselves (`go build
 `golang:1.26` container instead (no `/dev/net/tun` there, so the agent stays in
 userspace). Running them as root on a machine with a real TUN device needs a Go
 toolchain in the VM — not installed, because that is a download.
+
+09:40 to 10:00, v0.11.31, and the agent's end-to-end tests as root with a real TUN device.
+(1) **Released.** `make release` ran the full gate first (cmd/agent 266.5 s,
+internal/api 403.6 s, internal/client 217.6 s, `-race` green) and tagged
+v0.11.31 from merge commit `554c290`. Release and Release Desktop green; the
+image `ghcr.io/trustos/hopssh:v0.11.31` is pushed; production moved to it in
+`oci_nomad_cluster` `7c0b0d1` (`HOPSSH_NODE_PRUNE_AGE_HOURS = "0"` kept).
+(2) **Go 1.27.4 in the Ubuntu VM** (user's OK), so the agent and server tests now
+run there as root with `/dev/net/tun`. `internal/api` end to end: ok, 140.7 s.
+`cmd/agent`: one test failed, `TestE2E_Lifecycle`, twice, for one reason: the
+agent is a separate process, so the userspace pin of 08:20 does not reach it, and
+as root it moves itself to a kernel TUN device as an installed service does.
+Then the "both in userspace" check failed, and the known gap "every renewal ends
+all open sessions of an in-app network" reported **FIXED** — with kernel TUN the
+kernel holds the agent's end of the TCP session and a renewal replaces only
+Nebula, so the shell lives on. That is the product working; the gap is
+userspace only. The test now expects the mode the agent picks (`agentTunMode`:
+root means kernel) and, in kernel mode, asserts as an ordinary test that the
+shell survives the renewal. Green as root in the VM (97.3 s) and as a user on the
+Mac (110.2 s, the gap still reported there). Planted on the Mac (mode forced to
+kernel): fails at the status line and at "the open shell is dead after the
+renewal of a kernel-TUN network", the two places it should.
+
+13:00 to 13:50, how firewall rules could be set: research, design, two reviews.
+The question was whether rules belong in the UI. Three agents read the code, the
+dashboard and five products' own docs; one drafted a design; two checked it,
+one against the code and one looking for ways it breaks. Result:
+[[concepts/firewall-rules]] (proposed), raw notes in `raw/firewall-rules/`.
+(1) **Today nothing can change a running firewall**: the block is written once at
+enrollment, the heartbeat carries no rules, and Nebula's in-place reload, which
+keeps conntrack, is never called (no `*config.C` is kept).
+(2) **The reviews moved the design**: TCP 41820 must stay open from `node` too,
+since every peer's keepalive dials it, or a restrictive rule makes the watchdog
+restart the network every ~4.5 min; a rejected policy must leave the running
+rules and the file as they were, never close and restart.
+(3) **Seven things found on the way, each checked by hand**: the OS-stack
+fallback serves the agent API on `:41820` on every interface; a deleted node's
+address is reused while its cert still works (`NextNodeIndex` takes MAX over the
+nodes still listed); four writers of `nebula.yaml` without a lock, routes not
+atomic; DNS buttons vs API; capability and route writes not audited; Nebula's
+firewall pointer swap is a data race; a stale heartbeat comment.
+
+14:00 to 14:15, two of those seven fixed, test first (branch `test/lifecycle-root`,
+not pushed). (1) **A network whose Nebula is down serves nothing**: the OS-stack
+listener is gone (`serverset.go`), not moved to loopback, because nothing needs
+it: renewal and heartbeats are outbound, and the dashboard reaches an agent only
+through Nebula. On Linux it could also keep another network's kernel-TUN
+listener off `<mesh IP>:41820`. Once Nebula comes up, `rebindMesh` starts the
+mesh listener. Tests in `internal/client/fallback_listener_test.go`: on the old
+code two failed with `listening on [::]:41820 (OS stack)`; the third, recovery
+after a failed start, passes on both. (2) **A deleted node's address is not given
+out again**: migration 008 adds `released_node_ips` and a trigger on every
+delete of a node (API, prune, network cascade, by hand); `NextNodeIndex` never
+goes below the highest address ever used, and in a full /24 reuses only one
+released more than 48 h ago (`ErrNetworkFull` otherwise; before, a full network
+failed in `pki.NodeAddress`). Red on the old code: `.3` came back after the delete
+of `.3` (`internal/db/node_ip_test.go`), and `TestE2E_AddressNotReused` saw the
+deleted and the pruned address come back from the real server. Five planted bugs,
+each caught at the line meant for it; removing the cleanup trigger left 2 rows,
+which shows that a network's cascade does fire the node trigger. Not checked:
+whether `sqlc generate` (run by hand only, not in CI) parses `CREATE TRIGGER`.
+
+14:15 to 14:45, the gate and a review of the plan. The whole Go suite on the Mac
+passed in the second of two runs; in the first, one health check of
+`TestE2E_Proxy` hung for the route's 30 s while both ends had started a tunnel
+at once. Alone it passed 45 of 45, and in 35 of those the same double tunnel
+formed without harm, so load is part of it (open question filed). The changed
+packages passed in the Linux VM as user and the two new client tests as root.
+Two reviewers read the draft plan against the code
+(`raw/firewall-rules/plan-review-2026-11-27.md`). Found: agents probe clients on
+TCP 41820, which a client's ICMP-only firewall drops, so an agent whose only
+peers are clients sees the network as stuck (read, not run); a second plain
+writer of `nebula.yaml` (`listenport.go:73`); a Nebula reload callback cannot
+return an error, so validation has to build a scratch firewall first; "new
+networks only" needs no heartbeat field, a network column sent at enrollment is
+enough. Corrected in `concepts/firewall-rules.md`.
+
+15:35 to 16:10, the first small fixes of the approved plan, each red on the old
+code first. (1) **A full network answers 409 with a JSON error**, not 500, on all
+four ways to add a node (`allocNodeIP` in `internal/api/enroll.go`;
+`TestE2E_NetworkFull` failed on all four before). The agent's local API already
+turns a 409's `error` into the message the user sees
+(`TestDeviceFlowPoll_NetworkFull`). (2) **The debug listener binds 127.0.0.1**:
+with `--token` and no enrollment it served exec, shell and upload on `[::]:41820`
+(`TestE2E_DebugListenerLoopback` in `cmd/agent`, red on the old code). (3) The
+heartbeat comment says 60 s; `HeartbeatInterval` is marked unused. (4) **DNS
+create and delete accept the owner and admin members**, plain members get 403,
+outsiders 404 (`requireAdmin` in `internal/api/dns.go`); the dashboard shows
+Delete to admins only (it showed it to every member). `TestE2E_Access` was red on
+the old code (an admin got 404); a planted bug without the admin check was caught
+by both `TestE2E_Access` (member got 201) and the source scan. Loose ends filed in
+`open-questions.md`.
+
+16:10 to 16:25, **one lock for every writer of `nebula.yaml`** (step 3 of the
+plan). Seven functions write the file; each now holds `lockNebulaYAML` from its
+read to its write and writes with `writeNebulaYAML`, which also keeps
+`nebula.yaml.bak`. `startInstance` restores a missing, empty, unparseable or
+cut-short file from a whole backup (`repairNebulaYAML`; "cut short" is a missing
+top-level key, since `yaml.Marshal` writes them in alphabetical order).
+`atomicWrite` now uses a temp file of its own (`os.CreateTemp`) and syncs it
+before the rename. `applyRoutesUpdate` saves `routes.json` only after the
+rewrite worked; before, one failed rewrite made the routes count as applied for
+good. Red on the old code: the renewal and routes writers run at once lost a
+change in 281 to 300 of 300 rounds (4 runs; 224 to 234 on Linux, whose `/tmp` is
+tmpfs), and 8 writers of one path saw 208 to 219 of 320 `atomicWrite`s fail.
+Planted bugs, each caught for the stated reason: no repair call (Nebula got an
+empty file), the routes writer without the lock (the race test and the source
+scan, which names the function), one fixed temp name (176 of 320 writes failed),
+routes saved first (routes never reached the file). On the way: **`upgradeTunMode`
+replaced the whole `tun` section** when a user-mode agent was installed as root,
+which dropped `unsafe_routes`; `routes.json` said they were applied, so they were
+never written again. Fixed to change only the device
+(`TestUpgradeTunMode_KeepsRoutes`, red first). Also: rsync from macOS copies
+AppleDouble `._*` files (426 in the VM's copy); Go's build skips them, a test
+that globs `*.go` does not. Sync with `--exclude='._*'`; the source scan now skips
+what the build skips.
+
+16:25 to 16:30, **golden tests of every firewall block** (P0, step 4). `git show`
+of the commits that changed a firewall block gives three agent blocks (80fdbaa:
+TCP from group `server`; 791ac0b: TCP 41820 from `admin`, TCP from `user` and
+`agent`; 41ce077 to today: TCP 41820 from `admin`, TCP from `node`) and one client
+block (3f30d27 to today: ICMP only), all in `internal/client/testdata/firewall/`.
+`firewall_golden_test.go` reads them through `nebula.AddFirewallRulesFromConfig`
+with a recorder, so it compares what Nebula would install, not text. It pins:
+each old block still parses and allows what it did; today's agent template (both
+TUN modes) and client template give the newest block; the production file of
+2026-05-02, rewritten by `yaml.Marshal`, gives today's; and `ensureP2PConfig`, the
+routes and renewal writers, `upgradeTunMode` and the repair leave the firewall
+alone, for the oldest block too. Planted: TCP from `node` widened to any proto
+(caught, both TUN modes, the message lists the new rule), TCP 41820 added to the
+client (caught), `ensureP2PConfig` dropping the ICMP rule (caught), a fixture
+edited (caught). Green on Linux. The client's template text moved into
+`clientNebulaConfig`, since `writeClientNebulaConfig` writes to `/etc/hop-client`.
+
+16:30 to 16:55, **a firewall preset per network, and the keepalive of clients**
+(step 5: items 3 and 6 of the plan). Migration 009 adds `networks.firewall_preset`:
+the column's default is `all`, and the same migration sets every existing row to
+`tcp`, so old networks keep what their devices run (`TestMigration009_FirewallPreset`
+builds a database at 008 first). The token, device-flow and bundle answers send it
+as `firewall`; the client join answer does not. `agentFirewallYAML` renders `tcp`
+(today's block, byte for byte) or `all` (every protocol from `node`, with
+`inbound_action: drop` written out); an empty or unknown value gives `tcp`, never
+more. Red before the change, with two real Nebula peers
+(`internal/client/firewall_e2e_test.go`): UDP from one agent to another did not
+get through, and an agent whose only peer was a client counted 0 of 1 probes
+alive. The first red run of the UDP test was wrong for another reason: the
+harness's certificates had no groups, so no `groups: [node]` rule could match;
+they now carry `node`, as the server's do. How UDP is seen without a listener:
+gVisor answers a datagram to a closed port with ICMP port unreachable, the read
+of a connected UDP socket does not wake on it, and the next write returns
+"connection refused". Item 6 went to the client side (TCP 41820 from `node`)
+because an agent can't tell a client's node from an old agent's. Golden tests
+now also record what happens to a packet no rule allows, and pin the two new
+blocks as fixtures dated 2026-11-27. Planted, each caught for the stated reason:
+`all` rendered as `tcp` (UDP test and golden), the client rule's group renamed
+(keepalive test and golden), `inbound_action: reject` (golden), an unknown preset
+rendered as `all` (golden), the migration without its UPDATE (old network "all")
+and with default `tcp` (new network "tcp"), the bundle naming `tcp` (API e2e), the
+local API dropping the answer's preset (agent e2e: a real agent wrote `tcp` rules).
+The netlab's `TestUDPBetweenDevices` was a known gap; its network is new, so it
+now asserts that UDP gets through (passes in the VM). The same VM run failed
+`TestE2E_DebugListenerLoopback` (step 1's test, until then run on the Mac only):
+the VM's installed agent listens on port 41820 at its mesh addresses, and the
+test took any answer there for the debug listener. It now asks for `/health`
+with the debug token, which only its own agent knows, after checking that
+loopback answers. With the listener planted on every interface the Mac reports
+each address; in the VM the planted listener can't bind beside the installed
+agent and the test fails waiting for it. The whole gate then passed in the VM
+(Linux arm64): `internal/client` 267.6 s, `internal/api` 409.6 s, `internal/db`
+5.3 s, `cmd/agent` 272.6 s; on the Mac 248 s, 385 s, 5.4 s, 398 s. (Times of today's entries from 14:15
+on were corrected afterwards from the commits and the session's clock; they had
+run ahead by up to three hours.)
+
+17:00 to 17:55, **the proxy hang** (step 6: item 13 of the plan). Not the two
+tunnels: one is enough. A scratch test of 4 s of back-to-back health checks
+through the real server hung 10 rounds of 10, at requests 514 to 3167, 0.26 to
+1.58 s in (17:03 to 17:13, load about 5). Each hang was a new connection whose
+SYN got no answer at all. gVisor lets a SYN reopen a connection in TIME_WAIT
+only when a listening socket is there (`handleTimeWaitSegments`, `connect.go`);
+Nebula's userspace service accepts through the forwarder and has none, so the
+SYN and every retry were dropped until the TIME_WAIT ended 60 s later, past the
+server's 30 s timeout. The side that closes first keeps the TIME_WAIT, and
+with `DisableKeepAlives` that is the agent. A/B with two peers in one process
+(17:21, load 3.8): listener closes first, 3 stalls in 776 connections and 3 in
+364, each a dial that timed out after 3 s; dialer closes first, none in 25,760
+and 26,469. Upstream unchanged (gVisor's `go` branch, Nebula master). Fix:
+`patches/gvisor-time-wait.patch`, a SYN that may reopen a TIME_WAIT goes to the
+stack's forwarder when no socket listens (new `Stack.TransportProtocolHandler`).
+`TestE2E_ConnectAgainAfterTimeWait` (internal/client, 2000 connections, each
+under 800 ms): red 3 of 3 without the patch (connections 251, 190, 210), green
+3 of 3 and then 20 of 20 with it (17:29, load 3.1, 124 s); one run passed
+through the new path 47 times. A planted variant that drops the SYN once was
+caught ("<nil> after 1.003s"). `TestE2E_ProxyBackToBack` (internal/api, the
+real server, 4 s): red 5 of 5 without the patch (health checks 769 to 894,
+0.36 to 0.41 s in, 503 after 30.0 s), green 10 of 10 with it (8454 to 8856
+checks each; 17:51 to 17:54, load falling from 17 to 5). Under `-race` gVisor
+takes about 0.5 s for a connection (dial p50 237 ms, echo p50 285 ms; without
+`-race` p50 172 µs and 136 µs); the profile is the race runtime and the
+scheduler. So both tests skip under `-race`, with `raceEnabled` in each
+package; 800 connections under `-race`, 2 of them through the new path, gave
+no report. The scratch tests are gone.
+
+17:55 to 18:40, **the gate, a review of the patch, and a test of it without
+Nebula** (step 6, continued).
+
+- The gate on the Mac (17:55 to 18:07, load 5 to 22): build, vet and
+  `go test ./...` passed (`cmd/agent` 417 s, `internal/api` 405 s,
+  `internal/client` 254 s). The race run failed in `internal/client` on
+  `TestE2E_FirewallUDPBetweenAgents` (from 45c94c7), not on the patch. Its UDP
+  probe gave two tries one deadline. A gonet read does not wake for the ICMP
+  "port unreachable"; the next write returns it as "refused". Under `-race`
+  the first read used up the deadline, and the second write failed on that
+  instead of on the refusal. Red 3 of 3 under `-race` (18:07). With a deadline
+  per try it passed 5 of 5, and `TestE2E_KeepaliveReachesClient` beside it
+  5 of 5 (18:09 to 18:11). The planted bug (UDP left out of the `all` block in
+  `agentFirewallYAML`) is still caught, 2 of 2 with and without `-race`.
+- `TestE2E_ProxyBackToBack` became a count, 2000 checks instead of 4 s, so it
+  is the same test on a slower machine. In the VM (18:02 to 18:05) it failed
+  5 of 5 without the patch (checks 169 to 1426, 503 after 30.0 s) and passed
+  5 of 5 with it (2000 in 4.1 s; on the Mac 0.9 s).
+- A review of the patch (17:56 to 18:03; 11 findings, each checked by a
+  skeptic, then by me in the code) led to three changes. A SYN+ACK no longer
+  takes the new path: the forwarder refuses it, so it ended the TIME_WAIT for
+  nothing. `TestTimeWaitReopen` is new: two bare gVisor stacks, no Nebula; the
+  server accepts through a forwarder and closes first, then the client
+  connects again from the same port, once to a server that accepts and once
+  to one that refuses. It is in the race run, where a connection between the
+  bare stacks takes 75 to 380 ms. The 800 ms bar of
+  `TestE2E_ConnectAgainAfterTimeWait` went: over Nebula one lost packet on a
+  loaded machine fails it, and `TestTimeWaitReopen` pins the answer to the
+  first SYN instead. Without the patch that test still failed 3 of 3, at
+  connections 55, 237 and 319 (18:24, load 36: VMs and other programs).
+- `TestTimeWaitReopen` without the patch (18:30 to 18:34): 10 of 10 failed,
+  both cases, and 10 of 10 under `-race`; each second connection timed out
+  after 3 s. With the patch 10 of 10 passed under `-race`. In the VM (18:34)
+  10 of 10 failed the same way without it, and 10 of 10 passed with it. A half
+  fix that lets only the resend through was caught at 1.00 s (18:23).
+- In the VM (18:29 to 18:31), with the patch as it is now: `TestTimeWaitReopen`
+  5 of 5, `TestE2E_ConnectAgainAfterTimeWait`, `TestE2E_FirewallUDPBetweenAgents`
+  and `TestE2E_KeepaliveReachesClient` 3 of 3 each, `TestE2E_ProxyBackToBack`
+  3 of 3.
+- The race run again on the Mac (18:35 to 18:40): passed, `internal/client`
+  281 s, with `TestTimeWaitReopen` in it; both tests through Nebula skipped.
+- Left for the firewall work (item 17), from the review, read and not run:
+  the conntrack reach on port 41820 ([[open-questions]], under the
+  `TestE2E_Proxy` entry).
+
+18:40 to 19:10, **the audit log** (step 7: item 12 of the plan). A scout read
+every route; 19 that change something wrote no entry, among them removing a member, deleting
+a network, approving a device and downloading a bundle. `TestE2E_Audit`
+(internal/api, the real server) does each of 28 audited routes as the user who
+may, then reads every actor's `/api/audit`: who, network, node and details,
+for 24 entries. It also checks that no entry holds an invite code, enrollment
+token, device code or bundle token, and that every route that is not a GET is
+in `auditedRoutes` or, with a reason, in `notAudited` (logout, the anonymous
+device code, renew, heartbeat, clipboard announce). Red at 18:49 with 20
+entries missing. A machine enrolls and fetches its bundle without a session, so
+migration 010 adds `nodes.created_by`, written in the same transaction as the
+node by every path that creates one, and those two entries name that user; a
+token or bundle from before the migration gets none (they live 10 and 15
+minutes). Green at 19:00; `internal/api` and `internal/db` passed (140 s, 6 s),
+and `TestE2E_Upgrade` against v0.11.30 both ways (144 s). The `KnownGap` for
+member removal in `TestE2E_History` reported itself fixed and went. 11 bugs
+planted one at a time (19:01 to 19:06), all caught for the stated reason:
+[[concepts/e2e-tests]]. The coverage map: `raw/audit/coverage-2026-11-27.md`.
+
+19:10 to 20:00, **an adversarial review of the audit work**, four findings
+confirmed. (1) Removing a member or revoking an invite that was not there
+wrote an entry, and of 16 DNS deletes of one record at once several did: the
+stores did not say whether they deleted anything. The three delete queries
+are `:execrows` now (sqlc's generated shape, written by hand: `make generate`
+needs a download not approved), the stores return `(bool, error)`, and the
+handlers write the entry only for the delete that deleted; HTTP stays 204.
+(2) The secrets check missed the agent tokens (enroll, join, device poll, the
+bundle) and the user code; all are in it now. (3) Four actions were "audited
+elsewhere" on trust; `TestE2E_Audit` does them itself now (shell, exec, a
+proxied request, node delete). (4) The route gate trusted every GET; the GETs
+that change nothing are a list of 27 (`readOnly`), the node health check is in
+`notAudited` with its reason, and a route must be in exactly one of the three
+lists. The racing DNS delete was caught only now and then: the test client
+opens a new connection per request, so 16 deletes rarely met (3 of 10 runs).
+With the connections opened first they arrive together: 10 of 10, and the
+test without a plant passed 10 of 10. 21 planted bugs, all caught, each for
+its own reason (`TestE2E_Audit` lines: "N entries … want 1", "an entry holds a
+secret", "no entry …", "list it in exactly one of …"). What is left:
+[[open-questions]], 2026-11-27 audit entry.
+
+20:05, the audit work committed (a212291). 20:07 to 20:15, **firewall rules,
+phase 1** (step 8: item 16), the server side, drafted while the audit gates
+ran. The five points the owner asked to settle are in
+[[decisions/firewall-rule-sets]]. Migration 011 (a network's own rules with a
+version, rule sets owned by one user, which sets a network has attached), the
+store (`internal/db/firewall.go`: a change and its check of node IDs in one
+transaction), the rules (`internal/fwpolicy`) and eight routes with
+`ETag`/`If-Match`. `TestE2E_Firewall` (the real server): who may change what,
+428/409/400 for a missing, stale or malformed version, two changes against one
+version store one, what is refused stores nothing, sets per user, attach only
+by the network's owner and only their own sets, a change of an attached set
+checked in every network it is in, delete only once attached nowhere, a
+network's delete takes its attachments and not the set, a deleted node stays
+in the rules that name it, a new enrollment gets the preset. Its first run
+failed: `sourceNodeID` was accepted, since Go's JSON decoder matches field
+names without regard to case (it is `sourceNodeId`, so nothing was lost); the
+case now sends a field the API does not know, which is refused. Also
+`TestE2E_Access` (8 rows), `TestE2E_Audit` (6 routes, attach and detach of
+the same set at once write one entry), `TestE2E_DeleteNetwork` (the two new
+tables). The agent learns the `ping` preset: TCP 41820 from `admin` and
+`node`, ICMP; golden fixture `agent-2026-11-27-ping.yaml`. Two planted bugs in
+that block: one only broke the build (vet counts the `%d`), so it proved
+nothing, replaced by one that keeps it (`node` → `admin`), caught by
+`TestFirewall_TodaysTemplates` for that reason. Agents of v0.11.31 and before
+ignore the preset and write `tcp`. Next: the Firewall tab, a review, the gates.
+
+20:15 to 20:25, **the Firewall tab** (`frontend/src/lib/components/firewall-tab.svelte`,
+a tab of a network's page), tried in a browser against a local server with two
+devices and an admin member. As the owner: a rule (tcp 22 from one device to
+the other) and the `ping` preset saved as version 1; a change made through the
+API meanwhile, then a save from the tab: 409, the tab says so and reloads
+version 2. A rule set with port 0: 400, shown with the rule and the value; with
+443 it is saved, attached, its Delete greyed while attached, detached and
+deleted. Each change is in the audit log under its own label, and the refused
+save is not. As the admin: preset and rules can be changed, an attached set is
+shown read-only, and attaching is left to the owner. The tab says plainly that
+devices do not apply the rules yet, and that a preset reaches only devices that
+join from now on with an agent newer than v0.11.31. Fixed on the way: "1
+rules", and the reason a set cannot be deleted was only in the tooltip of a
+disabled button, which some browsers never show. `svelte-check`: the 5 errors
+from before, none new.
+
+20:27 to 20:55, **a review of phase 1**: nine agents, each finding checked by
+one that tried to refute it. Three hold, each reproduced; one was refuted.
+- **A rule set renamed to a name its owner already has: 500.** The store
+  returned the unique violation as it was, and only the create mapped it to
+  409. Now 409 for both, and nothing changes. A stale version is now **412**,
+  not 409: RFC 9110 requires 412 for a false `If-Match`, and the tab has to
+  tell "someone changed this first" (reload) from "that name is taken" (keep
+  what was typed). `TestE2E_Firewall` checks both; red before the fix.
+- **The tab threw away an unsaved change of the network's rules** on attach,
+  detach, saving or deleting a rule set (each reloaded everything), and a
+  refused save of the network's rules closed an open rule-set editor. Now a
+  reload keeps an unsaved change together with the version it was made
+  against, so if someone saved meanwhile its save is refused (412) and not
+  written over theirs. A rule set saved against a stale version reopens as it
+  is now.
+- **A device of another network read "deleted device"** in the editor of a
+  set that is not attached here. It reads "not a device of this network" now;
+  in the network's rules and in an attached set an unknown device is still a
+  deleted one (an attached set can name only devices of the networks it is
+  attached to, and IDs are never reused).
+- Refuted: "members cannot see that a rule set changed". They see the set,
+  its version and its time. What holds of it: the audit entry of a set's
+  change says in how many networks the set is, not in which; the attach
+  entries say which. Left as it is.
+
+The dashboard had no tests of its own. `frontend/tests/firewall-tab.test.mjs`
+(`npm test`, and a CI step) compiles the tab's real script with Svelte's
+compiler against a fake API and calls its functions: 9 cases. 10 bugs planted
+one at a time in the tab, all caught, each by the case about it.
+
+20:43 to 20:56, **33 bugs planted in phase 1** (store, migration, handlers,
+rule checks), one at a time: all caught, each by the line about it. Four were
+first "caught" only because they did not compile (a variable left unused): a
+build failure is not a test noticing anything. Rewritten so that they compile,
+the tests catch them. Three showed only the known-gap notes of
+`TestE2E_Access`; the line that failed was behind them. The planting script
+now calls a plant that does not compile BROKEN, and leaves the known-gap
+notes out. Details: [[concepts/e2e-tests]], "Firewall rules".
+
+21:00 to 21:42, **phase 2 designed; ports of a range bounded first.** Two
+designs of how a device applies the rules, ranked by two judges
+(`raw/firewall-p2/design-review-2026-11-27.md`; the code map beside it); the
+chosen one is in [[concepts/firewall-rules]], "Delivery and apply", and what it
+found in Nebula is in [[open-questions]]. While checking it, measured on the
+vendored Nebula (v1.11.2): **Nebula keeps an entry of about 800 bytes per port
+of a range, per rule.** One rule for TCP 1-65535 took 50 MB and 70 ms to build;
+ten from ten /32 sources 226 MB; a hundred 1.7 GB and 4.4 s. The same hundred
+over 1-4096 take 108 MB, over 1-40 1 MB. Phase 1 accepted all of it, so a
+network's rules could have run every device of the network out of memory once
+phase 2 sends them (twice during a reload, old and new). Now the ports the
+rules reaching a device cover together — the network's own rules and every
+attached set — are at most `fwpolicy.MaxPorts` (4096, about 3 MB), checked on
+every change that adds rules: the network's rules, a set's change (in every
+network it is in) and an attach; refused with 400 saying that a rule for every
+port is port "any". `TestValidateRules_Ports`, `TestPorts` and the "wide"
+section of `TestE2E_Firewall` were red before it. 9 bugs planted, all caught,
+each by the line about it: a change of the network's rules, of a set or an
+attach not counted; a set's old rules counted beside its new ones; the
+network's own rules left out of a set change; a range counted as one port;
+the bound off by one; one list not checked; the refusal answered 500.
+
+21:43 to 21:51, **a network is managed from its first save or attach on.**
+Phase 2 sends a network's rules to its devices only once someone chose them:
+a network with a `network_firewall` row. A save wrote one; an attach did not,
+so a network with only attached sets would never have reached its devices.
+An attach now stores an empty row at version 0 (updated at 0, by nobody), the
+versions don't change, and a detach of the last set leaves the row, since a
+device that applied a set's rules must get the preset back, not keep them.
+The answer says `managed`. `TestE2E_Firewall` was red before it at three
+lines (a save, an attach, the last detach). 6 bugs planted, all caught, each
+for its reason: an attach that writes no row, resets a saved network's
+version, or stamps the rules as updated; the flag never read; a detach that
+ends it; the flag left out of the answer.
+
+**`make patch-check`** (`scripts/patch-check.sh`, 10 s): against a pristine
+vendor tree built offline from the module cache (`go mod vendor -o`), each
+patch applies alone, all apply in order and in reverse order with no fuzz and
+give the same files, and the pristine tree with them is all of `vendor/`. The
+firewall swap of phase 2 has to touch `interface.go` (in `read-loop.patch`)
+and `outside.go` (in `paths.patch`), so the rule "no file is in two patches"
+became "hunks and the lines around them are apart, and patch-check passes"
+(`patches/README.md`). Planted: a patch that repeats a hunk of
+`read-loop.patch` (fails in order and in reverse order, and the two orders
+differ), a line added to `outside.go` (touched by a patch) and to `cert.go`
+(touched by none) in `vendor/` (both fail). It passes on the 11 patches here
+and in the Linux VM with GNU patch 2.8 (given a pristine copy, as the VM has
+no module cache). In `make preflight` and CI's build job.
+
+21:52 to 22:10, **patch `firewall-swap`** (phase 2 of firewall rules, its
+first step). A reload of the firewall section swapped the interface's
+firewall with a plain pointer write while the packet threads read it on every
+packet (finding 6 of [[concepts/firewall-rules]]; upstream v1.12.0 is the
+same). The field is now an `atomic.Pointer`; five reads in `inside.go` and
+`outside.go` and four in `interface.go` load it. `TestFirewallSwapIsSafeToRead`
+reloads the firewall 200 times while the main goroutine reads it: without the
+patch it fails 5 of 5 under `-race` (and passes without), with it 30 of 30.
+The same patch adds `Control.CheckFirewall(text)`, which builds the firewall
+a text would install without installing it (under `recover`: no certificate
+panics) and returns its rule hash, and `Control.FirewallRuleHash()`.
+`TestCheckFirewall` pins why: `ReloadConfigString` of a rule Nebula refuses
+(`proto: foo`) returns nil, logs, and keeps the old rules. The patch touches
+`interface.go` and `outside.go`, which other patches touch too; patch-check
+passes, after it learned to delete the `.orig` that Apple's `patch` keeps when
+a hunk lands at an offset (in one of the two orders; the files are the same).
+`make test-race` green, and the two tests, build and vet in the Linux VM.
+
+22:15 to 23:30, **firewall rules, phase 2: the devices apply them**
+([[concepts/firewall-rules]], "Built"). The heartbeat answer of a managed
+network carries the device's policy (`fwpolicy.Resolve`, its fingerprint
+`Delivered.Sum`); the agent checks it (`Delivered.Check`: preset, ports,
+sources inside the network, the fingerprint), renders its own block, has
+Nebula build it (`CheckFirewall`), reloads in place only when the rule hash
+differs, checks the hash, and writes `nebula.yaml`. Its next heartbeat says
+what it runs; the server keeps one report per device (`node_firewall`,
+migration 012) and the Firewall tab shows each device as applied, pending,
+refused or without a report. A beat ends applied, refused (not tried again
+on that Nebula) or later (a start in progress, a reload over 5 s, a file
+changed since Nebula loaded it). Found by reading: when only the backup
+`nebula.yaml.bak` failed, the old rules were reloaded although the file had
+the new ones; now that is applied. Tests: `TestE2E_FirewallDelivery` in
+`internal/api` (real server) and in `internal/client` (two real peers, 35 s
+under `-race`), `TestManagedFirewall`, `TestRecordReport`,
+`TestE2E_FirewallApplied` in `cmd/agent` (real server and agent process,
+131 s), and the tab's `npm test` (11). 21 bugs planted, all caught; one only
+after the test was fixed ([[concepts/e2e-tests]], "Firewall rules on the
+devices"). Green on the Mac (vet, and the tests of `internal/api`, `db`,
+`fwpolicy`, `client`, `cmd/agent`, `mesh`, `authz`) and in the Linux VM as a
+user and as root, where `TestE2E_FirewallApplied` ran in kernel TUN mode
+(134 s) and the client's test skips the read-only directory. Not run on
+Windows. Known gaps in [[open-questions]].
+
+## 2026-11-28 — firewall rules, phase 3: the device switch "Block incoming" and "who can reach"
+
+23:30 to 01:30, **phase 3 built** ([[concepts/firewall-rules]], "On the
+device"). Each network on a device has a switch "Block incoming from other
+devices": the file `block-incoming` in the enrollment's directory, set by
+`hop-agent block-incoming on|off --network <name>`, by the desktop app
+(Settings, per network) or by `POST /local/block-incoming`. While it is on,
+Nebula runs what hopssh always keeps (TCP 41820 from `admin` and from every
+node, ICMP) and nothing else; `nebula.yaml` keeps the network's rules, and
+a policy from the heartbeat still goes there, so switching off brings them
+back. Applied at once by an in-place reload (no new handshake), and by
+every start. The heartbeat's report says `blocked`, from what Nebula runs;
+the Firewall tab shows the device as blocking incoming, and a new list on
+the device's row, "Who can reach this device", shows what the network's
+rules, its sets and hopssh let in (`GET
+/api/networks/{id}/nodes/{nodeId}/firewall`, `fwpolicy.Reaching`), struck
+through while the device blocks. Found by the real-process test
+(`cmd/agent`'s `TestE2E_BlockIncoming`): the heartbeat an agent sends at
+start-up (`warmPeersFromHeartbeat`) carried no report, so for one beat after
+every restart the dashboard said "not blocked". Every heartbeat now carries
+it; the client test counts beats that don't. The tab and the list were
+checked in a browser against a test server with three devices (one
+blocking, one without a report). 24 bugs planted (17 in Go, 7 in the
+dashboard's script); 22 caught at first, the other two after two checks
+were added ([[concepts/e2e-tests]], "Firewall rules: the device switch").
+Green on the Mac (vet, and the tests of `internal/api`, `db`, `fwpolicy`,
+`client`, `cmd/agent`, `mesh`, `authz`; `cmd/agent` alone took 731 s, so a
+gate needs `-timeout 30m` as the Makefile has it: the default 10 minutes
+killed it twice) and in the Linux VM as a user and as root. The first root
+run looked green but was not: `internal/api` took 0.8 s and `cmd/agent`
+1.8 s, because every real-server test skipped (UDP 42001 was in use while
+they started, and outside CI the harness skips then). Run again with `-v`
+they ran (`cmd/agent` 632 s, `internal/api` 325 s; only `TestE2E_Upgrade`
+skipped, which needs `HOP_E2E_OLD`). Read a gate's times, not only its
+`ok`. Not run on Windows. Open points in [[open-questions]].
+
+## 2026-11-28 — item 14: deleted devices refused with `pki.blocklist` (not released)
+
+A device deleted in the dashboard kept a cert valid for up to 25 hours, and
+every device and the lighthouse accepted it. Now the server records every
+cert it issues (`node_certs`, migration 013, written in the transaction that
+writes the node's cert), a network's blocklist is its certs whose node is
+gone and that have not expired, the lighthouse reloads it in place (on a
+delete or the API's prune, every 30 s, at a start), and every heartbeat
+answer carries it. The agent checks it, keeps it in `blocklist.json`, never
+lists its own cert, and gives Nebula the active entries as `pki.blocklist`
+by an in-place reload, at every start and in the start's warm-up heartbeat
+(the agent owns the key; `nebula.yaml` never has it). Measured: the
+lighthouse ends the deleted device's tunnel 1 to 1.5 s after the refresh; a
+device 5 to 8 s after the heartbeat; with real processes, cut off 67 s after
+the deletion (the next heartbeat, 60 s ± 10 %). Found in review before the
+code: a device that renews in a loop before it is deleted could push its own
+certs off the 4096 entries; a node now holds at most 16 unexpired certs, and
+a renewal over that is answered 429 (`Retry-After: 3600`). A delete and the
+API's prune now refresh DNS too, so `TestE2E_DNS`'s known gap is a plain
+check, and `cmd/agent`'s `TestE2E_DeletedPeer` (a device in the mesh before
+the delete, cut off only by the agent) is a plain test.
+
+The review of the built change confirmed three faults on the device, all
+fixed. (1) A reload that can't read the CA keeps Nebula's old pool, logs,
+and returns no error; the device took the list as in force and never tried
+again. Patch `control-api` now has `Control.CABlocklist`, and the device
+compares what the pool refuses, not the text it loaded. (2) A heartbeat took
+the running Nebula before the start lock, and a renewal's restart has no
+warm-up heartbeat, so a list saved during a restart waited for the next
+beat. The Nebula is taken under the lock, and a restart (and a retried one)
+gives the new Nebula the list saved then. (3) A reload over 5 s went on
+alone while the next beat queued another behind it, and one built from the
+text before it could undo it (a beat turning "Block incoming" back off): one
+in-place reload at a time now, and one built from older text is refused. The
+full gate then found the 16-cert cap breaking `TestE2E_RateLimits` and
+`TestE2E_ManyAgents`, which renew in a loop; both fitted to it. 31 bugs
+planted, 29 caught, the other two can't fail (the lighthouse's own cert left
+out of its list, which is never in `node_certs`; the check after a reload
+that the pool took the list, which only changes the log line)
+([[concepts/e2e-tests]], "Deleted devices"). The race run found one test
+that assumed an order: b's fingerprint is random and sorts first about one
+time in 16; the expected list is sorted now. A second review of the fixes
+(four candidates, each checked by another agent) confirmed one more fault,
+which fix (3) brought in: the switch "Block incoming" while a reload of over
+5 s had not finished was refused, and nothing gave it to Nebula before its
+next start. Every heartbeat now gives Nebula the switch when it runs the
+other state (`reapplyIncomingBlocked`);
+`TestE2E_BlockIncoming_AfterBusyReload` failed without it, both ways. Two
+candidates were refuted, and one, older than item 14, is in
+[[open-questions]]. Green before the switch fix on the Mac (vet, gofmt,
+every package; `internal/client` 429 s, `cmd/agent` 826 s, `internal/api`
+144 s; 14 skips, all for another OS), with `-race` on the vendored Nebula
+packages, `internal/client` (475 s) and `internal/mesh`: no race, and in the
+Linux VM as a user and as root (13 skips: the OS-specific ones and
+`TestE2E_Upgrade`, which needs `HOP_E2E_OLD`). As root `internal/api`'s
+`TestE2E_Audit` took 580 s once; alone it took 2.9 s three times and 3.65 s
+in a second full root run ([[open-questions]]). After the switch fix, green
+again on the Mac (`internal/client` 450 s, `cmd/agent` 653 s; 14 skips),
+with `-race` on `internal/client` (492 s, no race), and in the VM as a user
+(472 s and 654 s; 12 skips) and as root (491 s and 583 s; 13 skips). Not run
+on Windows. Concept page [[concepts/deleted-devices]]; open points in
+[[open-questions]].
+
+## 2026-11-28 — self-endpoints in the heartbeat checked and capped (not released)
+
+The addresses a device reports in its heartbeat (`selfEndpoints`) were kept
+as sent and given to every other device of its network, which hands them
+to Nebula and writes them to its peer cache: no bound on how many, no check
+that each is an address a peer can send to. One device could put a megabyte
+in every answer to its peers. Nebula keeps the first 10 per address family
+of what it is given and only then drops what it refuses, so junk in front
+pushed the real addresses out. Found in the review of item 14. Now the
+server keeps, in the order sent, only addresses a peer can send to (not
+port 0, with a zone, unspecified, loopback, multicast, link-local,
+0.0.0.0/8, 240.0.0.0/4 or in 10.42.0.0/16, every network's mesh), each once
+(IPv4 written as IPv6 counts as IPv4), at most 10 per address family
+(`nebula.MaxRemotes`), each with the lifetime sent at its own index
+(`selfEndpointHints`, `peerCanSendTo`). A report with nothing usable clears
+what the device said before, and a heartbeat that dropped any logs one
+line. Real agents send only such addresses, so nothing changes for them.
+`internal/api`'s `TestE2E_SelfEndpoints` (real server) was red before: the
+list came back as sent, junk first and all 12 LAN addresses after it.
+
+Two reviews. The first found one cap of 10 for both families (ten IPv4
+addresses pushed every IPv6 one out) and a lifetime multiplied before it
+was compared (a huge one wrapped and expired the address at once). The
+second found that an address with a zone got through: `[2001:db8::7%eth0]`
+and `[2001:db8::7]` were kept as two, `[::%eth0]` is not unspecified to
+`netip`, and a zone can be any length, so ten entries could still carry a
+megabyte; also 0.0.0.0/8 and 240.0.0.0/4, and no test had an IPv4-mapped
+address of a refused class (`TestPeerCanSendTo` now). Each was made red
+before its fix. 17 bugs planted, all caught ([[concepts/e2e-tests]],
+"Self-endpoints"). `internal/api` and `cmd/agent` green on the Mac (797 s and 652 s) and in the VM as a user (498 s and 808 s) and as root (732 s and 585 s); one skip each time, `TestE2E_Upgrade`. Not run on Windows. Left open
+([[open-questions]]): the agent bounds nothing it gets in
+`peerEndpoints`; a real agent never sends an empty list, so what a device
+no longer has stays with its peers until it expires; a directed broadcast
+or a NAT64 address is let through; a peer gets the self-endpoints after the
+lighthouse's list, so Nebula may take fewer than 10 of them (as before);
+a device can make the server log a line per heartbeat (as the firewall
+report already could).
+
+Also explained: `TestE2E_Audit`'s 580 s as root (log of item 14) and 680 s
+as user today. It waited for its turn (`takeTurn`, one hop-server per
+machine) until `cmd/agent`'s tests ended, then ran in a second; in the
+last root run 585.8 s against `cmd/agent`'s 584.6 s. A
+package's time in a run of several is not its own.
+
+## 2026-11-28 — the turn's deadline, the generated code checked, a device's own addresses first, item 4, the API docs (not released)
+
+**A real-server test waits as long as `go test` lets it.** `takeTurn` (one
+hop-server per machine) gave up after 25 minutes whatever `-timeout`
+allowed; `cmd/agent`'s run alone takes 11 minutes in the Linux VM. It now
+waits until a minute before `-timeout` ends the binary (an hour without
+one). `TestTurnDeadline`.
+
+**The generated database code matches the migrations.** 008 to 013 went in
+without `make generate`; the next one would have changed what
+`GetNetworkByID` and `ListAllNetworks` return. Regenerated with sqlc
+v1.30.0; `make sqlc-check` (`sqlc diff`) runs in CI's build job and in
+`make preflight`, and `TestGeneratedDatabaseCodeIsChecked`
+(`internal/cigate`) fails when either stops running it.
+
+**A peer gets a device's own addresses before the lighthouse's list.** The
+peer's Nebula keeps the first 10 per family of what the server sends, so
+ten lighthouse entries pushed out a NAT-PMP mapping only the device knew.
+`TestMergePeerEndpoints_SelfEndpointsFirst` was red (the mapping came
+11th).
+
+**Item 4: an existing network moves to "Everything" and back.** The
+Firewall tab already did it (the first save makes a network managed, and
+the heartbeat answer carries the preset with no rules); nothing tested it.
+`TestE2E_FirewallTCPNetworkToAll` in `internal/api` (real server) and
+`internal/client` (two real Nebula peers): UDP passes from the device's
+next heartbeat and stops after "TCP only", on the same tunnel. 5 planted
+bugs, all caught; `TestE2E_FirewallDelivery` missed two of them
+([[concepts/e2e-tests]]). Agents up to v0.11.31 and `hop client join`
+devices keep their block.
+
+**The API docs.** `swagger/` was made in April: 15 of the 33 documented
+paths, no firewall route. Worse, the page at `/swagger/` loaded and
+`doc.json` answered 500 the whole time: http-swagger v2.0.2 reads swag v1's
+registry, and `swagger/` registers with swag v2. The server now serves
+`doc.json` itself; `TestE2E_APIDocs` (real server) was red with the 500 and
+checks the served paths against `swagger/swagger.json`. The spec no longer
+names `localhost:8080` as its host, so "Try it out" calls the server the
+page came from (checked in a browser). `make swagger` regenerates with the
+version go.mod has (v2.0.0-rc5, the same bytes every run); `make
+swagger-check` regenerates and fails when `swagger/` changed, in CI and in
+`make preflight` (`TestGeneratedAPIDocsAreChecked`). Checked: it fails on
+the April docs. Only handlers with an `@Router` annotation are in the
+docs: 41 operations; `/api/heartbeat`, the members, invites
+and clipboard routes, among others, have none ([[open-questions]]).
+
+Gates before the API docs: Mac `cmd/agent` 634 s, `internal/api` 778 s,
+`internal/client` 449 s (14 platform skips); VM as a user 803 s, 480 s,
+471 s, as root 753 s, 150 s, 475 s (13 skips, all for another system or
+for a user without root). One failure in the VM as a user,
+`TestGeneratedDatabaseCodeIsChecked`: its copy of `ci.yml` was older than
+the commit (the rsync left `.github/` out); green after syncing it. With
+the API docs: `internal/api` and `internal/cigate` on the Mac (149 s, no
+skips) and in the VM as a user and as root (151 s, 150 s), the item-4
+client tests in the VM as a user and as root. The first Mac run caught
+the new route missing from `TestE2E_Audit`'s table. Not run on Windows
+(the VM is gone from UTM).
+
+A review of item 4 and the API docs, each finding checked by a skeptic,
+kept three of four. The TCP-only step had no sign that the tunnel still
+carried anything: a reload that leaves b with no tunnel to a, and no error
+back, passed every check but the new one (a reach TCP 41820). The docs
+test compared path names only: a host named again and an operation that
+differs both passed; it compares the whole document now. And
+`swagger-check` compared with the index, so docs only staged passed it; it
+compares with the last commit. Each made red first. The fourth, that
+`internal/cigate` reads only the CI line and not the recipe, was refuted:
+a recipe made to do nothing would show in review, and a substring check
+of it would not stop that.
+
+**The real-server tests filled the disk.** Each test process builds
+`hop-server` in a temporary folder of its own (about 54 MB), and nothing
+removed it: 478 folders and 26 GB on the Mac, and in the Linux VM a full
+`/tmp`, which failed the gates with "no space left on device" and
+"database or disk is full". The folder's name now carries the process's
+pid, and the next build removes the folders of processes that have ended
+(`TestSweepBuilds`, `TestBuildSweeps`). Six planted bugs, each caught by
+the check written for it: a sweep that removes nothing, one that removes
+everything, a build that does not sweep, a name without the pid, a pid
+not cut from the name, names it cannot read removed. Two of them did not
+compile at first and were made again. Folders from before, named
+`hop-e2e-bin<digits>`, go by hand.
+
+A review of the fix, each finding checked by a skeptic, kept four of
+five. Nothing tested a living process the user may not signal: a sweep
+that took EPERM for "ended" removed root's folder and passed; pid 1 is in
+the test now. `filepath.Glob` read a "[" in the temp path as a pattern,
+so nothing was swept there (and with the right name a folder next to it
+could be); it reads the folder instead. `TestBuildSweeps` failed on its
+second run with `-count=2`, since the build runs once per process; the
+test resets it. And a comment read as if the folders from before went
+too. The fifth, refuted only for want of a Windows machine: there
+`FindProcess` fails for a living process it may not open, which counted
+as ended; only "no such process" (ERROR_INVALID_PARAMETER) does now.
+Three more plants, each caught by the check written for it, and the six
+earlier ones again on the new code; the Windows branch is cross-compiled
+only, not run.
+
+Gates with it: `internal/api`, `internal/cigate` and `internal/e2etest` on
+the Mac (149 s, 0.3 s, 2.7 s) and in the VM as a user (150 s, 0.0 s,
+0.6 s) and as root (150 s, 0.0 s, 0.6 s), no skips; the two sweep tests
+with `-count=3` on both. The VM's `/tmp` stayed at 3 %, with one folder
+left, the last run's.

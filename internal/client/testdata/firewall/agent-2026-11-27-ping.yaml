@@ -1,0 +1,26 @@
+# The firewall block hopssh writes for agents enrolled from 2026-11-27 on in a
+# network with the "ping" preset (networks.firewall_preset, migration 009):
+# agentFirewallYAML in internal/client/enroll.go; its two %d are 41820. Do not
+# edit: devices enrolled then still run it, since nothing rewrites the firewall
+# section.
+firewall:
+  inbound_action: drop
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    # Control plane (admin group) can reach agent API
+    - port: 41820
+      proto: tcp
+      groups:
+        - admin
+    # Other nodes' keepalive reaches the agent API
+    - port: 41820
+      proto: tcp
+      groups:
+        - node
+    # ICMP for diagnostics
+    - port: any
+      proto: icmp
+      host: any

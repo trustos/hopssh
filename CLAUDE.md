@@ -146,13 +146,14 @@ Packages NOT carried over (Pulumi/OCI-specific):
 
 ## Vendor Patch: Nebula
 
-We vendor dependencies and pin `slackhq/nebula` **v1.11.2** with **10 patches** in `patches/`, one theme each (inventory, what each replaced, and what to run after touching them: `patches/README.md`):
+We vendor dependencies and pin `slackhq/nebula` **v1.11.2** with **11 patches** in `patches/`, plus **one** to gVisor, the TCP/IP stack of Nebula's userspace service; one theme each (inventory, what each replaced, and what to run after touching them: `patches/README.md`):
 
 - macOS batched UDP and TUN I/O (`darwin-udp`, `darwin-tun`, `read-loop`);
 - which address a peer is sent to: roam suppression, LAN preferred, ask before moving, a new tunnel stays (`paths`);
-- what the agent calls on `*nebula.Control`: port-mapping addresses, peer endpoints, probes, counters (`control-api`);
-- cert clock-skew tolerance (`cert-skew`); relay-list race and drop warnings (`relays`); closing the netstack of a userspace service (`service-netstack`);
+- what the agent calls on `*nebula.Control`: port-mapping addresses, peer endpoints, probes, counters, what the CA pool refuses (`control-api`);
+- cert clock-skew tolerance (`cert-skew`); relay-list race and drop warnings (`relays`); closing the netstack of a userspace service (`service-netstack`); the firewall swapped atomically on a reload, and checked before one (`firewall-swap`);
 - Linux: closing a network waits until its UDP port and TUN device are free, and the TUN descriptor is close-on-exec (`linux-udp-close`, `linux-tun`).
+- gVisor: a new connection that meets an old one's TIME_WAIT is accepted (or refused with RST where nothing listens any more), not dropped for 60 s (`gvisor-time-wait`). Upstream reopens a TIME_WAIT only for a listening socket, and Nebula's service has none.
 
 - **Apply**: `make patch-vendor`, or `make vendor` (vendor + patch). Always do this after `go mod vendor`. It stops at a patch that does not apply (until November 2026 it carried on in silence).
 - **Build**: `go build -mod=vendor ./...` (or `make build`).
@@ -278,7 +279,7 @@ make release BUMP=minor   # minor bump (v0.1.1 → v0.2.0)
 1. `make release` — tags + pushes → CI builds Docker image + binaries
 2. Update `oci_nomad_cluster/jobs/hopssh.nomad.hcl` with new tag → commit + push
 3. GH runner deploys the new image via Nomad on Oracle Cloud (arm64)
-4. Agents self-update from the control plane
+4. Agents do **not** update by themselves: each machine needs `sudo hop-agent update`, which downloads from the control plane, checks the SHA-256 and restarts the service. Nothing runs it automatically (the heartbeat only reports the version; the dashboard shows drift in amber; the desktop app shows a banner). Verified 2026-11-27.
 
 **Dev deploy** (local testing only):
 ```bash
@@ -334,6 +335,7 @@ Specifically, the agent MUST consult the wiki before:
 - **`RebindUDPServer()` exists** but doesn't auto-detect network changes. The agent must poll for changes and call it. Also must `CloseAllTunnels(true)` to force re-handshake on the new network — rebind alone only re-advertises.
 - **Tunnels go dead after ~15s of inactivity** — Nebula's connection manager sends test packets and marks tunnels dead if no response. Subnet scanning (254 IPs) to keep tunnels warm floods the handshake manager causing EAGAIN. Use heartbeat-driven peer warmup instead.
 - **Nebula tunnels SURVIVE 30s network outages cleanly** — verified empirically (2026-04-16) on Mac mini ↔ MacBook Pro (cellular hotspot, lighthouse-relayed) with `sudo ifconfig en0 down` for 30s. **TCP connections through the tunnel survived the entire outage (0 bytes application data lost — TCP send buffer queues during outage, retransmits on recovery, all 215 of 215 attempted MSGs delivered through a single long-lived `nc` pipe).** ICMP recovery time after `en0 up`: ~3 seconds (first successful ping at T+3 after the network restored). The "~15s tunnel-dead" note above describes idle-detection behavior; *active* tunnels with traffic survive much better. Existing `cmd/agent/nebula.go:147-174` (`watchNetworkChanges` 5s polling + `RebindUDPServer` + `CloseAllTunnels(true)`) is sufficient for real-world mobile reliability — Phase 1 QUIC integration deemed unnecessary for outage survival. Evidence at `spike/nebula-baseline-evidence/`.
+- **gVisor reopens a TIME_WAIT only for a listening socket, and Nebula's userspace service has none** (it accepts through gVisor's forwarder). A new connection that reused a 4-tuple still in the service's TIME_WAIT lost its SYN and every retry for up to 60 s. The server's proxy opens a connection per request from a random port and the agent closes first, so about one request in a few hundred to a userspace node (the desktop app's bundled agent, userspace TUN mode) hung until the 30 s timeout. Fixed by patch `gvisor-time-wait` (found 2026-11-27); tests `TestTimeWaitReopen` (two bare gVisor stacks, the same port twice: red every time, runs under `-race`), `TestE2E_ConnectAgainAfterTimeWait`, `TestE2E_ProxyBackToBack`. Under `-race` a connection through Nebula's userspace stack takes about 0.5 s, so a timing test through it means nothing there: test the mechanism on bare stacks instead.
 - **`preferred_ranges` is essential** — without it, Nebula sorts public IPs before private ones, causing same-NAT peers to try hairpin NAT (fails on most routers) before trying LAN addresses. **It is a top-level key.** From v0.9.1 to v0.11.27 we wrote it under `lighthouse`, where Nebula ignores it without a word: neither this nor patch 15 was ever in effect. Check with `msg="Main HostMap created" preferredRanges="[…]"` in the agent's log; an empty list means it is off.
 
 ### macOS Platform
@@ -639,6 +641,7 @@ These rules are derived from 4 rounds of security review. Follow them for all ne
 - **Check `rows.Err()`** after every `for rows.Next()` loop.
 - **Use `wdb` (write DB) for any operation that needs atomicity** — even reads that must be serialized with a subsequent write. The `rdb` (read DB) can return stale data.
 - **Allocation queries (subnet, node IP) use MAX, not COUNT.** COUNT breaks when rows are deleted. MAX ensures monotonically increasing IDs. The UNIQUE constraint is the safety net.
+- **A node's mesh address is never given out again while the deleted node's certificate is valid.** MAX over the live rows alone gave the newest deleted node's address to the next one. A trigger records every deleted address in `released_node_ips` (API, prune, network cascade, a DELETE by hand); `NextNodeIndex` never goes below the highest address ever used, and when the /24 is full it reuses only addresses released more than 48 h ago. Addresses freed before migration 008 are unknown to it.
 - **Hash before storing, hash before querying.** If a token is hashed at rest (enrollment tokens, session tokens, device codes), the lookup query must hash the input before the WHERE clause.
 
 ### Agent

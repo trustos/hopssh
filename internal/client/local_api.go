@@ -117,21 +117,7 @@ func StartLocalAPI(ctx context.Context, c *Client) error {
 		return fmt.Errorf("local-api: write token: %w", err)
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /local/health", srv.handleHealth)
-	mux.HandleFunc("GET /local/status", srv.handleStatus)
-	mux.HandleFunc("GET /local/peers", srv.handlePeers)
-	mux.HandleFunc("GET /local/events", srv.handleEvents)
-	mux.HandleFunc("POST /local/enroll/device-flow/start", srv.handleEnrollDeviceFlowStart)
-	mux.HandleFunc("POST /local/enroll/device-flow/poll", srv.handleEnrollDeviceFlowPoll)
-	mux.HandleFunc("POST /local/enroll/token", srv.handleEnrollToken)
-	mux.HandleFunc("POST /local/connect", srv.handleConnect)
-	mux.HandleFunc("POST /local/disconnect", srv.handleDisconnect)
-	mux.HandleFunc("POST /local/leave", srv.handleLeave)
-	mux.HandleFunc("POST /local/clipboard-sync", srv.handleClipboardSyncToggle)
-	mux.HandleFunc("POST /local/renew", srv.handleForceRenew)
-
-	authed := localAuthMiddleware(token, mux)
+	authed := localAuthMiddleware(token, srv.routes())
 
 	ln, err := net.Listen("tcp", localAPIBindAddr)
 	if err != nil {
@@ -144,6 +130,11 @@ func StartLocalAPI(ctx context.Context, c *Client) error {
 	}
 
 	addr := ln.Addr().String()
+	// For the agent's own CLI (cli_block.go), next to the token.
+	if err := atomicWrite(filepath.Join(cfgDir, localAPIAddrFile), []byte(addr+"\n"), 0600); err != nil {
+		ln.Close()
+		return fmt.Errorf("local-api: write address: %w", err)
+	}
 	announceLocalAPI(os.Stdout, addr, token)
 	log.Printf("[local-api] listening on %s (token: %s..., file: %s)", addr, token[:8], tokenPath)
 
@@ -188,6 +179,25 @@ func StartLocalAPI(ctx context.Context, c *Client) error {
 	}()
 
 	return nil
+}
+
+// routes is the local API, without its auth.
+func (s *localAPIServer) routes() *http.ServeMux {
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /local/health", s.handleHealth)
+	mux.HandleFunc("GET /local/status", s.handleStatus)
+	mux.HandleFunc("GET /local/peers", s.handlePeers)
+	mux.HandleFunc("GET /local/events", s.handleEvents)
+	mux.HandleFunc("POST /local/enroll/device-flow/start", s.handleEnrollDeviceFlowStart)
+	mux.HandleFunc("POST /local/enroll/device-flow/poll", s.handleEnrollDeviceFlowPoll)
+	mux.HandleFunc("POST /local/enroll/token", s.handleEnrollToken)
+	mux.HandleFunc("POST /local/connect", s.handleConnect)
+	mux.HandleFunc("POST /local/disconnect", s.handleDisconnect)
+	mux.HandleFunc("POST /local/leave", s.handleLeave)
+	mux.HandleFunc("POST /local/clipboard-sync", s.handleClipboardSyncToggle)
+	mux.HandleFunc("POST /local/block-incoming", s.handleBlockIncoming)
+	mux.HandleFunc("POST /local/renew", s.handleForceRenew)
+	return mux
 }
 
 // localAuthMiddleware: bearer-token auth + 127.0.0.1-only enforcement.
@@ -270,6 +280,9 @@ type EnrollmentStatus struct {
 	// ClipboardSync mirrors enrollment.ClipboardSync — Phase L
 	// per-(device, network) opt-in flag for clipboard sync.
 	ClipboardSync bool `json:"clipboardSync,omitempty"`
+	// BlockIncoming: the device's switch "Block incoming from other
+	// devices" is on for this network (firewall_block.go).
+	BlockIncoming bool `json:"blockIncoming"`
 }
 
 // LocalStatus is the GET /local/status response.
@@ -389,6 +402,7 @@ func (s *localAPIServer) enrollmentStatus(e *Enrollment) EnrollmentStatus {
 		TunMode:       e.TunMode,
 		ListenPort:    e.ListenPort,
 		ClipboardSync: e.ClipboardSync,
+		BlockIncoming: incomingBlocked(enrollmentDir(s.configDir(), e.Name)),
 	}
 
 	// Cert info (best-effort).
@@ -455,7 +469,7 @@ func (s *localAPIServer) enrollmentStatus(e *Enrollment) EnrollmentStatus {
 			//
 			// Cold-start grace: the watcher is only spawned when Nebula
 			// is up AND endpoint is non-empty (cmd/agent/main.go:611).
-			// Bundled mode pre-attach, OS-stack fallback, or empty
+			// Bundled mode pre-attach, Nebula that failed to start, or empty
 			// endpoint enrollments never stamp — treat "never stamped"
 			// as alive (no watcher to wedge). The 100-year threshold
 			// matches runWatcherWatchdog's own cold-start exclusion.
@@ -1188,7 +1202,7 @@ func (s *localAPIServer) installEnrollment(er *enrollResponse, endpoint, tunMode
 	// successfully written the cert files, so a write-failure would be
 	// unusual. If/when we refactor those into error-returning forms,
 	// swap in here.
-	writeNebulaConfig(enrollDir, er.ServerIP, serverHost, er.LighthousePort, tunMode, listenPort)
+	writeNebulaConfig(enrollDir, er.ServerIP, serverHost, er.LighthousePort, tunMode, listenPort, er.Firewall)
 	writeDNSConfig(enrollDir, er.DNSDomain, serverHost, er.LighthousePort)
 
 	enrollment := &Enrollment{
@@ -1441,6 +1455,69 @@ func (s *localAPIServer) handleClipboardSyncToggle(w http.ResponseWriter, r *htt
 		"clipboardSync":   req.Enabled,
 		"restartRequired": true,
 	})
+}
+
+// handleBlockIncoming turns the switch "Block incoming from other devices"
+// on or off for one network (firewall_block.go). It is saved before
+// anything else, and applied at once to the network's running Nebula.
+// "applied" is false when the network is not running (its next start has
+// it) or the running Nebula could not take it ("error" says why).
+//
+// POST /local/block-incoming
+//
+//	{ "enrollment": "home", "enabled": true }
+func (s *localAPIServer) handleBlockIncoming(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
+	var req struct {
+		Enrollment string `json:"enrollment"`
+		Enabled    *bool  `json:"enabled"`
+	}
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&req); err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid body")
+		return
+	}
+	if req.Enrollment == "" || req.Enabled == nil {
+		writeJSONError(w, http.StatusBadRequest, "enrollment and enabled are required")
+		return
+	}
+	target := s.enrolls().Get(req.Enrollment)
+	if target == nil {
+		writeJSONError(w, http.StatusNotFound, "enrollment not found")
+		return
+	}
+	on := *req.Enabled
+	err := errNotLive
+	if inst := s.instances().get(target.Name); inst != nil {
+		err = setIncomingBlocked(inst, on)
+	} else if serr := saveIncomingBlocked(enrollmentDir(s.configDir(), target.Name), on); serr != nil {
+		err = fmt.Errorf("%w: %v", errSwitchNotSaved, serr)
+	} else if inst := s.instances().get(target.Name); inst != nil {
+		// It came up meanwhile, maybe from the file as it was before.
+		err = setIncomingBlocked(inst, on)
+	}
+	if errors.Is(err, errSwitchNotSaved) {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if inst := s.instances().get(target.Name); inst != nil {
+		inst.signalHeartbeat() // the dashboard learns it at once
+	}
+	s.events.publish(localEvent{
+		Time: time.Now(),
+		Type: "enrollment.changed",
+		Data: map[string]any{"name": target.Name, "field": "blockIncoming", "value": on},
+	})
+	resp := map[string]any{
+		"enrollment":    target.Name,
+		"blockIncoming": on,
+		"applied":       err == nil,
+	}
+	if err != nil {
+		resp["error"] = err.Error()
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // --- helpers ---

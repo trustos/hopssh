@@ -48,6 +48,8 @@ func migrateListenPorts(reg *enrollmentRegistry) {
 // Idempotent — no-op if already in sync.
 func healListenPortYAML(e *Enrollment) error {
 	cfgPath := filepath.Join(enrollmentDir(configDir, e.Name), "nebula.yaml")
+	unlock := lockNebulaYAML(cfgPath)
+	defer unlock()
 	data, err := os.ReadFile(cfgPath)
 	if err != nil {
 		return err
@@ -70,7 +72,7 @@ func healListenPortYAML(e *Enrollment) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(cfgPath, out, 0644); err != nil {
+	if err := writeNebulaYAML(cfgPath, out); err != nil {
 		return err
 	}
 	log.Printf("[migrate %s] nebula.yaml listen.port updated %d → %d", e.Name, curPort, e.ListenPort)

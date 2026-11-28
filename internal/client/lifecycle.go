@@ -1,9 +1,9 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -56,8 +56,17 @@ func warmPeersFromHeartbeat(inst *meshInstance, endpoint string) {
 		return
 	}
 
-	reqBody := fmt.Sprintf(`{"nodeId":%q}`, strings.TrimSpace(string(nodeID)))
-	req, err := http.NewRequest("POST", endpoint+"/api/heartbeat", strings.NewReader(reqBody))
+	hb := map[string]any{"nodeId": strings.TrimSpace(string(nodeID))}
+	// The firewall report as in every heartbeat: the server takes one without
+	// it to mean the device does not block incoming (firewall_block.go).
+	if a := inst.firewallAck(); a != nil {
+		hb["firewall"] = a
+	}
+	reqBody, err := json.Marshal(hb)
+	if err != nil {
+		return
+	}
+	req, err := http.NewRequest("POST", endpoint+"/api/heartbeat", bytes.NewReader(reqBody))
 	if err != nil {
 		return
 	}
@@ -80,10 +89,14 @@ func warmPeersFromHeartbeat(inst *meshInstance, endpoint string) {
 	var body struct {
 		Peers         []string            `json:"peers"`
 		PeerEndpoints map[string][]string `json:"peerEndpoints"`
+		Blocklist     json.RawMessage     `json:"blocklist"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return
 	}
+	// A device deleted while this one was down is refused before the warm-up
+	// dials. Both callers (startInstance, reloadNebula) hold startMu.
+	applyBlocklistAtStart(inst, body.Blocklist)
 
 	// Inject advertised peer UDP endpoints into Nebula's hostmap BEFORE
 	// dialing, so the TCP dials below traverse an already-populated hostmap
@@ -132,7 +145,7 @@ func startMeshWithError(configPath, tunMode string) (meshService, error) {
 
 	svc, err := startNebula(configPath)
 	if err != nil {
-		log.Printf("[agent] WARNING: Nebula userspace failed: %v (falling back to OS stack)", err)
+		log.Printf("[agent] WARNING: Nebula userspace failed: %v", err)
 		return nil, err
 	}
 	return svc, nil

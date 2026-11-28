@@ -18,6 +18,7 @@ type InviteHandler struct {
 	Networks *db.NetworkStore
 	Members  *db.NetworkMemberStore
 	Invites  *db.InviteStore
+	Audit    *db.AuditStore
 }
 
 // CreateInvite generates a new invite code for a network. Admin only.
@@ -76,6 +77,8 @@ func (h *InviteHandler) CreateInvite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to create invite", http.StatusInternalServerError)
 		return
 	}
+	// Never the code: whoever reads the log could join with it.
+	logAudit(h.Audit, user.ID, "invite.create", invite.NetworkID, "", map[string]any{"inviteId": invite.ID, "role": invite.Role})
 
 	writeJSONStatus(w, http.StatusCreated, map[string]interface{}{
 		"id":        invite.ID,
@@ -157,9 +160,14 @@ func (h *InviteHandler) DeleteInvite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.Invites.Delete(networkID, inviteID); err != nil {
+	// An invite that is not there (any more) is a 204 with no entry.
+	deleted, err := h.Invites.Delete(networkID, inviteID)
+	if err != nil {
 		http.Error(w, "failed to delete invite", http.StatusInternalServerError)
 		return
+	}
+	if deleted {
+		logAudit(h.Audit, user.ID, "invite.revoke", networkID, "", map[string]any{"inviteId": inviteID})
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -230,6 +238,7 @@ func (h *InviteHandler) AcceptInvite(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to join network", http.StatusInternalServerError)
 		return
 	}
+	logAudit(h.Audit, user.ID, "invite.accept", invite.NetworkID, "", map[string]any{"inviteId": invite.ID, "role": invite.Role})
 
 	writeJSONStatus(w, http.StatusCreated, map[string]interface{}{
 		"networkId": invite.NetworkID,

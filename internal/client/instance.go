@@ -40,6 +40,14 @@ type meshInstance struct {
 	// (setSvc returns false).
 	startMu sync.Mutex
 
+	// firewall: the policy of a managed network this instance runs, and the
+	// report its next heartbeat carries (firewall_apply.go).
+	firewall firewallState
+
+	// blocklist: the certificates of the network's deleted devices, as last
+	// saved (blocklist.go).
+	blocklist blocklistState
+
 	// heartbeatTrigger is signaled from watchNetworkChanges and any
 	// other out-of-cycle wake-up path so runHeartbeat fires an extra
 	// POST. Buffered 1 — a burst of signals coalesces into one heartbeat.

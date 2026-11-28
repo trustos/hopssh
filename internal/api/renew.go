@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -11,7 +12,10 @@ import (
 	"sync"
 	"time"
 
+	"github.com/slackhq/nebula"
+
 	"github.com/trustos/hopssh/internal/db"
+	"github.com/trustos/hopssh/internal/fwpolicy"
 	"github.com/trustos/hopssh/internal/mesh"
 	"github.com/trustos/hopssh/internal/nebulacfg"
 	"github.com/trustos/hopssh/internal/pki"
@@ -60,6 +64,10 @@ type RenewHandler struct {
 	EventHub       *EventHub
 	Events         *db.NetworkEventStore
 	NetworkManager *mesh.NetworkManager
+	// Firewall: the heartbeat answer of a managed network carries the
+	// policy for the device that asked, and its report is stored (phase 2
+	// of docs/wiki/concepts/firewall-rules.md). Nil: neither.
+	Firewall *db.FirewallStore
 
 	// selfEndpointCache holds each agent's most-recent self-reported
 	// reachable endpoints (populated from heartbeat body.SelfEndpoints).
@@ -147,7 +155,20 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 	h.Nodes.RecordHeartbeat(node.ID, captureAgentIP(r), nil, nil, nil, nil)
 
 	// Persist to DB.
-	if err := h.Nodes.UpdateCert(node.ID, nodeCert.CertPEM, nodeCert.KeyPEM); err != nil {
+	if err := h.Nodes.UpdateCert(node.ID, nodeCert.CertPEM, nodeCert.KeyPEM); errors.Is(err, db.ErrNodeGone) {
+		// Deleted since the lookup above: the cert is not recorded, so no
+		// blocklist would know it.
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	} else if errors.Is(err, db.ErrTooManyCerts) {
+		// A flood of renewals: their certs would not fit on the blocklist
+		// once the node is deleted (db.MaxHeldCerts). The agent waits after
+		// a 429 and renews again once older certs expire.
+		log.Printf("[renew] node %s: refused, it holds %d certificates that have not expired", node.ID, db.MaxHeldCerts)
+		w.Header().Set("Retry-After", "3600")
+		http.Error(w, "too many certificates", http.StatusTooManyRequests)
+		return
+	} else if err != nil {
 		http.Error(w, "failed to update cert: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -241,6 +262,9 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		// omit it.
 		OS   string `json:"os,omitempty"`
 		Arch string `json:"arch,omitempty"`
+		// Firewall: what the agent runs of the policy it got from the
+		// answer before (phase 2). Absent on agents that don't apply rules.
+		Firewall *fwpolicy.Ack `json:"firewall,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.NodeID == "" {
 		http.Error(w, "nodeId is required", http.StatusBadRequest)
@@ -295,6 +319,20 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		_ = h.Nodes.SetPlatform(node.ID, body.OS, body.Arch)
 	}
 
+	// A report that is not one is dropped, and the beat still answers: a
+	// bug in the agent's report must not take the device offline.
+	if h.Firewall != nil && body.Firewall != nil {
+		if a, ok := cleanReport(*body.Firewall); ok {
+			if err := h.Firewall.RecordReport(node.ID, a); err != nil {
+				log.Printf("[heartbeat] node %s: firewall report: %v", node.ID, err)
+			}
+		}
+	} else if h.Firewall != nil {
+		if err := h.Firewall.NoReport(node.ID); err != nil {
+			log.Printf("[heartbeat] node %s: firewall report: %v", node.ID, err)
+		}
+	}
+
 	// Phase G: cache agent's self-reported endpoints. Layer 1 (v0.10.27):
 	// each endpoint carries its own expiry derived from the agent's
 	// NAT-PMP lease lifetime (when reported via SelfEndpointLifetimesSec
@@ -302,28 +340,20 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	//
 	// Empty SelfEndpoints CLEARS any prior entry (agent explicitly has
 	// nothing to report, e.g. portmap dropped + no useful interface IPs).
-	if len(body.SelfEndpoints) > 0 {
-		now := time.Now()
-		hints := make([]endpointHint, 0, len(body.SelfEndpoints))
-		for i, addr := range body.SelfEndpoints {
-			expiresAt := now.Add(selfEndpointHintTTL)
-			// If the agent reported a per-endpoint lifetime, use it.
-			// Apply 50% safety margin per RFC 6886 §3.3 — peers must
-			// stop dialing before the router actually drops the lease,
-			// otherwise the brief window between actual expiry and
-			// our pruning lets the router reassign the port and we
-			// race to a different host.
-			if i < len(body.SelfEndpointLifetimesSec) && body.SelfEndpointLifetimesSec[i] > 0 {
-				safe := time.Duration(body.SelfEndpointLifetimesSec[i]/2) * time.Second
-				if safe < selfEndpointHintTTL {
-					expiresAt = now.Add(safe)
-				}
-			}
-			hints = append(hints, endpointHint{addr: addr, expiresAt: expiresAt})
+	//
+	// Only what a peer can send to is kept, at most maxSelfEndpoints
+	// (selfEndpointHints); a report with nothing usable clears it too.
+	if body.SelfEndpoints != nil {
+		hints, dropped := selfEndpointHints(body.SelfEndpoints, body.SelfEndpointLifetimesSec, time.Now())
+		if dropped > 0 {
+			log.Printf("[heartbeat] node %s: %d of %d self-endpoints dropped (not an address a peer can send to, a duplicate, or over %d of a family)",
+				node.ID, dropped, len(body.SelfEndpoints), maxSelfEndpoints)
 		}
-		h.selfEndpointCache.Store(node.ID, &selfEndpointHint{endpoints: hints})
-	} else if body.SelfEndpoints != nil {
-		h.selfEndpointCache.Delete(node.ID)
+		if len(hints) > 0 {
+			h.selfEndpointCache.Store(node.ID, &selfEndpointHint{endpoints: hints})
+		} else {
+			h.selfEndpointCache.Delete(node.ID)
+		}
 	}
 
 	if h.EventHub != nil {
@@ -358,7 +388,7 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	// the agent can't reach the UDP lighthouse (e.g. carrier-filtered
 	// cellular to Oracle Cloud). Mirrors Tailscale's control-plane-
 	// distributes-peer-endpoints model.
-	peers, _ := h.Nodes.ListForNetwork(node.NetworkID)
+	peers, peersErr := h.Nodes.ListForNetwork(node.NetworkID)
 	var peerIPs []string
 	var relayIPs []string
 	peerEndpoints := map[string][]string{}
@@ -496,14 +526,38 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		resp["routes"] = out
 	}
 
+	// Phase 2: the policy for this device, when the network is managed. On
+	// a failed read it is left out, and the agent keeps what it runs: a
+	// policy built from a partial list of nodes would drop their rules.
+	if h.Firewall != nil && peersErr == nil {
+		preset, rules, managed, err := h.Firewall.Policy(node.NetworkID)
+		if err != nil {
+			log.Printf("[heartbeat] node %s: firewall policy: %v", node.ID, err)
+		} else if managed {
+			resp["firewall"] = fwpolicy.Resolve(preset, rules, node.ID, nodeAddrs(peers))
+		}
+	}
+
+	// The certificates of the network's deleted nodes, which the device
+	// gives Nebula's pki.blocklist (docs/wiki/concepts/deleted-devices.md).
+	// Sent always, an empty list too, as it replaces what the agent holds;
+	// left out on a failed read, and the agent keeps what it has.
+	if list, err := h.Nodes.Blocklist(node.NetworkID, time.Now()); err != nil {
+		log.Printf("[heartbeat] node %s: blocklist: %v", node.ID, err)
+	} else {
+		resp["blocklist"] = list
+	}
+
 	writeJSON(w, resp)
 }
 
 // mergePeerEndpoints combines a peer's lighthouse-cached UDP endpoints
 // (Nebula's in-memory advertise_addrs cache, populated via the UDP
 // HostQuery flow) with the peer's self-reported endpoints from its
-// HTTPS heartbeat (Phase G). Lighthouse entries come first in result
-// order (preferred when both sources agree); hint entries fill gaps.
+// HTTPS heartbeat (Phase G). Hint entries come first: the peer's Nebula
+// keeps the first 10 per family of this list (nebula.MaxRemotes) and asks
+// the lighthouse itself besides, so what only the device knows must not be
+// pushed out by what the lighthouse knows (until 2026-11-28 it came after).
 //
 // Returns deduped, validated `IP:port` strings. Hint entries past
 // their per-endpoint expiry are dropped — peers shouldn't dial dead
@@ -520,17 +574,6 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 func mergePeerEndpoints(lighthouse []netip.AddrPort, hint *selfEndpointHint, now time.Time) []string {
 	out := make([]string, 0, len(lighthouse)+4)
 	seen := map[string]struct{}{}
-	for _, ap := range lighthouse {
-		if !ap.IsValid() {
-			continue
-		}
-		s := ap.String()
-		if _, dup := seen[s]; dup {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
 	if hint != nil {
 		for _, e := range hint.endpoints {
 			if !e.expiresAt.IsZero() && now.After(e.expiresAt) {
@@ -550,8 +593,97 @@ func mergePeerEndpoints(lighthouse []netip.AddrPort, hint *selfEndpointHint, now
 			out = append(out, norm)
 		}
 	}
+	for _, ap := range lighthouse {
+		if !ap.IsValid() {
+			continue
+		}
+		s := ap.String()
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
 	return out
 }
+
+// maxSelfEndpoints is how many self-endpoints of a device the server keeps
+// per address family: the most Nebula takes for a host (the rest it drops).
+// A peer gets them before what the lighthouse knows of the device
+// (mergePeerEndpoints). Every peer gets them in each heartbeat answer and
+// writes them to its peer cache, so without a bound one device could put a
+// megabyte in all of them.
+const maxSelfEndpoints = nebula.MaxRemotes
+
+// selfEndpointHints is what the server keeps of the self-endpoints of a
+// heartbeat: in the order sent, those a peer can send to, normalized, each
+// once, at most maxSelfEndpoints per address family, with the lifetime sent
+// at the same index.
+// dropped is how many it left out. The agent sends only such addresses
+// (internal/client/self_endpoints.go); anything else is a broken or hostile
+// device, and junk in front would push the real addresses out of the ones
+// Nebula takes.
+func selfEndpointHints(endpoints []string, lifetimesSec []int, now time.Time) (hints []endpointHint, dropped int) {
+	seen := map[netip.AddrPort]struct{}{}
+	perFamily := map[bool]int{} // by Is4
+	for i, s := range endpoints {
+		ap, err := netip.ParseAddrPort(s)
+		if err != nil || !peerCanSendTo(ap) {
+			dropped++
+			continue
+		}
+		ap = netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
+		if _, dup := seen[ap]; dup || perFamily[ap.Addr().Is4()] == maxSelfEndpoints {
+			dropped++
+			continue
+		}
+		seen[ap] = struct{}{}
+		perFamily[ap.Addr().Is4()]++
+		expiresAt := now.Add(selfEndpointHintTTL)
+		// If the agent reported a per-endpoint lifetime, use it.
+		// Apply 50% safety margin per RFC 6886 §3.3 — peers must
+		// stop dialing before the router actually drops the lease,
+		// otherwise the brief window between actual expiry and
+		// our pruning lets the router reassign the port and we
+		// race to a different host.
+		// Compared in seconds: a lifetime too large for a Duration (no
+		// NAT-PMP one is) would wrap and expire the address at once.
+		if i < len(lifetimesSec) && lifetimesSec[i] > 0 {
+			if half := lifetimesSec[i] / 2; half < int(selfEndpointHintTTL/time.Second) {
+				expiresAt = now.Add(time.Duration(half) * time.Second)
+			}
+		}
+		hints = append(hints, endpointHint{addr: ap.String(), expiresAt: expiresAt})
+	}
+	return hints, dropped
+}
+
+// peerCanSendTo: ap is an address a peer elsewhere can send UDP to. Not
+// port 0; not with a zone, which names an interface of the device itself
+// and can be any length; not unspecified, loopback, multicast, link-local,
+// 0.0.0.0/8 or 240.0.0.0/4 (255.255.255.255 among them); and not in the
+// mesh (10.42.0.0/16, every network's): that one would go into the tunnel
+// it is meant to set up. An IPv4 address written as IPv6 is judged as IPv4.
+func peerCanSendTo(ap netip.AddrPort) bool {
+	if ap.Port() == 0 || ap.Addr().Zone() != "" {
+		return false
+	}
+	a := ap.Addr().Unmap()
+	if !a.IsValid() || a.IsUnspecified() || a.IsLoopback() || a.IsMulticast() ||
+		a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() {
+		return false
+	}
+	return !thisNetwork.Contains(a) && !reserved.Contains(a) && !meshRange.Contains(a)
+}
+
+var (
+	// meshRange holds the mesh addresses of every network (db.AllocateSubnet).
+	meshRange = netip.MustParsePrefix("10.42.0.0/16")
+	// Nobody can send to "this network" (RFC 1122) or to the reserved
+	// range, which holds the broadcast address.
+	thisNetwork = netip.MustParsePrefix("0.0.0.0/8")
+	reserved    = netip.MustParsePrefix("240.0.0.0/4")
+)
 
 // parseCapabilitiesForRenew unmarshals the JSON-array capability blob
 // stored on Node into a set, defaulting to empty on parse failure.

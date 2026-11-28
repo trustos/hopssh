@@ -28,14 +28,26 @@ jobs:
       - name: Vendor dependencies + apply patches
         run: make setup
 
+      - name: Check the patches (each alone, either order, vendor/ as they make it)
+        run: make patch-check
+
       - name: Build frontend
         run: make frontend-embed
+
+      - name: Test frontend
+        run: cd frontend && npm test
 
       - name: Build
         run: make build
 
       - name: Vet
         run: make vet
+
+      - name: Generated database code matches the migrations
+        run: make sqlc-check
+
+      - name: API docs match the handlers' annotations
+        run: make swagger-check
 
       - name: Test
         run: make test

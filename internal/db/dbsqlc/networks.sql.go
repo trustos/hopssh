@@ -45,9 +45,24 @@ SELECT id, user_id, name, slug, nebula_ca_cert, nebula_ca_key, nebula_subnet, se
 FROM networks WHERE id = ?
 `
 
-func (q *Queries) GetNetworkByID(ctx context.Context, id string) (Network, error) {
+type GetNetworkByIDRow struct {
+	ID             string
+	UserID         string
+	Name           string
+	Slug           string
+	NebulaCaCert   []byte
+	NebulaCaKey    []byte
+	NebulaSubnet   *string
+	ServerCert     []byte
+	ServerKey      []byte
+	LighthousePort *int64
+	DnsDomain      string
+	CreatedAt      int64
+}
+
+func (q *Queries) GetNetworkByID(ctx context.Context, id string) (GetNetworkByIDRow, error) {
 	row := q.db.QueryRowContext(ctx, getNetworkByID, id)
-	var i Network
+	var i GetNetworkByIDRow
 	err := row.Scan(
 		&i.ID,
 		&i.UserID,
@@ -106,15 +121,30 @@ SELECT id, user_id, name, slug, nebula_ca_cert, nebula_ca_key, nebula_subnet, se
 FROM networks
 `
 
-func (q *Queries) ListAllNetworks(ctx context.Context) ([]Network, error) {
+type ListAllNetworksRow struct {
+	ID             string
+	UserID         string
+	Name           string
+	Slug           string
+	NebulaCaCert   []byte
+	NebulaCaKey    []byte
+	NebulaSubnet   *string
+	ServerCert     []byte
+	ServerKey      []byte
+	LighthousePort *int64
+	DnsDomain      string
+	CreatedAt      int64
+}
+
+func (q *Queries) ListAllNetworks(ctx context.Context) ([]ListAllNetworksRow, error) {
 	rows, err := q.db.QueryContext(ctx, listAllNetworks)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []Network{}
+	items := []ListAllNetworksRow{}
 	for rows.Next() {
-		var i Network
+		var i ListAllNetworksRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.UserID,

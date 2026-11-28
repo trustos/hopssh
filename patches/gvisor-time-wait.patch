@@ -1,0 +1,50 @@
+diff --git a/gvisor.dev/gvisor/pkg/tcpip/stack/stack.go b/gvisor.dev/gvisor/pkg/tcpip/stack/stack.go
+--- a/gvisor.dev/gvisor/pkg/tcpip/stack/stack.go
++++ b/gvisor.dev/gvisor/pkg/tcpip/stack/stack.go
+@@ -514,7 +514,19 @@
+ 	state := s.transportProtocols[p]
+ 	if state != nil {
+ 		state.defaultHandler = h
++	}
++}
++
++// TransportProtocolHandler returns the handler that SetTransportProtocolHandler
++// set for p, or nil.
++//
++// hopssh patch gvisor-time-wait: a TCP endpoint in TIME_WAIT hands it a SYN that
++// may reopen the connection when no listening endpoint is there.
++func (s *Stack) TransportProtocolHandler(p tcpip.TransportProtocolNumber) func(TransportEndpointID, *PacketBuffer) bool {
++	if state := s.transportProtocols[p]; state != nil {
++		return state.defaultHandler
+ 	}
++	return nil
+ }
+ 
+ // Clock returns the Stack's clock for retrieving the current time and
+diff --git a/gvisor.dev/gvisor/pkg/tcpip/transport/tcp/connect.go b/gvisor.dev/gvisor/pkg/tcpip/transport/tcp/connect.go
+--- a/gvisor.dev/gvisor/pkg/tcpip/transport/tcp/connect.go
++++ b/gvisor.dev/gvisor/pkg/tcpip/transport/tcp/connect.go
+@@ -1425,7 +1425,23 @@
+ 						// being reflected to a listening endpoint.
+ 						return false, reuseTW
+ 					}
++				}
++			}
++			// hopssh patch gvisor-time-wait: a stack that accepts through a
++			// Forwarder (Nebula's userspace service) has no listening
++			// endpoint, and the SYN was dropped here: it and every retry,
++			// until the TIME_WAIT ended 60 s later. Hand it to the stack's
++			// handler, as a SYN for a 4-tuple that nobody holds would be:
++			// the Forwarder accepts it, or its handler answers with RST. Not
++			// a SYN+ACK, which the Forwarder refuses: that one is dropped
++			// and the TIME_WAIT stays, as upstream does.
++			if h := e.stack.TransportProtocolHandler(info.TransProto); h != nil && !s.flags.Contains(header.TCPFlagAck) {
++				id := info.ID
++				reuseTW = func() {
++					h(id, s.pkt)
++					s.DecRef()
+ 				}
++				return false, reuseTW
+ 			}
+ 		}
+ 		if extTW {

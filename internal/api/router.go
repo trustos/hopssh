@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
+	"github.com/swaggo/swag/v2"
 	"github.com/trustos/hopssh/internal/auth"
 	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/frontend"
@@ -103,13 +104,25 @@ func NewRouter(
 	eventsH *EventsHandler,
 	netEventsH *NetworkEventsHandler,
 	clipboardH *ClipboardHandler,
+	firewallH *FirewallHandler,
 ) chi.Router {
 	r := chi.NewRouter()
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(cors)
 
-	// Swagger UI.
+	// Swagger UI. http-swagger reads the spec from swag v1's registry, and the
+	// swagger package registers it with swag v2, so doc.json is served here
+	// (it answered 500 from April to 2026-11-28; TestE2E_APIDocs).
+	r.Get("/swagger/doc.json", func(w http.ResponseWriter, _ *http.Request) {
+		doc, err := swag.ReadDoc()
+		if err != nil {
+			http.Error(w, "no API docs in this build", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Write([]byte(doc))
+	})
 	r.Get("/swagger/*", httpSwagger.WrapHandler)
 
 	// Rate limiter for public auth endpoints: 10 requests/minute burst 20.
@@ -248,6 +261,18 @@ func NewRouter(
 		r.With(wt).Get("/api/networks/{networkID}/invites", inviteH.ListInvites)
 		r.With(wt).Delete("/api/networks/{networkID}/invites/{inviteID}", inviteH.DeleteInvite)
 		r.With(wt).Post("/api/invites/{code}/accept", inviteH.AcceptInvite)
+
+		// Firewall rules of a network, and the rule sets its owner shares
+		// between networks (docs/wiki/decisions/firewall-rule-sets.md).
+		r.With(wt).Get("/api/networks/{networkID}/firewall", firewallH.GetNetworkFirewall)
+		r.With(wt).Get("/api/networks/{networkID}/nodes/{nodeID}/firewall", firewallH.GetNodeFirewall)
+		r.With(wt).Put("/api/networks/{networkID}/firewall", firewallH.UpdateNetworkFirewall)
+		r.With(wt).Put("/api/networks/{networkID}/firewall/sets/{setID}", firewallH.AttachFirewallSet)
+		r.With(wt).Delete("/api/networks/{networkID}/firewall/sets/{setID}", firewallH.DetachFirewallSet)
+		r.With(wt).Get("/api/firewall/sets", firewallH.ListFirewallSets)
+		r.With(wt).Post("/api/firewall/sets", firewallH.CreateFirewallSet)
+		r.With(wt).Put("/api/firewall/sets/{setID}", firewallH.UpdateFirewallSet)
+		r.With(wt).Delete("/api/firewall/sets/{setID}", firewallH.DeleteFirewallSet)
 	})
 
 	// Health check for container orchestrators (no auth, no rate limit).

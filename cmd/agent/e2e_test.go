@@ -23,14 +23,28 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/slackhq/nebula/cert"
+	"gopkg.in/yaml.v3"
 
 	"github.com/trustos/hopssh/internal/e2etest"
 	"github.com/trustos/hopssh/internal/nebulacfg"
 )
 
 // End-to-end tests: the real hop-server and real agents, each in its own
-// process, over a real Nebula mesh on this machine. Agents run unprivileged,
-// i.e. in "in-app" (userspace) mode. Skipped with -short.
+// process, over a real Nebula mesh on this machine. Agents run as the user who
+// runs the tests: unprivileged that is "in-app" (userspace) mode, as root the
+// agent moves itself to a kernel TUN device, as an installed service does (see
+// agentTunMode). Skipped with -short.
+
+// agentTunMode is the mode an agent started by these tests runs in. The agent
+// decides by itself (internal/client readTunMode): root means kernel TUN.
+// Before this, a root run (the Linux VM, 2026-11-27) failed TestE2E_Lifecycle
+// twice for that reason alone.
+func agentTunMode() string {
+	if os.Getuid() == 0 {
+		return "kernel"
+	}
+	return "userspace"
+}
 
 // TestMain turns this test binary into an agent when a test starts it as one.
 func TestMain(m *testing.M) {
@@ -260,8 +274,8 @@ func TestE2E_Lifecycle(t *testing.T) {
 		nodes := owner.Nodes(n.ID)
 		return nodes[aID].Status == "online" && nodes[bID].Status == "online"
 	})
-	if sa, sb := a.status("home"), b.status("home"); !sa.Connected || !sb.Connected || sa.TunMode != "userspace" || sa.ListenPort == sb.ListenPort {
-		t.Errorf("status: %+v and %+v, want both connected in userspace mode on different ports", sa, sb)
+	if sa, sb := a.status("home"), b.status("home"); !sa.Connected || !sb.Connected || sa.TunMode != agentTunMode() || sb.TunMode != agentTunMode() || sa.ListenPort == sb.ListenPort {
+		t.Errorf("status: %+v and %+v, want both connected in %s mode on different ports", sa, sb, agentTunMode())
 	}
 
 	t.Run("exec", func(t *testing.T) {
@@ -435,11 +449,24 @@ func TestE2E_Lifecycle(t *testing.T) {
 			t.Error("the certificate on disk did not change")
 		}
 		waitHealthy(t, 30*time.Second, owner, n.ID, aID)
-		e2etest.KnownGap(t, "every certificate renewal (about every 12h) ends all open sessions of an in-app network", func(g *e2etest.Gap) {
-			if out := typeIn(ws, "echo after=$((6*7))\n", "after=42"); !strings.Contains(out, "after=42") {
-				g.Errorf("the open shell is dead after the renewal")
+		after := func() bool {
+			out := typeIn(ws, "echo after=$((6*7))\n", "after=42")
+			return strings.Contains(out, "after=42")
+		}
+		if agentTunMode() == "kernel" {
+			// The kernel holds the agent's end of the session, and the
+			// renewal replaces only Nebula: the shell lives on. Seen as root
+			// in the Linux VM, where the known gap below reported FIXED.
+			if !after() {
+				t.Error("the open shell is dead after the renewal of a kernel-TUN network")
 			}
-		})
+		} else {
+			e2etest.KnownGap(t, "every certificate renewal (about every 12h) ends all open sessions of an in-app network", func(g *e2etest.Gap) {
+				if !after() {
+					g.Errorf("the open shell is dead after the renewal")
+				}
+			})
+		}
 		a.want(http.StatusTooManyRequests, "POST", "/local/renew", M{"enrollment": "home"}, nil)
 	})
 
@@ -634,8 +661,8 @@ func TestE2E_DeletedNode(t *testing.T) {
 	waitHealthy(t, 60*time.Second, owner, home.ID, a.enroll(s, owner, home.ID, "home"))
 }
 
-// TestE2E_MemberShell and TestE2E_DeletedPeer pin what the evaluation of
-// 2026-11-23 found and nobody has fixed yet.
+// TestE2E_MemberShell pins what the evaluation of 2026-11-23 found and
+// nobody has fixed yet.
 func TestE2E_MemberShell(t *testing.T) {
 	s := e2etest.Start(t)
 	owner, member := s.Register("owner"), s.Register("member")
@@ -669,33 +696,55 @@ func TestE2E_MemberShell(t *testing.T) {
 	})
 }
 
+// TestE2E_DeletedPeer: docs/wiki/concepts/deleted-devices.md with real
+// processes. A device that is in the mesh and talks to the agent is deleted
+// in the dashboard. The agent, which has a tunnel to it that the lighthouse
+// plays no part in, cuts it off with its next heartbeat (60 s, give or take
+// 10 %) and Nebula's teardown (5 to 8 s), and keeps it out; the control
+// plane still reaches the agent.
 func TestE2E_DeletedPeer(t *testing.T) {
 	s := e2etest.Start(t)
 	owner := s.Register("owner")
 	n := owner.CreateNetwork("home")
 	a := newAgent(t)
-	a.enroll(s, owner, n.ID, "home")
+	id := a.enroll(s, owner, n.ID, "home")
+	waitHealthy(t, time.Minute, owner, n.ID, id)
 	stolen := owner.Enroll(n.ID, "stolen-laptop")
-	owner.Want(http.StatusNoContent, "DELETE", nodePath(n.ID, stolen.NodeID), nil, nil)
+	peer := e2etest.StartPeer(t, stolen)
 
-	e2etest.KnownGap(t, "a deleted device can join the mesh until its certificate expires, up to 24h later", func(g *e2etest.Gap) {
-		peer := e2etest.StartPeer(t, stolen)
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	// reaches: the device gets an answer from the agent's API over the mesh.
+	reaches := func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		for ctx.Err() == nil {
-			dial, done := context.WithTimeout(ctx, 3*time.Second)
-			conn, err := peer.DialContext(dial, "tcp", meshIP(t, a)+":41820")
-			done()
-			if err == nil {
-				fmt.Fprintf(conn, "GET /health HTTP/1.0\r\n\r\n")
-				conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-				line, _ := bufio.NewReader(conn).ReadString('\n')
-				conn.Close()
-				g.Errorf("a deleted device reached another node: %q", strings.TrimSpace(line))
-				return
-			}
+		conn, err := peer.DialContext(ctx, "tcp", meshIP(t, a)+":41820")
+		if err != nil {
+			return false
 		}
+		defer conn.Close()
+		fmt.Fprintf(conn, "GET /health HTTP/1.0\r\n\r\n")
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		line, _ := bufio.NewReader(conn).ReadString('\n')
+		return strings.HasPrefix(line, "HTTP/")
+	}
+	e2etest.Within(t, time.Minute, "the device to reach the agent before it is deleted", reaches)
+
+	deleted := time.Now()
+	owner.Want(http.StatusNoContent, "DELETE", nodePath(n.ID, stolen.NodeID), nil, nil)
+	e2etest.Within(t, 2*time.Minute, "the agent to cut off the deleted device", func() bool {
+		return strings.Contains(a.log.String(), "Remote certificate is blocked") && !reaches()
 	})
+	t.Logf("cut off %v after the deletion", time.Since(deleted).Round(time.Second))
+	for end := time.Now().Add(20 * time.Second); time.Now().Before(end); {
+		if reaches() {
+			t.Fatal("the deleted device reaches the agent again")
+		}
+	}
+	if log := a.log.String(); !strings.Contains(log, "[blocklist home] certificates of deleted devices refused: 1") {
+		t.Errorf("the agent's log about the list:\n%s", a.log.Tail(40))
+	}
+	if !healthy(owner, n.ID, id) {
+		t.Error("the control plane no longer reaches the agent")
+	}
 }
 
 // TestE2E_Upgrade goes from a released version to this one, server first as in
@@ -765,4 +814,278 @@ func TestE2E_Upgrade(t *testing.T) {
 	agentNow(oldAgent)
 	check("old server, old agent again")
 	agentNow(os.Args[0]) // one that stops in time
+}
+
+// TestE2E_DebugListenerLoopback: `serve --token` with no enrollment serves
+// the agent API (exec, shell, upload) for local testing. Without --listen it
+// must stay on loopback, not on every interface of the machine.
+func TestE2E_DebugListenerLoopback(t *testing.T) {
+	dir := t.TempDir()
+	l := &e2etest.Log{}
+	cmd := exec.Command(os.Args[0], "serve", "--config-dir", filepath.Join(dir, "config"), "--token", "debug-token")
+	cmd.Env = []string{"HOP_E2E_AGENT=1", "PATH=" + os.Getenv("PATH"), "HOME=" + dir, "TMPDIR=" + dir}
+	cmd.Stdout, cmd.Stderr = l, l
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer e2etest.StopProcess(t, "agent", cmd, l)
+
+	var addr string
+	e2etest.Within(t, time.Minute, "the debug listener", func() bool {
+		_, rest, ok := strings.Cut(l.String(), "hop-agent listening on ")
+		addr, _, _ = strings.Cut(rest, " ")
+		return ok
+	})
+	ap, err := netip.ParseAddrPort(addr)
+	if err != nil || !ap.Addr().IsLoopback() {
+		t.Fatalf("debug listener on %q, want a loopback address", addr)
+	}
+
+	// An agent installed on this machine may listen on the same port at its
+	// mesh addresses; only this one knows debug-token, so it is asked for
+	// /health with it rather than just dialled.
+	answers := func(hostPort string) bool {
+		req, _ := http.NewRequest("GET", "http://"+hostPort+"/health", nil)
+		req.Header.Set("Authorization", "Bearer debug-token")
+		resp, err := (&http.Client{Timeout: time.Second}).Do(req)
+		if err != nil {
+			return false
+		}
+		resp.Body.Close()
+		return resp.StatusCode == http.StatusOK
+	}
+	if !answers(addr) {
+		t.Fatalf("the debug listener on %s does not answer /health with its token", addr)
+	}
+	addrs, _ := net.InterfaceAddrs()
+	for _, a := range addrs {
+		ipn, ok := a.(*net.IPNet)
+		if !ok || ipn.IP.IsLoopback() || ipn.IP.To4() == nil {
+			continue
+		}
+		lan := net.JoinHostPort(ipn.IP.String(), fmt.Sprint(ap.Port()))
+		if answers(lan) {
+			t.Errorf("the agent API answers on %s", lan)
+		}
+	}
+}
+
+// TestE2E_FirewallPreset: a real agent writes the firewall block its
+// network's preset names. In a new network every node may reach it on every
+// protocol; in one from before migration 009 on TCP only, as before.
+func TestE2E_FirewallPreset(t *testing.T) {
+	s := e2etest.Start(t)
+	owner := s.Register("owner")
+	for preset, want := range map[string]string{"all": "any", "tcp": "tcp"} {
+		t.Run(preset, func(t *testing.T) {
+			n := owner.CreateNetwork(preset)
+			if preset == "tcp" {
+				s.Exec("UPDATE networks SET firewall_preset = 'tcp' WHERE id = ?", n.ID)
+			}
+			a := newAgent(t)
+			a.enroll(s, owner, n.ID, preset)
+			var cfg struct {
+				Firewall struct {
+					Inbound []struct {
+						Port   any
+						Proto  string
+						Groups []string
+					}
+				}
+			}
+			if err := yaml.Unmarshal([]byte(a.read(preset, "nebula.yaml")), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			var got []string
+			for _, r := range cfg.Firewall.Inbound {
+				if fmt.Sprint(r.Port) == "any" && len(r.Groups) == 1 && r.Groups[0] == "node" {
+					got = append(got, r.Proto)
+				}
+			}
+			if len(got) != 1 || got[0] != want {
+				t.Errorf("rules for every port from group node allow %v, want [%s]", got, want)
+			}
+		})
+	}
+}
+
+// TestE2E_FirewallApplied: phase 2 of docs/wiki/concepts/firewall-rules.md
+// across the real processes. Rules saved in the dashboard reach the agent in
+// a heartbeat answer, and it applies them in place in the mode it runs in
+// (kernel TUN as root, as in the Linux VM). The control plane still reaches
+// it, and its next heartbeat reports the rules, which the dashboard shows.
+// Up to two heartbeats: about two minutes.
+func TestE2E_FirewallApplied(t *testing.T) {
+	s := e2etest.Start(t)
+	owner := s.Register("owner")
+	n := owner.CreateNetwork("home")
+	a := newAgent(t)
+	id := a.enroll(s, owner, n.ID, "home")
+	waitHealthy(t, time.Minute, owner, n.ID, id)
+
+	fw := "/api/networks/" + n.ID + "/firewall"
+	owner.With("If-Match", `"0"`).Want(http.StatusOK, "PUT", fw, M{"preset": "ping", "rules": []M{
+		{"proto": "tcp", "port": "7000", "targetNodeId": id},
+	}}, nil)
+
+	inFile := func() bool {
+		var cfg struct {
+			Firewall struct {
+				Inbound []struct {
+					Port   any
+					Proto  string
+					Groups []string
+				}
+			}
+		}
+		if err := yaml.Unmarshal([]byte(a.read("home", "nebula.yaml")), &cfg); err != nil {
+			t.Fatal(err)
+		}
+		for _, r := range cfg.Firewall.Inbound {
+			if fmt.Sprint(r.Port) == "7000" && r.Proto == "tcp" && len(r.Groups) == 1 && r.Groups[0] == "node" {
+				return true
+			}
+		}
+		return false
+	}
+	e2etest.Within(t, 90*time.Second, "the rule in the agent's nebula.yaml", inFile)
+
+	type device struct {
+		NodeID, Expected, Fingerprint, Error string
+		ReportedAt                           int64
+	}
+	var last device
+	e2etest.Within(t, 90*time.Second, "the dashboard to show the rules applied", func() bool {
+		var p struct{ Devices []device }
+		owner.Want(http.StatusOK, "GET", fw, nil, &p)
+		for _, d := range p.Devices {
+			if d.NodeID == id {
+				last = d
+			}
+		}
+		return last.ReportedAt != 0 && last.Expected != "" && last.Fingerprint == last.Expected && last.Error == ""
+	})
+	if !healthy(owner, n.ID, id) {
+		t.Error("the control plane no longer reaches the agent under the rules")
+	}
+	if log := a.log.String(); !strings.Contains(log, "[firewall home] runs policy") || strings.Contains(log, "refused policy") || strings.Contains(log, "waits for the next heartbeat") {
+		t.Errorf("the agent's log about the policy:\n%s", a.log.Tail(40))
+	}
+}
+
+// cli runs a hop-agent command against a's config dir, as a user would, and
+// returns its exit code and output.
+func (a *agent) cli(args ...string) (int, string) {
+	a.t.Helper()
+	cmd := exec.Command(a.bin, append(args, "--config-dir", filepath.Join(a.dir, "config"))...)
+	cmd.Env = []string{"HOP_E2E_AGENT=1", "PATH=" + os.Getenv("PATH"), "HOME=" + a.dir, "TMPDIR=" + a.dir}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		if e, ok := err.(*exec.ExitError); ok {
+			return e.ExitCode(), string(out)
+		}
+		a.t.Fatalf("hop-agent %v: %v", args, err)
+	}
+	return 0, string(out)
+}
+
+// TestE2E_BlockIncoming: phase 3 of docs/wiki/concepts/firewall-rules.md
+// with real processes. `hop-agent block-incoming on` goes to the running
+// agent, which blocks at once; the control plane still reaches it, the
+// dashboard says it is blocked, and so does it after a restart of the
+// agent. `off` brings the network's rules back.
+func TestE2E_BlockIncoming(t *testing.T) {
+	s := e2etest.Start(t)
+	owner := s.Register("owner")
+	n := owner.CreateNetwork("home")
+	a := newAgent(t)
+	id := a.enroll(s, owner, n.ID, "home")
+	waitHealthy(t, time.Minute, owner, n.ID, id)
+	owner.With("If-Match", `"0"`).Want(http.StatusOK, "PUT", "/api/networks/"+n.ID+"/firewall", M{"preset": "ping", "rules": []M{
+		{"proto": "tcp", "port": "7000", "targetNodeId": id},
+	}}, nil)
+
+	type device struct {
+		Expected, Fingerprint, Error string
+		Blocked                      bool
+		ReportedAt                   int64
+	}
+	reach := func() device {
+		var p struct{ Device device }
+		owner.Want(http.StatusOK, "GET", nodePath(n.ID, id)+"/firewall", nil, &p)
+		return p.Device
+	}
+	rule := func() bool { return strings.Contains(a.read("home", "nebula.yaml"), "7000") }
+	// The policy comes with a heartbeat answer, the report with the next.
+	e2etest.Within(t, 90*time.Second, "the rule in the agent's nebula.yaml", rule)
+	e2etest.Within(t, 90*time.Second, "the dashboard to show the rules applied", func() bool {
+		d := reach()
+		return d.Expected != "" && d.Fingerprint == d.Expected && !d.Blocked
+	})
+	switchSays := func(want bool) {
+		t.Helper()
+		var out struct {
+			Enrollments []struct {
+				Name          string
+				BlockIncoming bool
+			}
+		}
+		a.want(http.StatusOK, "GET", "/local/status", nil, &out)
+		for _, e := range out.Enrollments {
+			if e.Name == "home" && e.BlockIncoming != want {
+				t.Errorf("/local/status says blockIncoming %v; want %v", e.BlockIncoming, want)
+			}
+		}
+	}
+
+	code, out := a.cli("block-incoming", "on")
+	if code != 0 || !strings.Contains(out, "home: incoming from other devices is blocked") {
+		t.Fatalf("block-incoming on: exit %d\n%s", code, out)
+	}
+	e2etest.Within(t, 30*time.Second, "the dashboard to show the device blocks incoming", func() bool { return reach().Blocked })
+	switchSays(true)
+	if !healthy(owner, n.ID, id) {
+		t.Error("the control plane no longer reaches the agent that blocks incoming")
+	}
+	if !rule() {
+		t.Error("blocking incoming took the network's rule out of nebula.yaml")
+	}
+
+	// A restart of the agent: still blocked, and the dashboard still says so.
+	a.stop()
+	a.run()
+	waitHealthy(t, time.Minute, owner, n.ID, id)
+	switchSays(true)
+	time.Sleep(2 * time.Second) // the first heartbeats after the start
+	if d := reach(); !d.Blocked {
+		t.Errorf("after a restart of the agent the dashboard says %+v; it blocks incoming", d)
+	}
+
+	code, out = a.cli("block-incoming", "off", "--network", "home")
+	if code != 0 || !strings.Contains(out, "home: the network's rules apply again") {
+		t.Fatalf("block-incoming off: exit %d\n%s", code, out)
+	}
+	e2etest.Within(t, 30*time.Second, "the dashboard to show the device no longer blocks", func() bool { return !reach().Blocked })
+	// Switched off this soon after the restart, the agent had not checked the
+	// policy again yet: it reports the fingerprint with the next heartbeat.
+	e2etest.Within(t, 90*time.Second, "the dashboard to show the rules applied again", func() bool {
+		d := reach()
+		return !d.Blocked && d.Fingerprint == d.Expected
+	})
+	switchSays(false)
+	if !healthy(owner, n.ID, id) {
+		t.Error("the control plane does not reach the agent after the switch went off")
+	}
+
+	// What it refuses.
+	if code, out := a.cli("block-incoming", "maybe"); code != 2 || !strings.Contains(out, "Usage: hop-agent block-incoming on|off") {
+		t.Errorf("block-incoming maybe: exit %d\n%s", code, out)
+	}
+	if code, out := a.cli("block-incoming", "on", "--network", "nope"); code != 1 || !strings.Contains(out, "enrollment not found") {
+		t.Errorf("block-incoming on --network nope: exit %d\n%s", code, out)
+	}
+	a.stop()
+	if code, out := a.cli("block-incoming", "on"); code != 1 || !strings.Contains(out, "the agent is not running") {
+		t.Errorf("block-incoming with the agent stopped: exit %d\n%s", code, out)
+	}
 }

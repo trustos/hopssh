@@ -1,0 +1,19 @@
+# The firewall block hopssh writes for hop client join devices enrolled from
+# 2026-11-27 on: clientNebulaConfig in internal/client/cli_join.go; its %d is
+# 41820. Do not edit: devices enrolled then still run it, since nothing
+# rewrites the firewall section.
+firewall:
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    # The mesh keepalive of every agent dials this port. Nothing listens
+    # here, so the reset tells the agent the tunnel works.
+    - port: 41820
+      proto: tcp
+      groups:
+        - node
+    - port: any
+      proto: icmp
+      host: any

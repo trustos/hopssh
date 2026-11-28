@@ -24,6 +24,9 @@ Commands:
   uninstall   Remove the service (--purge to also remove configs + logs;
               --remove-binary for a complete wipe; --dry-run to preview)
   update      Update to the latest version
+  block-incoming on|off
+              Block what other devices of a network may reach on this one,
+              apart from what hopssh needs (--network <name>)
   version     Print version and exit
 
 Multi-network:

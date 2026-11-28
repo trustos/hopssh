@@ -88,9 +88,11 @@ func (s *NetworkMemberStore) ListNetworkIDsForUser(userID string) ([]string, err
 	return q.ListNetworkIDsForMember(context.Background(), userID)
 }
 
-func (s *NetworkMemberStore) Remove(networkID, id string) error {
+// Remove deletes a membership and reports whether there was one.
+func (s *NetworkMemberStore) Remove(networkID, id string) (bool, error) {
 	q := dbsqlc.New(WrapDB(s.wdb))
-	return q.DeleteNetworkMember(context.Background(), dbsqlc.DeleteNetworkMemberParams{NetworkID: networkID, ID: id})
+	n, err := q.DeleteNetworkMember(context.Background(), dbsqlc.DeleteNetworkMemberParams{NetworkID: networkID, ID: id})
+	return n > 0, err
 }
 
 func (s *NetworkMemberStore) RemoveByNetworkAndUser(networkID, userID string) error {

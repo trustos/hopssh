@@ -31,7 +31,7 @@ func (q *Queries) DeleteExpiredInvites(ctx context.Context) error {
 	return err
 }
 
-const deleteInvite = `-- name: DeleteInvite :exec
+const deleteInvite = `-- name: DeleteInvite :execrows
 DELETE FROM network_invites WHERE network_id = ? AND id = ?
 `
 
@@ -40,9 +40,12 @@ type DeleteInviteParams struct {
 	ID        string
 }
 
-func (q *Queries) DeleteInvite(ctx context.Context, arg DeleteInviteParams) error {
-	_, err := q.db.ExecContext(ctx, deleteInvite, arg.NetworkID, arg.ID)
-	return err
+func (q *Queries) DeleteInvite(ctx context.Context, arg DeleteInviteParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteInvite, arg.NetworkID, arg.ID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const getInviteByCode = `-- name: GetInviteByCode :one

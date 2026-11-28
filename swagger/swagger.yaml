@@ -15,6 +15,15 @@ definitions:
         example: a1b2c3d4e5f6...
         type: string
     type: object
+  internal_api.BundleResponse:
+    properties:
+      bundleUrl:
+        example: https://hopssh.com/api/bundles/abc123
+        type: string
+      expiresIn:
+        example: 900
+        type: integer
+    type: object
   internal_api.CreateNetworkRequest:
     properties:
       name:
@@ -23,17 +32,50 @@ definitions:
     type: object
   internal_api.CreateNodeResponse:
     properties:
+      endpoint:
+        example: https://hopssh.com:9473
+        type: string
       enrollmentToken:
         example: a1b2c3d4...
-        type: string
-      installCommand:
-        example: curl -fsSL https://hopssh.com/install | sudo bash -s -- --token a1b2c3d4...
         type: string
       nebulaIP:
         example: 10.42.1.2/24
         type: string
       nodeId:
         example: 550e8400-e29b-41d4-a716-446655440000
+        type: string
+    type: object
+  internal_api.DeviceAuthorizeRequest:
+    properties:
+      networkId:
+        example: 550e8400-...
+        type: string
+      userCode:
+        example: HOP-K9M2
+        type: string
+    type: object
+  internal_api.DeviceCodeResponse:
+    properties:
+      deviceCode:
+        example: abc123...
+        type: string
+      expiresIn:
+        example: 600
+        type: integer
+      interval:
+        example: 5
+        type: integer
+      userCode:
+        example: HOP-K9M2
+        type: string
+      verificationURI:
+        example: /device
+        type: string
+    type: object
+  internal_api.DevicePollRequest:
+    properties:
+      deviceCode:
+        example: abc123...
         type: string
     type: object
   internal_api.EnrollRequest:
@@ -132,9 +174,15 @@ definitions:
       createdAt:
         example: 1712361600
         type: integer
+      dnsDomain:
+        example: hop
+        type: string
       id:
         example: 550e8400-e29b-41d4-a716-446655440000
         type: string
+      lighthousePort:
+        example: 42001
+        type: integer
       name:
         example: production
         type: string
@@ -153,12 +201,44 @@ definitions:
       agentRealIP:
         example: 203.0.113.10
         type: string
+      agentVersion:
+        example: v0.9.15
+        type: string
       arch:
         example: arm64
+        type: string
+      capabilities:
+        example:
+        - terminal
+        - health
+        - forward
+        items:
+          type: string
+        type: array
+      clientType:
+        description: |-
+          ClientType is "desktop" (bundled in or installed by the macOS
+          .app) or "cli" (standalone hop-agent binary). Build-baked at
+          the agent — not affected by runtime mode (a "desktop" build
+          running as the system LaunchDaemon still reports "desktop").
+          Empty string for legacy / pre-v0.10.52 agents that don't report.
+        example: desktop
+        type: string
+      connectivity:
+        description: |-
+          Connectivity is derived from PeersDirect / PeersRelayed at serialize time.
+          Values: "" (unknown — agent hasn't reported), "idle" (no peers),
+          "direct" (all peers direct), "relayed" (all peers relayed),
+          "mixed" (some direct, some relayed). Skipped entirely for lighthouse nodes.
+        example: direct
         type: string
       createdAt:
         example: 1712361600
         type: integer
+      dnsName:
+        type: string
+      exposedPorts:
+        type: string
       hostname:
         example: web-server-1
         type: string
@@ -174,11 +254,48 @@ definitions:
       networkId:
         example: 550e8400-e29b-41d4-a716-446655440000
         type: string
+      nodeType:
+        example: node
+        type: string
       os:
         example: linux
         type: string
+      peers:
+        description: parsed from peer_state JSON; nil if never reported
+        items:
+          $ref: '#/definitions/internal_api.PeerDetail'
+        type: array
+      peersDirect:
+        example: 3
+        type: integer
+      peersRelayed:
+        example: 1
+        type: integer
+      peersReportedAt:
+        example: 1712361600
+        type: integer
       status:
         example: online
+        type: string
+    type: object
+  internal_api.PeerDetail:
+    properties:
+      direct:
+        example: true
+        type: boolean
+      remoteAddr:
+        example: 203.0.113.18:4242
+        type: string
+      rttMs:
+        description: |-
+          RTTms is the agent-measured EWMA-smoothed TCP-connect round-trip
+          to the peer's mesh API listener (port 41820). Populated only
+          when Direct=true; relayed peers report 0. 0 means "no sample
+          yet" (brand-new peer, or relayed). See cmd/agent/peerstate.go.
+        example: 32
+        type: integer
+      vpnAddr:
+        example: 10.42.1.7
         type: string
     type: object
   internal_api.PortForwardResponse:
@@ -217,6 +334,24 @@ definitions:
         example: secretpassword
         type: string
     type: object
+  internal_api.RenewRequest:
+    properties:
+      nodeId:
+        example: 550e8400-e29b-41d4-a716-446655440000
+        type: string
+    type: object
+  internal_api.RenewResponse:
+    properties:
+      expiresIn:
+        example: 86400
+        type: integer
+      nodeCert:
+        example: '-----BEGIN NEBULA CERTIFICATE-----...'
+        type: string
+      nodeKey:
+        example: '-----BEGIN NEBULA X25519 PRIVATE KEY-----...'
+        type: string
+    type: object
   internal_api.StartPortForwardRequest:
     properties:
       localPort:
@@ -244,7 +379,6 @@ definitions:
         example: John Doe
         type: string
     type: object
-host: localhost:8080
 info:
   contact:
     name: hopssh
@@ -256,6 +390,22 @@ info:
   title: hopssh API
   version: 0.1.0
 paths:
+  /api/audit:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List audit log
+      tags:
+      - audit
   /api/auth/login:
     post:
       consumes:
@@ -358,6 +508,132 @@ paths:
       summary: Auth status
       tags:
       - auth
+  /api/bundles/{token}:
+    get:
+      description: Downloads a pre-generated tarball containing agent certs and config.
+        Single-use, expires after 15 minutes.
+      parameters:
+      - description: Download token
+        in: path
+        name: token
+        required: true
+        type: string
+      produces:
+      - application/gzip
+      responses:
+        "200":
+          description: Tarball
+          schema:
+            type: file
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      summary: Download enrollment bundle
+      tags:
+      - enrollment
+  /api/device/authorize:
+    post:
+      consumes:
+      - application/json
+      description: User enters the code shown on the server terminal. Selects a network
+        and authorizes the device.
+      parameters:
+      - description: User code and network selection
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.DeviceAuthorizeRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Authorize device code
+      tags:
+      - enrollment
+  /api/device/code:
+    post:
+      description: Initiates the device authorization flow. Returns a device code
+        for polling and a user code for the human to enter at /device.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.DeviceCodeResponse'
+      summary: Request device code
+      tags:
+      - enrollment
+  /api/device/poll:
+    post:
+      consumes:
+      - application/json
+      description: Agent polls this endpoint to check if the user has authorized the
+        device code. Returns enrollment data when authorized.
+      parameters:
+      - description: Device code
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.DevicePollRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Enrollment complete
+          schema:
+            $ref: '#/definitions/internal_api.EnrollResponse'
+        "400":
+          description: Missing device code
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+        "403":
+          description: authorization_pending or expired
+          schema:
+            type: string
+      summary: Poll device code
+      tags:
+      - enrollment
+  /api/device/verify/{code}:
+    get:
+      description: Check if a user code is valid and pending authorization.
+      parameters:
+      - description: User code (e.g. HOP-K9M2)
+        in: path
+        name: code
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Verify device code
+      tags:
+      - enrollment
   /api/enroll:
     post:
       consumes:
@@ -390,6 +666,91 @@ paths:
       summary: Agent enrollment
       tags:
       - enrollment
+  /api/firewall/sets:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List my rule sets
+      tags:
+      - firewall
+    post:
+      consumes:
+      - application/json
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a rule set
+      tags:
+      - firewall
+  /api/firewall/sets/{setID}:
+    delete:
+      parameters:
+      - description: Rule set ID
+        in: path
+        name: setID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "409":
+          description: attached to a network
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Delete a rule set
+      tags:
+      - firewall
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Rule set ID
+        in: path
+        name: setID
+        required: true
+        type: string
+      - description: Version the change is made against
+        in: header
+        name: If-Match
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+        "409":
+          description: a rule set with that name exists
+          schema:
+            type: string
+        "412":
+          description: changed in the meantime
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Change a rule set
+      tags:
+      - firewall
   /api/networks:
     get:
       description: Returns all mesh networks owned by the authenticated user with
@@ -455,8 +816,8 @@ paths:
         required: true
         type: string
       responses:
-        "200":
-          description: OK
+        "204":
+          description: No Content
         "404":
           description: Not Found
           schema:
@@ -490,6 +851,237 @@ paths:
       summary: Get network
       tags:
       - networks
+  /api/networks/{networkID}/audit:
+    get:
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List network audit log
+      tags:
+      - audit
+  /api/networks/{networkID}/bundles:
+    post:
+      description: Creates a pre-enrolled node and generates a single-use download
+        URL for a tarball containing all certs and config.
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/internal_api.BundleResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create enrollment bundle
+      tags:
+      - enrollment
+  /api/networks/{networkID}/dns:
+    get:
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List DNS records
+      tags:
+      - dns
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create DNS record
+      tags:
+      - dns
+  /api/networks/{networkID}/dns/{recordID}:
+    delete:
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      - description: DNS Record ID
+        in: path
+        name: recordID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+      security:
+      - BearerAuth: []
+      summary: Delete DNS record
+      tags:
+      - dns
+  /api/networks/{networkID}/firewall:
+    get:
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Network firewall rules
+      tags:
+      - firewall
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      - description: Version the change is made against
+        in: header
+        name: If-Match
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+        "412":
+          description: changed in the meantime
+          schema:
+            type: string
+        "428":
+          description: If-Match missing
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Change network firewall rules
+      tags:
+      - firewall
+  /api/networks/{networkID}/firewall/sets/{setID}:
+    delete:
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      - description: Rule set ID
+        in: path
+        name: setID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+      security:
+      - BearerAuth: []
+      summary: Detach a rule set
+      tags:
+      - firewall
+    put:
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      - description: Rule set ID
+        in: path
+        name: setID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+      security:
+      - BearerAuth: []
+      summary: Attach a rule set
+      tags:
+      - firewall
+  /api/networks/{networkID}/join:
+    post:
+      consumes:
+      - application/json
+      description: Issues a "user" cert for a client device to join the mesh. Returns
+        certs and lighthouse info.
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.EnrollResponse'
+      security:
+      - BearerAuth: []
+      summary: Join network as client
+      tags:
+      - enrollment
   /api/networks/{networkID}/nodes:
     get:
       description: Returns all nodes in a network with their status, hostname, OS,
@@ -543,6 +1135,33 @@ paths:
       summary: Add node to network
       tags:
       - nodes
+  /api/networks/{networkID}/nodes/{nodeID}:
+    delete:
+      description: Permanently deletes a node from the network, closes its mesh tunnel
+        and any active port forwards.
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      - description: Node ID
+        in: path
+        name: nodeID
+        required: true
+        type: string
+      responses:
+        "204":
+          description: No Content
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete node
+      tags:
+      - nodes
   /api/networks/{networkID}/nodes/{nodeID}/exec:
     post:
       consumes:
@@ -587,6 +1206,31 @@ paths:
       summary: Execute command
       tags:
       - nodes
+  /api/networks/{networkID}/nodes/{nodeID}/firewall:
+    get:
+      parameters:
+      - description: Network ID
+        in: path
+        name: networkID
+        required: true
+        type: string
+      - description: Node ID
+        in: path
+        name: nodeID
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: object
+      security:
+      - BearerAuth: []
+      summary: What may reach a device
+      tags:
+      - firewall
   /api/networks/{networkID}/nodes/{nodeID}/health:
     get:
       description: Proxies a health check to the agent on the node via Nebula mesh.
@@ -747,6 +1391,33 @@ paths:
       summary: Stop port forward
       tags:
       - port-forwards
+  /api/renew:
+    post:
+      consumes:
+      - application/json
+      description: Agent calls this to get a fresh short-lived Nebula certificate.
+        Authenticated via the per-node bearer token.
+      parameters:
+      - description: Node ID
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/internal_api.RenewRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/internal_api.RenewResponse'
+        "401":
+          description: Invalid token or node not found
+          schema:
+            $ref: '#/definitions/internal_api.ErrorResponse'
+      summary: Renew node certificate
+      tags:
+      - enrollment
 securityDefinitions:
   BearerAuth:
     description: 'Session token from login/register. Format: "Bearer {token}"'

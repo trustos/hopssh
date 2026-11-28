@@ -2,7 +2,7 @@
 -include .env
 export
 
-.PHONY: all setup vendor patch-vendor build build-all build-linux vet test test-race preflight netlab \
+.PHONY: all setup vendor patch-vendor patch-check sqlc-check swagger swagger-check build build-all build-linux vet test test-race preflight netlab \
        generate clean clean-vendor clean-stuck-dumps frontend frontend-embed \
        run dev release wifi-snapshot \
        desktop-build desktop-app desktop-dev desktop-smoke desktop-clean
@@ -43,6 +43,11 @@ patch-vendor:
 		fi; \
 	done
 	@echo "==> Done."
+
+# Check the patches against a pristine vendor tree: each applies alone, in
+# either order they give the same files, and vendor/ is what they make.
+patch-check:
+	@scripts/patch-check.sh
 
 # Build Go binaries.
 build:
@@ -91,9 +96,27 @@ dev-deploy-server:
 vet:
 	go vet -mod=vendor ./...
 
-# Regenerate sqlc code from .sql query files.
+# Regenerate sqlc code from .sql query files (downloads sqlc the first time).
+SQLC = github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0
 generate:
-	$(GOPATH)/bin/sqlc generate || sqlc generate
+	go run $(SQLC) generate
+
+# The generated code matches the migrations and the queries. Migrations 008 to
+# 013 went in without it (found 2026-11-28).
+sqlc-check:
+	go run $(SQLC) diff
+
+# Regenerate the API docs in swagger/ (served at /swagger/) from the handlers'
+# annotations (downloads swag the first time; the version go.mod has).
+SWAG = github.com/swaggo/swag/v2/cmd/swag@v2.0.0-rc5
+swagger:
+	go run $(SWAG) init -q -g cmd/server/main.go --parseDependency -o swagger
+
+# The API docs match the annotations: regenerate and compare with the last
+# commit (docs only staged do not count). They were made last in April, with
+# none of the firewall routes (found 2026-11-28).
+swagger-check: swagger
+	@git diff --exit-code --stat HEAD -- swagger || { echo "swagger/ did not match the annotations; make swagger rewrote it, commit the result"; exit 1; }
 
 # Run tests.
 test:
@@ -107,7 +130,7 @@ test-race:
 	go test -mod=vendor -race -timeout 30m $(RACE_PKGS)
 
 # What has to pass before a release.
-preflight: vet test test-race
+preflight: patch-check vet sqlc-check swagger-check test test-race
 
 # Run the network lab: the real server and agents behind simulated routers.
 # Needs root on Linux, or the podman VM on a Mac. ARGS go to the test binary.

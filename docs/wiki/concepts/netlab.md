@@ -89,7 +89,7 @@ Nebula's own end-to-end tests (`e2e/`, on the Mac, v1.10.3 and v1.11.2) with all
 
 Known to be wrong, checked by a test that will say when it is no longer so (`KnownGap`):
 
-- **UDP between devices does not get through** (`TestUDPBetweenDevices`). mosh, QUIC, WireGuard and Screen Sharing's media need it, while every TCP port between nodes is already open. What the three firewall writers allow, and the decision to make: [[../open-questions]] "UDP between devices is blocked by our own firewall".
+- (No longer a gap since 2026-11-27: the lab's network is new, so its preset is "all" and `TestUDPBetweenDevices` asserts that UDP gets through. Networks from before migration 009 still drop it: [[firewall-rules]].) **UDP between devices does not get through** (`TestUDPBetweenDevices`). mosh, QUIC, WireGuard and Screen Sharing's media need it, while every TCP port between nodes is already open.
 - **A network without UDP has no way out** (`TestNoUDP`). Tailscale has a relay on TCP 443 for that.
 - **Big packets get lost** on a line that takes less than 1480 bytes and does not say so (`TestSmallPackets/told_false`). Small ones get through, so a login works and a listing hangs. Our TUN MTU of 1420 needs 1480 on the way; 1280 broke Screen Sharing (see CLAUDE.md, "TunMTU"). Looking for the MTU per path (DPLPMTUD) was never built.
 

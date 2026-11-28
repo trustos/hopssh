@@ -25,6 +25,7 @@ import (
 
 	"github.com/slackhq/nebula/cert"
 	"github.com/trustos/hopssh/internal/buildinfo"
+	"github.com/trustos/hopssh/internal/fwpolicy"
 	"github.com/trustos/hopssh/internal/nebulacfg"
 	"gopkg.in/yaml.v3"
 )
@@ -59,7 +60,8 @@ func nextHeartbeatRetry(interval time.Duration, err error) time.Duration {
 // runHeartbeat sends periodic heartbeats to the control plane so the
 // dashboard shows the node as "online".
 //
-// Normal mode: every 5 minutes. On failure: fast retry with exponential
+// Normal mode: every 60 s (normalInterval), counted from the end of the
+// previous POST. On failure: fast retry with exponential
 // backoff (5s → 10s → 20s → ... → 2m cap) so agents recover within seconds
 // of a server redeploy. All intervals include ±10% jitter to prevent
 // thundering herd across agents.
@@ -192,6 +194,13 @@ func sendHeartbeat(inst *meshInstance) error {
 			reqBody["selfEndpointLifetimesSec"] = lifetimes
 		}
 	}
+	// The switch "Block incoming", when Nebula runs otherwise
+	// (firewall_block.go); before the report, which says what Nebula runs.
+	reapplyIncomingBlocked(inst)
+	// What the firewall policy of the last answer became (firewall_apply.go).
+	if a := inst.firewallAck(); a != nil {
+		reqBody["firewall"] = a
+	}
 	reqBodyBytes, err := json.Marshal(reqBody)
 	if err != nil {
 		return err
@@ -271,6 +280,14 @@ func sendHeartbeat(inst *meshInstance) error {
 		// `tun.unsafe_routes` in nebula.yaml. Backwards-compatible:
 		// older server builds omit; agent leaves existing routes alone.
 		Routes []string `json:"routes,omitempty"`
+		// Firewall is the policy of a managed network for this node
+		// (phase 2 of docs/wiki/concepts/firewall-rules.md). Absent: the
+		// node keeps the firewall it runs.
+		Firewall *fwpolicy.Delivered `json:"firewall"`
+		// Blocklist is the certificates of the network's deleted devices
+		// (blocklist.go), decoded on its own. Absent: the device keeps
+		// the list it has.
+		Blocklist json.RawMessage `json:"blocklist"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
 		if len(body.PeerEndpoints) > 0 {
@@ -286,6 +303,8 @@ func sendHeartbeat(inst *meshInstance) error {
 		// a Nebula reload only when the route list actually changed.
 		// No-op when both old and new lists are empty.
 		applyRoutesUpdate(inst, body.Routes)
+		applyFirewall(inst, body.Firewall)
+		applyBlocklist(inst, body.Blocklist)
 		// Persist networkId on first successful heartbeat (or refresh
 		// if the registry value drifted — defensive). Idempotent for
 		// stable enrollments; SetNetworkID returns nil with no write
@@ -645,7 +664,7 @@ func renewalTime(notBefore, notAfter time.Time, seed string) time.Time {
 // the other, and the renewal loop is already running by then. A renewal that
 // lands in that window leaves Nebula with the new cert and the old key, and it
 // refuses to start at all — "private key is not a pair with public key in
-// nebula cert" — so the network comes up on the OS stack and Nebula only
+// nebula cert" — so the network stays down and Nebula only
 // arrives on the retry two seconds later. The window is open on every start of
 // a machine that was off for more than half a cert's life, which is 12 h of
 // the 24 h we issue; neither Mac in the fleet has logged it, so it is a race
@@ -796,6 +815,8 @@ func applyNebulaConfigUpdate(inst *meshInstance, update *nebulaConfigUpdate) err
 	}
 
 	configPath := filepath.Join(inst.dir(), "nebula.yaml")
+	unlock := lockNebulaYAML(configPath)
+	defer unlock()
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return fmt.Errorf("read config: %w", err)
@@ -809,7 +830,7 @@ func applyNebulaConfigUpdate(inst *meshInstance, update *nebulaConfigUpdate) err
 		return nil
 	}
 
-	if err := atomicWrite(configPath, out, 0644); err != nil {
+	if err := writeNebulaYAML(configPath, out); err != nil {
 		return fmt.Errorf("write config: %w", err)
 	}
 	log.Printf("[renew] nebula config updated from server")
@@ -910,6 +931,8 @@ func yamlMap(cfg map[string]interface{}, key string) map[string]interface{} {
 //   where the yaml still references the pre-migration paths)
 func ensureP2PConfig(inst *meshInstance) {
 	configPath := filepath.Join(inst.dir(), "nebula.yaml")
+	unlock := lockNebulaYAML(configPath)
+	defer unlock()
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		return
@@ -1133,7 +1156,7 @@ func ensureP2PConfig(inst *meshInstance) {
 		return
 	}
 
-	if err := atomicWrite(configPath, out, 0644); err != nil {
+	if err := writeNebulaYAML(configPath, out); err != nil {
 		log.Printf("[agent] WARNING: failed to update P2P config: %v", err)
 		return
 	}
@@ -1213,12 +1236,32 @@ func addJitter(d time.Duration) time.Duration {
 }
 
 // atomicWrite writes data to a temp file then renames it to the target path.
+// Each call has its own temp file, so two writers of one path can't write
+// into each other's, and the data is synced before the rename, so a crash
+// leaves the old file or the new one, not an empty one.
 func atomicWrite(path string, data []byte, mode os.FileMode) error {
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	tmp := f.Name()
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Chmod(mode)
+	}
+	if err == nil {
+		err = f.Sync()
+	}
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp, path)
+	}
+	if err != nil {
+		os.Remove(tmp)
+	}
+	return err
 }
 
 // reloadNebula restarts the embedded Nebula instance to pick up new certs.
@@ -1244,7 +1287,7 @@ func reloadNebula(inst *meshInstance) {
 		// Nebula never started — e.g. cert was expired at boot. Try a fresh
 		// start now that we have a renewed cert. This is the fix for the
 		// "screen sharing broken after overnight sleep" bug: agent boots with
-		// expired cert → Nebula fails → falls back to OS stack → renewal
+		// expired cert → Nebula fails → network stays down → renewal
 		// gets fresh cert → this path starts Nebula for the first time.
 		inst.svcMu.Unlock()
 		log.Printf("[renew %s] no embedded Nebula instance — attempting cold start with renewed cert", inst.name())
@@ -1289,7 +1332,7 @@ func reloadNebula(inst *meshInstance) {
 		// so this is effectively a no-op, but kept for symmetry).
 		inst.reinjectPortmapAddr()
 
-		// Swap HTTP listener from OS stack to mesh.
+		// Start the agent API on the mesh listener.
 		if inst.onRestart != nil && !inst.isClosed() {
 			inst.onRestart(newSvc)
 		}
@@ -1344,6 +1387,7 @@ func reloadNebula(inst *meshInstance) {
 		log.Printf("[renew %s] instance was closed while Nebula was restarting — stopped it", inst.name())
 		return
 	}
+	applySavedBlocklist(inst, newSvc)
 
 	// Spawn a fresh watcher against the new ctrl.
 	if ctrl := newSvc.NebulaControl(); ctrl != nil && inst.endpoint() != "" {
@@ -1567,6 +1611,7 @@ func retryReloadOnce(inst *meshInstance, configPath, tunMode string, attempt, to
 		log.Printf("[renew %s] instance was closed during retry-reload — stopped Nebula", inst.name())
 		return true
 	}
+	applySavedBlocklist(inst, newSvc)
 
 	if ctrl := newSvc.NebulaControl(); ctrl != nil && inst.endpoint() != "" {
 		inst.startWatcher(ctrl)

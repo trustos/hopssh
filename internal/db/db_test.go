@@ -153,6 +153,7 @@ func TestDeletingANetworkDeletesItsRows(t *testing.T) {
 			`INSERT INTO network_members (id, network_id, user_id) VALUES (?1, ?1, 'owner')`,
 			`INSERT INTO network_invites (id, network_id, created_by, code) VALUES (?1, ?1, 'owner', ?1)`,
 			`INSERT INTO network_events (network_id, event_type, created_at) VALUES (?1, 'x', 0)`,
+			`INSERT INTO node_certs (fingerprint, network_id, node_id, not_after) VALUES (?1, ?1, 'node-' || ?1, 0)`,
 		} {
 			if _, err := p.WriteDB.Exec(q, net); err != nil {
 				t.Fatalf("%s: %v", q, err)
@@ -162,7 +163,7 @@ func TestDeletingANetworkDeletesItsRows(t *testing.T) {
 	if err := NewNetworkStore(p, enc).Delete("gone"); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"nodes", "enrollment_bundles", "dns_records", "network_members", "network_invites", "network_events"} {
+	for _, table := range []string{"nodes", "enrollment_bundles", "dns_records", "network_members", "network_invites", "network_events", "node_certs"} {
 		var n int
 		if err := p.ReadDB.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&n); err != nil {
 			t.Fatal(err)

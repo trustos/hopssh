@@ -158,11 +158,23 @@ func writeClientNebulaConfig(serverIP, serverHost string, lighthousePort int) {
 		log.Printf("  Warning: could not detect physical interface: %v", err)
 	}
 
+	nebulaConfig := clientNebulaConfig(serverIP, serverHost, lighthousePort, physicalIface)
+	cfgPath := filepath.Join(clientDir, "nebula.yaml")
+	unlock := lockNebulaYAML(cfgPath)
+	werr := writeNebulaYAML(cfgPath, []byte(nebulaConfig))
+	unlock()
+	if werr != nil {
+		log.Fatalf("Failed to write %s: %v", cfgPath, werr)
+	}
+}
+
+// clientNebulaConfig is the nebula.yaml of a `hop client join` device.
+func clientNebulaConfig(serverIP, serverHost string, lighthousePort int, physicalIface string) string {
 	if lighthousePort == 0 {
 		lighthousePort = 42001
 	}
 
-	nebulaConfig := fmt.Sprintf(`pki:
+	return fmt.Sprintf(`pki:
   ca: %s/ca.crt
   cert: %s/node.crt
   key: %s/node.key
@@ -209,6 +221,12 @@ firewall:
       proto: any
       host: any
   inbound:
+    # The mesh keepalive of every agent dials this port. Nothing listens
+    # here, so the reset tells the agent the tunnel works.
+    - port: %d
+      proto: tcp
+      groups:
+        - node
     - port: any
       proto: icmp
       host: any
@@ -222,9 +240,8 @@ firewall:
 		nebulacfg.ListenPort,
 		nebulacfg.Routines,
 		nebulacfg.HandshakeTryInterval,
-		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay)
-
-	writeFileSecure(filepath.Join(clientDir, "nebula.yaml"), []byte(nebulaConfig), 0644)
+		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay,
+		agentAPIPort)
 }
 
 func getHostname() string {

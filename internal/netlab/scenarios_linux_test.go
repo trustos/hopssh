@@ -535,16 +535,17 @@ func TestUDPBetweenDevices(t *testing.T) {
 	c, err := a.Dial("udp4", pc.LocalAddr().String(), time.Second)
 	l.must(err)
 	defer c.Close()
-	e2etest.KnownGap(t, "UDP between devices is blocked by the mesh firewall", func(g *e2etest.Gap) {
-		for i := 0; i < 10; i++ {
-			c.Write([]byte("ping"))
-			c.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-			if _, err := c.Read(make([]byte, 8)); err == nil {
-				return
-			}
+	// The lab's network is new, so its preset is "all" (migration 009). A
+	// network from before keeps the TCP-only block: TestE2E_FirewallUDPBetweenAgents
+	// in internal/client.
+	for i := 0; i < 10; i++ {
+		c.Write([]byte("ping"))
+		c.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		if _, err := c.Read(make([]byte, 8)); err == nil {
+			return
 		}
-		g.Errorf("no answer to 10 datagrams")
-	})
+	}
+	t.Errorf("no answer to 10 datagrams between agents of a new network")
 }
 
 func TestTwoPhones(t *testing.T) {
