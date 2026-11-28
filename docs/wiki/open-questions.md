@@ -144,7 +144,7 @@ Source / context: `docs/wiki/log.md` 2026-11-27, `concepts/firewall-rules.md` "F
 
 Read in the code while fixing the keepalive, not run. `runClientJoin` (`internal/client/cli_join.go`) starts Nebula with `tun: user: true` and nothing else: no listener, no SOCKS proxy, no port forward, no DNS. The device's programs can't reach the mesh, so the hint it prints ("Try: ping <hostname>") can't work. Every run also enrolls afresh: a new node and certificate each time, and the old node stays on the server. **Decide:** build it out as a client (kernel TUN as an installed service does, or a local proxy), or drop the command in favour of `hop-agent enroll`.
 
-Also: existing networks keep the `tcp` preset; there is no way yet to move a network, or the devices already in it, to `all` (item 4 of the plan, later; [[concepts/firewall-rules]] "Decide").
+Also: ~~existing networks keep the `tcp` preset; there is no way yet to move a network, or the devices already in it, to `all` (item 4 of the plan, later; [[concepts/firewall-rules]] "Decide").~~ (2026-11-28: the Firewall tab does it. Its owner or an admin picks "Everything" and saves; devices on an agent with P2 apply it at their next heartbeat, older agents and `hop client join` devices keep their block. `TestE2E_FirewallTCPNetworkToAll` in `internal/api` and `internal/client`.)
 
 ## 2026-11-27 — `TestE2E_Proxy`: a request hangs for 30 s (resolved: TIME_WAIT in gVisor)
 

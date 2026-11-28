@@ -316,6 +316,84 @@ func TestE2E_FirewallDelivery(t *testing.T) {
 	}
 }
 
+// TestE2E_FirewallTCPNetworkToAll: a network from before migration 009 moved
+// to "Everything" in its Firewall tab (item 4 of the plan), with two real
+// Nebula peers. Both joined it with the TCP-only block. The first save makes
+// the network managed, and b's next heartbeat answer carries the preset with
+// no rules: from that beat on UDP from a reaches b. Back to "TCP only", it
+// stops again. The tunnel stays throughout.
+func TestE2E_FirewallTCPNetworkToAll(t *testing.T) {
+	var policy atomic.Pointer[fwpolicy.Delivered]
+	var report atomic.Pointer[fwpolicy.Ack]
+	m, a, b, ipB := firewallMesh(t, agentFirewallFile(t, firewallPresetTCP), agentFirewallFile(t, firewallPresetTCP), func(m *e2eMesh) {
+		fn := func(body map[string]any) any {
+			if body["nodeId"] != "node-b" {
+				return map[string]any{}
+			}
+			if raw, ok := body["firewall"]; ok {
+				buf, _ := json.Marshal(raw)
+				r := new(fwpolicy.Ack)
+				json.Unmarshal(buf, r)
+				report.Store(r)
+			}
+			if p := policy.Load(); p != nil {
+				return map[string]any{"firewall": p}
+			}
+			return map[string]any{}
+		}
+		m.onHeartbeat.Store(&fn)
+	})
+	file := filepath.Join(m.dir, "b", "nebula.yaml")
+	beat := func() {
+		t.Helper()
+		if err := sendHeartbeat(b); err != nil {
+			t.Fatalf("b's heartbeat: %v", err)
+		}
+	}
+	tunnel := func() uint32 {
+		t.Helper()
+		for _, h := range a.control().ListHostmapHosts(false) {
+			if len(h.VpnAddrs) > 0 && h.VpnAddrs[0].String() == ipB {
+				return h.LocalIndex
+			}
+		}
+		t.Fatal("a has no tunnel to b")
+		return 0
+	}
+	if udpReaches(t, a, ipB+":9") {
+		t.Fatal("the TCP-only block lets UDP from a in")
+	}
+	start := tunnel()
+
+	const anyFromNodes, tcpFromNodes = "in any any groups=node", "in tcp any groups=node"
+	for _, c := range []struct {
+		preset    string
+		udp       bool
+		has, hasn string
+	}{
+		{fwpolicy.PresetAll, true, anyFromNodes, tcpFromNodes},
+		{fwpolicy.PresetTCP, false, tcpFromNodes, anyFromNodes},
+	} {
+		p := delivered(c.preset)
+		policy.Store(&p)
+		beat()
+		if got := udpReaches(t, a, ipB+":9"); got != c.udp {
+			t.Errorf("%s: UDP from a reaches b: %v, want %v", c.preset, got, c.udp)
+		}
+		rules := firewallRules(t, readFile(t, file))
+		if !slices.Contains(rules, c.has) || slices.Contains(rules, c.hasn) {
+			t.Errorf("%s: nebula.yaml allows %q; want %q and not %q", c.preset, rules, c.has, c.hasn)
+		}
+		beat()
+		if r := report.Load(); r == nil || r.Fingerprint != p.Fingerprint || r.Error != "" {
+			t.Errorf("%s: b reports %+v, want the policy's fingerprint %.12s", c.preset, r, p.Fingerprint)
+		}
+	}
+	if got := tunnel(); got != start {
+		t.Errorf("a's tunnel to b is a new one (index %d, was %d): a reload made a handshake", got, start)
+	}
+}
+
 func delivered(preset string, rules ...fwpolicy.DeliveredRule) fwpolicy.Delivered {
 	if rules == nil {
 		rules = []fwpolicy.DeliveredRule{}

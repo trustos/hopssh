@@ -153,3 +153,37 @@ func TestE2E_FirewallDelivery(t *testing.T) {
 		t.Errorf("another network nobody managed sends a policy: %+v", d)
 	}
 }
+
+// TestE2E_FirewallTCPNetworkToAll: a network from before migration 009 keeps
+// TCP only until its owner or an admin chooses "Everything" in its Firewall
+// tab (item 4 of the plan). Until then its devices get nothing and keep the
+// block they joined with. After the save each gets the preset with no rules;
+// "TCP only" again goes out as such, since the network stays managed.
+func TestE2E_FirewallTCPNetworkToAll(t *testing.T) {
+	h := newHousehold(t)
+	h.s.Exec("UPDATE networks SET firewall_preset = 'tcp' WHERE id = ?", h.net.ID)
+	box := h.owner.Enroll(h.net.ID, "box")
+	agent := h.s.Anonymous()
+	agent.Token = box.AgentToken
+	beat := func() *fwpolicy.Delivered {
+		t.Helper()
+		var out struct{ Firewall *fwpolicy.Delivered }
+		agent.Want(200, "POST", "/api/heartbeat", M{"nodeId": box.NodeID}, &out)
+		return out.Firewall
+	}
+	fw := h.url("/firewall")
+	var p fwPolicy
+	h.admin.Want(200, "GET", fw, nil, &p)
+	if p.Preset != "tcp" || p.Managed || !p.CanEdit {
+		t.Fatalf("a network from before migration 009, to an admin: preset %q, managed %v, can edit %v; want tcp, false, true", p.Preset, p.Managed, p.CanEdit)
+	}
+	if d := beat(); d != nil {
+		t.Fatalf("a network nobody moved sends a policy: %+v", d)
+	}
+	for i, preset := range []string{"all", "tcp"} {
+		h.admin.With("If-Match", version(int64(i))).Want(200, "PUT", fw, M{"preset": preset, "rules": []M{}}, nil)
+		if d := beat(); d == nil || d.Preset != preset || len(d.Rules) != 0 || d.Fingerprint != d.Sum() {
+			t.Errorf("after a save of %q the heartbeat answer carries %+v", preset, d)
+		}
+	}
+}
