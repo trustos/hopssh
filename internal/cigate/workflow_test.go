@@ -77,3 +77,25 @@ func TestDesktopReleaseWaitsForPreflight(t *testing.T) {
 		}
 	}
 }
+
+// The code sqlc generates must match the migrations: CI and the release gate
+// check it. Migrations 008 to 013 went in without it (found 2026-11-28), and
+// the next `make generate` would have changed the types of two queries.
+func TestGeneratedDatabaseCodeIsChecked(t *testing.T) {
+	if !strings.Contains(jobBody(t, "ci.yml", "build"), "make sqlc-check") {
+		t.Error("ci.yml build job does not run make sqlc-check")
+	}
+	b, err := os.ReadFile(filepath.Join("..", "..", "Makefile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, l := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(l, "preflight:") {
+			if !strings.Contains(l, " sqlc-check") {
+				t.Errorf("make preflight does not run sqlc-check: %q", l)
+			}
+			return
+		}
+	}
+	t.Error("Makefile has no preflight target")
+}

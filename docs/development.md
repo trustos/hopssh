@@ -6,7 +6,7 @@
 - Node.js 20+ (`node --version`) — for frontend
 - `make` (pre-installed on macOS/Linux)
 - Optional: Docker (for containerized builds)
-- Optional: `sqlc` (for regenerating query code: `go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest`)
+- No sqlc install needed: `make generate` and `make sqlc-check` run sqlc v1.30.0 with `go run` (downloaded the first time; needs a C compiler)
 
 ## First-Time Setup
 
@@ -327,13 +327,13 @@ curl -H "Authorization: Bearer <token>" \
 
 ### sqlc
 
-SQL queries live in `internal/db/queries/*.sql`. After editing, regenerate:
+SQL queries live in `internal/db/queries/*.sql`, the schema in `internal/db/migrations/`. After editing either, regenerate:
 
 ```bash
 make generate    # runs sqlc
 ```
 
-Generated code goes to `internal/db/dbsqlc/`. Never edit generated files.
+Generated code goes to `internal/db/dbsqlc/`. Never edit generated files. `make sqlc-check` fails when the generated code does not match the migrations and the queries; CI and `make preflight` run it. A migration counts too: 008 to 013 added tables and columns without regenerating, so the next `make generate` would have changed the return types of two queries.
 
 ## Docker
 

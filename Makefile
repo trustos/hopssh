@@ -2,7 +2,7 @@
 -include .env
 export
 
-.PHONY: all setup vendor patch-vendor patch-check build build-all build-linux vet test test-race preflight netlab \
+.PHONY: all setup vendor patch-vendor patch-check sqlc-check build build-all build-linux vet test test-race preflight netlab \
        generate clean clean-vendor clean-stuck-dumps frontend frontend-embed \
        run dev release wifi-snapshot \
        desktop-build desktop-app desktop-dev desktop-smoke desktop-clean
@@ -96,9 +96,15 @@ dev-deploy-server:
 vet:
 	go vet -mod=vendor ./...
 
-# Regenerate sqlc code from .sql query files.
+# Regenerate sqlc code from .sql query files (downloads sqlc the first time).
+SQLC = github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0
 generate:
-	$(GOPATH)/bin/sqlc generate || sqlc generate
+	go run $(SQLC) generate
+
+# The generated code matches the migrations and the queries. Migrations 008 to
+# 013 went in without it (found 2026-11-28).
+sqlc-check:
+	go run $(SQLC) diff
 
 # Run tests.
 test:
@@ -112,7 +118,7 @@ test-race:
 	go test -mod=vendor -race -timeout 30m $(RACE_PKGS)
 
 # What has to pass before a release.
-preflight: patch-check vet test test-race
+preflight: patch-check vet sqlc-check test test-race
 
 # Run the network lab: the real server and agents behind simulated routers.
 # Needs root on Linux, or the podman VM on a Mac. ARGS go to the test binary.

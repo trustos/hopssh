@@ -51,6 +51,16 @@ type EnrollmentBundle struct {
 	CreatedAt     int64
 }
 
+type FirewallSet struct {
+	ID        string
+	UserID    string
+	Name      string
+	Rules     string
+	Version   int64
+	CreatedAt int64
+	UpdatedAt int64
+}
+
 type Network struct {
 	ID             string
 	UserID         string
@@ -64,6 +74,7 @@ type Network struct {
 	LighthousePort *int64
 	DnsDomain      string
 	CreatedAt      int64
+	FirewallPreset string
 }
 
 type NetworkEvent struct {
@@ -74,6 +85,20 @@ type NetworkEvent struct {
 	Status    *string
 	Details   *string
 	CreatedAt int64
+}
+
+type NetworkFirewall struct {
+	NetworkID string
+	Rules     string
+	Version   int64
+	UpdatedAt int64
+	UpdatedBy *string
+}
+
+type NetworkFirewallSet struct {
+	NetworkID  string
+	SetID      string
+	AttachedAt int64
 }
 
 type NetworkInvite struct {
@@ -123,6 +148,28 @@ type Node struct {
 	AgentVersion        *string
 	ClientType          *string
 	Routes              *string
+	CreatedBy           *string
+}
+
+type NodeCert struct {
+	Fingerprint string
+	NetworkID   string
+	NodeID      string
+	NotAfter    int64
+}
+
+type NodeFirewall struct {
+	NodeID      string
+	Fingerprint string
+	Error       string
+	Blocked     int64
+	ReportedAt  int64
+}
+
+type ReleasedNodeIp struct {
+	NetworkID  string
+	NebulaIp   string
+	ReleasedAt int64
 }
 
 type Session struct {
