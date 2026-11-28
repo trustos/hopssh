@@ -554,8 +554,10 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 // mergePeerEndpoints combines a peer's lighthouse-cached UDP endpoints
 // (Nebula's in-memory advertise_addrs cache, populated via the UDP
 // HostQuery flow) with the peer's self-reported endpoints from its
-// HTTPS heartbeat (Phase G). Lighthouse entries come first in result
-// order (preferred when both sources agree); hint entries fill gaps.
+// HTTPS heartbeat (Phase G). Hint entries come first: the peer's Nebula
+// keeps the first 10 per family of this list (nebula.MaxRemotes) and asks
+// the lighthouse itself besides, so what only the device knows must not be
+// pushed out by what the lighthouse knows (until 2026-11-28 it came after).
 //
 // Returns deduped, validated `IP:port` strings. Hint entries past
 // their per-endpoint expiry are dropped — peers shouldn't dial dead
@@ -572,17 +574,6 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 func mergePeerEndpoints(lighthouse []netip.AddrPort, hint *selfEndpointHint, now time.Time) []string {
 	out := make([]string, 0, len(lighthouse)+4)
 	seen := map[string]struct{}{}
-	for _, ap := range lighthouse {
-		if !ap.IsValid() {
-			continue
-		}
-		s := ap.String()
-		if _, dup := seen[s]; dup {
-			continue
-		}
-		seen[s] = struct{}{}
-		out = append(out, s)
-	}
 	if hint != nil {
 		for _, e := range hint.endpoints {
 			if !e.expiresAt.IsZero() && now.After(e.expiresAt) {
@@ -602,13 +593,24 @@ func mergePeerEndpoints(lighthouse []netip.AddrPort, hint *selfEndpointHint, now
 			out = append(out, norm)
 		}
 	}
+	for _, ap := range lighthouse {
+		if !ap.IsValid() {
+			continue
+		}
+		s := ap.String()
+		if _, dup := seen[s]; dup {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
 	return out
 }
 
 // maxSelfEndpoints is how many self-endpoints of a device the server keeps
 // per address family: the most Nebula takes for a host (the rest it drops).
-// A peer gets them after what the lighthouse knows of the device, so its
-// Nebula may take fewer. Every peer gets them in each heartbeat answer and
+// A peer gets them before what the lighthouse knows of the device
+// (mergePeerEndpoints). Every peer gets them in each heartbeat answer and
 // writes them to its peer cache, so without a bound one device could put a
 // megabyte in all of them.
 const maxSelfEndpoints = nebula.MaxRemotes

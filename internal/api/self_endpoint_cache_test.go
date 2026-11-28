@@ -1,7 +1,9 @@
 package api
 
 import (
+	"fmt"
 	"net/netip"
+	"slices"
 	"testing"
 	"time"
 )
@@ -137,8 +139,34 @@ func TestMergePeerEndpoints_BothSourcesUnion(t *testing.T) {
 	if len(got) != 2 {
 		t.Errorf("union should have 2 entries, got %d: %v", len(got), got)
 	}
-	if got[0] != "203.0.113.10:4242" {
-		t.Errorf("lighthouse entry not first: %v", got)
+	if got[0] != "192.168.0.3:4242" {
+		t.Errorf("the device's own address not first: %v", got)
+	}
+}
+
+// A peer's Nebula keeps the first 10 addresses per family of the list it is
+// given (ReplaceStaticHostMap, nebula.MaxRemotes) and asks the lighthouse
+// itself besides, keeping that answer apart. So the device's own addresses
+// come first: what the lighthouse knows reaches the peer anyway, what only
+// the device knows (a NAT-PMP mapping the lighthouse never heard of, with
+// UDP to it blocked) only this way. Until 2026-11-28 the lighthouse's list
+// came first, and ten entries of it pushed the device's out.
+func TestMergePeerEndpoints_SelfEndpointsFirst(t *testing.T) {
+	var lighthouse []netip.AddrPort
+	for i := 1; i <= 10; i++ {
+		lighthouse = append(lighthouse, netip.MustParseAddrPort(fmt.Sprintf("203.0.113.%d:4242", i)))
+	}
+	now := time.Now()
+	hint := hintFromAddrs([]string{"198.51.100.7:4242", "203.0.113.3:4242"}, now.Add(15*time.Minute))
+	got := mergePeerEndpoints(lighthouse, hint, now)
+	want := []string{"198.51.100.7:4242", "203.0.113.3:4242"}
+	for i := 1; i <= 10; i++ {
+		if i != 3 {
+			want = append(want, fmt.Sprintf("203.0.113.%d:4242", i))
+		}
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("got\n %q\nwant\n %q", got, want)
 	}
 }
 
