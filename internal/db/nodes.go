@@ -229,6 +229,11 @@ func (s *NodeStore) Create(n *Node) error {
 			return fmt.Errorf("record creator: %w", err)
 		}
 	}
+	if len(n.NebulaCert) > 0 {
+		if err := recordCert(tx, n.ID, n.NebulaCert, time.Now()); err != nil {
+			return err
+		}
+	}
 	return tx.Commit()
 }
 
@@ -514,35 +519,58 @@ func parseLastOctet(cidr string) int {
 	return n
 }
 
-// CompleteEnrollment sets the node's cert/key after enrollment.
+// CompleteEnrollment sets the node's cert/key after enrollment and records
+// the cert (node_certs), in one transaction. ErrNodeGone when the node was
+// deleted meanwhile: the cert must not be handed out then.
 func (s *NodeStore) CompleteEnrollment(id string, cert, key []byte, hostname, os, arch string) error {
 	encKey, err := s.enc.EncryptBytes(key)
 	if err != nil {
 		return fmt.Errorf("encrypt node key: %w", err)
 	}
-	q := dbsqlc.New(WrapDB(s.wdb))
-	return q.CompleteEnrollment(context.Background(), dbsqlc.CompleteEnrollmentParams{
-		NebulaCert: cert,
-		NebulaKey:  encKey,
-		Hostname:   hostname,
-		Os:         os,
-		Arch:       arch,
-		ID:         id,
-	})
+	return s.writeCert(id, cert, `UPDATE nodes SET nebula_cert = ?, nebula_key = ?, hostname = ?, os = ?, arch = ?,
+		status = 'enrolled' WHERE id = ?`, cert, encKey, hostname, os, arch, id)
 }
 
-// UpdateCert replaces the node's Nebula certificate and key (for cert rotation).
+// UpdateCert replaces the node's Nebula certificate and key (for cert
+// rotation) and records the cert, in one transaction. ErrNodeGone when the
+// node was deleted meanwhile, ErrTooManyCerts when it holds MaxHeldCerts:
+// the cert must not be handed out then.
 func (s *NodeStore) UpdateCert(id string, cert, key []byte) error {
 	encKey, err := s.enc.EncryptBytes(key)
 	if err != nil {
 		return fmt.Errorf("encrypt node key: %w", err)
 	}
-	q := dbsqlc.New(WrapDB(s.wdb))
-	return q.UpdateNodeCert(context.Background(), dbsqlc.UpdateNodeCertParams{
-		NebulaCert: cert,
-		NebulaKey:  encKey,
-		ID:         id,
-	})
+	return s.writeCert(id, cert, `UPDATE nodes SET nebula_cert = ?, nebula_key = ? WHERE id = ?`, cert, encKey, id)
+}
+
+// writeCert runs update, which stores cert on node id, and records cert.
+// A cert the blocklist would not know is never stored: if the node is gone,
+// holds MaxHeldCerts, or the cert cannot be read, nothing is written.
+func (s *NodeStore) writeCert(id string, cert []byte, update string, args ...any) error {
+	tx, err := s.wdb.Begin()
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback()
+	res, err := tx.Exec(update, args...)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 {
+		return ErrNodeGone
+	}
+	now := time.Now()
+	if held, err := heldCerts(tx, id, now); err != nil {
+		return err
+	} else if held >= MaxHeldCerts {
+		return ErrTooManyCerts
+	}
+	if err := recordCert(tx, id, cert, now); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *NodeStore) UpdateStatus(id, status string) error {

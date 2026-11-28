@@ -27,6 +27,7 @@ import (
 	"github.com/slackhq/nebula/cert"
 
 	"github.com/trustos/hopssh/internal/api"
+	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/e2etest"
 )
 
@@ -782,11 +783,16 @@ func TestE2E_RateLimits(t *testing.T) {
 	for i := range 5 {
 		agents = append(agents, h.owner.Enroll(h.net.ID, fmt.Sprint("node", i)))
 	}
+	// A node holds at most db.MaxHeldCerts certs (TestE2E_Blocklist), so
+	// each renews in the first rounds only: 14 times in the two runs.
 	all := func(when string) {
 		t.Helper()
 		for round := range 20 {
 			for _, a := range agents {
 				for _, path := range []string{"/api/renew", "/api/heartbeat"} {
+					if path == "/api/renew" && round >= (db.MaxHeldCerts-2)/2 {
+						continue
+					}
 					if s, body := house.As(a.AgentToken).Do("POST", path, M{"nodeId": a.NodeID}); s != 200 {
 						t.Fatalf("%s, round %d: %s: HTTP %d %s", when, round, path, s, body)
 					}
@@ -1075,14 +1081,12 @@ func TestE2E_DNS(t *testing.T) {
 	}
 	want("farbox.hop", "")
 
-	// A deleted device's name must stop resolving: its address is handed to
-	// the next device that joins.
-	e2etest.KnownGap(t, "a deleted node's name keeps resolving", func(g *e2etest.Gap) {
-		h.owner.Want(204, "DELETE", h.url("/nodes/%s", box.NodeID), nil, nil)
-		if ips := resolve(t, h.net, "media-box.hop"); len(ips) != 0 {
-			g.Errorf("media-box.hop = %v", ips)
-		}
-	})
+	// A deleted device's name stops resolving at once, not at the next
+	// refresh of the network's names.
+	h.owner.Want(204, "DELETE", h.url("/nodes/%s", box.NodeID), nil, nil)
+	if ips := resolve(t, h.net, "media-box.hop"); len(ips) != 0 {
+		t.Errorf("a deleted node's name still resolves: media-box.hop = %v", ips)
+	}
 }
 
 // TestE2E_Bundles: the tarball with a private key is given out once, over
@@ -1535,7 +1539,9 @@ func count(h household, table string) int {
 
 // TestE2E_ManyAgents: agents renew and report while users work in the
 // dashboard, and every request is answered. A renewal that meets a write must
-// wait for it: an agent takes 401 for "you were deleted".
+// wait for it: an agent takes 401 for "you were deleted". A node holds at
+// most db.MaxHeldCerts certs, its enrollment's among them; a renewal past
+// that is answered 429, after the same write of the node it rolls back.
 func TestE2E_ManyAgents(t *testing.T) {
 	h := newHousehold(t)
 	var agents []e2etest.Enrollment
@@ -1569,10 +1575,15 @@ func TestE2E_ManyAgents(t *testing.T) {
 	for _, a := range agents {
 		c := h.s.Anonymous()
 		c.Token = a.AgentToken
+		renewed := 0
 		loop(func(i int) {
 			if i%4 == 0 {
 				c.IP = h.s.Anonymous().IP
-				run(c, 200, "POST", "/api/renew", M{"nodeId": a.NodeID})
+				want := 200
+				if renewed++; renewed >= db.MaxHeldCerts {
+					want = 429
+				}
+				run(c, want, "POST", "/api/renew", M{"nodeId": a.NodeID})
 			} else {
 				run(c, 200, "POST", "/api/heartbeat", M{"nodeId": a.NodeID, "peersDirect": i})
 			}

@@ -965,3 +965,66 @@ they started, and outside CI the harness skips then). Run again with `-v`
 they ran (`cmd/agent` 632 s, `internal/api` 325 s; only `TestE2E_Upgrade`
 skipped, which needs `HOP_E2E_OLD`). Read a gate's times, not only its
 `ok`. Not run on Windows. Open points in [[open-questions]].
+
+## 2026-11-28 — item 14: deleted devices refused with `pki.blocklist` (not released)
+
+A device deleted in the dashboard kept a cert valid for up to 25 hours, and
+every device and the lighthouse accepted it. Now the server records every
+cert it issues (`node_certs`, migration 013, written in the transaction that
+writes the node's cert), a network's blocklist is its certs whose node is
+gone and that have not expired, the lighthouse reloads it in place (on a
+delete or the API's prune, every 30 s, at a start), and every heartbeat
+answer carries it. The agent checks it, keeps it in `blocklist.json`, never
+lists its own cert, and gives Nebula the active entries as `pki.blocklist`
+by an in-place reload, at every start and in the start's warm-up heartbeat
+(the agent owns the key; `nebula.yaml` never has it). Measured: the
+lighthouse ends the deleted device's tunnel 1 to 1.5 s after the refresh; a
+device 5 to 8 s after the heartbeat; with real processes, cut off 67 s after
+the deletion (the next heartbeat, 60 s ± 10 %). Found in review before the
+code: a device that renews in a loop before it is deleted could push its own
+certs off the 4096 entries; a node now holds at most 16 unexpired certs, and
+a renewal over that is answered 429 (`Retry-After: 3600`). A delete and the
+API's prune now refresh DNS too, so `TestE2E_DNS`'s known gap is a plain
+check, and `cmd/agent`'s `TestE2E_DeletedPeer` (a device in the mesh before
+the delete, cut off only by the agent) is a plain test.
+
+The review of the built change confirmed three faults on the device, all
+fixed. (1) A reload that can't read the CA keeps Nebula's old pool, logs,
+and returns no error; the device took the list as in force and never tried
+again. Patch `control-api` now has `Control.CABlocklist`, and the device
+compares what the pool refuses, not the text it loaded. (2) A heartbeat took
+the running Nebula before the start lock, and a renewal's restart has no
+warm-up heartbeat, so a list saved during a restart waited for the next
+beat. The Nebula is taken under the lock, and a restart (and a retried one)
+gives the new Nebula the list saved then. (3) A reload over 5 s went on
+alone while the next beat queued another behind it, and one built from the
+text before it could undo it (a beat turning "Block incoming" back off): one
+in-place reload at a time now, and one built from older text is refused. The
+full gate then found the 16-cert cap breaking `TestE2E_RateLimits` and
+`TestE2E_ManyAgents`, which renew in a loop; both fitted to it. 31 bugs
+planted, 29 caught, the other two can't fail (the lighthouse's own cert left
+out of its list, which is never in `node_certs`; the check after a reload
+that the pool took the list, which only changes the log line)
+([[concepts/e2e-tests]], "Deleted devices"). The race run found one test
+that assumed an order: b's fingerprint is random and sorts first about one
+time in 16; the expected list is sorted now. A second review of the fixes
+(four candidates, each checked by another agent) confirmed one more fault,
+which fix (3) brought in: the switch "Block incoming" while a reload of over
+5 s had not finished was refused, and nothing gave it to Nebula before its
+next start. Every heartbeat now gives Nebula the switch when it runs the
+other state (`reapplyIncomingBlocked`);
+`TestE2E_BlockIncoming_AfterBusyReload` failed without it, both ways. Two
+candidates were refuted, and one, older than item 14, is in
+[[open-questions]]. Green before the switch fix on the Mac (vet, gofmt,
+every package; `internal/client` 429 s, `cmd/agent` 826 s, `internal/api`
+144 s; 14 skips, all for another OS), with `-race` on the vendored Nebula
+packages, `internal/client` (475 s) and `internal/mesh`: no race, and in the
+Linux VM as a user and as root (13 skips: the OS-specific ones and
+`TestE2E_Upgrade`, which needs `HOP_E2E_OLD`). As root `internal/api`'s
+`TestE2E_Audit` took 580 s once; alone it took 2.9 s three times and 3.65 s
+in a second full root run ([[open-questions]]). After the switch fix, green
+again on the Mac (`internal/client` 450 s, `cmd/agent` 653 s; 14 skips),
+with `-race` on `internal/client` (492 s, no race), and in the VM as a user
+(472 s and 654 s; 12 skips) and as root (491 s and 583 s; 13 skips). Not run
+on Windows. Concept page [[concepts/deleted-devices]]; open points in
+[[open-questions]].

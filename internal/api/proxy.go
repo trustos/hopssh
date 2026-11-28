@@ -1281,16 +1281,19 @@ func (h *ProxyHandler) DeleteNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Node will be disconnected from the mesh when its cert expires (24h)
-	// or immediately when it tries to re-register with the lighthouse.
-
-	// Delete from database.
+	// Delete from database. Its certificates are then the network's
+	// blocklist: the lighthouse refuses them now, the other devices at
+	// their next heartbeat (docs/wiki/concepts/deleted-devices.md).
 	if err := h.Nodes.Delete(node.ID); err != nil {
 		http.Error(w, "failed to delete node: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	h.InvalidateProxyCache(node.NetworkID, node.ID)
+	if h.NetworkManager != nil {
+		go h.NetworkManager.RefreshBlocklist(node.NetworkID)
+		h.NetworkManager.RefreshDNS(node.NetworkID) // its name goes too
+	}
 
 	user := auth.UserFromContext(r.Context())
 	networkID := chi.URLParam(r, "networkID")
@@ -1347,6 +1350,10 @@ func (h *ProxyHandler) PruneOfflineNodes(w http.ResponseWriter, r *http.Request)
 	if err != nil {
 		http.Error(w, "prune failed: "+err.Error(), http.StatusInternalServerError)
 		return
+	}
+	if deleted > 0 && h.NetworkManager != nil {
+		go h.NetworkManager.RefreshBlocklist(networkID)
+		h.NetworkManager.RefreshDNS(networkID)
 	}
 
 	h.audit(user.ID, "nodes.prune", &networkID, nil,

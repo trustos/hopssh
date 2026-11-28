@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/slackhq/nebula/config"
 	"gopkg.in/yaml.v3"
 
 	"github.com/trustos/hopssh/internal/fwpolicy"
@@ -386,5 +387,61 @@ func TestE2E_BlockIncoming(t *testing.T) {
 	}
 	if !udpReaches(t, a, ipB+":9") {
 		t.Error("after the refused requests a does not reach b")
+	}
+}
+
+// TestE2E_BlockIncoming_AfterBusyReload: the switch while an earlier
+// in-place reload has not finished (one past its 5 s limit that still
+// returns) is saved and refused, as one reload runs at a time. The next
+// heartbeat gives it to Nebula; nothing else would before Nebula's next
+// start. On, and then off.
+func TestE2E_BlockIncoming_AfterBusyReload(t *testing.T) {
+	_, a, b, ipB := firewallMesh(t, agentFirewallFile(t, firewallPresetAll), agentFirewallFile(t, firewallPresetAll), nil)
+	conf := b.liveSvc().(inPlaceConfig).loaded()
+	// hold, when set, keeps a reload of b's Nebula from returning; it runs
+	// after Nebula's own callbacks.
+	var hold atomic.Pointer[chan struct{}]
+	conf.cfg.RegisterReloadCallback(func(*config.C) {
+		if c := hold.Load(); c != nil {
+			<-*c
+		}
+	})
+	// busy: a reload of what b runs that returns only after release.
+	busy := func() (release func()) {
+		t.Helper()
+		c := make(chan struct{})
+		hold.Store(&c)
+		if err := reloadInPlace(b, conf, conf.loadedText(), conf.loadedText(), conf.isBlocked()); err == nil {
+			t.Fatal("a held reload returned within its limit")
+		}
+		return func() {
+			t.Helper()
+			hold.Store(nil)
+			close(c)
+			within(t, 5*time.Second, "the late reload to return", func() bool {
+				conf.mu.Lock()
+				defer conf.mu.Unlock()
+				return !conf.pending
+			})
+		}
+	}
+	for _, on := range []bool{true, false} {
+		release := busy()
+		if err := setIncomingBlocked(b, on); err == nil || !strings.Contains(err.Error(), "earlier reload") {
+			t.Fatalf("block incoming %v while a reload runs: %v; want it refused", on, err)
+		}
+		if incomingBlocked(b.dir()) != on {
+			t.Fatalf("block incoming %v while a reload runs: not saved", on)
+		}
+		release()
+		if err := sendHeartbeat(b); err != nil {
+			t.Fatalf("b's heartbeat: %v", err)
+		}
+		if got := conf.isBlocked(); got != on {
+			t.Errorf("after the heartbeat, b's Nebula blocks incoming: %v; the switch says %v", got, on)
+		}
+		if reaches := udpReaches(t, a, ipB+":9"); reaches == on {
+			t.Errorf("block incoming %v, after the heartbeat: UDP from a reaches b: %v", on, reaches)
+		}
 	}
 }

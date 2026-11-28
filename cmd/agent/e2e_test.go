@@ -661,8 +661,8 @@ func TestE2E_DeletedNode(t *testing.T) {
 	waitHealthy(t, 60*time.Second, owner, home.ID, a.enroll(s, owner, home.ID, "home"))
 }
 
-// TestE2E_MemberShell and TestE2E_DeletedPeer pin what the evaluation of
-// 2026-11-23 found and nobody has fixed yet.
+// TestE2E_MemberShell pins what the evaluation of 2026-11-23 found and
+// nobody has fixed yet.
 func TestE2E_MemberShell(t *testing.T) {
 	s := e2etest.Start(t)
 	owner, member := s.Register("owner"), s.Register("member")
@@ -696,33 +696,55 @@ func TestE2E_MemberShell(t *testing.T) {
 	})
 }
 
+// TestE2E_DeletedPeer: docs/wiki/concepts/deleted-devices.md with real
+// processes. A device that is in the mesh and talks to the agent is deleted
+// in the dashboard. The agent, which has a tunnel to it that the lighthouse
+// plays no part in, cuts it off with its next heartbeat (60 s, give or take
+// 10 %) and Nebula's teardown (5 to 8 s), and keeps it out; the control
+// plane still reaches the agent.
 func TestE2E_DeletedPeer(t *testing.T) {
 	s := e2etest.Start(t)
 	owner := s.Register("owner")
 	n := owner.CreateNetwork("home")
 	a := newAgent(t)
-	a.enroll(s, owner, n.ID, "home")
+	id := a.enroll(s, owner, n.ID, "home")
+	waitHealthy(t, time.Minute, owner, n.ID, id)
 	stolen := owner.Enroll(n.ID, "stolen-laptop")
-	owner.Want(http.StatusNoContent, "DELETE", nodePath(n.ID, stolen.NodeID), nil, nil)
+	peer := e2etest.StartPeer(t, stolen)
 
-	e2etest.KnownGap(t, "a deleted device can join the mesh until its certificate expires, up to 24h later", func(g *e2etest.Gap) {
-		peer := e2etest.StartPeer(t, stolen)
-		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	// reaches: the device gets an answer from the agent's API over the mesh.
+	reaches := func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		for ctx.Err() == nil {
-			dial, done := context.WithTimeout(ctx, 3*time.Second)
-			conn, err := peer.DialContext(dial, "tcp", meshIP(t, a)+":41820")
-			done()
-			if err == nil {
-				fmt.Fprintf(conn, "GET /health HTTP/1.0\r\n\r\n")
-				conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-				line, _ := bufio.NewReader(conn).ReadString('\n')
-				conn.Close()
-				g.Errorf("a deleted device reached another node: %q", strings.TrimSpace(line))
-				return
-			}
+		conn, err := peer.DialContext(ctx, "tcp", meshIP(t, a)+":41820")
+		if err != nil {
+			return false
 		}
+		defer conn.Close()
+		fmt.Fprintf(conn, "GET /health HTTP/1.0\r\n\r\n")
+		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		line, _ := bufio.NewReader(conn).ReadString('\n')
+		return strings.HasPrefix(line, "HTTP/")
+	}
+	e2etest.Within(t, time.Minute, "the device to reach the agent before it is deleted", reaches)
+
+	deleted := time.Now()
+	owner.Want(http.StatusNoContent, "DELETE", nodePath(n.ID, stolen.NodeID), nil, nil)
+	e2etest.Within(t, 2*time.Minute, "the agent to cut off the deleted device", func() bool {
+		return strings.Contains(a.log.String(), "Remote certificate is blocked") && !reaches()
 	})
+	t.Logf("cut off %v after the deletion", time.Since(deleted).Round(time.Second))
+	for end := time.Now().Add(20 * time.Second); time.Now().Before(end); {
+		if reaches() {
+			t.Fatal("the deleted device reaches the agent again")
+		}
+	}
+	if log := a.log.String(); !strings.Contains(log, "[blocklist home] certificates of deleted devices refused: 1") {
+		t.Errorf("the agent's log about the list:\n%s", a.log.Tail(40))
+	}
+	if !healthy(owner, n.ID, id) {
+		t.Error("the control plane no longer reaches the agent")
+	}
 }
 
 // TestE2E_Upgrade goes from a released version to this one, server first as in

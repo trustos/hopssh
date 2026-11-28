@@ -4,6 +4,26 @@ Cross-cutting unresolved items. Acts as a handoff state machine across sessions:
 
 Per-incident open items live on the incident page itself (`## Open` section). This file is for items that span multiple pages or that don't have a natural home yet.
 
+## 2026-11-28 — deleted devices blocked with `pki.blocklist` (item 14, not released): what is left
+
+- **Agents of v0.11.31 and older, and `hop client join` devices, get no list.** They accept a deleted device until its cert expires; only the lighthouse refuses it for them. Nothing to do but update the agents (`sudo hop-agent update`).
+- **The server's hourly prune does not refresh DNS** (`internal/db/status_sweeper.go:84`, only when `HOPSSH_NODE_PRUNE_AGE_HOURS` is set). The lighthouse catches the prune within 30 s, but a pruned node's name resolves until the next DNS refresh. The sweeper lives in `db` and can't call the network manager; it needs a callback.
+- **Certs of devices deleted before migration 013 are not known**, nor certs a node held before its current one at the time of the upgrade. Both are gone within 25 hours of the upgrade.
+- **A server whose clock runs ahead drops entries early**, by as much as it runs ahead. Devices check `until` against their own clock too.
+- **Self-endpoints in the heartbeat are stored as sent** (`internal/api/renew.go:341`): no limit on how many, no check that each is an address. A device can hand every peer of its network up to 1 MB of them. Found while reviewing item 14, not part of it.
+- **The DNS server of each network listens on `0.0.0.0`** (`internal/mesh/dns.go:88`) and answers anyone who reaches its port (15300-15400/udp is published in the Docker example): the names and mesh addresses of a network's devices. Bind it to the lighthouse's mesh address, or answer only queries from the mesh.
+- **The real-server tests skip without a word outside CI when UDP 42001 is in use** (`internal/e2etest/server.go`). Seen once, in the first root run in the VM for P3 (log 2026-11-28); a second run with `-v` had no skip, and what held the port is not known. A gate has to count skips (`-v`), not only read `ok`.
+- **A stolen cert of a device that was not deleted can't be revoked.** That needs a "revoke this certificate" action; a product decision of its own.
+- **An in-place reload that never returns blocks every later one until a restart**, on the device (firewall, "Block incoming", the list: `reloadInPlace`) as on the lighthouse. The price of one reload at a time (found in review: without it each beat queued one more reload behind the stuck one). No watchdog restarts on it; a renewal's restart does. On the lighthouse, `Close` waits for a refresh only up to its 10 s limit, so a reload that outlives it can still be running when the network closes.
+- **What has no test.** Taking the service only once the start lock is held (`takeBlocklist`): the race it closes is a restart between two lines, and nothing can time it. The check after the reload that the pool took the list only changes the log line ("refused" or "waits"): its plant can't fail; the beat after it retries either way, because the check before the reload looks at the pool. The lighthouse's guard for a reload still running, its 10 s limit and the 30 s refresher loop. The e2e check that b is refused counts any datagram that does not arrive.
+- **A lighthouse that starts reads the list before it registers its network** (`internal/mesh/network_manager.go`: the list at the start, the network in the map later), so a node deleted in between is let in until the next refresh, at most 30 s.
+- **A network with 4096 entries logs the cut and sends all of them on every heartbeat** (`internal/db/node_certs.go`, `internal/api/renew.go`): about 420 KB per beat per device. Not reached by anything real; a list that only grows when devices are deleted.
+- **The refresher reloads networks one after the other**, each under its `blockMu` and up to 10 s, so a hung reload delays the others by that much every 30 s.
+- **A firewall apply takes the service before the start lock** (`applyFirewall`, `internal/client/firewall_apply.go`), so a restart in between leaves it working on the old one: one heartbeat reports a policy as applied that the new Nebula does not run yet. The next answer with a policy applies it to the new one. Older than item 14; `takeBlocklist` takes the service under the lock, `applyFirewall` does not. Found in the review of the fixes, low.
+- **The lighthouse does not check that Nebula's CA pool took the list** (`internal/mesh/network_manager.go`, unlike the device's `CABlocklist` check). Only a reload that can't load the CA leaves the pool behind, and the lighthouse's CA is inline text that never changes, so that happens only once the CA expired, when the pool refuses every cert anyway. A log line that says more than it should, nothing else.
+- **`internal/api`'s `TestE2E_Audit` took 580 s once as root in the VM** (2026-11-28; the run as user 3.4 s). Three runs alone as root took 2.9 s each, and a second full root run 3.65 s. The log is silent from the fake agent's start to the end of the test; the test's burst client has no timeout. Not seen again, cause not known. If it comes back: a goroutine dump after 60 s.
+- **Not run on Windows**, like P2 and P3.
+
 ## 2026-11-28 — after the device switch "Block incoming" (phase 3 of firewall rules, not released)
 
 - **No report means "not blocked".** The server takes a heartbeat without a firewall report to mean the switch is off (`FirewallStore.NoReport`), so that an agent of v0.11.31 or older, which never blocks, never shows as blocked. The other side of this: any new code that sends a heartbeat must carry `firewallAck()`, or the dashboard says "not blocked" for that beat (it happened with the start-up heartbeat, fixed 2026-11-28). Only two senders exist today (`sendHeartbeat`, `warmPeersFromHeartbeat`).
@@ -170,8 +190,8 @@ Each has a `KnownGap` in the test named, which fails once the gap is closed, so 
 
 | Gap | Test |
 |---|---|
-| A deleted device can join the mesh until its cert expires (≤ 24 h): nothing distributes a blocklist | `TestE2E_DeletedPeer` |
-| A deleted node's name keeps resolving: `DeleteNode` doesn't call `RefreshDNS` | `TestE2E_DNS` |
+| *(closed 2026-11-28)* A deleted device could join the mesh until its cert expired (≤ 24 h): nothing distributed a blocklist. Now the lighthouse and every device refuse its certs ([[concepts/deleted-devices]]) | `TestE2E_DeletedPeer` (normal test now) |
+| *(closed 2026-11-28)* A deleted node's name kept resolving: `DeleteNode` didn't call `RefreshDNS`. Now a delete and the API's prune do | `TestE2E_DNS` (normal check now) |
 | An outsider gets 403 instead of 404 on admin routes, so they can tell which network IDs exist (9 routes) | `TestE2E_Access` |
 | A member who opens an invite uses it up for the person it was meant for | `TestE2E_Invites` |
 | *(closed 2026-11-27)* Removing a member left no audit trace, nor did 18 other routes (networks, enrollment, device approval, bundles, rename, capabilities, routes, stopped forwards, DNS, invites). Now each is logged with who, where and what, and a machine's enrollment or bundle download names the user who made its token or bundle (`nodes.created_by`, migration 010) | `TestE2E_Audit` (normal test now) |

@@ -3,6 +3,7 @@ package api
 import (
 	"crypto/subtle"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -152,7 +153,20 @@ func (h *RenewHandler) Renew(w http.ResponseWriter, r *http.Request) {
 	h.Nodes.RecordHeartbeat(node.ID, captureAgentIP(r), nil, nil, nil, nil)
 
 	// Persist to DB.
-	if err := h.Nodes.UpdateCert(node.ID, nodeCert.CertPEM, nodeCert.KeyPEM); err != nil {
+	if err := h.Nodes.UpdateCert(node.ID, nodeCert.CertPEM, nodeCert.KeyPEM); errors.Is(err, db.ErrNodeGone) {
+		// Deleted since the lookup above: the cert is not recorded, so no
+		// blocklist would know it.
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	} else if errors.Is(err, db.ErrTooManyCerts) {
+		// A flood of renewals: their certs would not fit on the blocklist
+		// once the node is deleted (db.MaxHeldCerts). The agent waits after
+		// a 429 and renews again once older certs expire.
+		log.Printf("[renew] node %s: refused, it holds %d certificates that have not expired", node.ID, db.MaxHeldCerts)
+		w.Header().Set("Retry-After", "3600")
+		http.Error(w, "too many certificates", http.StatusTooManyRequests)
+		return
+	} else if err != nil {
 		http.Error(w, "failed to update cert: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -528,6 +542,16 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		} else if managed {
 			resp["firewall"] = fwpolicy.Resolve(preset, rules, node.ID, nodeAddrs(peers))
 		}
+	}
+
+	// The certificates of the network's deleted nodes, which the device
+	// gives Nebula's pki.blocklist (docs/wiki/concepts/deleted-devices.md).
+	// Sent always, an empty list too, as it replaces what the agent holds;
+	// left out on a failed read, and the agent keeps what it has.
+	if list, err := h.Nodes.Blocklist(node.NetworkID, time.Now()); err != nil {
+		log.Printf("[heartbeat] node %s: blocklist: %v", node.ID, err)
+	} else {
+		resp["blocklist"] = list
 	}
 
 	writeJSON(w, resp)

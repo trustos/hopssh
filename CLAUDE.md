@@ -150,7 +150,7 @@ We vendor dependencies and pin `slackhq/nebula` **v1.11.2** with **11 patches** 
 
 - macOS batched UDP and TUN I/O (`darwin-udp`, `darwin-tun`, `read-loop`);
 - which address a peer is sent to: roam suppression, LAN preferred, ask before moving, a new tunnel stays (`paths`);
-- what the agent calls on `*nebula.Control`: port-mapping addresses, peer endpoints, probes, counters (`control-api`);
+- what the agent calls on `*nebula.Control`: port-mapping addresses, peer endpoints, probes, counters, what the CA pool refuses (`control-api`);
 - cert clock-skew tolerance (`cert-skew`); relay-list race and drop warnings (`relays`); closing the netstack of a userspace service (`service-netstack`); the firewall swapped atomically on a reload, and checked before one (`firewall-swap`);
 - Linux: closing a network waits until its UDP port and TUN device are free, and the TUN descriptor is close-on-exec (`linux-udp-close`, `linux-tun`).
 - gVisor: a new connection that meets an old one's TIME_WAIT is accepted (or refused with RST where nothing listens any more), not dropped for 60 s (`gvisor-time-wait`). Upstream reopens a TIME_WAIT only for a listening socket, and Nebula's service has none.

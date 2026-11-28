@@ -65,15 +65,19 @@ type userspaceMeshService struct {
 // loadNebulaConfig reads a nebula.yaml into the config Nebula is started
 // with, and keeps it with its text so the firewall can be reloaded in place
 // later (firewall_apply.go). While the device blocks incoming on this
-// network (firewall_block.go), the firewall it loads is the blocked one.
+// network (firewall_block.go), the firewall it loads is the blocked one; the
+// certificates of the network's deleted devices that still need blocking go
+// in as pki.blocklist (blocklist.go).
 func loadNebulaConfig(configPath string) (*loadedConfig, error) {
 	raw, err := os.ReadFile(configPath)
 	if err != nil {
 		return nil, fmt.Errorf("load nebula config %s: %w", configPath, err)
 	}
-	text, blocked := string(raw), incomingBlocked(filepath.Dir(configPath))
-	if blocked {
-		if text, err = withBlockedFirewall(raw); err != nil {
+	dir := filepath.Dir(configPath)
+	text, blocked := string(raw), incomingBlocked(dir)
+	fps := activeBlocklist(dir, loadBlocklist(dir))
+	if blocked || len(fps) > 0 {
+		if text, err = withOverlays(raw, blocked, fps); err != nil {
 			return nil, fmt.Errorf("load nebula config %s: %w", configPath, err)
 		}
 	}

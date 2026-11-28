@@ -138,6 +138,15 @@ func main() {
 	members := db.NewNetworkMemberStore(database)
 	invites := db.NewInviteStore(database)
 
+	// Certificates given out before migration 013 were not recorded, so a
+	// node deleted now would not be blocked (docs/wiki/concepts/
+	// deleted-devices.md). Before the lighthouses start, which read the list.
+	if n, err := nodes.RecordHeldCerts(); err != nil {
+		log.Printf("Record the nodes' certificates: %v", err)
+	} else if n > 0 {
+		log.Printf("Recorded the certificates of %d nodes", n)
+	}
+
 	// Initialize network manager (persistent per-network Nebula lighthouse+relay+DNS).
 	netMgr, err := mesh.NewNetworkManager(networks, nodes, dnsRecords)
 	if err != nil {
@@ -152,6 +161,10 @@ func main() {
 
 	// Mesh keepalive: dial online agents every 30s to keep NAT mappings alive.
 	netMgr.StartMeshKeepalive(reaperCtx, nodes, 30*time.Second)
+
+	// Lighthouses refuse the certificates of deleted nodes; this catches
+	// deletes the API did not report and drops entries that expired.
+	netMgr.StartBlocklistRefresher(reaperCtx, 30*time.Second)
 
 	fwdMgr := mesh.NewForwardManager(netMgr)
 	fwdMgr.StartIdleReaper(reaperCtx)

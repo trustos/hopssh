@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -39,14 +40,19 @@ func blockedFirewall() (interface{}, error) {
 	return managedFirewall(fwpolicy.Delivered{Preset: fwpolicy.PresetPing})
 }
 
-// withBlockedFirewall is the config text with its firewall section replaced
-// by blockedFirewall.
-func withBlockedFirewall(raw []byte) (string, error) {
+// withOverlays is the config text with, when blocked, its firewall section
+// replaced by blockedFirewall, and pki.blocklist set to fps (blocklist.go).
+func withOverlays(raw []byte, blocked bool, fps []string) (string, error) {
 	cfg, err := parseNebulaYAML(raw)
 	if err != nil {
 		return "", err
 	}
-	if cfg["firewall"], err = blockedFirewall(); err != nil {
+	if blocked {
+		if cfg["firewall"], err = blockedFirewall(); err != nil {
+			return "", err
+		}
+	}
+	if err := setBlocklist(cfg, fps); err != nil {
 		return "", err
 	}
 	out, err := yaml.Marshal(cfg)
@@ -70,6 +76,38 @@ func setIncomingBlocked(inst *meshInstance, on bool) error {
 	if err := saveIncomingBlocked(inst.dir(), on); err != nil {
 		return fmt.Errorf("%w: %v", errSwitchNotSaved, err)
 	}
+	return applyIncomingBlocked(inst, on)
+}
+
+// reapplyIncomingBlocked is the heartbeat's retry of the switch, when the
+// running Nebula has the other state: a switch refused because an earlier
+// reload had not finished, or one that such a reload undid when it
+// finished. Nothing else gives it to Nebula before its next start.
+func reapplyIncomingBlocked(inst *meshInstance) {
+	ip, ok := inst.liveSvc().(inPlaceConfig)
+	if !ok || ip.loaded() == nil {
+		return
+	}
+	on := incomingBlocked(inst.dir())
+	if ip.loaded().isBlocked() == on {
+		return
+	}
+	// A start, a renewal, a firewall apply or the switch itself is under
+	// way; the next beat looks again.
+	if !inst.startMu.TryLock() {
+		return
+	}
+	defer inst.startMu.Unlock()
+	if err := applyIncomingBlocked(inst, on); err != nil {
+		log.Printf("[firewall %s] block incoming %v waits for the next heartbeat: %v", inst.name(), on, err)
+		return
+	}
+	log.Printf("[firewall %s] block incoming %v, as the switch says", inst.name(), on)
+}
+
+// applyIncomingBlocked gives the running Nebula of inst the switch; the
+// caller holds startMu.
+func applyIncomingBlocked(inst *meshInstance, on bool) error {
 	svc := inst.liveSvc()
 	if svc == nil {
 		return errNotLive
@@ -84,7 +122,8 @@ func setIncomingBlocked(inst *meshInstance, on bool) error {
 	unlock := lockNebulaYAML(path)
 	defer unlock()
 
-	running, err := parseNebulaYAML([]byte(conf.loadedText()))
+	base := conf.loadedText()
+	running, err := parseNebulaYAML([]byte(base))
 	if err != nil {
 		return fmt.Errorf("the config Nebula runs: %w", err)
 	}
@@ -119,7 +158,7 @@ func setIncomingBlocked(inst *meshInstance, on bool) error {
 	if ctrl.FirewallRuleHash() == want && conf.isBlocked() == on {
 		return nil
 	}
-	if err := reloadInPlace(inst, conf, string(text), on); err != nil {
+	if err := reloadInPlace(inst, conf, base, string(text), on); err != nil {
 		return err
 	}
 	if got := ctrl.FirewallRuleHash(); got != want {

@@ -89,10 +89,14 @@ func warmPeersFromHeartbeat(inst *meshInstance, endpoint string) {
 	var body struct {
 		Peers         []string            `json:"peers"`
 		PeerEndpoints map[string][]string `json:"peerEndpoints"`
+		Blocklist     json.RawMessage     `json:"blocklist"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
 		return
 	}
+	// A device deleted while this one was down is refused before the warm-up
+	// dials. Both callers (startInstance, reloadNebula) hold startMu.
+	applyBlocklistAtStart(inst, body.Blocklist)
 
 	// Inject advertised peer UDP endpoints into Nebula's hostmap BEFORE
 	// dialing, so the TCP dials below traverse an already-populated hostmap

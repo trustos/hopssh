@@ -1,10 +1,16 @@
 package client
 
 import (
+	"log/slog"
 	"net/netip"
 	"reflect"
 	"slices"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/slackhq/nebula/config"
 
 	"gopkg.in/yaml.v3"
 
@@ -67,5 +73,58 @@ func TestManagedFirewall_ComparesWithTheFile(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg["firewall"], block) {
 		t.Errorf("the block read back from the file is another one:\n%#v\n%#v", cfg["firewall"], block)
+	}
+}
+
+// TestReloadInPlace_OneAtATime: a reload that takes longer than its limit
+// goes on alone. Until it returns no other one starts, and once it has, one
+// built from the text before it is refused: it would undo it (a heartbeat
+// that read the config, then the switch "Block incoming", then the beat's
+// reload). Review of item 14, 2026-11-28.
+func TestReloadInPlace_OneAtATime(t *testing.T) {
+	const t0, t1, t2 = "a: 0\n", "a: 1\n", "a: 2\n"
+	c := config.NewC(slog.New(slog.DiscardHandler))
+	if err := c.LoadString(t0); err != nil {
+		t.Fatal(err)
+	}
+	release := make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	var calls atomic.Int32
+	c.RegisterReloadCallback(func(*config.C) {
+		if calls.Add(1) == 1 {
+			<-release
+		}
+	})
+	conf := &loadedConfig{cfg: c, text: t0}
+	inst := newMeshInstance(&Enrollment{Name: "home"})
+
+	if err := reloadInPlace(inst, conf, t0, t1, false); err == nil {
+		t.Fatal("a reload that did not return within its limit reported success")
+	}
+	start := time.Now()
+	if err := reloadInPlace(inst, conf, t0, t2, true); err == nil {
+		t.Error("a second reload was taken while the first had not returned")
+	}
+	if d := time.Since(start); d > time.Second {
+		t.Errorf("the second reload was refused after %v; it should not wait", d)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("Nebula's reload ran %d times before the first returned, want 1", n)
+	}
+
+	once.Do(func() { close(release) })
+	within(t, 5*time.Second, "the late reload to be recorded", func() bool { return conf.loadedText() == t1 })
+	if err := reloadInPlace(inst, conf, t0, t2, true); err == nil {
+		t.Error("a reload built from the text before the late one was taken")
+	}
+	if got := conf.loadedText(); got != t1 {
+		t.Errorf("after a refused reload the loaded text is %q, want %q", got, t1)
+	}
+	if err := reloadInPlace(inst, conf, t1, t2, true); err != nil {
+		t.Fatalf("a reload built from the text loaded now: %v", err)
+	}
+	if got, blocked, n := conf.loadedText(), conf.isBlocked(), calls.Load(); got != t2 || !blocked || n != 2 {
+		t.Errorf("after the last reload: text %q, blocked %v, %d reloads; want %q, true, 2", got, blocked, n, t2)
 	}
 }

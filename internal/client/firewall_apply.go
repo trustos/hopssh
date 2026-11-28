@@ -36,6 +36,7 @@ type loadedConfig struct {
 	mu      sync.Mutex
 	text    string
 	blocked bool
+	pending bool // a reload has not returned yet
 }
 
 func (l *loadedConfig) loadedText() string {
@@ -198,7 +199,7 @@ func applyFirewallOn(inst *meshInstance, svc meshService, d fwpolicy.Delivered) 
 	// A reload applies every section, not only the firewall: the PKI one
 	// reads the cert again, routes and relays written since the last start
 	// would go live too. When the file changed, the next start loads it.
-	if !sameApartFromFirewall(running, onDisk) {
+	if !sameApartFromOverlays(running, onDisk) {
 		return firewallLater, errors.New("nebula.yaml changed since Nebula loaded it")
 	}
 	running["firewall"] = block
@@ -229,7 +230,7 @@ func applyFirewallOn(inst *meshInstance, svc meshService, d fwpolicy.Delivered) 
 		}
 	}
 	if ctrl.FirewallRuleHash() != want || conf.isBlocked() != blocked {
-		if err := reloadInPlace(inst, conf, string(text), blocked); err != nil {
+		if err := reloadInPlace(inst, conf, before, string(text), blocked); err != nil {
 			return firewallLater, err
 		}
 		if got := ctrl.FirewallRuleHash(); got != want {
@@ -253,7 +254,7 @@ func applyFirewallOn(inst *meshInstance, svc meshService, d fwpolicy.Delivered) 
 	if err != nil {
 		// The running rules go back to the file's, so the two agree, and a
 		// restart brings no surprise.
-		if rerr := reloadInPlace(inst, conf, before, wasBlocked); rerr != nil {
+		if rerr := reloadInPlace(inst, conf, conf.loadedText(), before, wasBlocked); rerr != nil {
 			log.Printf("[firewall %s] CRITICAL: nebula.yaml was not written and the old rules are not back (%v); a restart loads the file's", inst.name(), rerr)
 		}
 		return firewallRefused, fmt.Errorf("write nebula.yaml: %w", err)
@@ -262,19 +263,36 @@ func applyFirewallOn(inst *meshInstance, svc meshService, d fwpolicy.Delivered) 
 }
 
 // reloadInPlace reloads conf from text, within firewallReloadLimit; blocked
-// says whether text has the firewall of a device that blocks incoming. A
-// reload that takes longer goes on alone; its text is recorded when it
-// finishes.
-func reloadInPlace(inst *meshInstance, conf *loadedConfig, text string, blocked bool) error {
+// says whether text has the firewall of a device that blocks incoming, and
+// base is the loaded text the caller built text from. A reload that takes
+// longer goes on alone and its text is recorded when it finishes. Until it
+// has, no other reload starts; after it, one built from the text before it
+// is refused, since it would undo it (the switch "Block incoming" turned
+// back by a heartbeat that read the config first).
+func reloadInPlace(inst *meshInstance, conf *loadedConfig, base, text string, blocked bool) error {
+	conf.mu.Lock()
+	switch {
+	case conf.pending:
+		conf.mu.Unlock()
+		return errors.New("an earlier reload has not finished")
+	case conf.text != base:
+		conf.mu.Unlock()
+		return errors.New("the config Nebula runs changed while this reload was built")
+	}
+	conf.pending = true
+	conf.mu.Unlock()
+
 	done := make(chan struct{})
 	var err error
 	runWithTimeout(inst.name(), "firewall reload", firewallReloadLimit, func() {
-		err = conf.cfg.ReloadConfigString(text)
-		if err == nil {
-			conf.mu.Lock()
+		rerr := conf.cfg.ReloadConfigString(text)
+		conf.mu.Lock()
+		if rerr == nil {
 			conf.text, conf.blocked = text, blocked
-			conf.mu.Unlock()
 		}
+		conf.pending = false
+		conf.mu.Unlock()
+		err = rerr
 		close(done)
 	})
 	select {
@@ -297,13 +315,27 @@ func fileHasFirewall(path string, block interface{}) bool {
 	return err == nil && reflect.DeepEqual(cfg["firewall"], block)
 }
 
-// sameApartFromFirewall reports whether two parsed configs differ only in
-// their firewall section.
-func sameApartFromFirewall(a, b map[string]interface{}) bool {
+// sameApartFromOverlays reports whether two parsed configs differ only in
+// what the agent puts over nebula.yaml when it loads it: the firewall
+// section and pki.blocklist (blocklist.go).
+func sameApartFromOverlays(a, b map[string]interface{}) bool {
 	strip := func(m map[string]interface{}) map[string]interface{} {
 		out := make(map[string]interface{}, len(m))
 		for k, v := range m {
-			if k != "firewall" {
+			switch k {
+			case "firewall":
+			case "pki":
+				if p, ok := v.(map[string]interface{}); ok {
+					q := make(map[string]interface{}, len(p))
+					for pk, pv := range p {
+						if pk != "blocklist" {
+							q[pk] = pv
+						}
+					}
+					v = q
+				}
+				out[k] = v
+			default:
 				out[k] = v
 			}
 		}

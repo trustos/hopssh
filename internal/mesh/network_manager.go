@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/slackhq/nebula"
@@ -18,6 +20,7 @@ import (
 	"github.com/slackhq/nebula/logging"
 	"github.com/slackhq/nebula/overlay"
 	"github.com/slackhq/nebula/service"
+	"github.com/trustos/hopssh/internal/blocklist"
 	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/nebulacfg"
 )
@@ -38,6 +41,15 @@ type NetworkInstance struct {
 	svc  *service.Service
 	ctrl *nebula.Control // cached for peer advertise_addrs lookup (see PeerEndpoints)
 	dns  *MeshDNS
+
+	// The config Nebula runs, reloaded in place when the network's
+	// blocklist changes (RefreshBlocklist).
+	cfg       *config.C
+	network   *db.Network
+	blockMu   sync.Mutex
+	blocked   []string    // the fingerprints in pki.blocklist now
+	closed    bool        // under blockMu: no reload once Close has begun
+	reloading atomic.Bool // a reload has not returned; no second one meanwhile
 }
 
 // Dial opens a TCP connection to a node's agent API through the mesh.
@@ -68,6 +80,9 @@ func (ni *NetworkInstance) HTTPClient(nebulaIP string) *http.Client {
 // Close shuts down the Nebula instance gracefully.
 func (ni *NetworkInstance) Close() {
 	log.Printf("[mesh] stopping lighthouse for network %s (port %d)", ni.Slug, ni.UDPPort)
+	ni.blockMu.Lock() // waits for a RefreshBlocklist under way, at most its 10 s limit
+	ni.closed = true
+	ni.blockMu.Unlock()
 	if ni.dns != nil {
 		ni.dns.Stop()
 	}
@@ -508,53 +523,13 @@ func (nm *NetworkManager) startInstance(n *db.Network) error {
 	}
 	port := int(*n.LighthousePort)
 
-	cfgStr := fmt.Sprintf(`
-tun:
-  user: true
-cipher: %s
-pki:
-  ca: |
-%s
-  cert: |
-%s
-  key: |
-%s
-listen:
-  host: 0.0.0.0
-  port: %d
-routines: %d
-handshakes:
-  try_interval: %s
-lighthouse:
-  am_lighthouse: true
-relay:
-  am_relay: true
-punchy:
-  punch: true
-  respond: true
-  punch_back: %t
-  delay: %s
-  respond_delay: %s
-  target_all_remotes: true
-firewall:
-  outbound:
-    - port: any
-      proto: any
-      host: any
-  inbound:
-    - port: any
-      proto: any
-      host: any
-`,
-		nebulacfg.Cipher,
-		indentPEM(string(n.NebulaCACert), 4),
-		indentPEM(string(n.ServerCert), 4),
-		indentPEM(string(n.ServerKey), 4),
-		port,
-		nebulacfg.Routines,
-		nebulacfg.HandshakeTryInterval,
-		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay,
-	)
+	// A deleted node is refused from the start: a restart of the server
+	// must not let it back in until the next refresh.
+	blocked, err := nm.blockedCerts(n)
+	if err != nil {
+		log.Printf("[mesh] network %s: blocklist: %v", n.Slug, err)
+	}
+	cfgStr := lighthouseConfig(n, port, blocked)
 
 	var cfg config.C
 	if err := cfg.LoadString(cfgStr); err != nil {
@@ -612,6 +587,9 @@ firewall:
 		svc:       svc,
 		ctrl:      ctrl,
 		dns:       meshDNS,
+		cfg:       &cfg,
+		network:   n,
+		blocked:   blocked,
 	}
 
 	nm.mu.Lock()
@@ -621,6 +599,174 @@ firewall:
 		n.Slug, n.ID[:8], port, n.DNSDomain)
 
 	return nil
+}
+
+// lighthouseConfig is the Nebula config of a network's lighthouse+relay,
+// refusing the certificates in blocked.
+func lighthouseConfig(n *db.Network, port int, blocked []string) string {
+	return fmt.Sprintf(`
+tun:
+  user: true
+cipher: %s
+pki:
+  ca: |
+%s
+  cert: |
+%s
+  key: |
+%s
+%slisten:
+  host: 0.0.0.0
+  port: %d
+routines: %d
+handshakes:
+  try_interval: %s
+lighthouse:
+  am_lighthouse: true
+relay:
+  am_relay: true
+punchy:
+  punch: true
+  respond: true
+  punch_back: %t
+  delay: %s
+  respond_delay: %s
+  target_all_remotes: true
+firewall:
+  outbound:
+    - port: any
+      proto: any
+      host: any
+  inbound:
+    - port: any
+      proto: any
+      host: any
+`,
+		nebulacfg.Cipher,
+		indentPEM(string(n.NebulaCACert), 4),
+		indentPEM(string(n.ServerCert), 4),
+		indentPEM(string(n.ServerKey), 4),
+		blocklistYAML(blocked),
+		port,
+		nebulacfg.Routines,
+		nebulacfg.HandshakeTryInterval,
+		nebulacfg.PunchBack, nebulacfg.PunchDelay, nebulacfg.RespondDelay,
+	)
+}
+
+// blocklistYAML is the pki.blocklist section for fingerprints, nothing when
+// there are none.
+func blocklistYAML(fingerprints []string) string {
+	if len(fingerprints) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.WriteString("  blocklist:\n")
+	for _, fp := range fingerprints {
+		fmt.Fprintf(&b, "    - %q\n", fp)
+	}
+	return b.String()
+}
+
+// blockedCerts is what the network's lighthouse must refuse now: the
+// certificates of its deleted nodes (docs/wiki/concepts/deleted-devices.md),
+// never its own.
+func (nm *NetworkManager) blockedCerts(n *db.Network) ([]string, error) {
+	if nm.nodes == nil {
+		return nil, nil
+	}
+	now := time.Now()
+	list, err := nm.nodes.Blocklist(n.ID, now)
+	if err != nil {
+		return nil, err
+	}
+	own, _, _ := blocklist.Fingerprint(n.ServerCert)
+	return blocklist.Active(list, now, own), nil
+}
+
+// blocklistReloadLimit bounds a reload of a lighthouse's config. Nebula
+// takes its own locks there; a reload that does not return must not hold
+// up the refresher for good.
+const blocklistReloadLimit = 10 * time.Second
+
+// RefreshBlocklist gives the network's lighthouse the current blocklist,
+// by an in-place reload when it changed. Called when nodes are deleted and
+// every 30 s by StartBlocklistRefresher, as entries expire.
+func (nm *NetworkManager) RefreshBlocklist(networkID string) {
+	nm.mu.RLock()
+	inst := nm.instances[networkID]
+	nm.mu.RUnlock()
+	if inst == nil || inst.cfg == nil { // nil while the network is starting
+		return
+	}
+	inst.blockMu.Lock()
+	defer inst.blockMu.Unlock()
+	if inst.closed {
+		return
+	}
+	if inst.reloading.Load() {
+		log.Printf("[mesh] network %s: the last reload with the blocklist has not returned; not starting another", inst.Slug)
+		return
+	}
+	list, err := nm.blockedCerts(inst.network)
+	if err != nil {
+		log.Printf("[mesh] network %s: blocklist: %v (keeping the %d entries it has)", inst.Slug, err, len(inst.blocked))
+		return
+	}
+	if slices.Equal(list, inst.blocked) {
+		return
+	}
+	done := make(chan error, 1)
+	inst.reloading.Store(true)
+	go func() {
+		defer inst.reloading.Store(false)
+		defer func() { // a panic here would end the server
+			if r := recover(); r != nil {
+				done <- fmt.Errorf("panic: %v", r)
+			}
+		}()
+		done <- inst.cfg.ReloadConfigString(lighthouseConfig(inst.network, inst.UDPPort, list))
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			log.Printf("[mesh] network %s: reload with the blocklist: %v", inst.Slug, err)
+			return
+		}
+	case <-time.After(blocklistReloadLimit):
+		log.Printf("[mesh] network %s: the reload with the blocklist did not finish within %v", inst.Slug, blocklistReloadLimit)
+		return
+	}
+	log.Printf("[mesh] network %s: certificates of deleted nodes refused: %d", inst.Slug, len(list))
+	inst.blocked = list
+}
+
+// StartBlocklistRefresher refreshes every lighthouse's blocklist each
+// interval: deletes the API did not report (the server-wide prune, a
+// change by hand) and entries that expired.
+func (nm *NetworkManager) StartBlocklistRefresher(ctx context.Context, interval time.Duration) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				nm.mu.RLock()
+				ids := make([]string, 0, len(nm.instances))
+				for id, inst := range nm.instances {
+					if inst != nil {
+						ids = append(ids, id)
+					}
+				}
+				nm.mu.RUnlock()
+				for _, id := range ids {
+					nm.RefreshBlocklist(id)
+				}
+			}
+		}
+	}()
 }
 
 func indentPEM(pem string, spaces int) string {

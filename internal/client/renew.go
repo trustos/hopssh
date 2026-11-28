@@ -194,6 +194,9 @@ func sendHeartbeat(inst *meshInstance) error {
 			reqBody["selfEndpointLifetimesSec"] = lifetimes
 		}
 	}
+	// The switch "Block incoming", when Nebula runs otherwise
+	// (firewall_block.go); before the report, which says what Nebula runs.
+	reapplyIncomingBlocked(inst)
 	// What the firewall policy of the last answer became (firewall_apply.go).
 	if a := inst.firewallAck(); a != nil {
 		reqBody["firewall"] = a
@@ -281,6 +284,10 @@ func sendHeartbeat(inst *meshInstance) error {
 		// (phase 2 of docs/wiki/concepts/firewall-rules.md). Absent: the
 		// node keeps the firewall it runs.
 		Firewall *fwpolicy.Delivered `json:"firewall"`
+		// Blocklist is the certificates of the network's deleted devices
+		// (blocklist.go), decoded on its own. Absent: the device keeps
+		// the list it has.
+		Blocklist json.RawMessage `json:"blocklist"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&body); err == nil {
 		if len(body.PeerEndpoints) > 0 {
@@ -297,6 +304,7 @@ func sendHeartbeat(inst *meshInstance) error {
 		// No-op when both old and new lists are empty.
 		applyRoutesUpdate(inst, body.Routes)
 		applyFirewall(inst, body.Firewall)
+		applyBlocklist(inst, body.Blocklist)
 		// Persist networkId on first successful heartbeat (or refresh
 		// if the registry value drifted — defensive). Idempotent for
 		// stable enrollments; SetNetworkID returns nil with no write
@@ -1379,6 +1387,7 @@ func reloadNebula(inst *meshInstance) {
 		log.Printf("[renew %s] instance was closed while Nebula was restarting — stopped it", inst.name())
 		return
 	}
+	applySavedBlocklist(inst, newSvc)
 
 	// Spawn a fresh watcher against the new ctrl.
 	if ctrl := newSvc.NebulaControl(); ctrl != nil && inst.endpoint() != "" {
@@ -1602,6 +1611,7 @@ func retryReloadOnce(inst *meshInstance, configPath, tunMode string, attempt, to
 		log.Printf("[renew %s] instance was closed during retry-reload — stopped Nebula", inst.name())
 		return true
 	}
+	applySavedBlocklist(inst, newSvc)
 
 	if ctrl := newSvc.NebulaControl(); ctrl != nil && inst.endpoint() != "" {
 		inst.startWatcher(ctrl)
