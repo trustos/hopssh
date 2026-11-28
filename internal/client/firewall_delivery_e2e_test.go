@@ -321,7 +321,7 @@ func TestE2E_FirewallDelivery(t *testing.T) {
 // Nebula peers. Both joined it with the TCP-only block. The first save makes
 // the network managed, and b's next heartbeat answer carries the preset with
 // no rules: from that beat on UDP from a reaches b. Back to "TCP only", it
-// stops again. The tunnel stays throughout.
+// stops again while TCP still gets through. The tunnel stays throughout.
 func TestE2E_FirewallTCPNetworkToAll(t *testing.T) {
 	var policy atomic.Pointer[fwpolicy.Delivered]
 	var report atomic.Pointer[fwpolicy.Ack]
@@ -379,6 +379,11 @@ func TestE2E_FirewallTCPNetworkToAll(t *testing.T) {
 		beat()
 		if got := udpReaches(t, a, ipB+":9"); got != c.udp {
 			t.Errorf("%s: UDP from a reaches b: %v, want %v", c.preset, got, c.udp)
+		}
+		// A tunnel that carries nothing drops UDP too; TCP to the agent's
+		// port, which every block lets in from a node, still gets through.
+		if _, succeeded, _, _ := keepaliveOneCycle(a); succeeded != 1 {
+			t.Errorf("%s: TCP from a does not reach b's agent port: the tunnel carries nothing", c.preset)
 		}
 		rules := firewallRules(t, readFile(t, file))
 		if !slices.Contains(rules, c.has) || slices.Contains(rules, c.hasn) {
