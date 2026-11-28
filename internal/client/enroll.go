@@ -296,6 +296,7 @@ func enrollDeviceFlow(endpoint string) {
 	fmt.Println()
 	fmt.Println("  To enroll this node, open:  " + endpoint + "/device")
 	fmt.Println("  Enter code:  " + codeResp.UserCode)
+	fmt.Println("  You choose there which network this node joins.")
 	fmt.Println()
 	fmt.Println("  Waiting for authorization...")
 
