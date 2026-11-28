@@ -5,6 +5,7 @@ status: current
 last_compiled: 2026-11-28
 sources:
   - internal/e2etest/server.go
+  - internal/e2etest/sweep_test.go
   - internal/e2etest/peer.go
   - internal/api/e2e_test.go
   - internal/api/audit_e2e_test.go
@@ -33,6 +34,7 @@ go test -mod=vendor ./internal/api ./cmd/agent -run TestE2E -v
 - `HOP_E2E_OLD=<dir>` runs `TestE2E_Upgrade` against a released version: the directory holds its `hop-server` and its `hop-agent`. Without it that test is skipped. Build them from a worktree of the tag, after `go mod vendor` and `make patch-vendor`; set `PortmapEnabled = false` in its `internal/nebulacfg/defaults.go` first, or the old agent asks your router for a port.
 - The kernel-TUN test needs root and a network namespace: `go test -mod=vendor -c -o /tmp/client.test ./internal/client`, then `sudo unshare -n sh -c 'ip link set lo up && /tmp/client.test -test.run KernelTun -test.v'`. CI does that; `make test` skips it.
 - They never ask the router for a port mapping (`PortmapEnabled = false` in `TestMain`) and never call `enroll`, which would install a service.
+- Each test process builds `hop-server` once, in `$TMPDIR/hop-e2e-bin-<pid>-…` (about 54 MB). Nothing removes it when the process ends, so the next build removes the folders of processes that have ended (`sweepBuilds`; `TestSweepBuilds`, `TestBuildSweeps`, which also pass with `-count=3`). The folder of a living process stays, another user's too. Until 2026-11-28 they stayed: 26 GB on a Mac, and in the Linux VM a full `/tmp` that failed tests with "no space left on device". Folders from before, named `hop-e2e-bin<digits>`, go by hand.
 
 ## What is where
 

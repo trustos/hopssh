@@ -7,6 +7,7 @@ package e2etest
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -16,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -42,6 +44,48 @@ type Server struct {
 	ips  atomic.Uint32
 }
 
+// binPrefix starts the name of the folder a test process builds hop-server
+// in, followed by the process's pid: nothing removes the folder when the
+// process ends, so the next build removes it (sweepBuilds).
+const binPrefix = "hop-e2e-bin-"
+
+// sweepBuilds removes the build folders in dir of test processes that have
+// ended. Until 2026-11-28 the folders stayed: 26 GB on a Mac, and a full
+// /tmp in the Linux VM. The folder of a living process stays, another
+// user's too, and so do the folders from before, named without a pid. It
+// reads dir rather than globbing it: a "[" in the temp path is a pattern
+// to filepath.Glob.
+func sweepBuilds(dir string) {
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		rest, ok := strings.CutPrefix(e.Name(), binPrefix)
+		if !ok {
+			continue
+		}
+		pid, _, _ := strings.Cut(rest, "-")
+		if n, err := strconv.Atoi(pid); err == nil && ended(n) {
+			os.RemoveAll(filepath.Join(dir, e.Name()))
+		}
+	}
+}
+
+// ended says whether process pid has ended. Signal 0 tests for it on Unix,
+// where FindProcess never fails; a process this user may not signal
+// answers EPERM and is living. On Windows FindProcess opens the process:
+// OpenProcess answers ERROR_INVALID_PARAMETER (87) for a pid no process
+// has, and any other refusal, access denied above all, is a living
+// process. A process it can open is living too, as far as this goes:
+// Signal(0) is not supported there.
+func ended(pid int) bool {
+	p, err := os.FindProcess(pid)
+	if err != nil {
+		return errors.Is(err, syscall.Errno(87))
+	}
+	defer p.Release()
+	err = p.Signal(syscall.Signal(0))
+	return errors.Is(err, os.ErrProcessDone) || errors.Is(err, syscall.ESRCH)
+}
+
 var (
 	buildOnce sync.Once
 	buildPath string
@@ -54,7 +98,9 @@ func build() (string, error) {
 	buildOnce.Do(func() {
 		_, file, _, _ := runtime.Caller(0)
 		root := filepath.Join(filepath.Dir(file), "..", "..")
-		dir, err := os.MkdirTemp("", "hop-e2e-bin")
+		tmp := os.TempDir()
+		sweepBuilds(tmp)
+		dir, err := os.MkdirTemp(tmp, fmt.Sprintf("%s%d-", binPrefix, os.Getpid()))
 		if err != nil {
 			buildErr = err
 			return

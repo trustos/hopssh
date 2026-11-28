@@ -1142,3 +1142,37 @@ compares with the last commit. Each made red first. The fourth, that
 `internal/cigate` reads only the CI line and not the recipe, was refuted:
 a recipe made to do nothing would show in review, and a substring check
 of it would not stop that.
+
+**The real-server tests filled the disk.** Each test process builds
+`hop-server` in a temporary folder of its own (about 54 MB), and nothing
+removed it: 478 folders and 26 GB on the Mac, and in the Linux VM a full
+`/tmp`, which failed the gates with "no space left on device" and
+"database or disk is full". The folder's name now carries the process's
+pid, and the next build removes the folders of processes that have ended
+(`TestSweepBuilds`, `TestBuildSweeps`). Six planted bugs, each caught by
+the check written for it: a sweep that removes nothing, one that removes
+everything, a build that does not sweep, a name without the pid, a pid
+not cut from the name, names it cannot read removed. Two of them did not
+compile at first and were made again. Folders from before, named
+`hop-e2e-bin<digits>`, go by hand.
+
+A review of the fix, each finding checked by a skeptic, kept four of
+five. Nothing tested a living process the user may not signal: a sweep
+that took EPERM for "ended" removed root's folder and passed; pid 1 is in
+the test now. `filepath.Glob` read a "[" in the temp path as a pattern,
+so nothing was swept there (and with the right name a folder next to it
+could be); it reads the folder instead. `TestBuildSweeps` failed on its
+second run with `-count=2`, since the build runs once per process; the
+test resets it. And a comment read as if the folders from before went
+too. The fifth, refuted only for want of a Windows machine: there
+`FindProcess` fails for a living process it may not open, which counted
+as ended; only "no such process" (ERROR_INVALID_PARAMETER) does now.
+Three more plants, each caught by the check written for it, and the six
+earlier ones again on the new code; the Windows branch is cross-compiled
+only, not run.
+
+Gates with it: `internal/api`, `internal/cigate` and `internal/e2etest` on
+the Mac (149 s, 0.3 s, 2.7 s) and in the VM as a user (150 s, 0.0 s,
+0.6 s) and as root (150 s, 0.0 s, 0.6 s), no skips; the two sweep tests
+with `-count=3` on both. The VM's `/tmp` stayed at 3 %, with one folder
+left, the last run's.
