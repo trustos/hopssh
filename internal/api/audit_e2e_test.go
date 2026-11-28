@@ -78,6 +78,7 @@ var notAudited = map[string]string{
 // readOnly: routes that change nothing. A new route must be put in one of
 // auditedRoutes, notAudited and readOnly; a GET is not taken on trust.
 var readOnly = map[string]bool{
+	"GET /swagger/doc.json":                                 true,
 	"GET /swagger/*":                                        true,
 	"GET /healthz":                                          true,
 	"GET /version":                                          true,

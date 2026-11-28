@@ -1072,3 +1072,73 @@ as user today. It waited for its turn (`takeTurn`, one hop-server per
 machine) until `cmd/agent`'s tests ended, then ran in a second; in the
 last root run 585.8 s against `cmd/agent`'s 584.6 s. A
 package's time in a run of several is not its own.
+
+## 2026-11-28 — the turn's deadline, the generated code checked, a device's own addresses first, item 4, the API docs (not released)
+
+**A real-server test waits as long as `go test` lets it.** `takeTurn` (one
+hop-server per machine) gave up after 25 minutes whatever `-timeout`
+allowed; `cmd/agent`'s run alone takes 11 minutes in the Linux VM. It now
+waits until a minute before `-timeout` ends the binary (an hour without
+one). `TestTurnDeadline`.
+
+**The generated database code matches the migrations.** 008 to 013 went in
+without `make generate`; the next one would have changed what
+`GetNetworkByID` and `ListAllNetworks` return. Regenerated with sqlc
+v1.30.0; `make sqlc-check` (`sqlc diff`) runs in CI's build job and in
+`make preflight`, and `TestGeneratedDatabaseCodeIsChecked`
+(`internal/cigate`) fails when either stops running it.
+
+**A peer gets a device's own addresses before the lighthouse's list.** The
+peer's Nebula keeps the first 10 per family of what the server sends, so
+ten lighthouse entries pushed out a NAT-PMP mapping only the device knew.
+`TestMergePeerEndpoints_SelfEndpointsFirst` was red (the mapping came
+11th).
+
+**Item 4: an existing network moves to "Everything" and back.** The
+Firewall tab already did it (the first save makes a network managed, and
+the heartbeat answer carries the preset with no rules); nothing tested it.
+`TestE2E_FirewallTCPNetworkToAll` in `internal/api` (real server) and
+`internal/client` (two real Nebula peers): UDP passes from the device's
+next heartbeat and stops after "TCP only", on the same tunnel. 5 planted
+bugs, all caught; `TestE2E_FirewallDelivery` missed two of them
+([[concepts/e2e-tests]]). Agents up to v0.11.31 and `hop client join`
+devices keep their block.
+
+**The API docs.** `swagger/` was made in April: 15 of the 33 documented
+paths, no firewall route. Worse, the page at `/swagger/` loaded and
+`doc.json` answered 500 the whole time: http-swagger v2.0.2 reads swag v1's
+registry, and `swagger/` registers with swag v2. The server now serves
+`doc.json` itself; `TestE2E_APIDocs` (real server) was red with the 500 and
+checks the served paths against `swagger/swagger.json`. The spec no longer
+names `localhost:8080` as its host, so "Try it out" calls the server the
+page came from (checked in a browser). `make swagger` regenerates with the
+version go.mod has (v2.0.0-rc5, the same bytes every run); `make
+swagger-check` regenerates and fails when `swagger/` changed, in CI and in
+`make preflight` (`TestGeneratedAPIDocsAreChecked`). Checked: it fails on
+the April docs. Only handlers with an `@Router` annotation are in the
+docs: 41 operations; `/api/heartbeat`, the members, invites
+and clipboard routes, among others, have none ([[open-questions]]).
+
+Gates before the API docs: Mac `cmd/agent` 634 s, `internal/api` 778 s,
+`internal/client` 449 s (14 platform skips); VM as a user 803 s, 480 s,
+471 s, as root 753 s, 150 s, 475 s (13 skips, all for another system or
+for a user without root). One failure in the VM as a user,
+`TestGeneratedDatabaseCodeIsChecked`: its copy of `ci.yml` was older than
+the commit (the rsync left `.github/` out); green after syncing it. With
+the API docs: `internal/api` and `internal/cigate` on the Mac (149 s, no
+skips) and in the VM as a user and as root (151 s, 150 s), the item-4
+client tests in the VM as a user and as root. The first Mac run caught
+the new route missing from `TestE2E_Audit`'s table. Not run on Windows
+(the VM is gone from UTM).
+
+A review of item 4 and the API docs, each finding checked by a skeptic,
+kept three of four. The TCP-only step had no sign that the tunnel still
+carried anything: a reload that leaves b with no tunnel to a, and no error
+back, passed every check but the new one (a reach TCP 41820). The docs
+test compared path names only: a host named again and an operation that
+differs both passed; it compares the whole document now. And
+`swagger-check` compared with the index, so docs only staged passed it; it
+compares with the last commit. Each made red first. The fourth, that
+`internal/cigate` reads only the CI line and not the recipe, was refuted:
+a recipe made to do nothing would show in review, and a substring check
+of it would not stop that.

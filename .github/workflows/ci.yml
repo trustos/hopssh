@@ -46,6 +46,9 @@ jobs:
       - name: Generated database code matches the migrations
         run: make sqlc-check
 
+      - name: API docs match the handlers' annotations
+        run: make swagger-check
+
       - name: Test
         run: make test
 

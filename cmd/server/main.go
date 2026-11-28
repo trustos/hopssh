@@ -35,7 +35,6 @@ import (
 //
 // @license.name  Proprietary
 //
-// @host      localhost:8080
 // @BasePath  /
 //
 // @securityDefinitions.apikey BearerAuth

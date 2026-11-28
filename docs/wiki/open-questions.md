@@ -4,6 +4,10 @@ Cross-cutting unresolved items. Acts as a handoff state machine across sessions:
 
 Per-incident open items live on the incident page itself (`## Open` section). This file is for items that span multiple pages or that don't have a natural home yet.
 
+## 2026-11-28 — the API docs have only the annotated routes
+
+`swagger/` is made from `@Router` annotations, and 41 operations have one. `/api/heartbeat`, the members, invites and clipboard routes, among others, have none, so the page at `/swagger/` doesn't show them; nothing checks that a route is documented (`TestE2E_Access` checks only who may call it). **Decide:** annotate the rest and let a test compare the router with the docs, or say in the docs that they are partial. Also left as they were: `@version 0.1.0` and `@license.name Proprietary` in `cmd/server/main.go`.
+
 ## 2026-11-28 — deleted devices blocked with `pki.blocklist` (item 14, not released): what is left
 
 - **Agents of v0.11.31 and older, and `hop client join` devices, get no list.** They accept a deleted device until its cert expires; only the lighthouse refuses it for them. Nothing to do but update the agents (`sudo hop-agent update`).

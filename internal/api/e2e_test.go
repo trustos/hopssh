@@ -85,6 +85,7 @@ var publicRoutes = map[string]string{
 	"GET /download/SHA256SUMS":      "nothing to protect",
 	"GET /download/{binary}":        "nothing to protect",
 	"GET /download/desktop/{asset}": "nothing to protect",
+	"GET /swagger/doc.json":         "nothing to protect",
 	"GET /swagger/*":                "nothing to protect",
 }
 

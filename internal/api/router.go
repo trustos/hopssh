@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
+	"github.com/swaggo/swag/v2"
 	"github.com/trustos/hopssh/internal/auth"
 	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/frontend"
@@ -110,7 +111,18 @@ func NewRouter(
 	r.Use(middleware.Recoverer)
 	r.Use(cors)
 
-	// Swagger UI.
+	// Swagger UI. http-swagger reads the spec from swag v1's registry, and the
+	// swagger package registers it with swag v2, so doc.json is served here
+	// (it answered 500 from April to 2026-11-28; TestE2E_APIDocs).
+	r.Get("/swagger/doc.json", func(w http.ResponseWriter, _ *http.Request) {
+		doc, err := swag.ReadDoc()
+		if err != nil {
+			http.Error(w, "no API docs in this build", http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Write([]byte(doc))
+	})
 	r.Get("/swagger/*", httpSwagger.WrapHandler)
 
 	// Rate limiter for public auth endpoints: 10 requests/minute burst 20.

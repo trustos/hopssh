@@ -12,9 +12,35 @@
         },
         "version": "0.1.0"
     },
-    "host": "localhost:8080",
     "basePath": "/",
     "paths": {
+        "/api/audit": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "audit"
+                ],
+                "summary": "List audit log",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object"
+                            }
+                        }
+                    }
+                }
+            }
+        },
         "/api/auth/login": {
             "post": {
                 "description": "Authenticate with email and password. Returns session token and sets cookie.",
@@ -171,6 +197,196 @@
                 }
             }
         },
+        "/api/bundles/{token}": {
+            "get": {
+                "description": "Downloads a pre-generated tarball containing agent certs and config. Single-use, expires after 15 minutes.",
+                "produces": [
+                    "application/gzip"
+                ],
+                "tags": [
+                    "enrollment"
+                ],
+                "summary": "Download enrollment bundle",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Download token",
+                        "name": "token",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Tarball",
+                        "schema": {
+                            "type": "file"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/device/authorize": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "User enters the code shown on the server terminal. Selects a network and authorizes the device.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "enrollment"
+                ],
+                "summary": "Authorize device code",
+                "parameters": [
+                    {
+                        "description": "User code and network selection",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.DeviceAuthorizeRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "string"
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/device/code": {
+            "post": {
+                "description": "Initiates the device authorization flow. Returns a device code for polling and a user code for the human to enter at /device.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "enrollment"
+                ],
+                "summary": "Request device code",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.DeviceCodeResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/device/poll": {
+            "post": {
+                "description": "Agent polls this endpoint to check if the user has authorized the device code. Returns enrollment data when authorized.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "enrollment"
+                ],
+                "summary": "Poll device code",
+                "parameters": [
+                    {
+                        "description": "Device code",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.DevicePollRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "Enrollment complete",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.EnrollResponse"
+                        }
+                    },
+                    "400": {
+                        "description": "Missing device code",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    },
+                    "403": {
+                        "description": "authorization_pending or expired",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/device/verify/{code}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Check if a user code is valid and pending authorization.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "enrollment"
+                ],
+                "summary": "Verify device code",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "User code (e.g. HOP-K9M2)",
+                        "name": "code",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/enroll": {
             "post": {
                 "description": "Called by the install script. Validates the one-time enrollment token, issues a Nebula certificate, and returns connection details. The enrollment token is consumed and cannot be reused.",
@@ -212,6 +428,144 @@
                         "description": "Invalid enrollment token",
                         "schema": {
                             "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/firewall/sets": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "firewall"
+                ],
+                "summary": "List my rule sets",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "firewall"
+                ],
+                "summary": "Create a rule set",
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/firewall/sets/{setID}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "firewall"
+                ],
+                "summary": "Change a rule set",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Rule set ID",
+                        "name": "setID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Version the change is made against",
+                        "name": "If-Match",
+                        "in": "header",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object"
+                        }
+                    },
+                    "409": {
+                        "description": "a rule set with that name exists",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "412": {
+                        "description": "changed in the meantime",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "firewall"
+                ],
+                "summary": "Delete a rule set",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Rule set ID",
+                        "name": "setID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "409": {
+                        "description": "attached to a network",
+                        "schema": {
+                            "type": "string"
                         }
                     }
                 }
@@ -360,13 +714,382 @@
                     }
                 ],
                 "responses": {
-                    "200": {
-                        "description": "OK"
+                    "204": {
+                        "description": "No Content"
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/networks/{networkID}/audit": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "audit"
+                ],
+                "summary": "List network audit log",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Network ID",
+                        "name": "networkID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/networks/{networkID}/bundles": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Creates a pre-enrolled node and generates a single-use download URL for a tarball containing all certs and config.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "enrollment"
+                ],
+                "summary": "Create enrollment bundle",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Network ID",
+                        "name": "networkID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.BundleResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/networks/{networkID}/dns": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "dns"
+                ],
+                "summary": "List DNS records",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Network ID",
+                        "name": "networkID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "dns"
+                ],
+                "summary": "Create DNS record",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Network ID",
+                        "name": "networkID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/networks/{networkID}/dns/{recordID}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "dns"
+                ],
+                "summary": "Delete DNS record",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Network ID",
+                        "name": "networkID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "DNS Record ID",
+                        "name": "recordID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            }
+        },
+        "/api/networks/{networkID}/firewall": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "firewall"
+                ],
+                "summary": "Network firewall rules",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Network ID",
+                        "name": "networkID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object"
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "firewall"
+                ],
+                "summary": "Change network firewall rules",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Network ID",
+                        "name": "networkID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Version the change is made against",
+                        "name": "If-Match",
+                        "in": "header",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object"
+                        }
+                    },
+                    "412": {
+                        "description": "changed in the meantime",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "428": {
+                        "description": "If-Match missing",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/networks/{networkID}/firewall/sets/{setID}": {
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "firewall"
+                ],
+                "summary": "Attach a rule set",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Network ID",
+                        "name": "networkID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Rule set ID",
+                        "name": "setID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "firewall"
+                ],
+                "summary": "Detach a rule set",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Network ID",
+                        "name": "networkID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Rule set ID",
+                        "name": "setID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            }
+        },
+        "/api/networks/{networkID}/join": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Issues a \"user\" cert for a client device to join the mesh. Returns certs and lighthouse info.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "enrollment"
+                ],
+                "summary": "Join network as client",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Network ID",
+                        "name": "networkID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.EnrollResponse"
                         }
                     }
                 }
@@ -453,6 +1176,47 @@
                 }
             }
         },
+        "/api/networks/{networkID}/nodes/{nodeID}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Permanently deletes a node from the network, closes its mesh tunnel and any active port forwards.",
+                "tags": [
+                    "nodes"
+                ],
+                "summary": "Delete node",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Network ID",
+                        "name": "networkID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Node ID",
+                        "name": "nodeID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/networks/{networkID}/nodes/{nodeID}/exec": {
             "post": {
                 "security": [
@@ -513,6 +1277,46 @@
                         "description": "Agent unreachable",
                         "schema": {
                             "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/networks/{networkID}/nodes/{nodeID}/firewall": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "firewall"
+                ],
+                "summary": "What may reach a device",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Network ID",
+                        "name": "networkID",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Node ID",
+                        "name": "nodeID",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object"
                         }
                     }
                 }
@@ -760,6 +1564,46 @@
                     }
                 }
             }
+        },
+        "/api/renew": {
+            "post": {
+                "description": "Agent calls this to get a fresh short-lived Nebula certificate. Authenticated via the per-node bearer token.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "enrollment"
+                ],
+                "summary": "Renew node certificate",
+                "parameters": [
+                    {
+                        "description": "Node ID",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.RenewRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.RenewResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Invalid token or node not found",
+                        "schema": {
+                            "$ref": "#/definitions/internal_api.ErrorResponse"
+                        }
+                    }
+                }
+            }
         }
     },
     "definitions": {
@@ -784,6 +1628,19 @@
                 }
             }
         },
+        "internal_api.BundleResponse": {
+            "type": "object",
+            "properties": {
+                "bundleUrl": {
+                    "type": "string",
+                    "example": "https://hopssh.com/api/bundles/abc123"
+                },
+                "expiresIn": {
+                    "type": "integer",
+                    "example": 900
+                }
+            }
+        },
         "internal_api.CreateNetworkRequest": {
             "type": "object",
             "properties": {
@@ -796,13 +1653,13 @@
         "internal_api.CreateNodeResponse": {
             "type": "object",
             "properties": {
+                "endpoint": {
+                    "type": "string",
+                    "example": "https://hopssh.com:9473"
+                },
                 "enrollmentToken": {
                     "type": "string",
                     "example": "a1b2c3d4..."
-                },
-                "installCommand": {
-                    "type": "string",
-                    "example": "curl -fsSL https://hopssh.com/install | sudo bash -s -- --token a1b2c3d4..."
                 },
                 "nebulaIP": {
                     "type": "string",
@@ -811,6 +1668,53 @@
                 "nodeId": {
                     "type": "string",
                     "example": "550e8400-e29b-41d4-a716-446655440000"
+                }
+            }
+        },
+        "internal_api.DeviceAuthorizeRequest": {
+            "type": "object",
+            "properties": {
+                "networkId": {
+                    "type": "string",
+                    "example": "550e8400-..."
+                },
+                "userCode": {
+                    "type": "string",
+                    "example": "HOP-K9M2"
+                }
+            }
+        },
+        "internal_api.DeviceCodeResponse": {
+            "type": "object",
+            "properties": {
+                "deviceCode": {
+                    "type": "string",
+                    "example": "abc123..."
+                },
+                "expiresIn": {
+                    "type": "integer",
+                    "example": 600
+                },
+                "interval": {
+                    "type": "integer",
+                    "example": 5
+                },
+                "userCode": {
+                    "type": "string",
+                    "example": "HOP-K9M2"
+                },
+                "verificationURI": {
+                    "type": "string",
+                    "example": "/device"
+                }
+            }
+        },
+        "internal_api.DevicePollRequest": {
+            "type": "object",
+            "properties": {
+                "deviceCode": {
+                    "type": "string",
+                    "example": "abc123..."
                 }
             }
         },
@@ -950,9 +1854,17 @@
                     "type": "integer",
                     "example": 1712361600
                 },
+                "dnsDomain": {
+                    "type": "string",
+                    "example": "hop"
+                },
                 "id": {
                     "type": "string",
                     "example": "550e8400-e29b-41d4-a716-446655440000"
+                },
+                "lighthousePort": {
+                    "type": "integer",
+                    "example": 42001
                 },
                 "name": {
                     "type": "string",
@@ -979,13 +1891,44 @@
                     "type": "string",
                     "example": "203.0.113.10"
                 },
+                "agentVersion": {
+                    "type": "string",
+                    "example": "v0.9.15"
+                },
                 "arch": {
                     "type": "string",
                     "example": "arm64"
                 },
+                "capabilities": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "example": [
+                        "terminal",
+                        "health",
+                        "forward"
+                    ]
+                },
+                "clientType": {
+                    "description": "ClientType is \"desktop\" (bundled in or installed by the macOS\n.app) or \"cli\" (standalone hop-agent binary). Build-baked at\nthe agent — not affected by runtime mode (a \"desktop\" build\nrunning as the system LaunchDaemon still reports \"desktop\").\nEmpty string for legacy / pre-v0.10.52 agents that don't report.",
+                    "type": "string",
+                    "example": "desktop"
+                },
+                "connectivity": {
+                    "description": "Connectivity is derived from PeersDirect / PeersRelayed at serialize time.\nValues: \"\" (unknown — agent hasn't reported), \"idle\" (no peers),\n\"direct\" (all peers direct), \"relayed\" (all peers relayed),\n\"mixed\" (some direct, some relayed). Skipped entirely for lighthouse nodes.",
+                    "type": "string",
+                    "example": "direct"
+                },
                 "createdAt": {
                     "type": "integer",
                     "example": 1712361600
+                },
+                "dnsName": {
+                    "type": "string"
+                },
+                "exposedPorts": {
+                    "type": "string"
                 },
                 "hostname": {
                     "type": "string",
@@ -1007,13 +1950,58 @@
                     "type": "string",
                     "example": "550e8400-e29b-41d4-a716-446655440000"
                 },
+                "nodeType": {
+                    "type": "string",
+                    "example": "node"
+                },
                 "os": {
                     "type": "string",
                     "example": "linux"
                 },
+                "peers": {
+                    "description": "parsed from peer_state JSON; nil if never reported",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_api.PeerDetail"
+                    }
+                },
+                "peersDirect": {
+                    "type": "integer",
+                    "example": 3
+                },
+                "peersRelayed": {
+                    "type": "integer",
+                    "example": 1
+                },
+                "peersReportedAt": {
+                    "type": "integer",
+                    "example": 1712361600
+                },
                 "status": {
                     "type": "string",
                     "example": "online"
+                }
+            }
+        },
+        "internal_api.PeerDetail": {
+            "type": "object",
+            "properties": {
+                "direct": {
+                    "type": "boolean",
+                    "example": true
+                },
+                "remoteAddr": {
+                    "type": "string",
+                    "example": "203.0.113.18:4242"
+                },
+                "rttMs": {
+                    "description": "RTTms is the agent-measured EWMA-smoothed TCP-connect round-trip\nto the peer's mesh API listener (port 41820). Populated only\nwhen Direct=true; relayed peers report 0. 0 means \"no sample\nyet\" (brand-new peer, or relayed). See cmd/agent/peerstate.go.",
+                    "type": "integer",
+                    "example": 32
+                },
+                "vpnAddr": {
+                    "type": "string",
+                    "example": "10.42.1.7"
                 }
             }
         },
@@ -1064,6 +2052,32 @@
                 "password": {
                     "type": "string",
                     "example": "secretpassword"
+                }
+            }
+        },
+        "internal_api.RenewRequest": {
+            "type": "object",
+            "properties": {
+                "nodeId": {
+                    "type": "string",
+                    "example": "550e8400-e29b-41d4-a716-446655440000"
+                }
+            }
+        },
+        "internal_api.RenewResponse": {
+            "type": "object",
+            "properties": {
+                "expiresIn": {
+                    "type": "integer",
+                    "example": 86400
+                },
+                "nodeCert": {
+                    "type": "string",
+                    "example": "-----BEGIN NEBULA CERTIFICATE-----..."
+                },
+                "nodeKey": {
+                    "type": "string",
+                    "example": "-----BEGIN NEBULA X25519 PRIVATE KEY-----..."
                 }
             }
         },

@@ -7,6 +7,7 @@
 - `make` (pre-installed on macOS/Linux)
 - Optional: Docker (for containerized builds)
 - No sqlc install needed: `make generate` and `make sqlc-check` run sqlc v1.30.0 with `go run` (downloaded the first time; needs a C compiler)
+- No swag install needed either: `make swagger` and `make swagger-check` run it with `go run`
 
 ## First-Time Setup
 
@@ -376,8 +377,8 @@ Key highlights:
 ## Swagger API Docs
 
 ```bash
-go install github.com/swaggo/swag/v2/cmd/swag@latest
-swag init -g cmd/server/main.go -o docs --parseDependency
+make swagger          # regenerates swagger/ from the handlers' annotations (swag v2.0.0-rc5, the version go.mod has)
+make swagger-check    # regenerates and fails if swagger/ differs from the last commit; CI and make preflight run it
 ```
 
-Access at: `http://localhost:9473/swagger/`
+Access at: `http://localhost:9473/swagger/`. Only handlers with an `@Router` annotation are in it. The server serves `doc.json` itself (`internal/api/router.go`): http-swagger reads swag v1's registry, and `swagger/` registers with swag v2. `TestE2E_APIDocs` checks that the server serves `swagger/swagger.json` as it is, operations and models included, and names no host (with one, "Try it out" calls that host instead of the server the page came from).
