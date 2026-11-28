@@ -117,8 +117,9 @@ func takeTurn(t testing.TB) {
 	t.Helper()
 	const lock = "127.0.0.1:41999"
 	// Not shared fairly: whoever has it mostly gets it for their next test too,
-	// so this must outlast another package's whole run (8 minutes with -race).
-	deadline := time.Now().Add(25 * time.Minute)
+	// so a test may wait for another package's whole run (cmd/agent's alone
+	// takes 11 minutes in the Linux VM).
+	deadline := turnDeadline(t, time.Now())
 	for {
 		l, err := net.Listen("tcp", lock)
 		if err == nil {
@@ -139,6 +140,18 @@ func takeTurn(t testing.TB) {
 		t.Skipf("UDP 42001 is in use, is a hop-server running here? (%v)", err)
 	}
 	p.Close()
+}
+
+// turnDeadline is when takeTurn gives up waiting: a minute before go test's
+// -timeout ends the test binary, so the failure says why; an hour when there
+// is no timeout.
+func turnDeadline(t testing.TB, now time.Time) time.Time {
+	if d, ok := t.(interface{ Deadline() (time.Time, bool) }); ok {
+		if end, ok := d.Deadline(); ok {
+			return end.Add(-time.Minute)
+		}
+	}
+	return now.Add(time.Hour)
 }
 
 // Run starts the server process on the same data directory and address, and
