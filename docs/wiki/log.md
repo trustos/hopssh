@@ -1028,3 +1028,47 @@ with `-race` on `internal/client` (492 s, no race), and in the VM as a user
 (472 s and 654 s; 12 skips) and as root (491 s and 583 s; 13 skips). Not run
 on Windows. Concept page [[concepts/deleted-devices]]; open points in
 [[open-questions]].
+
+## 2026-11-28 — self-endpoints in the heartbeat checked and capped (not released)
+
+The addresses a device reports in its heartbeat (`selfEndpoints`) were kept
+as sent and given to every other device of its network, which hands them
+to Nebula and writes them to its peer cache: no bound on how many, no check
+that each is an address a peer can send to. One device could put a megabyte
+in every answer to its peers. Nebula keeps the first 10 per address family
+of what it is given and only then drops what it refuses, so junk in front
+pushed the real addresses out. Found in the review of item 14. Now the
+server keeps, in the order sent, only addresses a peer can send to (not
+port 0, with a zone, unspecified, loopback, multicast, link-local,
+0.0.0.0/8, 240.0.0.0/4 or in 10.42.0.0/16, every network's mesh), each once
+(IPv4 written as IPv6 counts as IPv4), at most 10 per address family
+(`nebula.MaxRemotes`), each with the lifetime sent at its own index
+(`selfEndpointHints`, `peerCanSendTo`). A report with nothing usable clears
+what the device said before, and a heartbeat that dropped any logs one
+line. Real agents send only such addresses, so nothing changes for them.
+`internal/api`'s `TestE2E_SelfEndpoints` (real server) was red before: the
+list came back as sent, junk first and all 12 LAN addresses after it.
+
+Two reviews. The first found one cap of 10 for both families (ten IPv4
+addresses pushed every IPv6 one out) and a lifetime multiplied before it
+was compared (a huge one wrapped and expired the address at once). The
+second found that an address with a zone got through: `[2001:db8::7%eth0]`
+and `[2001:db8::7]` were kept as two, `[::%eth0]` is not unspecified to
+`netip`, and a zone can be any length, so ten entries could still carry a
+megabyte; also 0.0.0.0/8 and 240.0.0.0/4, and no test had an IPv4-mapped
+address of a refused class (`TestPeerCanSendTo` now). Each was made red
+before its fix. 17 bugs planted, all caught ([[concepts/e2e-tests]],
+"Self-endpoints"). `internal/api` and `cmd/agent` green on the Mac (797 s and 652 s) and in the VM as a user (498 s and 808 s) and as root (732 s and 585 s); one skip each time, `TestE2E_Upgrade`. Not run on Windows. Left open
+([[open-questions]]): the agent bounds nothing it gets in
+`peerEndpoints`; a real agent never sends an empty list, so what a device
+no longer has stays with its peers until it expires; a directed broadcast
+or a NAT64 address is let through; a peer gets the self-endpoints after the
+lighthouse's list, so Nebula may take fewer than 10 of them (as before);
+a device can make the server log a line per heartbeat (as the firewall
+report already could).
+
+Also explained: `TestE2E_Audit`'s 580 s as root (log of item 14) and 680 s
+as user today. It waited for its turn (`takeTurn`, one hop-server per
+machine) until `cmd/agent`'s tests ended, then ran in a second; in the
+last root run 585.8 s against `cmd/agent`'s 584.6 s. A
+package's time in a run of several is not its own.

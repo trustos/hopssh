@@ -12,6 +12,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/slackhq/nebula"
+
 	"github.com/trustos/hopssh/internal/db"
 	"github.com/trustos/hopssh/internal/fwpolicy"
 	"github.com/trustos/hopssh/internal/mesh"
@@ -338,28 +340,20 @@ func (h *RenewHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 	//
 	// Empty SelfEndpoints CLEARS any prior entry (agent explicitly has
 	// nothing to report, e.g. portmap dropped + no useful interface IPs).
-	if len(body.SelfEndpoints) > 0 {
-		now := time.Now()
-		hints := make([]endpointHint, 0, len(body.SelfEndpoints))
-		for i, addr := range body.SelfEndpoints {
-			expiresAt := now.Add(selfEndpointHintTTL)
-			// If the agent reported a per-endpoint lifetime, use it.
-			// Apply 50% safety margin per RFC 6886 §3.3 — peers must
-			// stop dialing before the router actually drops the lease,
-			// otherwise the brief window between actual expiry and
-			// our pruning lets the router reassign the port and we
-			// race to a different host.
-			if i < len(body.SelfEndpointLifetimesSec) && body.SelfEndpointLifetimesSec[i] > 0 {
-				safe := time.Duration(body.SelfEndpointLifetimesSec[i]/2) * time.Second
-				if safe < selfEndpointHintTTL {
-					expiresAt = now.Add(safe)
-				}
-			}
-			hints = append(hints, endpointHint{addr: addr, expiresAt: expiresAt})
+	//
+	// Only what a peer can send to is kept, at most maxSelfEndpoints
+	// (selfEndpointHints); a report with nothing usable clears it too.
+	if body.SelfEndpoints != nil {
+		hints, dropped := selfEndpointHints(body.SelfEndpoints, body.SelfEndpointLifetimesSec, time.Now())
+		if dropped > 0 {
+			log.Printf("[heartbeat] node %s: %d of %d self-endpoints dropped (not an address a peer can send to, a duplicate, or over %d of a family)",
+				node.ID, dropped, len(body.SelfEndpoints), maxSelfEndpoints)
 		}
-		h.selfEndpointCache.Store(node.ID, &selfEndpointHint{endpoints: hints})
-	} else if body.SelfEndpoints != nil {
-		h.selfEndpointCache.Delete(node.ID)
+		if len(hints) > 0 {
+			h.selfEndpointCache.Store(node.ID, &selfEndpointHint{endpoints: hints})
+		} else {
+			h.selfEndpointCache.Delete(node.ID)
+		}
 	}
 
 	if h.EventHub != nil {
@@ -610,6 +604,84 @@ func mergePeerEndpoints(lighthouse []netip.AddrPort, hint *selfEndpointHint, now
 	}
 	return out
 }
+
+// maxSelfEndpoints is how many self-endpoints of a device the server keeps
+// per address family: the most Nebula takes for a host (the rest it drops).
+// A peer gets them after what the lighthouse knows of the device, so its
+// Nebula may take fewer. Every peer gets them in each heartbeat answer and
+// writes them to its peer cache, so without a bound one device could put a
+// megabyte in all of them.
+const maxSelfEndpoints = nebula.MaxRemotes
+
+// selfEndpointHints is what the server keeps of the self-endpoints of a
+// heartbeat: in the order sent, those a peer can send to, normalized, each
+// once, at most maxSelfEndpoints per address family, with the lifetime sent
+// at the same index.
+// dropped is how many it left out. The agent sends only such addresses
+// (internal/client/self_endpoints.go); anything else is a broken or hostile
+// device, and junk in front would push the real addresses out of the ones
+// Nebula takes.
+func selfEndpointHints(endpoints []string, lifetimesSec []int, now time.Time) (hints []endpointHint, dropped int) {
+	seen := map[netip.AddrPort]struct{}{}
+	perFamily := map[bool]int{} // by Is4
+	for i, s := range endpoints {
+		ap, err := netip.ParseAddrPort(s)
+		if err != nil || !peerCanSendTo(ap) {
+			dropped++
+			continue
+		}
+		ap = netip.AddrPortFrom(ap.Addr().Unmap(), ap.Port())
+		if _, dup := seen[ap]; dup || perFamily[ap.Addr().Is4()] == maxSelfEndpoints {
+			dropped++
+			continue
+		}
+		seen[ap] = struct{}{}
+		perFamily[ap.Addr().Is4()]++
+		expiresAt := now.Add(selfEndpointHintTTL)
+		// If the agent reported a per-endpoint lifetime, use it.
+		// Apply 50% safety margin per RFC 6886 §3.3 — peers must
+		// stop dialing before the router actually drops the lease,
+		// otherwise the brief window between actual expiry and
+		// our pruning lets the router reassign the port and we
+		// race to a different host.
+		// Compared in seconds: a lifetime too large for a Duration (no
+		// NAT-PMP one is) would wrap and expire the address at once.
+		if i < len(lifetimesSec) && lifetimesSec[i] > 0 {
+			if half := lifetimesSec[i] / 2; half < int(selfEndpointHintTTL/time.Second) {
+				expiresAt = now.Add(time.Duration(half) * time.Second)
+			}
+		}
+		hints = append(hints, endpointHint{addr: ap.String(), expiresAt: expiresAt})
+	}
+	return hints, dropped
+}
+
+// peerCanSendTo: ap is an address a peer elsewhere can send UDP to. Not
+// port 0; not with a zone, which names an interface of the device itself
+// and can be any length; not unspecified, loopback, multicast, link-local,
+// 0.0.0.0/8 or 240.0.0.0/4 (255.255.255.255 among them); and not in the
+// mesh (10.42.0.0/16, every network's): that one would go into the tunnel
+// it is meant to set up. An IPv4 address written as IPv6 is judged as IPv4.
+func peerCanSendTo(ap netip.AddrPort) bool {
+	if ap.Port() == 0 || ap.Addr().Zone() != "" {
+		return false
+	}
+	a := ap.Addr().Unmap()
+	if !a.IsValid() || a.IsUnspecified() || a.IsLoopback() || a.IsMulticast() ||
+		a.IsLinkLocalUnicast() || a.IsLinkLocalMulticast() {
+		return false
+	}
+	return !thisNetwork.Contains(a) && !reserved.Contains(a) && !meshRange.Contains(a)
+}
+
+var (
+	// meshRange holds the mesh addresses of every network (db.AllocateSubnet).
+	meshRange = netip.MustParsePrefix("10.42.0.0/16")
+	// Nobody can send to "this network" (RFC 1122) or to the reserved
+	// range, which holds the broadcast address.
+	thisNetwork = netip.MustParsePrefix("0.0.0.0/8")
+	reserved    = netip.MustParsePrefix("240.0.0.0/4")
+)
 
 // parseCapabilitiesForRenew unmarshals the JSON-array capability blob
 // stored on Node into a set, defaulting to empty on parse failure.

@@ -252,3 +252,79 @@ func TestMergePeerEndpoints_ZeroExpiryTreatedAsValid(t *testing.T) {
 		t.Errorf("zero-expiry endpoint dropped: %v", got)
 	}
 }
+
+// TestSelfEndpointHints_LifetimeStaysWithItsAddress: the lifetimes come in
+// the order of the addresses, so one dropped must not shift the ones after
+// it onto the wrong address. The short NAT-PMP lease of the public mapping
+// would otherwise land on a LAN address, and the mapping would keep the
+// 15-minute fallback after the router may have given its port away.
+func TestSelfEndpointHints_LifetimeStaysWithItsAddress(t *testing.T) {
+	now := time.Now()
+	hints, dropped := selfEndpointHints(
+		[]string{"127.0.0.1:4242", "203.0.113.7:4242", "192.168.1.5:4242"},
+		[]int{0, 120, 0}, now)
+	if dropped != 1 || len(hints) != 2 {
+		t.Fatalf("kept %+v, dropped %d; want 2 kept, 1 dropped", hints, dropped)
+	}
+	if hints[0].addr != "203.0.113.7:4242" || !hints[0].expiresAt.Equal(now.Add(time.Minute)) {
+		t.Errorf("the mapping: %+v, want 203.0.113.7:4242 for half its 120 s lease", hints[0])
+	}
+	if hints[1].addr != "192.168.1.5:4242" || !hints[1].expiresAt.Equal(now.Add(selfEndpointHintTTL)) {
+		t.Errorf("the LAN address: %+v, want the %v fallback", hints[1], selfEndpointHintTTL)
+	}
+}
+
+// TestSelfEndpointHints_HugeLifetime: a lifetime too large to turn into a
+// time.Duration (NAT-PMP's are 32-bit; this one is not) gets the fallback,
+// like any lease longer than it. Multiplied first, it wrapped to a negative
+// duration, and the address was dropped as expired at once.
+func TestSelfEndpointHints_HugeLifetime(t *testing.T) {
+	now := time.Now()
+	hints, _ := selfEndpointHints([]string{"203.0.113.7:4242"}, []int{20_000_000_000}, now)
+	if len(hints) != 1 || !hints[0].expiresAt.Equal(now.Add(selfEndpointHintTTL)) {
+		t.Errorf("kept %+v, want 203.0.113.7:4242 for the %v fallback", hints, selfEndpointHintTTL)
+	}
+}
+
+// TestPeerCanSendTo: which of a device's own addresses the server passes on
+// to its peers. An IPv4 address written as IPv6 is judged as IPv4. One with
+// a zone is refused: the zone names an interface of the device itself,
+// means nothing to a peer, and can be any length.
+func TestPeerCanSendTo(t *testing.T) {
+	for _, c := range []struct {
+		ap   string
+		want bool
+	}{
+		{"203.0.113.7:4242", true},
+		{"192.168.1.5:4242", true},
+		{"100.64.0.1:4242", true}, // carrier NAT: a peer of the same carrier can
+		{"[2001:db8::7]:4242", true},
+		{"[::ffff:203.0.113.7]:4242", true},
+		{"203.0.113.7:0", false},
+		{"0.0.0.0:4242", false},
+		{"0.1.2.3:4242", false},
+		{"[::]:4242", false},
+		{"[::%eth0]:4242", false},
+		{"127.0.0.1:4242", false},
+		{"[::1]:4242", false},
+		{"224.0.0.1:4242", false},
+		{"239.1.2.3:4242", false},
+		{"[ff0e::1]:4242", false},
+		{"169.254.1.1:4242", false},
+		{"[fe80::1]:4242", false},
+		{"[fe80::1%en0]:4242", false},
+		{"240.0.0.1:4242", false},
+		{"255.255.255.255:4242", false},
+		{"10.42.1.9:4242", false},
+		{"10.42.200.1:4242", false},
+		{"[::ffff:10.42.1.9]:4242", false},
+		{"[::ffff:0.0.0.0]:4242", false},
+		{"[::ffff:255.255.255.255]:4242", false},
+		{"[::ffff:127.0.0.1]:4242", false},
+		{"[2001:db8::7%eth0]:4242", false},
+	} {
+		if got := peerCanSendTo(netip.MustParseAddrPort(c.ap)); got != c.want {
+			t.Errorf("peerCanSendTo(%s) = %v, want %v", c.ap, got, c.want)
+		}
+	}
+}
